@@ -30,6 +30,12 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    // Handle completions command - no API needed
+    if let Commands::Completions { shell } = &cli.command {
+        Cli::generate_completions(*shell);
+        return Ok(());
+    }
+
     // Handle config commands that don't need API connection
     if let Commands::Config { action } = &cli.command {
         use cli::ConfigCommands;
@@ -82,6 +88,10 @@ fn run_with_client(
         Commands::Config { action } => handle_config(issue_client, action, cli.format),
         Commands::Article { action } => {
             commands::article::handle_article(issue_client, kb_client, action, cli.format)
+        }
+        Commands::Completions { .. } => {
+            // Already handled before config loading
+            unreachable!("Completions command should be handled before API validation")
         }
     }
 }

@@ -590,3 +590,59 @@ fn test_article_update_command_format() {
         .stdout(predicate::str::contains("--content"))
         .stdout(predicate::str::contains("--content-file"));
 }
+
+// ============================================================================
+// Shell Completions Tests
+// ============================================================================
+
+#[test]
+fn test_completions_command_exists() {
+    cargo_bin_cmd!("track")
+        .args(["completions", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Generate shell completions"))
+        .stdout(predicate::str::contains("bash"))
+        .stdout(predicate::str::contains("zsh"))
+        .stdout(predicate::str::contains("fish"));
+}
+
+#[test]
+fn test_completions_bash_output() {
+    cargo_bin_cmd!("track")
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_track"))
+        .stdout(predicate::str::contains("COMPREPLY"));
+}
+
+#[test]
+fn test_completions_zsh_output() {
+    cargo_bin_cmd!("track")
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#compdef track"))
+        .stdout(predicate::str::contains("_track"));
+}
+
+#[test]
+fn test_completions_fish_output() {
+    cargo_bin_cmd!("track")
+        .args(["completions", "fish"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("complete -c track"));
+}
+
+#[test]
+fn test_completions_no_config_required() {
+    // Completions should work without any configuration
+    cargo_bin_cmd!("track")
+        .args(["completions", "bash"])
+        .env_remove("TRACKER_URL")
+        .env_remove("TRACKER_TOKEN")
+        .assert()
+        .success();
+}

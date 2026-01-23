@@ -1,4 +1,5 @@
-use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -97,6 +98,20 @@ pub enum Commands {
         #[command(subcommand)]
         action: ArticleCommands,
     },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+}
+
+impl Cli {
+    /// Generate shell completions and write to stdout
+    pub fn generate_completions(shell: Shell) {
+        let mut cmd = Cli::command();
+        clap_complete::generate(shell, &mut cmd, "track", &mut std::io::stdout());
+    }
 }
 
 #[derive(Subcommand, Debug)]
