@@ -76,6 +76,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: ConfigCommands,
     },
+    /// Knowledge base article operations
+    #[command(visible_alias = "wiki", visible_alias = "a")]
+    Article {
+        #[command(subcommand)]
+        action: ArticleCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -278,6 +284,122 @@ pub enum TagCommands {
     /// List all available tags
     #[command(visible_alias = "ls")]
     List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ArticleCommands {
+    /// Get article by ID
+    #[command(visible_alias = "g")]
+    Get {
+        /// Article ID (e.g., PROJ-A-1 or database ID)
+        id: String,
+    },
+    /// List articles
+    #[command(visible_alias = "ls")]
+    List {
+        /// Filter by project ID or shortName
+        #[arg(long, short = 'p')]
+        project: Option<String>,
+        /// Maximum number of results
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Number of results to skip
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
+    },
+    /// Search articles
+    #[command(visible_alias = "s", visible_alias = "find")]
+    Search {
+        /// Search query
+        query: String,
+        /// Maximum number of results
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Number of results to skip
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
+    },
+    /// Create new article
+    #[command(visible_alias = "new", visible_alias = "c")]
+    Create {
+        /// Project ID or shortName
+        #[arg(long, short = 'p', required = true)]
+        project: String,
+        /// Article title
+        #[arg(long, short = 's', required = true)]
+        summary: String,
+        /// Article content (Markdown)
+        #[arg(long, short = 'c')]
+        content: Option<String>,
+        /// Read content from file
+        #[arg(long, conflicts_with = "content")]
+        content_file: Option<PathBuf>,
+        /// Parent article ID (for creating child articles)
+        #[arg(long)]
+        parent: Option<String>,
+        /// Tag name (can be repeated)
+        #[arg(long = "tag", short = 't')]
+        tags: Vec<String>,
+    },
+    /// Update existing article
+    #[command(visible_alias = "u")]
+    Update {
+        /// Article ID
+        id: String,
+        /// New title
+        #[arg(long, short = 's')]
+        summary: Option<String>,
+        /// New content (Markdown)
+        #[arg(long, short = 'c')]
+        content: Option<String>,
+        /// Read content from file
+        #[arg(long, conflicts_with = "content")]
+        content_file: Option<PathBuf>,
+        /// Tag name (can be repeated)
+        #[arg(long = "tag", short = 't')]
+        tags: Vec<String>,
+    },
+    /// Delete article by ID
+    #[command(visible_alias = "rm", visible_alias = "del")]
+    Delete {
+        /// Article ID
+        id: String,
+    },
+    /// Show article hierarchy (children)
+    Tree {
+        /// Article ID to show children for
+        id: String,
+    },
+    /// Move article to new parent
+    Move {
+        /// Article ID to move
+        id: String,
+        /// New parent article ID (omit to move to root)
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    /// List attachments on an article
+    Attachments {
+        /// Article ID
+        id: String,
+    },
+    /// Add a comment to an article
+    #[command(visible_alias = "cmt")]
+    Comment {
+        /// Article ID
+        id: String,
+        /// Comment text
+        #[arg(short = 'm', long = "message")]
+        text: String,
+    },
+    /// List comments on an article
+    Comments {
+        /// Article ID
+        id: String,
+        /// Maximum number of comments to show
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
 }
 
 #[cfg(test)]

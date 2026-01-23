@@ -1,6 +1,6 @@
 use crate::cli::OutputFormat;
 use serde::Serialize;
-use tracker_core::{CustomField, Issue, IssueTag, Project, ProjectCustomField};
+use tracker_core::{Article, ArticleAttachment, Comment, CustomField, Issue, IssueTag, Project, ProjectCustomField};
 
 pub fn output_result<T: Serialize + Displayable>(result: &T, format: OutputFormat) {
     match format {
@@ -130,5 +130,82 @@ impl Displayable for ProjectCustomField {
 impl Displayable for IssueTag {
     fn display(&self) -> String {
         format!("{} ({})", self.name, self.id)
+    }
+}
+
+impl Displayable for Article {
+    fn display(&self) -> String {
+        let mut output = format!(
+            "{} - {}\n  Project: {}\n  Created: {}\n  Updated: {}",
+            self.id_readable,
+            self.summary,
+            self.project.short_name.as_deref().unwrap_or(&self.project.id),
+            self.created.format("%Y-%m-%d %H:%M:%S"),
+            self.updated.format("%Y-%m-%d %H:%M:%S")
+        );
+
+        if let Some(parent) = &self.parent_article {
+            output.push_str(&format!(
+                "\n  Parent: {}",
+                parent.id_readable.as_deref().unwrap_or(&parent.id)
+            ));
+        }
+
+        if self.has_children {
+            output.push_str("\n  Has children: yes");
+        }
+
+        if !self.tags.is_empty() {
+            let tag_names: Vec<&str> = self.tags.iter().map(|t| t.name.as_str()).collect();
+            output.push_str(&format!("\n  Tags: {}", tag_names.join(", ")));
+        }
+
+        if let Some(content) = &self.content {
+            // Truncate content for display
+            let preview: String = content.chars().take(200).collect();
+            if content.len() > 200 {
+                output.push_str(&format!("\n  Content: {}...", preview));
+            } else {
+                output.push_str(&format!("\n  Content: {}", preview));
+            }
+        }
+
+        output
+    }
+}
+
+impl Displayable for ArticleAttachment {
+    fn display(&self) -> String {
+        let size_str = if self.size > 1024 * 1024 {
+            format!("{:.1} MB", self.size as f64 / (1024.0 * 1024.0))
+        } else if self.size > 1024 {
+            format!("{:.1} KB", self.size as f64 / 1024.0)
+        } else {
+            format!("{} bytes", self.size)
+        };
+
+        format!(
+            "{} ({}) - {}",
+            self.name,
+            self.mime_type.as_deref().unwrap_or("unknown"),
+            size_str
+        )
+    }
+}
+
+impl Displayable for Comment {
+    fn display(&self) -> String {
+        let author = self
+            .author
+            .as_ref()
+            .map(|a| a.name.as_deref().unwrap_or(&a.login))
+            .unwrap_or("Unknown");
+
+        let date = self
+            .created
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "Unknown date".to_string());
+
+        format!("[{}] {} - {}", date, author, self.text)
     }
 }

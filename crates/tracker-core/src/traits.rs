@@ -72,3 +72,62 @@ pub trait IssueTracker: Send + Sync {
     /// Get comments for an issue
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>>;
 }
+
+/// Trait for knowledge base / wiki operations
+///
+/// This trait is separate from IssueTracker because not all backends may support
+/// a knowledge base. YouTrack has a built-in Knowledge Base, while Jira uses
+/// Confluence as a separate product.
+///
+/// Backends that support both issues and articles can implement both traits.
+pub trait KnowledgeBase: Send + Sync {
+    // ========== Article CRUD Operations ==========
+
+    /// Get an article by its ID (database ID or readable ID like PROJ-A-1)
+    fn get_article(&self, id: &str) -> Result<Article>;
+
+    /// List articles, optionally filtered by project
+    ///
+    /// * `project_id` - Optional project ID or shortName to filter by
+    /// * `limit` - Maximum number of articles to return
+    /// * `skip` - Number of articles to skip (for pagination)
+    fn list_articles(
+        &self,
+        project_id: Option<&str>,
+        limit: usize,
+        skip: usize,
+    ) -> Result<Vec<Article>>;
+
+    /// Search articles using the backend's query language
+    fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>>;
+
+    /// Create a new article
+    fn create_article(&self, article: &CreateArticle) -> Result<Article>;
+
+    /// Update an existing article
+    fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article>;
+
+    /// Delete an article
+    fn delete_article(&self, id: &str) -> Result<()>;
+
+    // ========== Hierarchy Operations ==========
+
+    /// Get child articles of a parent article
+    fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>>;
+
+    /// Move an article to a new parent (or to root if new_parent_id is None)
+    fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article>;
+
+    // ========== Attachment Operations ==========
+
+    /// List attachments on an article
+    fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>>;
+
+    // ========== Comment Operations ==========
+
+    /// Get comments on an article
+    fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>>;
+
+    /// Add a comment to an article
+    fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment>;
+}

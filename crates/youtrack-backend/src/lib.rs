@@ -12,4 +12,4 @@ pub use error::{Result, YouTrackError};
 pub use models::*;
 
 // Re-export tracker-core types for convenience
-pub use tracker_core::{IssueTracker, TrackerError};
+pub use tracker_core::{IssueTracker, KnowledgeBase, TrackerError};

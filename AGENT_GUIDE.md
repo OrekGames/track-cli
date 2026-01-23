@@ -36,6 +36,14 @@ All commands have short aliases for faster typing:
 | `track tags list` | `track t ls` |
 | `track config` | `track cfg` |
 | `track config project` | `track cfg proj` |
+| `track article` | `track a` |
+| `track article get` | `track a g` |
+| `track article list` | `track a ls` |
+| `track article search` | `track a s`, `track a find` |
+| `track article create` | `track a new`, `track a c` |
+| `track article update` | `track a u` |
+| `track article delete` | `track a rm`, `track a del` |
+| `track article comment` | `track a cmt` |
 
 ## Quick Reference
 
@@ -254,3 +262,103 @@ $TRACK i new -s "Code review fixes" --parent OGIT-45
 - **JSON** (`-o json`): Machine-readable output for programmatic parsing
 
 Always use `-o json` when you need to parse the output programmatically.
+
+## Knowledge Base (Articles)
+
+The `track article` commands allow you to manage Knowledge Base articles in YouTrack.
+
+### Article Commands Quick Reference
+
+```bash
+# Get article by ID
+$TRACK -o json a g KB-A-1
+
+# List articles
+$TRACK -o json a ls --limit 20
+$TRACK -o json a ls --project PROJ --limit 10
+
+# Search articles
+$TRACK -o json a s "getting started" --limit 10
+
+# Create article
+$TRACK a new --project PROJ --summary "New Article" --content "Article content here"
+$TRACK a new --project PROJ --summary "Article with file" --content-file ./content.md
+
+# Create child article
+$TRACK a new --project PROJ --summary "Child Article" --parent KB-A-1
+
+# Update article
+$TRACK a u KB-A-1 --summary "Updated Title"
+$TRACK a u KB-A-1 --content "Updated content"
+$TRACK a u KB-A-1 --content-file ./updated-content.md
+
+# Delete article
+$TRACK a del KB-A-1
+
+# View article hierarchy (children)
+$TRACK a tree KB-A-1
+
+# Move article to new parent
+$TRACK a move KB-A-1 --parent KB-A-2   # Move under another article
+$TRACK a move KB-A-1                    # Move to root (no parent)
+
+# List attachments
+$TRACK -o json a attachments KB-A-1
+
+# Add comment to article
+$TRACK a comment KB-A-1 -m "This is a comment"
+$TRACK a cmt KB-A-1 -m "Short form"
+
+# List comments on article
+$TRACK a comments KB-A-1 --limit 10
+```
+
+### Article Workflows
+
+#### Creating Documentation
+
+```bash
+# Create a root article for documentation
+$TRACK a new --project DOCS --summary "API Reference" --content "# API Reference\n\nThis section documents the API."
+
+# Create child articles for sections
+$TRACK a new --project DOCS --summary "Authentication" --parent KB-A-1 --content-file ./docs/auth.md
+$TRACK a new --project DOCS --summary "Endpoints" --parent KB-A-1 --content-file ./docs/endpoints.md
+$TRACK a new --project DOCS --summary "Error Codes" --parent KB-A-1 --content-file ./docs/errors.md
+```
+
+#### Updating Documentation from Files
+
+```bash
+# Update article content from a markdown file
+$TRACK a u KB-A-5 --content-file ./docs/updated-auth.md
+
+# Update both title and content
+$TRACK a u KB-A-5 --summary "Authentication (Updated)" --content-file ./docs/auth.md
+```
+
+#### Navigating Article Hierarchy
+
+```bash
+# See the structure under an article
+$TRACK a tree KB-A-1
+
+# Get full details of an article including content
+$TRACK -o json a g KB-A-1
+```
+
+### Article Command Details
+
+| Command | Description |
+|---------|-------------|
+| `article get <ID>` | Get article by ID with full content |
+| `article list` | List articles with optional `--project`, `--limit`, `--skip` |
+| `article search <QUERY>` | Search articles by text content |
+| `article create` | Create new article (requires `--project`, `--summary`) |
+| `article update <ID>` | Update article (summary, content, tags) |
+| `article delete <ID>` | Delete article by ID |
+| `article tree <ID>` | Show article and its children |
+| `article move <ID>` | Move article to new parent (or root) |
+| `article attachments <ID>` | List attachments on article |
+| `article comment <ID>` | Add comment to article |
+| `article comments <ID>` | List comments on article |

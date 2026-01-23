@@ -4,4 +4,4 @@ pub mod traits;
 
 pub use error::{Result, TrackerError};
 pub use models::*;
-pub use traits::IssueTracker;
+pub use traits::{IssueTracker, KnowledgeBase};

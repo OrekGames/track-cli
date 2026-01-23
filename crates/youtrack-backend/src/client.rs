@@ -5,6 +5,7 @@ use ureq::Agent;
 
 const DEFAULT_ISSUE_FIELDS: &str = "id,idReadable,summary,description,project(id,name,shortName),customFields(name,$type,value(name,login,isResolved,text)),tags(id,name),created,updated";
 const DEFAULT_PROJECT_FIELDS: &str = "id,name,shortName,description";
+const DEFAULT_ARTICLE_FIELDS: &str = "id,idReadable,summary,content,project(id,name,shortName),parentArticle(id,idReadable,summary),hasChildren,tags(id,name),created,updated,reporter(login,name)";
 
 pub struct YouTrackClient {
     agent: Agent,
@@ -387,5 +388,236 @@ impl YouTrackClient {
 
         let comments: Vec<IssueComment> = response.body_mut().read_json()?;
         Ok(comments)
+    }
+
+    // ========================================================================
+    // Knowledge Base / Article Operations
+    // ========================================================================
+
+    /// Get an article by ID (database ID or readable ID like PROJ-A-1)
+    pub fn get_article(&self, id: &str) -> Result<Article> {
+        let url = format!(
+            "{}/api/articles/{}?fields={}",
+            self.base_url, id, DEFAULT_ARTICLE_FIELDS
+        );
+
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let article: Article = response.body_mut().read_json()?;
+        Ok(article)
+    }
+
+    /// List articles with pagination
+    pub fn list_articles(&self, limit: usize, skip: usize) -> Result<Vec<Article>> {
+        let url = format!(
+            "{}/api/articles?fields={}&$top={}&$skip={}",
+            self.base_url, DEFAULT_ARTICLE_FIELDS, limit, skip
+        );
+
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let articles: Vec<Article> = response.body_mut().read_json()?;
+        Ok(articles)
+    }
+
+    /// Search articles using YouTrack query language
+    pub fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
+        let url = format!(
+            "{}/api/articles?query={}&fields={}&$top={}&$skip={}",
+            self.base_url,
+            urlencoding::encode(query),
+            DEFAULT_ARTICLE_FIELDS,
+            limit,
+            skip
+        );
+
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let articles: Vec<Article> = response.body_mut().read_json()?;
+        Ok(articles)
+    }
+
+    /// Create a new article
+    pub fn create_article(&self, create: &CreateArticle) -> Result<Article> {
+        let url = format!(
+            "{}/api/articles?fields={}",
+            self.base_url, DEFAULT_ARTICLE_FIELDS
+        );
+
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(&create)
+            .map_err(|e| self.handle_error(e))?;
+
+        let article: Article = response.body_mut().read_json()?;
+        Ok(article)
+    }
+
+    /// Update an existing article
+    pub fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
+        let url = format!(
+            "{}/api/articles/{}?fields={}",
+            self.base_url, id, DEFAULT_ARTICLE_FIELDS
+        );
+
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(&update)
+            .map_err(|e| self.handle_error(e))?;
+
+        let article: Article = response.body_mut().read_json()?;
+        Ok(article)
+    }
+
+    /// Delete an article
+    pub fn delete_article(&self, id: &str) -> Result<()> {
+        let url = format!("{}/api/articles/{}", self.base_url, id);
+
+        self.agent
+            .delete(&url)
+            .header("Authorization", &self.auth_header())
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        Ok(())
+    }
+
+    /// Get child articles of a parent article
+    pub fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
+        let url = format!(
+            "{}/api/articles/{}/childArticles?fields={}",
+            self.base_url, parent_id, DEFAULT_ARTICLE_FIELDS
+        );
+
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let articles: Vec<Article> = response.body_mut().read_json()?;
+        Ok(articles)
+    }
+
+    /// Move an article to a new parent (or to root if new_parent_id is None)
+    /// This is done by updating the article's parentArticle field
+    pub fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article> {
+        let url = format!(
+            "{}/api/articles/{}?fields={}",
+            self.base_url, article_id, DEFAULT_ARTICLE_FIELDS
+        );
+
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct MoveArticle {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            parent_article: Option<ArticleIdentifier>,
+        }
+
+        let body = MoveArticle {
+            parent_article: new_parent_id.map(|id| ArticleIdentifier { id: id.to_string() }),
+        };
+
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(&body)
+            .map_err(|e| self.handle_error(e))?;
+
+        let article: Article = response.body_mut().read_json()?;
+        Ok(article)
+    }
+
+    /// List attachments on an article
+    pub fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
+        let url = format!(
+            "{}/api/articles/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name)",
+            self.base_url, article_id
+        );
+
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let attachments: Vec<ArticleAttachment> = response.body_mut().read_json()?;
+        Ok(attachments)
+    }
+
+    /// Get comments on an article
+    pub fn get_article_comments(&self, article_id: &str) -> Result<Vec<ArticleComment>> {
+        let url = format!(
+            "{}/api/articles/{}/comments?fields=id,text,author(login,name),created",
+            self.base_url, article_id
+        );
+
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let comments: Vec<ArticleComment> = response.body_mut().read_json()?;
+        Ok(comments)
+    }
+
+    /// Add a comment to an article
+    pub fn add_article_comment(&self, article_id: &str, text: &str) -> Result<ArticleComment> {
+        let url = format!(
+            "{}/api/articles/{}/comments?fields=id,text,author(login,name),created",
+            self.base_url, article_id
+        );
+
+        let comment = CreateArticleComment {
+            text: text.to_string(),
+        };
+
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(&comment)
+            .map_err(|e| self.handle_error(e))?;
+
+        let created_comment: ArticleComment = response.body_mut().read_json()?;
+        Ok(created_comment)
     }
 }

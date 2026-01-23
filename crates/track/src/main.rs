@@ -11,7 +11,7 @@ use cli::{Backend, Cli, Commands};
 use config::Config;
 use output::output_error;
 use std::process::ExitCode;
-use tracker_core::IssueTracker;
+use tracker_core::{IssueTracker, KnowledgeBase};
 use youtrack_backend::YouTrackClient;
 
 fn main() -> ExitCode {
@@ -44,30 +44,40 @@ fn run(cli: Cli) -> Result<()> {
     config.validate(cli.backend)?;
 
     // Create the appropriate backend client
-    let client: Box<dyn IssueTracker> = create_client(cli.backend, &config)?;
-
-    match &cli.command {
-        Commands::Issue { action } => {
-            commands::issue::handle_issue(client.as_ref(), action, cli.format)
-        }
-        Commands::Project { action } => {
-            commands::project::handle_project(client.as_ref(), action, cli.format)
-        }
-        Commands::Tags { action } => commands::tags::handle_tags(client.as_ref(), action, cli.format),
-        Commands::Cache { action } => handle_cache(client.as_ref(), action, cli.format, cli.backend),
-        Commands::Config { action } => handle_config(client.as_ref(), action, cli.format),
-    }
-}
-
-/// Create a client for the specified backend
-fn create_client(backend: Backend, config: &Config) -> Result<Box<dyn IssueTracker>> {
-    match backend {
+    // We use the concrete client type to support both IssueTracker and KnowledgeBase
+    match cli.backend {
         Backend::YouTrack => {
             let client = YouTrackClient::new(
                 config.url.as_ref().unwrap(),
                 config.token.as_ref().unwrap(),
             );
-            Ok(Box::new(client))
+            run_with_client(&client, &client, &cli)
+        }
+    }
+}
+
+/// Run commands with clients that implement the required traits
+fn run_with_client(
+    issue_client: &dyn IssueTracker,
+    kb_client: &dyn KnowledgeBase,
+    cli: &Cli,
+) -> Result<()> {
+    match &cli.command {
+        Commands::Issue { action } => {
+            commands::issue::handle_issue(issue_client, action, cli.format)
+        }
+        Commands::Project { action } => {
+            commands::project::handle_project(issue_client, action, cli.format)
+        }
+        Commands::Tags { action } => {
+            commands::tags::handle_tags(issue_client, action, cli.format)
+        }
+        Commands::Cache { action } => {
+            handle_cache(issue_client, action, cli.format, cli.backend)
+        }
+        Commands::Config { action } => handle_config(issue_client, action, cli.format),
+        Commands::Article { action } => {
+            commands::article::handle_article(issue_client, kb_client, action, cli.format)
         }
     }
 }

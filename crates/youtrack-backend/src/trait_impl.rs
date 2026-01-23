@@ -1,9 +1,10 @@
-//! IssueTracker trait implementation for YouTrackClient
+//! IssueTracker and KnowledgeBase trait implementations for YouTrackClient
 
 use crate::client::YouTrackClient;
 use tracker_core::{
-    Comment, CreateIssue, IssueLink, IssueTag, IssueTracker, Issue, Project,
-    ProjectCustomField, Result, TrackerError, UpdateIssue,
+    Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, Issue, IssueLink,
+    IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result, TrackerError,
+    UpdateArticle, UpdateIssue,
 };
 
 impl IssueTracker for YouTrackClient {
@@ -97,6 +98,91 @@ impl IssueTracker for YouTrackClient {
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         self.get_comments(issue_id)
             .map(|comments| comments.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+}
+
+// ============================================================================
+// KnowledgeBase Implementation
+// ============================================================================
+
+impl KnowledgeBase for YouTrackClient {
+    fn get_article(&self, id: &str) -> Result<Article> {
+        self.get_article(id)
+            .map(Into::into)
+            .map_err(TrackerError::from)
+    }
+
+    fn list_articles(
+        &self,
+        project_id: Option<&str>,
+        limit: usize,
+        skip: usize,
+    ) -> Result<Vec<Article>> {
+        let result = if let Some(proj) = project_id {
+            // Use search with project filter
+            let query = format!("project: {}", proj);
+            self.search_articles(&query, limit, skip)
+        } else {
+            self.list_articles(limit, skip)
+        };
+
+        result
+            .map(|articles| articles.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
+        self.search_articles(query, limit, skip)
+            .map(|articles| articles.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn create_article(&self, article: &CreateArticle) -> Result<Article> {
+        let yt_create: crate::models::CreateArticle = article.into();
+        self.create_article(&yt_create)
+            .map(Into::into)
+            .map_err(TrackerError::from)
+    }
+
+    fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
+        let yt_update: crate::models::UpdateArticle = update.into();
+        self.update_article(id, &yt_update)
+            .map(Into::into)
+            .map_err(TrackerError::from)
+    }
+
+    fn delete_article(&self, id: &str) -> Result<()> {
+        self.delete_article(id).map_err(TrackerError::from)
+    }
+
+    fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
+        self.get_child_articles(parent_id)
+            .map(|articles| articles.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article> {
+        self.move_article(article_id, new_parent_id)
+            .map(Into::into)
+            .map_err(TrackerError::from)
+    }
+
+    fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
+        self.list_article_attachments(article_id)
+            .map(|attachments| attachments.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
+        self.get_article_comments(article_id)
+            .map(|comments| comments.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment> {
+        self.add_article_comment(article_id, text)
+            .map(Into::into)
             .map_err(TrackerError::from)
     }
 }

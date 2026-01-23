@@ -171,3 +171,79 @@ pub enum CustomFieldUpdate {
     State { name: String, value: String },
     SingleUser { name: String, login: String },
 }
+
+// ============================================================================
+// Knowledge Base / Article Models
+// ============================================================================
+
+/// Knowledge base article representation across all backends
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Article {
+    /// Internal ID
+    pub id: String,
+    /// Human-readable ID (e.g., "PROJ-A-1")
+    pub id_readable: String,
+    /// Article title
+    pub summary: String,
+    /// Article content (Markdown)
+    pub content: Option<String>,
+    /// Project this article belongs to
+    pub project: ProjectRef,
+    /// Parent article (for hierarchical organization)
+    pub parent_article: Option<ArticleRef>,
+    /// Whether this article has child articles
+    pub has_children: bool,
+    /// Tags on the article
+    pub tags: Vec<Tag>,
+    /// Creation timestamp
+    pub created: DateTime<Utc>,
+    /// Last update timestamp
+    pub updated: DateTime<Utc>,
+    /// Article author
+    pub reporter: Option<CommentAuthor>,
+}
+
+/// Reference to an article (minimal fields for links/hierarchy)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArticleRef {
+    pub id: String,
+    pub id_readable: Option<String>,
+    pub summary: Option<String>,
+}
+
+/// Data for creating a new article
+#[derive(Debug, Clone)]
+pub struct CreateArticle {
+    /// Project ID or shortName
+    pub project_id: String,
+    /// Article title
+    pub summary: String,
+    /// Article content (Markdown)
+    pub content: Option<String>,
+    /// Parent article ID (for creating child articles)
+    pub parent_article_id: Option<String>,
+    /// Tags to apply
+    pub tags: Vec<String>,
+}
+
+/// Data for updating an article
+#[derive(Debug, Clone, Default)]
+pub struct UpdateArticle {
+    /// New title (if changing)
+    pub summary: Option<String>,
+    /// New content (if changing)
+    pub content: Option<String>,
+    /// Tags to set
+    pub tags: Vec<String>,
+}
+
+/// Attachment on an article
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArticleAttachment {
+    pub id: String,
+    pub name: String,
+    pub size: i64,
+    pub mime_type: Option<String>,
+    pub url: Option<String>,
+    pub created: Option<DateTime<Utc>>,
+}

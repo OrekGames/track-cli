@@ -340,3 +340,253 @@ fn test_issue_create_requires_summary() {
         .failure()
         .stderr(predicate::str::contains("--summary"));
 }
+
+// Article command integration tests
+
+#[test]
+fn test_article_commands_exist() {
+    cargo_bin_cmd!("track")
+        .args(["article", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("get"))
+        .stdout(predicate::str::contains("list"))
+        .stdout(predicate::str::contains("search"))
+        .stdout(predicate::str::contains("create"))
+        .stdout(predicate::str::contains("update"))
+        .stdout(predicate::str::contains("delete"));
+}
+
+#[test]
+fn test_article_get_requires_id() {
+    cargo_bin_cmd!("track")
+        .args(["article", "get"])
+        .env("TRACKER_TOKEN", "test")
+        .env("TRACKER_URL", "https://test.example.com")
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("required"));
+}
+
+#[test]
+fn test_article_create_requires_project() {
+    cargo_bin_cmd!("track")
+        .args(["article", "create", "--summary", "Test Article"])
+        .env("TRACKER_TOKEN", "test")
+        .env("TRACKER_URL", "https://test.example.com")
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--project"));
+}
+
+#[test]
+fn test_article_create_requires_summary() {
+    cargo_bin_cmd!("track")
+        .args(["article", "create", "--project", "KB"])
+        .env("TRACKER_TOKEN", "test")
+        .env("TRACKER_URL", "https://test.example.com")
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--summary"));
+}
+
+#[test]
+fn test_article_tree_command_exists() {
+    cargo_bin_cmd!("track")
+        .args(["article", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tree"))
+        .stdout(predicate::str::contains("article hierarchy"));
+}
+
+#[test]
+fn test_article_move_command_exists() {
+    cargo_bin_cmd!("track")
+        .args(["article", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("move"))
+        .stdout(predicate::str::contains("Move article"));
+}
+
+#[test]
+fn test_article_attachments_command_exists() {
+    cargo_bin_cmd!("track")
+        .args(["article", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("attachments"))
+        .stdout(predicate::str::contains("List attachments"));
+}
+
+#[test]
+fn test_article_comment_command_exists() {
+    cargo_bin_cmd!("track")
+        .args(["article", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("comment"))
+        .stdout(predicate::str::contains("comments"));
+}
+
+#[test]
+fn test_article_get_with_json_output() {
+    let mock_response = serde_json::json!({
+        "id": "123-456",
+        "idReadable": "KB-A-1",
+        "summary": "Test Article",
+        "content": "Article content here",
+        "project": {
+            "id": "0-1",
+            "name": "Knowledge Base",
+            "shortName": "KB"
+        },
+        "hasChildren": false,
+        "tags": [],
+        "created": 1640000000000i64,
+        "updated": 1640000000000i64
+    });
+
+    let (_server, port) = start_mock_server(mock_response.to_string());
+    thread::sleep(Duration::from_millis(50));
+
+    let output = cargo_bin_cmd!("track")
+        .args(["--format", "json", "article", "get", "KB-A-1"])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let output_str = String::from_utf8(output).unwrap();
+    let json: Value = serde_json::from_str(&output_str).unwrap();
+    assert_eq!(json["id_readable"], "KB-A-1");
+    assert_eq!(json["summary"], "Test Article");
+}
+
+#[test]
+fn test_article_get_with_text_output() {
+    let mock_response = serde_json::json!({
+        "id": "123-456",
+        "idReadable": "KB-A-2",
+        "summary": "Another Test Article",
+        "project": {
+            "id": "0-1",
+            "shortName": "KB"
+        },
+        "hasChildren": false,
+        "tags": [],
+        "created": 1640000000000i64,
+        "updated": 1640000000000i64
+    });
+
+    let (_server, port) = start_mock_server(mock_response.to_string());
+    thread::sleep(Duration::from_millis(50));
+
+    cargo_bin_cmd!("track")
+        .args(["article", "get", "KB-A-2"])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("KB-A-2"))
+        .stdout(predicate::str::contains("Another Test Article"));
+}
+
+#[test]
+fn test_article_list_with_results() {
+    let mock_response = serde_json::json!([
+        {
+            "id": "123-1",
+            "idReadable": "KB-A-1",
+            "summary": "First Article",
+            "project": {"id": "0-1", "shortName": "KB"},
+            "hasChildren": false,
+            "tags": [],
+            "created": 1640000000000i64,
+            "updated": 1640000000000i64
+        },
+        {
+            "id": "123-2",
+            "idReadable": "KB-A-2",
+            "summary": "Second Article",
+            "project": {"id": "0-1", "shortName": "KB"},
+            "hasChildren": true,
+            "tags": [],
+            "created": 1640000000000i64,
+            "updated": 1640000000000i64
+        }
+    ]);
+
+    let (_server, port) = start_mock_server(mock_response.to_string());
+    thread::sleep(Duration::from_millis(50));
+
+    let output = cargo_bin_cmd!("track")
+        .args(["--format", "json", "article", "list", "--limit", "10"])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let output_str = String::from_utf8(output).unwrap();
+    let json: Value = serde_json::from_str(&output_str).unwrap();
+    assert!(json.is_array());
+    assert_eq!(json.as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn test_article_search_with_query() {
+    cargo_bin_cmd!("track")
+        .args(["article", "search", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("query"))
+        .stdout(predicate::str::contains("--limit"))
+        .stdout(predicate::str::contains("--skip"));
+}
+
+#[test]
+fn test_article_create_command_format() {
+    cargo_bin_cmd!("track")
+        .args(["article", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--project"))
+        .stdout(predicate::str::contains("--summary"))
+        .stdout(predicate::str::contains("--content"))
+        .stdout(predicate::str::contains("--content-file"))
+        .stdout(predicate::str::contains("--parent"))
+        .stdout(predicate::str::contains("--tag"));
+}
+
+#[test]
+fn test_article_update_command_format() {
+    cargo_bin_cmd!("track")
+        .args(["article", "update", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--summary"))
+        .stdout(predicate::str::contains("--content"))
+        .stdout(predicate::str::contains("--content-file"));
+}

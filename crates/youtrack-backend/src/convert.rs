@@ -215,3 +215,110 @@ impl From<&core::CustomFieldUpdate> for yt::CustomFieldUpdate {
         }
     }
 }
+
+// ============================================================================
+// Article Conversions
+// ============================================================================
+
+/// Convert YouTrack Article to tracker-core Article
+impl From<yt::Article> for core::Article {
+    fn from(article: yt::Article) -> Self {
+        Self {
+            id: article.id,
+            id_readable: article.id_readable.unwrap_or_default(),
+            summary: article.summary,
+            content: article.content,
+            project: article
+                .project
+                .map(|p| core::ProjectRef {
+                    id: p.id,
+                    name: p.name,
+                    short_name: p.short_name,
+                })
+                .unwrap_or_else(|| core::ProjectRef {
+                    id: String::new(),
+                    name: None,
+                    short_name: None,
+                }),
+            parent_article: article.parent_article.map(|p| core::ArticleRef {
+                id: p.id,
+                id_readable: p.id_readable,
+                summary: p.summary,
+            }),
+            has_children: article.has_children.unwrap_or(false),
+            tags: article.tags.into_iter().map(Into::into).collect(),
+            created: article.created.unwrap_or_else(chrono::Utc::now),
+            updated: article.updated.unwrap_or_else(chrono::Utc::now),
+            reporter: article.reporter.map(|r| core::CommentAuthor {
+                login: r.login,
+                name: r.name,
+            }),
+        }
+    }
+}
+
+/// Convert YouTrack ArticleAttachment to tracker-core ArticleAttachment
+impl From<yt::ArticleAttachment> for core::ArticleAttachment {
+    fn from(attachment: yt::ArticleAttachment) -> Self {
+        Self {
+            id: attachment.id,
+            name: attachment.name,
+            size: attachment.size,
+            mime_type: attachment.mime_type,
+            url: attachment.url,
+            created: attachment.created,
+        }
+    }
+}
+
+/// Convert YouTrack ArticleComment to tracker-core Comment
+impl From<yt::ArticleComment> for core::Comment {
+    fn from(comment: yt::ArticleComment) -> Self {
+        Self {
+            id: comment.id,
+            text: comment.text,
+            author: comment.author.map(|a| core::CommentAuthor {
+                login: a.login,
+                name: a.name,
+            }),
+            created: comment.created,
+        }
+    }
+}
+
+/// Convert tracker-core CreateArticle to YouTrack CreateArticle
+impl From<&core::CreateArticle> for yt::CreateArticle {
+    fn from(create: &core::CreateArticle) -> Self {
+        Self {
+            project: yt::ProjectIdentifier {
+                id: create.project_id.clone(),
+            },
+            summary: create.summary.clone(),
+            content: create.content.clone(),
+            parent_article: create
+                .parent_article_id
+                .as_ref()
+                .map(|id| yt::ArticleIdentifier { id: id.clone() }),
+            tags: create
+                .tags
+                .iter()
+                .map(|name| yt::TagIdentifier::from_name(name.clone()))
+                .collect(),
+        }
+    }
+}
+
+/// Convert tracker-core UpdateArticle to YouTrack UpdateArticle
+impl From<&core::UpdateArticle> for yt::UpdateArticle {
+    fn from(update: &core::UpdateArticle) -> Self {
+        Self {
+            summary: update.summary.clone(),
+            content: update.content.clone(),
+            tags: update
+                .tags
+                .iter()
+                .map(|name| yt::TagIdentifier::from_name(name.clone()))
+                .collect(),
+        }
+    }
+}
