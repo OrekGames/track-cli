@@ -12,6 +12,7 @@ path = "src/main.rs"
 tracker-core = { workspace = true }
 youtrack-backend = { workspace = true }
 clap = { workspace = true }
+clap_complete = { workspace = true }
 colored = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
