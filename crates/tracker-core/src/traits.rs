@@ -31,6 +31,9 @@ pub trait IssueTracker: Send + Sync {
     /// Get a project by ID
     fn get_project(&self, id: &str) -> Result<Project>;
 
+    /// Create a new project
+    fn create_project(&self, project: &CreateProject) -> Result<Project>;
+
     /// Resolve a project identifier (shortName or ID) to internal ID
     fn resolve_project_id(&self, identifier: &str) -> Result<String>;
 

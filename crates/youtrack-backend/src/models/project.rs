@@ -64,3 +64,13 @@ pub struct TagColor {
     #[serde(default)]
     pub foreground: Option<String>,
 }
+
+/// Data for creating a new project via YouTrack API
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateProject {
+    pub name: String,
+    pub short_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}

@@ -2,9 +2,9 @@
 
 use crate::client::YouTrackClient;
 use tracker_core::{
-    Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, Issue, IssueLink,
-    IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result, TrackerError,
-    UpdateArticle, UpdateIssue,
+    Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, Issue,
+    IssueLink, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result,
+    TrackerError, UpdateArticle, UpdateIssue,
 };
 
 impl IssueTracker for YouTrackClient {
@@ -46,6 +46,13 @@ impl IssueTracker for YouTrackClient {
 
     fn get_project(&self, id: &str) -> Result<Project> {
         self.get_project(id)
+            .map(Into::into)
+            .map_err(TrackerError::from)
+    }
+
+    fn create_project(&self, project: &CreateProject) -> Result<Project> {
+        let yt_create: crate::models::CreateProject = project.into();
+        self.create_project(&yt_create)
             .map(Into::into)
             .map_err(TrackerError::from)
     }

@@ -178,6 +178,25 @@ impl YouTrackClient {
         Ok(project)
     }
 
+    pub fn create_project(&self, create: &CreateProject) -> Result<Project> {
+        let url = format!(
+            "{}/api/admin/projects?fields={}",
+            self.base_url, DEFAULT_PROJECT_FIELDS
+        );
+
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(&create)
+            .map_err(|e| self.handle_error(e))?;
+
+        let project: Project = response.body_mut().read_json()?;
+        Ok(project)
+    }
+
     /// Resolve a project identifier (shortName or ID) to internal ID.
     /// If the input looks like an internal ID (contains '-' and starts with digit), returns it as-is.
     /// Otherwise, searches projects by shortName.

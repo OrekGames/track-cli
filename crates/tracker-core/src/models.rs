@@ -83,6 +83,17 @@ pub struct ProjectCustomField {
     pub required: bool,
 }
 
+/// Data for creating a new project
+#[derive(Debug, Clone)]
+pub struct CreateProject {
+    /// Human-readable project name
+    pub name: String,
+    /// Short name / project key (e.g., "PROJ")
+    pub short_name: String,
+    /// Optional description
+    pub description: Option<String>,
+}
+
 /// Issue tag (full representation with optional metadata)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueTag {
