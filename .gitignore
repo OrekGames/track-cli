@@ -1,0 +1,20 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+*.env
+
+# OS/editor
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+
+# AI coding agents
+.claude/
+.codex/
+.aider/
+.cursor/
+.continue/
+.windsurf/

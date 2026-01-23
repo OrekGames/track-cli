@@ -1,0 +1,24 @@
+[package]
+name = "track"
+version = "0.1.0"
+edition = "2021"
+description = "CLI for issue tracking systems (YouTrack, Jira, etc.)"
+
+[[bin]]
+name = "track"
+path = "src/main.rs"
+
+[dependencies]
+tracker-core = { workspace = true }
+youtrack-backend = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+figment = { workspace = true }
+directories = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }

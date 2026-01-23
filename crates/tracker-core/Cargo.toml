@@ -1,0 +1,10 @@
+[package]
+name = "tracker-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core traits and types for issue tracker backends"
+
+[dependencies]
+thiserror = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }

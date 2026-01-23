@@ -1,0 +1,18 @@
+[package]
+name = "youtrack-backend"
+version = "0.1.0"
+edition = "2021"
+description = "YouTrack backend implementation for tracker-core"
+
+[dependencies]
+tracker-core = { workspace = true }
+ureq = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+urlencoding = "2.1"
+
+[dev-dependencies]
+wiremock = { workspace = true }
+tokio = { workspace = true }

@@ -1,0 +1,10 @@
+# Example configuration file for YouTrack CLI
+# Copy this file to your config path (e.g. ~/.config/yt/config.toml on Linux,
+# ~/Library/Application Support/yt/config.toml on macOS) or use --config PATH.
+
+# YouTrack instance URL (without trailing slash)
+url = "https://youtrack.example.com"
+
+# Your YouTrack API token
+# Format: perm:<base64-username>.<base64-tokenname>.<token-value>
+token = "perm:..."
