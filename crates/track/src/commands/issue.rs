@@ -115,12 +115,13 @@ fn handle_get(
             println!("{}", serde_json::to_string_pretty(&full_issue)?);
         }
         OutputFormat::Text => {
+            use colored::Colorize;
             // Print issue details
             output_result(&issue, format);
 
             // Print links
             if !links.is_empty() {
-                println!("\n  Links:");
+                println!("\n  {}:", "Links".dimmed());
                 for link in &links {
                     let direction = link.direction.as_deref().unwrap_or("BOTH");
                     let description = match direction {
@@ -142,7 +143,12 @@ fn handle_get(
                             .as_deref()
                             .unwrap_or(&linked_issue.id);
                         let linked_summary = linked_issue.summary.as_deref().unwrap_or("");
-                        println!("    {} {} - {}", description, linked_id, linked_summary);
+                        println!(
+                            "    {} {} - {}",
+                            description.dimmed(),
+                            linked_id.cyan(),
+                            linked_summary
+                        );
                     }
                 }
             }
@@ -150,7 +156,7 @@ fn handle_get(
             // Print comments
             if !comments.is_empty() {
                 let recent_comments: Vec<_> = comments.iter().rev().take(5).collect();
-                println!("\n  Recent Comments ({} total):", comments.len());
+                println!("\n  {} ({} total):", "Recent Comments".dimmed(), comments.len());
                 for comment in recent_comments.iter().rev() {
                     let author = comment
                         .author
@@ -161,7 +167,7 @@ fn handle_get(
                         .created
                         .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
                         .unwrap_or_default();
-                    println!("\n    [{}] {} wrote:", date, author);
+                    println!("\n    [{}] {} wrote:", date.dimmed(), author.cyan());
                     for line in comment.text.lines().take(3) {
                         println!("      {}", line);
                     }
@@ -245,9 +251,12 @@ fn handle_create(
                 );
             }
             OutputFormat::Text => {
+                use colored::Colorize;
                 println!(
                     "Created {} as subtask of {}: {}",
-                    issue.id_readable, parent_id, issue.summary
+                    issue.id_readable.cyan().bold(),
+                    parent_id.cyan(),
+                    issue.summary
                 );
             }
         }
@@ -572,7 +581,8 @@ fn handle_delete(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> R
             println!(r#"{{"success": true, "message": "Issue deleted"}}"#);
         }
         OutputFormat::Text => {
-            println!("Issue '{}' deleted successfully", id);
+            use colored::Colorize;
+            println!("Issue {} deleted successfully", id.cyan().bold());
         }
     }
     Ok(())
@@ -594,7 +604,8 @@ fn handle_comment(
             println!("{}", json);
         }
         OutputFormat::Text => {
-            println!("Comment added to {}:", id);
+            use colored::Colorize;
+            println!("Comment added to {}:", id.cyan().bold());
             println!("  {}", text);
         }
     }
@@ -619,10 +630,11 @@ fn handle_comments(
             println!("{}", json);
         }
         OutputFormat::Text => {
+            use colored::Colorize;
             if comments.is_empty() {
-                println!("No comments on {}", id);
+                println!("No comments on {}", id.cyan().bold());
             } else {
-                println!("Comments on {} ({}):", id, comments.len());
+                println!("Comments on {} ({}):", id.cyan().bold(), comments.len());
                 for comment in &comments {
                     let author = comment
                         .author
@@ -633,7 +645,7 @@ fn handle_comments(
                         .created
                         .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
                         .unwrap_or_default();
-                    println!("\n  [{}] {} wrote:", date, author);
+                    println!("\n  [{}] {} wrote:", date.dimmed(), author.cyan());
                     for line in comment.text.lines() {
                         println!("    {}", line);
                     }
@@ -680,7 +692,13 @@ fn handle_link(
             );
         }
         OutputFormat::Text => {
-            println!("{} {} {}", source, description, target);
+            use colored::Colorize;
+            println!(
+                "{} {} {}",
+                source.cyan().bold(),
+                description.dimmed(),
+                target.cyan().bold()
+            );
         }
     }
     Ok(())
@@ -728,7 +746,14 @@ fn handle_state_transition(
             );
         }
         OutputFormat::Text => {
-            println!("{} {} ({}={})", issue.id_readable, action, field, state);
+            use colored::Colorize;
+            println!(
+                "{} {} ({}={})",
+                issue.id_readable.cyan().bold(),
+                action.green(),
+                field.dimmed(),
+                state.green()
+            );
         }
     }
     Ok(())

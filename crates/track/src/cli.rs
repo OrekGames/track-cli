@@ -8,6 +8,10 @@ pub struct Cli {
     #[arg(long, short = 'o', value_enum, global = true, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
 
+    /// When to colorize output
+    #[arg(long, value_enum, global = true, default_value_t = ColorChoice::Auto)]
+    pub color: ColorChoice,
+
     /// Backend to use (youtrack, jira)
     #[arg(long, short = 'b', value_enum, global = true, default_value_t = Backend::YouTrack, env = "TRACKER_BACKEND")]
     pub backend: Backend,
@@ -43,6 +47,17 @@ pub enum Backend {
 pub enum OutputFormat {
     Text,
     Json,
+}
+
+#[derive(ValueEnum, Clone, Debug, Copy, Default)]
+pub enum ColorChoice {
+    /// Colorize output if stdout is a terminal
+    #[default]
+    Auto,
+    /// Always colorize output
+    Always,
+    /// Never colorize output
+    Never,
 }
 
 #[derive(Subcommand, Debug)]

@@ -1,5 +1,6 @@
 mod cache;
 mod cli;
+mod color;
 mod commands;
 mod config;
 mod local_config;
@@ -16,6 +17,9 @@ use youtrack_backend::YouTrackClient;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    // Initialize color mode based on CLI flag and environment
+    color::init(cli.color);
 
     if let Err(e) = run(cli) {
         output_error(&e, cli::OutputFormat::Text);
@@ -104,9 +108,10 @@ fn handle_cache(
                             println!(r#"{{"success": true, "message": "Cache refreshed"}}"#);
                         }
                         cli::OutputFormat::Text => {
-                            println!("Cache refreshed successfully");
-                            println!("  Projects: {}", cache.projects.len());
-                            println!("  Tags: {}", cache.tags.len());
+                            use colored::Colorize;
+                            println!("{}", "Cache refreshed successfully".green());
+                            println!("  {}: {}", "Projects".dimmed(), cache.projects.len());
+                            println!("  {}: {}", "Tags".dimmed(), cache.tags.len());
                         }
                     }
                 }
@@ -121,30 +126,48 @@ fn handle_cache(
                     println!("{}", json);
                 }
                 cli::OutputFormat::Text => {
+                    use colored::Colorize;
                     if let Some(updated) = &cache.updated_at {
-                        println!("Last updated: {}", updated);
+                        println!("{}: {}", "Last updated".dimmed(), updated);
                     } else {
-                        println!("Cache is empty. Run 'track cache refresh' to populate.");
+                        println!(
+                            "Cache is empty. Run '{}' to populate.",
+                            "track cache refresh".cyan()
+                        );
                         return Ok(());
                     }
                     println!();
-                    println!("Projects:");
+                    println!("{}:", "Projects".white().bold());
                     for p in &cache.projects {
-                        println!("  {} ({}) - {}", p.short_name, p.id, p.name);
+                        println!(
+                            "  {} ({}) - {}",
+                            p.short_name.cyan().bold(),
+                            p.id.dimmed(),
+                            p.name
+                        );
                     }
                     println!();
-                    println!("Custom Fields by Project:");
+                    println!("{}:", "Custom Fields by Project".white().bold());
                     for pf in &cache.project_fields {
-                        println!("  {}:", pf.project_short_name);
+                        println!("  {}:", pf.project_short_name.cyan());
                         for f in &pf.fields {
-                            let req = if f.required { " (required)" } else { "" };
-                            println!("    {} [{}]{}", f.name, f.field_type, req);
+                            let req = if f.required {
+                                " (required)".yellow().to_string()
+                            } else {
+                                String::new()
+                            };
+                            println!(
+                                "    {} [{}]{}",
+                                f.name.white(),
+                                f.field_type.dimmed(),
+                                req
+                            );
                         }
                     }
                     println!();
-                    println!("Tags:");
+                    println!("{}:", "Tags".white().bold());
                     for t in &cache.tags {
-                        println!("  {} ({})", t.name, t.id);
+                        println!("  {} ({})", t.name.magenta(), t.id.dimmed());
                     }
                 }
             }
@@ -172,16 +195,25 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                     println!("{}", json);
                 }
                 cli::OutputFormat::Text => {
+                    use colored::Colorize;
                     if local_config.is_empty() {
                         println!("No local configuration set.");
-                        println!("Use 'track config project <ID>' to set a default project.");
+                        println!(
+                            "Use '{}' to set a default project.",
+                            "track config project <ID>".cyan()
+                        );
                     } else {
-                        println!("Local configuration:");
+                        println!("{}:", "Local configuration".white().bold());
                         if let (Some(id), Some(name)) = (
                             &local_config.default_project_id,
                             &local_config.default_project_name,
                         ) {
-                            println!("  Default project: {} ({})", name, id);
+                            println!(
+                                "  {}: {} ({})",
+                                "Default project".dimmed(),
+                                name.cyan().bold(),
+                                id.dimmed()
+                            );
                         }
                     }
                 }
@@ -195,7 +227,8 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                     println!(r#"{{"success": true, "message": "Local configuration cleared"}}"#);
                 }
                 cli::OutputFormat::Text => {
-                    println!("Local configuration cleared.");
+                    use colored::Colorize;
+                    println!("{}", "Local configuration cleared.".green());
                 }
             }
             Ok(())
@@ -245,9 +278,11 @@ fn handle_config(
                     );
                 }
                 cli::OutputFormat::Text => {
+                    use colored::Colorize;
                     println!(
                         "Default project set to: {} ({})",
-                        project.short_name, project.id
+                        project.short_name.cyan().bold(),
+                        project.id.dimmed()
                     );
                 }
             }

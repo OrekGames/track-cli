@@ -190,11 +190,12 @@ fn handle_update(
 }
 
 fn handle_delete(client: &dyn KnowledgeBase, id: &str) -> Result<()> {
+    use colored::Colorize;
     client
         .delete_article(id)
         .with_context(|| format!("Failed to delete article '{}'", id))?;
 
-    println!("Article '{}' deleted.", id);
+    println!("Article {} deleted.", id.cyan().bold());
     Ok(())
 }
 
@@ -223,12 +224,21 @@ fn handle_tree(client: &dyn KnowledgeBase, id: &str, format: OutputFormat) -> Re
             println!("{}", serde_json::to_string_pretty(&tree).unwrap());
         }
         OutputFormat::Text => {
-            println!("{} - {}", parent.id_readable, parent.summary);
+            use colored::Colorize;
+            println!(
+                "{} - {}",
+                parent.id_readable.cyan().bold(),
+                parent.summary.white().bold()
+            );
             for child in &children {
-                println!("  {} - {}", child.id_readable, child.summary);
+                println!(
+                    "  {} - {}",
+                    child.id_readable.cyan(),
+                    child.summary
+                );
             }
             if children.is_empty() {
-                println!("  (no children)");
+                println!("  {}", "(no children)".dimmed());
             }
         }
     }
@@ -246,9 +256,16 @@ fn handle_move(
         .move_article(id, new_parent)
         .with_context(|| format!("Failed to move article '{}'", id))?;
 
-    match new_parent {
-        Some(parent) => println!("Article '{}' moved to parent '{}'.", id, parent),
-        None => println!("Article '{}' moved to root.", id),
+    {
+        use colored::Colorize;
+        match new_parent {
+            Some(parent) => println!(
+                "Article {} moved to parent {}.",
+                id.cyan().bold(),
+                parent.cyan()
+            ),
+            None => println!("Article {} moved to root.", id.cyan().bold()),
+        }
     }
 
     output_result(&article, format);
