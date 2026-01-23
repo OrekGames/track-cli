@@ -301,6 +301,19 @@ pub enum ProjectCommands {
         /// Project ID or short name
         id: String,
     },
+    /// Create a new project
+    #[command(visible_alias = "new", visible_alias = "c")]
+    Create {
+        /// Human-readable project name
+        #[arg(long, short = 'n')]
+        name: String,
+        /// Short name / project key (e.g., "PROJ" for PROJ-123 issues)
+        #[arg(long, short = 's')]
+        short_name: String,
+        /// Project description
+        #[arg(long, short = 'd')]
+        description: Option<String>,
+    },
     /// List custom fields for a project
     #[command(visible_alias = "f")]
     Fields {

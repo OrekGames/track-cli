@@ -1,7 +1,7 @@
 use crate::cli::{OutputFormat, ProjectCommands};
 use crate::output::{output_list, output_result};
 use anyhow::{Context, Result};
-use tracker_core::IssueTracker;
+use tracker_core::{CreateProject, IssueTracker};
 
 pub fn handle_project(
     client: &dyn IssueTracker,
@@ -11,6 +11,11 @@ pub fn handle_project(
     match action {
         ProjectCommands::List => handle_list(client, format),
         ProjectCommands::Get { id } => handle_get(client, id, format),
+        ProjectCommands::Create {
+            name,
+            short_name,
+            description,
+        } => handle_create(client, name, short_name, description.clone(), format),
         ProjectCommands::Fields { id } => handle_fields(client, id, format),
     }
 }
@@ -21,6 +26,27 @@ fn handle_list(client: &dyn IssueTracker, format: OutputFormat) -> Result<()> {
         .context("Failed to list projects")?;
 
     output_list(&projects, format);
+    Ok(())
+}
+
+fn handle_create(
+    client: &dyn IssueTracker,
+    name: &str,
+    short_name: &str,
+    description: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    let create = CreateProject {
+        name: name.to_string(),
+        short_name: short_name.to_string(),
+        description,
+    };
+
+    let project = client
+        .create_project(&create)
+        .context("Failed to create project")?;
+
+    output_result(&project, format);
     Ok(())
 }
 
