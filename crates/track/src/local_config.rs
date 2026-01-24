@@ -52,6 +52,7 @@ impl LocalConfig {
     }
 
     /// Clear the default project
+    #[allow(dead_code)]
     pub fn clear_default_project(&mut self) {
         self.default_project_id = None;
         self.default_project_name = None;

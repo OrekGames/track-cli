@@ -89,10 +89,10 @@ impl TrackerCache {
 
     /// Refresh cache from tracker API
     pub fn refresh(client: &dyn IssueTracker) -> Result<Self> {
-        let mut cache = Self::default();
-
-        // Update timestamp
-        cache.updated_at = Some(chrono::Utc::now().to_rfc3339());
+        let mut cache = Self {
+            updated_at: Some(chrono::Utc::now().to_rfc3339()),
+            ..Self::default()
+        };
 
         // Fetch projects
         let projects = client.list_projects().context("Failed to fetch projects")?;
@@ -141,6 +141,7 @@ impl TrackerCache {
     }
 
     /// Get project ID by shortName (from cache)
+    #[allow(dead_code)]
     pub fn get_project_id(&self, short_name: &str) -> Option<&str> {
         self.projects
             .iter()
@@ -149,6 +150,7 @@ impl TrackerCache {
     }
 
     /// Get fields for a project (from cache)
+    #[allow(dead_code)]
     pub fn get_project_fields(&self, short_name: &str) -> Option<&[CachedField]> {
         self.project_fields
             .iter()
@@ -157,6 +159,7 @@ impl TrackerCache {
     }
 
     /// Get tag ID by name (from cache)
+    #[allow(dead_code)]
     pub fn get_tag_id(&self, name: &str) -> Option<&str> {
         self.tags
             .iter()
