@@ -38,12 +38,12 @@ impl YouTrackClient {
                     YouTrackError::Unauthorized
                 } else if *code == 404 {
                     YouTrackError::Api {
-                        status: *code as u16,
+                        status: *code,
                         message: "Resource not found".to_string(),
                     }
                 } else {
                     YouTrackError::Api {
-                        status: *code as u16,
+                        status: *code,
                         message: err.to_string(),
                     }
                 }
