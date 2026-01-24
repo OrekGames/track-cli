@@ -30,7 +30,7 @@ variables:
 
 test:
   stage: test
-  image: rust:1.83
+  image: rust:1.93
   <<: *cargo-cache
   script:
     - rustc --version && cargo --version
@@ -42,7 +42,7 @@ test:
 
 clippy:
   stage: test
-  image: rust:1.83
+  image: rust:1.93
   <<: *cargo-cache
   script:
     - rustup component add clippy
@@ -53,7 +53,7 @@ clippy:
 
 fmt:
   stage: test
-  image: rust:1.83
+  image: rust:1.93
   script:
     - rustup component add rustfmt
     - cargo fmt --all -- --check
@@ -73,7 +73,7 @@ include:
 
 .build-template: &build-template
   stage: build
-  image: rust:1.83
+  image: rust:1.93
   <<: *cargo-cache
   before_script:
     - apt-get update && apt-get install -y wget xz-utils
@@ -144,6 +144,19 @@ build:macos-aarch64:
       - artifacts/macos-aarch64/
     expire_in: 1 week
 
+# Windows x86_64 (GNU)
+build:windows-x86_64:
+  <<: *build-template
+  script:
+    - rustup target add x86_64-pc-windows-gnu
+    - cargo zigbuild --release --target x86_64-pc-windows-gnu --package track
+    - mkdir -p artifacts/windows-x86_64
+    - cp target/x86_64-pc-windows-gnu/release/track.exe artifacts/windows-x86_64/
+  artifacts:
+    paths:
+      - artifacts/windows-x86_64/
+    expire_in: 1 week
+
 # ------------------------------------------------------------------------------
 # Package Stage - Create release tarballs
 # ------------------------------------------------------------------------------
@@ -156,8 +169,9 @@ package:
     - build:linux-aarch64
     - build:macos-x86_64
     - build:macos-aarch64
+    - build:windows-x86_64
   before_script:
-    - apk add --no-cache tar gzip coreutils
+    - apk add --no-cache tar gzip coreutils zip
   script:
     - VERSION=${CI_COMMIT_TAG#v}  # Remove 'v' prefix if present
     - mkdir -p dist
@@ -190,8 +204,14 @@ package:
     - cp README.md LICENSE ${PACKAGE_NAME}-${VERSION}-aarch64-apple-darwin/ 2>/dev/null || true
     - tar -czvf dist/${PACKAGE_NAME}-${VERSION}-aarch64-apple-darwin.tar.gz ${PACKAGE_NAME}-${VERSION}-aarch64-apple-darwin
 
+    # Package Windows x86_64 (GNU)
+    - mkdir -p ${PACKAGE_NAME}-${VERSION}-x86_64-pc-windows-gnu
+    - cp artifacts/windows-x86_64/track.exe ${PACKAGE_NAME}-${VERSION}-x86_64-pc-windows-gnu/
+    - cp README.md LICENSE ${PACKAGE_NAME}-${VERSION}-x86_64-pc-windows-gnu/ 2>/dev/null || true
+    - zip -r dist/${PACKAGE_NAME}-${VERSION}-x86_64-pc-windows-gnu.zip ${PACKAGE_NAME}-${VERSION}-x86_64-pc-windows-gnu
+
     # Generate checksums
-    - cd dist && sha256sum *.tar.gz > checksums-sha256.txt && cd ..
+    - cd dist && sha256sum *.tar.gz *.zip > checksums-sha256.txt && cd ..
     - cat dist/checksums-sha256.txt
   artifacts:
     paths:
@@ -266,6 +286,9 @@ release:
           link_type: package
         - name: "macOS Apple Silicon (aarch64)"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_TAG#v}/${PACKAGE_NAME}-${CI_COMMIT_TAG#v}-aarch64-apple-darwin.tar.gz"
+          link_type: package
+        - name: "Windows x86_64 (GNU)"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_TAG#v}/${PACKAGE_NAME}-${CI_COMMIT_TAG#v}-x86_64-pc-windows-gnu.zip"
           link_type: package
         - name: "Checksums (SHA256)"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_TAG#v}/checksums-sha256.txt"
