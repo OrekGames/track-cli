@@ -80,12 +80,7 @@ pub fn handle_issue(
     }
 }
 
-fn handle_get(
-    client: &dyn IssueTracker,
-    id: &str,
-    full: bool,
-    format: OutputFormat,
-) -> Result<()> {
+fn handle_get(client: &dyn IssueTracker, id: &str, full: bool, format: OutputFormat) -> Result<()> {
     let issue = client
         .get_issue(id)
         .with_context(|| format!("Failed to fetch issue '{}'", id))?;
@@ -156,7 +151,11 @@ fn handle_get(
             // Print comments
             if !comments.is_empty() {
                 let recent_comments: Vec<_> = comments.iter().rev().take(5).collect();
-                println!("\n  {} ({} total):", "Recent Comments".dimmed(), comments.len());
+                println!(
+                    "\n  {} ({} total):",
+                    "Recent Comments".dimmed(),
+                    comments.len()
+                );
                 for comment in recent_comments.iter().rev() {
                     let author = comment
                         .author
@@ -416,11 +415,7 @@ fn parse_create_payload(client: &dyn IssueTracker, payload: &str) -> Result<Crea
     let custom_fields = parse_custom_fields_json(&parsed.custom_fields)?;
 
     // Parse tags
-    let tags: Vec<String> = parsed
-        .tags
-        .into_iter()
-        .filter_map(|t| t.name)
-        .collect();
+    let tags: Vec<String> = parsed.tags.into_iter().filter_map(|t| t.name).collect();
 
     Ok(CreateIssue {
         project_id,
@@ -511,49 +506,6 @@ fn parse_custom_fields_json(fields: &[serde_json::Value]) -> Result<Vec<CustomFi
     }
 
     Ok(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_field_value_correctly() {
-        let (name, value) = parse_field_value("Priority=Major").unwrap();
-        assert_eq!(name, "Priority");
-        assert_eq!(value, "Major");
-    }
-
-    #[test]
-    fn parses_field_value_with_equals_in_value() {
-        let (name, value) = parse_field_value("Formula=a=b+c").unwrap();
-        assert_eq!(name, "Formula");
-        assert_eq!(value, "a=b+c");
-    }
-
-    #[test]
-    fn rejects_field_value_without_equals() {
-        assert!(parse_field_value("InvalidFormat").is_err());
-    }
-
-    #[test]
-    fn rejects_field_value_with_empty_name() {
-        assert!(parse_field_value("=Value").is_err());
-    }
-
-    #[test]
-    fn rejects_field_value_with_empty_value() {
-        assert!(parse_field_value("Name=").is_err());
-    }
-
-    #[test]
-    fn builds_custom_fields_from_cli_args() {
-        let fields = vec!["Type=Bug".to_string(), "Component=UI".to_string()];
-        let result =
-            build_custom_fields(&fields, Some("Open"), Some("Major"), Some("john")).unwrap();
-
-        assert_eq!(result.len(), 5); // 2 fields + state + priority + assignee
-    }
 }
 
 fn handle_search(
@@ -713,19 +665,19 @@ fn handle_state_transition(
     format: OutputFormat,
 ) -> Result<()> {
     // Build the custom field update based on field name
-    let custom_field =
-        if field.eq_ignore_ascii_case("State") || field.eq_ignore_ascii_case("Stage") {
-            CustomFieldUpdate::State {
-                name: field.to_string(),
-                value: state.to_string(),
-            }
-        } else {
-            // For non-State fields, treat as SingleEnum
-            CustomFieldUpdate::SingleEnum {
-                name: field.to_string(),
-                value: state.to_string(),
-            }
-        };
+    let custom_field = if field.eq_ignore_ascii_case("State") || field.eq_ignore_ascii_case("Stage")
+    {
+        CustomFieldUpdate::State {
+            name: field.to_string(),
+            value: state.to_string(),
+        }
+    } else {
+        // For non-State fields, treat as SingleEnum
+        CustomFieldUpdate::SingleEnum {
+            name: field.to_string(),
+            value: state.to_string(),
+        }
+    };
 
     let update = UpdateIssue {
         summary: None,
@@ -757,4 +709,47 @@ fn handle_state_transition(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_field_value_correctly() {
+        let (name, value) = parse_field_value("Priority=Major").unwrap();
+        assert_eq!(name, "Priority");
+        assert_eq!(value, "Major");
+    }
+
+    #[test]
+    fn parses_field_value_with_equals_in_value() {
+        let (name, value) = parse_field_value("Formula=a=b+c").unwrap();
+        assert_eq!(name, "Formula");
+        assert_eq!(value, "a=b+c");
+    }
+
+    #[test]
+    fn rejects_field_value_without_equals() {
+        assert!(parse_field_value("InvalidFormat").is_err());
+    }
+
+    #[test]
+    fn rejects_field_value_with_empty_name() {
+        assert!(parse_field_value("=Value").is_err());
+    }
+
+    #[test]
+    fn rejects_field_value_with_empty_value() {
+        assert!(parse_field_value("Name=").is_err());
+    }
+
+    #[test]
+    fn builds_custom_fields_from_cli_args() {
+        let fields = vec!["Type=Bug".to_string(), "Component=UI".to_string()];
+        let result =
+            build_custom_fields(&fields, Some("Open"), Some("Major"), Some("john")).unwrap();
+
+        assert_eq!(result.len(), 5); // 2 fields + state + priority + assignee
+    }
 }

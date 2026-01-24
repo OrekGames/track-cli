@@ -19,19 +19,15 @@ fn start_mock_server(response_body: String) -> (thread::JoinHandle<()>, u16) {
             .set_nonblocking(false)
             .expect("Failed to set blocking");
 
-        for stream in listener.incoming() {
-            if let Ok(mut stream) = stream {
-                let mut buffer = [0; 4096];
-                if stream.read(&mut buffer).is_ok() {
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        response_body.len(),
-                        response_body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                }
-                // Exit after first request
-                break;
+        if let Some(mut stream) = listener.incoming().flatten().next() {
+            let mut buffer = [0; 4096];
+            if stream.read(&mut buffer).is_ok() {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let _ = stream.write_all(response.as_bytes());
             }
         }
     });
@@ -141,7 +137,15 @@ fn test_issue_search_with_results() {
     thread::sleep(Duration::from_millis(50));
 
     let output = cargo_bin_cmd!("track")
-        .args(["--format", "json", "issue", "search", "project: PROJ", "--limit", "10"])
+        .args([
+            "--format",
+            "json",
+            "issue",
+            "search",
+            "project: PROJ",
+            "--limit",
+            "10",
+        ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
         .env_remove("YOUTRACK_URL")

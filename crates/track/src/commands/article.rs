@@ -131,14 +131,14 @@ fn handle_create(
     };
 
     // Read content from file if specified
-    let content = if let Some(file_path) = content_file {
-        Some(
-            fs::read_to_string(file_path)
-                .with_context(|| format!("Failed to read content from '{}'", file_path.display()))?,
-        )
-    } else {
-        content.map(String::from)
-    };
+    let content =
+        if let Some(file_path) = content_file {
+            Some(fs::read_to_string(file_path).with_context(|| {
+                format!("Failed to read content from '{}'", file_path.display())
+            })?)
+        } else {
+            content.map(String::from)
+        };
 
     let create = CreateArticle {
         project_id,
@@ -166,14 +166,14 @@ fn handle_update(
     format: OutputFormat,
 ) -> Result<()> {
     // Read content from file if specified
-    let content = if let Some(file_path) = content_file {
-        Some(
-            fs::read_to_string(file_path)
-                .with_context(|| format!("Failed to read content from '{}'", file_path.display()))?,
-        )
-    } else {
-        content.map(String::from)
-    };
+    let content =
+        if let Some(file_path) = content_file {
+            Some(fs::read_to_string(file_path).with_context(|| {
+                format!("Failed to read content from '{}'", file_path.display())
+            })?)
+        } else {
+            content.map(String::from)
+        };
 
     let update = UpdateArticle {
         summary: summary.map(String::from),
@@ -231,11 +231,7 @@ fn handle_tree(client: &dyn KnowledgeBase, id: &str, format: OutputFormat) -> Re
                 parent.summary.white().bold()
             );
             for child in &children {
-                println!(
-                    "  {} - {}",
-                    child.id_readable.cyan(),
-                    child.summary
-                );
+                println!("  {} - {}", child.id_readable.cyan(), child.summary);
             }
             if children.is_empty() {
                 println!("  {}", "(no children)".dimmed());
@@ -272,11 +268,7 @@ fn handle_move(
     Ok(())
 }
 
-fn handle_attachments(
-    client: &dyn KnowledgeBase,
-    id: &str,
-    format: OutputFormat,
-) -> Result<()> {
+fn handle_attachments(client: &dyn KnowledgeBase, id: &str, format: OutputFormat) -> Result<()> {
     let attachments = client
         .list_article_attachments(id)
         .with_context(|| format!("Failed to list attachments for article '{}'", id))?;

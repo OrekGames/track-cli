@@ -49,9 +49,8 @@ pub fn output_error(err: &anyhow::Error, format: OutputFormat) {
                 code: "error".to_string(),
                 message: format!("{:#}", err),
             };
-            serde_json::to_string_pretty(&json_err).unwrap_or_else(|_| {
-                format!(r#"{{"error": true, "message": "{}"}}"#, err)
-            })
+            serde_json::to_string_pretty(&json_err)
+                .unwrap_or_else(|_| format!(r#"{{"error": true, "message": "{}"}}"#, err))
         }
         OutputFormat::Text => format!("{}: {:#}", "Error".red().bold(), err),
     };
@@ -69,11 +68,20 @@ impl Displayable for Issue {
             self.id_readable.cyan().bold(),
             self.summary.white().bold(),
             "Project".dimmed(),
-            self.project.short_name.as_deref().unwrap_or(&self.project.id),
+            self.project
+                .short_name
+                .as_deref()
+                .unwrap_or(&self.project.id),
             "Created".dimmed(),
-            self.created.format("%Y-%m-%d %H:%M:%S").to_string().dimmed(),
+            self.created
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+                .dimmed(),
             "Updated".dimmed(),
-            self.updated.format("%Y-%m-%d %H:%M:%S").to_string().dimmed()
+            self.updated
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+                .dimmed()
         );
 
         if let Some(desc) = &self.description {
@@ -81,11 +89,16 @@ impl Displayable for Issue {
         }
 
         if !self.tags.is_empty() {
-            let tag_names: Vec<String> = self.tags
+            let tag_names: Vec<String> = self
+                .tags
                 .iter()
                 .map(|t| t.name.magenta().to_string())
                 .collect();
-            output.push_str(&format!("\n  {}: {}", "Tags".dimmed(), tag_names.join(", ")));
+            output.push_str(&format!(
+                "\n  {}: {}",
+                "Tags".dimmed(),
+                tag_names.join(", ")
+            ));
         }
 
         if !self.custom_fields.is_empty() {
@@ -107,7 +120,11 @@ impl Displayable for CustomField {
                 let colored_val = colorize_priority(name, val);
                 format!("{}: {}", name.dimmed(), colored_val)
             }
-            CustomField::State { name, value, is_resolved } => {
+            CustomField::State {
+                name,
+                value,
+                is_resolved,
+            } => {
                 let val = value.as_deref().unwrap_or("None");
                 let colored_val = if *is_resolved {
                     val.green().to_string()
@@ -188,11 +205,20 @@ impl Displayable for Article {
             self.id_readable.cyan().bold(),
             self.summary.white().bold(),
             "Project".dimmed(),
-            self.project.short_name.as_deref().unwrap_or(&self.project.id),
+            self.project
+                .short_name
+                .as_deref()
+                .unwrap_or(&self.project.id),
             "Created".dimmed(),
-            self.created.format("%Y-%m-%d %H:%M:%S").to_string().dimmed(),
+            self.created
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+                .dimmed(),
             "Updated".dimmed(),
-            self.updated.format("%Y-%m-%d %H:%M:%S").to_string().dimmed()
+            self.updated
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+                .dimmed()
         );
 
         if let Some(parent) = &self.parent_article {
@@ -204,15 +230,24 @@ impl Displayable for Article {
         }
 
         if self.has_children {
-            output.push_str(&format!("\n  {}: {}", "Has children".dimmed(), "yes".green()));
+            output.push_str(&format!(
+                "\n  {}: {}",
+                "Has children".dimmed(),
+                "yes".green()
+            ));
         }
 
         if !self.tags.is_empty() {
-            let tag_names: Vec<String> = self.tags
+            let tag_names: Vec<String> = self
+                .tags
                 .iter()
                 .map(|t| t.name.magenta().to_string())
                 .collect();
-            output.push_str(&format!("\n  {}: {}", "Tags".dimmed(), tag_names.join(", ")));
+            output.push_str(&format!(
+                "\n  {}: {}",
+                "Tags".dimmed(),
+                tag_names.join(", ")
+            ));
         }
 
         if let Some(content) = &self.content {
@@ -261,11 +296,6 @@ impl Displayable for Comment {
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "Unknown date".to_string());
 
-        format!(
-            "[{}] {} - {}",
-            date.dimmed(),
-            author.cyan(),
-            self.text
-        )
+        format!("[{}] {} - {}", date.dimmed(), author.cyan(), self.text)
     }
 }

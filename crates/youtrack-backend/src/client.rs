@@ -104,7 +104,7 @@ impl YouTrackClient {
             .header("Authorization", &self.auth_header())
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .send_json(&create)
+            .send_json(create)
             .map_err(|e| self.handle_error(e))?;
 
         let issue: Issue = response.body_mut().read_json()?;
@@ -123,7 +123,7 @@ impl YouTrackClient {
             .header("Authorization", &self.auth_header())
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .send_json(&update)
+            .send_json(update)
             .map_err(|e| self.handle_error(e))?;
 
         let issue: Issue = response.body_mut().read_json()?;
@@ -190,7 +190,7 @@ impl YouTrackClient {
             .header("Authorization", &self.auth_header())
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .send_json(&create)
+            .send_json(create)
             .map_err(|e| self.handle_error(e))?;
 
         let project: Project = response.body_mut().read_json()?;
@@ -202,7 +202,13 @@ impl YouTrackClient {
     /// Otherwise, searches projects by shortName.
     pub fn resolve_project_id(&self, identifier: &str) -> Result<String> {
         // If it looks like an internal ID (e.g., "0-2"), return as-is
-        if identifier.contains('-') && identifier.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if identifier.contains('-')
+            && identifier
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+        {
             return Ok(identifier.to_string());
         }
 
@@ -297,7 +303,12 @@ impl YouTrackClient {
     /// `source_issue_id` is the issue to add the link from
     /// `link_id` is the link type id with direction suffix (e.g., "142-3t" for inward subtask)
     /// `target_issue_id` is the issue to link to
-    pub fn add_issue_to_link(&self, source_issue_id: &str, link_id: &str, target_issue_id: &str) -> Result<()> {
+    pub fn add_issue_to_link(
+        &self,
+        source_issue_id: &str,
+        link_id: &str,
+        target_issue_id: &str,
+    ) -> Result<()> {
         let url = format!(
             "{}/api/issues/{}/links/{}/issues",
             self.base_url, source_issue_id, link_id
@@ -320,7 +331,12 @@ impl YouTrackClient {
 
     /// Find the link ID for a given link type name and direction
     /// Returns the link ID that can be used with add_issue_to_link
-    fn find_link_id(&self, issue_id: &str, link_type_name: &str, direction: &str) -> Result<String> {
+    fn find_link_id(
+        &self,
+        issue_id: &str,
+        link_type_name: &str,
+        direction: &str,
+    ) -> Result<String> {
         let links = self.get_issue_links(issue_id)?;
 
         for link in links {
@@ -487,7 +503,7 @@ impl YouTrackClient {
             .header("Authorization", &self.auth_header())
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .send_json(&create)
+            .send_json(create)
             .map_err(|e| self.handle_error(e))?;
 
         let article: Article = response.body_mut().read_json()?;
@@ -507,7 +523,7 @@ impl YouTrackClient {
             .header("Authorization", &self.auth_header())
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .send_json(&update)
+            .send_json(update)
             .map_err(|e| self.handle_error(e))?;
 
         let article: Article = response.body_mut().read_json()?;

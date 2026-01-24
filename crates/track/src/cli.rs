@@ -158,13 +158,23 @@ pub enum IssueCommands {
         #[arg(long, short = 'p', conflicts_with = "json")]
         project: Option<String>,
         /// Issue summary
-        #[arg(long, short = 's', required_unless_present = "json", conflicts_with = "json")]
+        #[arg(
+            long,
+            short = 's',
+            required_unless_present = "json",
+            conflicts_with = "json"
+        )]
         summary: Option<String>,
         /// Issue description
         #[arg(long, short = 'd', conflicts_with = "json")]
         description: Option<String>,
         /// Custom field value (format: FIELD=VALUE, can be repeated)
-        #[arg(long = "field", short = 'f', value_name = "FIELD=VALUE", conflicts_with = "json")]
+        #[arg(
+            long = "field",
+            short = 'f',
+            value_name = "FIELD=VALUE",
+            conflicts_with = "json"
+        )]
         fields: Vec<String>,
         /// Issue state (e.g., "Open", "In Progress")
         #[arg(long, conflicts_with = "json")]
@@ -202,7 +212,12 @@ pub enum IssueCommands {
         #[arg(long, short = 'd')]
         description: Option<String>,
         /// Custom field value (format: FIELD=VALUE, can be repeated)
-        #[arg(long = "field", short = 'f', value_name = "FIELD=VALUE", conflicts_with = "json")]
+        #[arg(
+            long = "field",
+            short = 'f',
+            value_name = "FIELD=VALUE",
+            conflicts_with = "json"
+        )]
         fields: Vec<String>,
         /// Issue state (e.g., "Open", "In Progress")
         #[arg(long, conflicts_with = "json")]
@@ -514,7 +529,13 @@ mod tests {
 
     #[test]
     fn parses_config_path_flag() {
-        let cli = Cli::parse_from(["track", "--config", "/tmp/track-config.toml", "project", "list"]);
+        let cli = Cli::parse_from([
+            "track",
+            "--config",
+            "/tmp/track-config.toml",
+            "project",
+            "list",
+        ]);
 
         assert_eq!(cli.config, Some(PathBuf::from("/tmp/track-config.toml")));
     }
@@ -618,14 +639,7 @@ mod tests {
 
     #[test]
     fn parses_update_with_state_only() {
-        let cli = Cli::parse_from([
-            "track",
-            "issue",
-            "update",
-            "PROJ-1",
-            "--state",
-            "Resolved",
-        ]);
+        let cli = Cli::parse_from(["track", "issue", "update", "PROJ-1", "--state", "Resolved"]);
 
         match cli.command {
             Commands::Issue { action } => match action {
@@ -797,14 +811,7 @@ mod tests {
     #[test]
     fn parses_complete_command_with_custom_values() {
         let cli = Cli::parse_from([
-            "track",
-            "issue",
-            "complete",
-            "PROJ-123",
-            "--field",
-            "State",
-            "--state",
-            "Resolved",
+            "track", "issue", "complete", "PROJ-123", "--field", "State", "--state", "Resolved",
         ]);
 
         match cli.command {

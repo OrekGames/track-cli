@@ -24,19 +24,15 @@ fn start_mock_server(port: u16, response_body: String) -> thread::JoinHandle<()>
             Err(_) => return, // Port already in use, exit gracefully
         };
 
-        for stream in listener.incoming() {
-            if let Ok(mut stream) = stream {
-                let mut buffer = [0; 4096];
-                if stream.read(&mut buffer).is_ok() {
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        response_body.len(),
-                        response_body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                }
-                // Exit after first request
-                break;
+        if let Some(mut stream) = listener.incoming().flatten().next() {
+            let mut buffer = [0; 4096];
+            if stream.read(&mut buffer).is_ok() {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let _ = stream.write_all(response.as_bytes());
             }
         }
     })

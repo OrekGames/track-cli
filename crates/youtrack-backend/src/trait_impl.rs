@@ -92,8 +92,7 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
-        self.link_subtask(child, parent)
-            .map_err(TrackerError::from)
+        self.link_subtask(child, parent).map_err(TrackerError::from)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {

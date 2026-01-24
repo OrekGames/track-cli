@@ -57,10 +57,8 @@ fn run(cli: Cli) -> Result<()> {
     // We use the concrete client type to support both IssueTracker and KnowledgeBase
     match cli.backend {
         Backend::YouTrack => {
-            let client = YouTrackClient::new(
-                config.url.as_ref().unwrap(),
-                config.token.as_ref().unwrap(),
-            );
+            let client =
+                YouTrackClient::new(config.url.as_ref().unwrap(), config.token.as_ref().unwrap());
             run_with_client(&client, &client, &cli)
         }
     }
@@ -79,12 +77,8 @@ fn run_with_client(
         Commands::Project { action } => {
             commands::project::handle_project(issue_client, action, cli.format)
         }
-        Commands::Tags { action } => {
-            commands::tags::handle_tags(issue_client, action, cli.format)
-        }
-        Commands::Cache { action } => {
-            handle_cache(issue_client, action, cli.format, cli.backend)
-        }
+        Commands::Tags { action } => commands::tags::handle_tags(issue_client, action, cli.format),
+        Commands::Cache { action } => handle_cache(issue_client, action, cli.format, cli.backend),
         Commands::Config { action } => handle_config(issue_client, action, cli.format),
         Commands::Article { action } => {
             commands::article::handle_article(issue_client, kb_client, action, cli.format)
@@ -166,12 +160,7 @@ fn handle_cache(
                             } else {
                                 String::new()
                             };
-                            println!(
-                                "    {} [{}]{}",
-                                f.name.white(),
-                                f.field_type.dimmed(),
-                                req
-                            );
+                            println!("    {} [{}]{}", f.name.white(), f.field_type.dimmed(), req);
                         }
                     }
                     println!();

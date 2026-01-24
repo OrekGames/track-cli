@@ -21,9 +21,7 @@ pub fn handle_project(
 }
 
 fn handle_list(client: &dyn IssueTracker, format: OutputFormat) -> Result<()> {
-    let projects = client
-        .list_projects()
-        .context("Failed to list projects")?;
+    let projects = client.list_projects().context("Failed to list projects")?;
 
     output_list(&projects, format);
     Ok(())
