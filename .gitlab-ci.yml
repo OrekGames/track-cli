@@ -152,12 +152,12 @@ build:windows-x86_64:
   script:
     - rustup target add x86_64-pc-windows-gnu
     - cargo zigbuild --release --target x86_64-pc-windows-gnu --package track
-      - mkdir -p artifacts/windows-x86_64
-      - cp target/x86_64-pc-windows-gnu/release/track.exe artifacts/windows-x86_64/
-    artifacts:
-      paths:
-        - artifacts/windows-x86_64/
-      expire_in: 1 week
+    - mkdir -p artifacts/windows-x86_64
+    - cp target/x86_64-pc-windows-gnu/release/track.exe artifacts/windows-x86_64/
+  artifacts:
+    paths:
+      - artifacts/windows-x86_64/
+    expire_in: 1 week
 
 # # Windows ARM64 (GNU)
 build:windows-aarch64:
@@ -167,12 +167,12 @@ build:windows-aarch64:
   script:
     - rustup target add aarch64-pc-windows-gnu
     - cargo zigbuild --release --target aarch64-pc-windows-gnu --package track
-     - mkdir -p artifacts/windows-aarch64
-     - cp target/aarch64-pc-windows-gnu/release/track.exe artifacts/windows-aarch64/
-   artifacts:
-     paths:
-       - artifacts/windows-aarch64/
-     expire_in: 1 week
+      - mkdir -p artifacts/windows-aarch64
+      - cp target/aarch64-pc-windows-gnu/release/track.exe artifacts/windows-aarch64/
+  artifacts:
+    paths:
+      - artifacts/windows-aarch64/
+    expire_in: 1 week
 
 # ------------------------------------------------------------------------------
 # Package Stage - Create release tarballs
