@@ -29,14 +29,22 @@ All commands have short aliases for faster typing:
 | `track issue delete` | `track i rm`, `track i del` |
 | `track issue comment` | `track i cmt` |
 | `track issue complete` | `track i done`, `track i resolve` |
+| `track issue start` | `track i start` |
+| `track issue link` | `track i link` |
+| `track issue comments` | `track i comments` |
 | `track project` | `track p` |
 | `track project list` | `track p ls` |
+| `track project get` | `track p g` |
+| `track project create` | `track p new`, `track p c` |
 | `track project fields` | `track p f` |
 | `track tags` | `track t` |
 | `track tags list` | `track t ls` |
 | `track config` | `track cfg` |
 | `track config project` | `track cfg proj` |
-| `track article` | `track a` |
+| `track config show` | `track cfg show` |
+| `track config clear` | `track cfg clear` |
+| `track config path` | `track cfg path` |
+| `track article` | `track a`, `track wiki` |
 | `track article get` | `track a g` |
 | `track article list` | `track a ls` |
 | `track article search` | `track a s`, `track a find` |
@@ -44,6 +52,7 @@ All commands have short aliases for faster typing:
 | `track article update` | `track a u` |
 | `track article delete` | `track a rm`, `track a del` |
 | `track article comment` | `track a cmt` |
+| `track completions` | - |
 
 ## Quick Reference
 
@@ -53,6 +62,12 @@ $TRACK config project OGIT
 
 # List projects (shortNames now auto-resolve to internal IDs!)
 $TRACK -o json p ls
+
+# Get project details
+$TRACK -o json p g OGIT
+
+# Create a new project
+$TRACK p new -n "My Project" -s "MYPROJ" -d "Project description"
 
 # Get issue details
 $TRACK -o json i g OGIT-123
@@ -362,3 +377,21 @@ $TRACK -o json a g KB-A-1
 | `article attachments <ID>` | List attachments on article |
 | `article comment <ID>` | Add comment to article |
 | `article comments <ID>` | List comments on article |
+
+## Shell Completions
+
+Generate shell completions for your preferred shell:
+
+```bash
+# Bash
+$TRACK completions bash > ~/.local/share/bash-completion/completions/track
+
+# Zsh
+$TRACK completions zsh > ~/.zfunc/_track
+
+# Fish
+$TRACK completions fish > ~/.config/fish/completions/track.fish
+
+# PowerShell
+$TRACK completions powershell > track.ps1
+```

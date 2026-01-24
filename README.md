@@ -16,16 +16,38 @@ A command-line interface for interacting with issue tracking systems, built with
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
+For private GitLab repositories, first set up authentication:
+
+```bash
+# Add to ~/.zshrc or ~/.bashrc
+export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxxxxxx"
+```
+
+Then install:
+
+```bash
+brew tap your-group/track https://gitlab.com/your-group/youtrack-cli.git
+brew install track
+```
+
+### Cargo (from source)
+
 ```bash
 cargo install --path crates/track
 ```
 
-Or build from source:
+### Build from source
 
 ```bash
 cargo build --release
 # Binary will be at target/release/track
 ```
+
+### Download Binary
+
+Download pre-built binaries from the [Releases](https://gitlab.com/your-group/youtrack-cli/-/releases) page.
 
 ## Configuration
 
