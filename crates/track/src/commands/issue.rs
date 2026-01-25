@@ -1,5 +1,4 @@
 use crate::cli::{IssueCommands, OutputFormat};
-use crate::local_config::LocalConfig;
 use crate::output::{output_list, output_result};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -9,6 +8,7 @@ pub fn handle_issue(
     client: &dyn IssueTracker,
     action: &IssueCommands,
     format: OutputFormat,
+    default_project: Option<&str>,
 ) -> Result<()> {
     match action {
         IssueCommands::Get { id, full } => handle_get(client, id, *full, format),
@@ -36,6 +36,7 @@ pub fn handle_issue(
             parent.as_deref(),
             json.as_deref(),
             format,
+            default_project,
         ),
         IssueCommands::Update {
             id,
@@ -194,25 +195,20 @@ fn handle_create(
     parent: Option<&str>,
     json: Option<&str>,
     format: OutputFormat,
+    default_project: Option<&str>,
 ) -> Result<()> {
     let create = if let Some(payload) = json {
         parse_create_payload(client, payload)?
     } else {
-        // Try CLI flag first, then fall back to local config default
-        let project_input = match project {
-            Some(p) => p.to_string(),
-            None => {
-                // Try to load default project from local config
-                let local_config = LocalConfig::load().ok();
-                local_config
-                    .and_then(|c| c.default_project_id)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Project is required. Use -p/--project or set a default with 'track config project <ID>'"
-                        )
-                    })?
-            }
-        };
+        // Try CLI flag first, then fall back to config default_project
+        let project_input = project
+            .or(default_project)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Project is required. Use -p/--project or set a default with 'track config project <ID>'"
+                )
+            })?
+            .to_string();
         let summary = summary.ok_or_else(|| anyhow!("Summary is required"))?;
 
         // Resolve project shortName to internal ID

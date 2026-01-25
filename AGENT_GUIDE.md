@@ -6,59 +6,82 @@ This guide is for AI agents (Claude Code, Cursor, etc.) that need to interact wi
 
 The binary is located at `target/release/track`. Configure it using one of:
 
-1. **Config file**: `--config ./target/release/config.toml`
+1. **Local config file**: Run `track init` to create `.track.toml` in the project directory
 2. **Environment variables**: `TRACKER_URL`, `TRACKER_TOKEN`
 3. **CLI flags**: `--url`, `--token`
 
 ```bash
-# Set up alias for convenience
+# Initialize configuration (recommended - run once per project)
+track init --url https://youtrack.example.com --token YOUR_TOKEN --project PROJ
+
+# Or set up alias for explicit config
 TRACK="./target/release/track --config ./target/release/config.toml"
+
+# Test connection
+track config test
 ```
 
 ## Command Aliases
 
 All commands have short aliases for faster typing:
 
-| Command | Aliases |
-|---------|---------|
-| `track issue` | `track i` |
-| `track issue get` | `track i g` |
-| `track issue create` | `track i new`, `track i c` |
-| `track issue update` | `track i u` |
-| `track issue search` | `track i s`, `track i find` |
-| `track issue delete` | `track i rm`, `track i del` |
-| `track issue comment` | `track i cmt` |
-| `track issue complete` | `track i done`, `track i resolve` |
-| `track issue start` | `track i start` |
-| `track issue link` | `track i link` |
-| `track issue comments` | `track i comments` |
-| `track project` | `track p` |
-| `track project list` | `track p ls` |
-| `track project get` | `track p g` |
-| `track project create` | `track p new`, `track p c` |
-| `track project fields` | `track p f` |
-| `track tags` | `track t` |
-| `track tags list` | `track t ls` |
-| `track config` | `track cfg` |
-| `track config project` | `track cfg proj` |
-| `track config show` | `track cfg show` |
-| `track config clear` | `track cfg clear` |
-| `track config path` | `track cfg path` |
-| `track article` | `track a`, `track wiki` |
-| `track article get` | `track a g` |
-| `track article list` | `track a ls` |
-| `track article search` | `track a s`, `track a find` |
-| `track article create` | `track a new`, `track a c` |
-| `track article update` | `track a u` |
-| `track article delete` | `track a rm`, `track a del` |
-| `track article comment` | `track a cmt` |
-| `track completions` | - |
+| Command | Aliases | Notes |
+|---------|---------|-------|
+| `track PROJ-123` | - | **Shortcut**: same as `track issue get PROJ-123` |
+| `track open PROJ-123` | - | Open issue in browser |
+| `track open` | - | Open dashboard in browser |
+| `track config test` | - | Test connection (validates URL/token) |
+| `track issue` | `track i` | |
+| `track issue get` | `track i g` | |
+| `track issue create` | `track i new`, `track i c` | |
+| `track issue update` | `track i u` | |
+| `track issue search` | `track i s`, `track i find` | |
+| `track issue delete` | `track i rm`, `track i del` | |
+| `track issue comment` | `track i cmt` | |
+| `track issue complete` | `track i done`, `track i resolve` | |
+| `track issue start` | `track i start` | |
+| `track issue link` | `track i link` | |
+| `track issue comments` | `track i comments` | |
+| `track project` | `track p` | |
+| `track project list` | `track p ls` | |
+| `track project get` | `track p g` | |
+| `track project create` | `track p new`, `track p c` | |
+| `track project fields` | `track p f` | |
+| `track tags` | `track t` | |
+| `track tags list` | `track t ls` | |
+| `track config` | `track cfg` | |
+| `track config project` | `track cfg proj` | |
+| `track config show` | `track cfg show` | |
+| `track config clear` | `track cfg clear` | |
+| `track config path` | `track cfg path` | |
+| `track article` | `track a`, `track wiki` | |
+| `track article get` | `track a g` | |
+| `track article list` | `track a ls` | |
+| `track article search` | `track a s`, `track a find` | |
+| `track article create` | `track a new`, `track a c` | |
+| `track article update` | `track a u` | |
+| `track article delete` | `track a rm`, `track a del` | |
+| `track article comment` | `track a cmt` | |
+| `track completions` | - | |
 
 ## Quick Reference
 
 ```bash
-# Set default project (only needs to be done once)
+# Initialize config (creates .track.toml - run once per project)
+track init --url https://youtrack.example.com --token YOUR_TOKEN --project OGIT
+
+# Test connection
+track config test
+
+# Set default project (only needs to be done once if not set during init)
 $TRACK config project OGIT
+
+# Quick issue lookup (shortcut - no subcommand needed!)
+$TRACK OGIT-123              # Same as: track issue get OGIT-123
+$TRACK OGIT-123 --full       # With full context
+
+# Open issue in browser
+$TRACK open OGIT-123
 
 # List projects (shortNames now auto-resolve to internal IDs!)
 $TRACK -o json p ls
@@ -69,7 +92,7 @@ $TRACK -o json p g OGIT
 # Create a new project
 $TRACK p new -n "My Project" -s "MYPROJ" -d "Project description"
 
-# Get issue details
+# Get issue details (traditional syntax)
 $TRACK -o json i g OGIT-123
 
 # Get issue with full context (subtasks, links, comments)
@@ -237,10 +260,14 @@ $TRACK i new -s "Code review fixes" --parent OGIT-45
 
 ## Session Startup Checklist
 
-1. **Set default project** (once, persists across sessions):
+1. **Initialize or verify config** (once per project):
    ```bash
-   $TRACK config project OGIT
-   $TRACK config show          # Verify it's set
+   # First time setup
+   track init --url https://youtrack.example.com --token YOUR_TOKEN --project OGIT
+
+   # Or verify existing config
+   $TRACK config show
+   $TRACK config test          # Test connection works
    ```
 
 2. **Refresh cache** (once per session):
@@ -260,16 +287,19 @@ $TRACK i new -s "Code review fixes" --parent OGIT-45
 
 ## Important Notes
 
-1. **Default Project**: Set with `track config project <ID>` - then `-p` is optional for issue creation
-2. **Subtasks**: Use `--parent ISSUE-ID` to create an issue as a subtask of another issue
-3. **Project ShortNames**: The CLI auto-resolves shortNames (OGIT) to internal IDs (0-2)
-4. **Field Names**: Field names are case-sensitive and project-specific. Use `track p f <project>` to discover them.
-5. **JSON Output**: Use `-o json` when parsing output programmatically
-6. **Tags**: Tags must already exist in the tracker. Use `track t ls` to see available tags.
-7. **Full Context**: Use `--full` with `issue get` to see subtasks, links, and comments in one view
-8. **Quick Transitions**: Use `start` and `complete` commands for common state changes. Customize state values with `--field` and `--state` flags.
-9. **Link Types**: Available types are `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
-10. **Error Messages**: Include full error chain context for debugging
+1. **Quick Issue Access**: Use `track PROJ-123` directly (no `issue get` subcommand needed)
+2. **Browser Access**: Use `track open PROJ-123` to open issues in your browser
+3. **Connection Test**: Use `track config test` to verify credentials work
+4. **Default Project**: Set with `track config project <ID>` - then `-p` is optional for issue creation
+5. **Subtasks**: Use `--parent ISSUE-ID` to create an issue as a subtask of another issue
+6. **Project ShortNames**: The CLI auto-resolves shortNames (OGIT) to internal IDs (0-2)
+7. **Field Names**: Field names are case-sensitive and project-specific. Use `track p f <project>` to discover them.
+8. **JSON Output**: Use `-o json` when parsing output programmatically
+9. **Tags**: Tags must already exist in the tracker. Use `track t ls` to see available tags.
+10. **Full Context**: Use `--full` with `issue get` or the shortcut to see subtasks, links, and comments in one view
+11. **Quick Transitions**: Use `start` and `complete` commands for common state changes. Customize state values with `--field` and `--state` flags.
+12. **Link Types**: Available types are `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
+13. **Error Messages**: Include full error chain context for debugging
 
 ## Output Formats
 

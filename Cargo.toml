@@ -21,6 +21,8 @@ colored = "3.1.1"
 # Configuration
 figment = { version = "0.10", features = ["toml", "env"] }
 directories = "6.0.0"
+toml = "0.8"
+open = "5.3"
 
 # Error handling
 thiserror = "2.0"

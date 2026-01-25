@@ -91,6 +91,28 @@ Configure your tracker instance in three ways (priority from highest to lowest):
    # token = "..."
    ```
 
+## Quick Start
+
+```bash
+# Initialize configuration (creates .track.toml in current directory)
+track init --url https://youtrack.example.com --token YOUR_TOKEN
+
+# Set a default project
+track config project PROJ
+
+# Test your connection
+track config test
+
+# View an issue (shortcut - no subcommand needed!)
+track PROJ-123
+
+# Open issue in browser
+track open PROJ-123
+
+# Create an issue
+track issue create -s "Bug summary" --priority "Major"
+```
+
 ## Usage
 
 ### Backend Selection
@@ -103,27 +125,44 @@ track -b youtrack issue get PROJ-123         # Short form
 # Future: track --backend jira issue get PROJ-123
 ```
 
+### Shortcuts
+
+**Direct issue access** - Skip the `issue get` subcommand:
+```bash
+track PROJ-123           # Same as: track issue get PROJ-123
+track PROJ-123 --full    # Same as: track issue get PROJ-123 --full
+```
+
+**Open in browser:**
+```bash
+track open PROJ-123      # Opens issue in default browser
+track open               # Opens the tracker dashboard
+```
+
 ### Command Aliases
 
 All commands have short aliases for faster typing:
 
-| Command | Aliases |
-|---------|---------|
-| `track issue` | `track i` |
-| `track issue get` | `track i g` |
-| `track issue create` | `track i new`, `track i c` |
-| `track issue update` | `track i u` |
-| `track issue search` | `track i s`, `track i find` |
-| `track issue delete` | `track i rm`, `track i del` |
-| `track issue comment` | `track i cmt` |
-| `track issue complete` | `track i done`, `track i resolve` |
-| `track project` | `track p` |
-| `track project list` | `track p ls` |
-| `track project fields` | `track p f` |
-| `track tags` | `track t` |
-| `track tags list` | `track t ls` |
-| `track config` | `track cfg` |
-| `track config project` | `track cfg proj` |
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `track PROJ-123` | - | Shortcut for `track issue get PROJ-123` |
+| `track open PROJ-123` | - | Open issue in browser |
+| `track issue` | `track i` | Issue operations |
+| `track issue get` | `track i g` | Get issue details |
+| `track issue create` | `track i new`, `track i c` | Create new issue |
+| `track issue update` | `track i u` | Update issue |
+| `track issue search` | `track i s`, `track i find` | Search issues |
+| `track issue delete` | `track i rm`, `track i del` | Delete issue |
+| `track issue comment` | `track i cmt` | Add comment |
+| `track issue complete` | `track i done`, `track i resolve` | Complete issue |
+| `track project` | `track p` | Project operations |
+| `track project list` | `track p ls` | List projects |
+| `track project fields` | `track p f` | List custom fields |
+| `track tags` | `track t` | Tag operations |
+| `track tags list` | `track t ls` | List tags |
+| `track config` | `track cfg` | Configuration |
+| `track config project` | `track cfg proj` | Set default project |
+| `track config test` | - | Test connection |
 
 ### Issue Commands
 
@@ -257,9 +296,28 @@ track -o json cache show     # JSON for programmatic access
 track cache path             # Shows where cache is stored
 ```
 
+### Initialization
+
+Initialize a local `.track.toml` config file in your project directory:
+
+```bash
+# Basic initialization
+track init --url https://youtrack.example.com --token YOUR_TOKEN
+
+# Initialize with default project
+track init --url https://youtrack.example.com --token YOUR_TOKEN --project PROJ
+```
+
+This creates a `.track.toml` file that stores your credentials locally, so you don't need to specify `--url` and `--token` for every command.
+
 ### Config Commands
 
-Set a default project so you don't need to specify `-p` for every issue command.
+Manage local configuration settings.
+
+**Test connection:**
+```bash
+track config test            # Validates URL and token work correctly
+```
 
 **Set default project:**
 ```bash
@@ -269,23 +327,32 @@ track cfg proj 0-2           # Or using internal ID
 
 **Show current configuration:**
 ```bash
-track config show            # Shows default project
+track config show            # Shows URL, token status, default project
 track -o json config show    # JSON format
 ```
 
-**Clear configuration:**
+**Clear default project:**
 ```bash
-track config clear           # Remove default project
+track config clear           # Remove default project (keeps URL/token)
 ```
 
 **Show config file path:**
 ```bash
-track config path            # Shows .track-config.json location
+track config path            # Shows .track.toml location
 ```
 
 Once a default project is set, you can create issues without `-p`:
 ```bash
 track issue create -s "Fix bug" --priority "Major"  # Uses default project
+```
+
+### Browser Commands
+
+Open issues or the tracker dashboard in your default browser:
+
+```bash
+track open PROJ-123          # Open specific issue
+track open                   # Open tracker dashboard
 ```
 
 ### Output Formats

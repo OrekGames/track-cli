@@ -104,6 +104,26 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+    /// Initialize a local .track.toml config file
+    Init {
+        /// Tracker instance URL
+        #[arg(long, required = true)]
+        url: String,
+        /// API token
+        #[arg(long, required = true)]
+        token: String,
+        /// Default project ID or shortName (optional, validates against server if provided)
+        #[arg(long, short = 'p')]
+        project: Option<String>,
+    },
+    /// Open an issue or the tracker dashboard in your browser
+    Open {
+        /// Issue ID to open (e.g., PROJ-123). If omitted, opens the dashboard.
+        id: Option<String>,
+    },
+    /// Shortcut: Get issue by ID (same as 'track issue get')
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 impl Cli {
@@ -128,6 +148,8 @@ pub enum ConfigCommands {
     Clear,
     /// Show local config file path
     Path,
+    /// Test connection to the tracker (validates URL and token)
+    Test,
 }
 
 #[derive(Subcommand, Debug)]
@@ -855,6 +877,119 @@ mod tests {
                 _ => panic!("expected issue get"),
             },
             _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_init_command() {
+        let cli = Cli::parse_from([
+            "track",
+            "init",
+            "--url",
+            "https://youtrack.example.com",
+            "--token",
+            "perm:xxx",
+        ]);
+
+        match cli.command {
+            Commands::Init {
+                url,
+                token,
+                project,
+            } => {
+                assert_eq!(url, "https://youtrack.example.com");
+                assert_eq!(token, "perm:xxx");
+                assert!(project.is_none());
+            }
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn parses_init_command_with_project() {
+        let cli = Cli::parse_from([
+            "track",
+            "init",
+            "--url",
+            "https://youtrack.example.com",
+            "--token",
+            "perm:xxx",
+            "--project",
+            "PROJ",
+        ]);
+
+        match cli.command {
+            Commands::Init {
+                url,
+                token,
+                project,
+            } => {
+                assert_eq!(url, "https://youtrack.example.com");
+                assert_eq!(token, "perm:xxx");
+                assert_eq!(project.as_deref(), Some("PROJ"));
+            }
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn rejects_init_without_url() {
+        let result = Cli::try_parse_from(["track", "init", "--token", "perm:xxx"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_init_without_token() {
+        let result = Cli::try_parse_from(["track", "init", "--url", "https://example.com"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_open_command_with_issue_id() {
+        let cli = Cli::parse_from(["track", "open", "PROJ-123"]);
+
+        match cli.command {
+            Commands::Open { id } => {
+                assert_eq!(id.as_deref(), Some("PROJ-123"));
+            }
+            _ => panic!("expected open command"),
+        }
+    }
+
+    #[test]
+    fn parses_open_command_without_id() {
+        let cli = Cli::parse_from(["track", "open"]);
+
+        match cli.command {
+            Commands::Open { id } => {
+                assert!(id.is_none());
+            }
+            _ => panic!("expected open command"),
+        }
+    }
+
+    #[test]
+    fn parses_config_test_command() {
+        let cli = Cli::parse_from(["track", "config", "test"]);
+
+        match cli.command {
+            Commands::Config { action } => match action {
+                ConfigCommands::Test => {}
+                _ => panic!("expected config test"),
+            },
+            _ => panic!("expected config command"),
+        }
+    }
+
+    #[test]
+    fn parses_external_subcommand_as_issue_shortcut() {
+        let cli = Cli::parse_from(["track", "PROJ-123"]);
+
+        match cli.command {
+            Commands::External(args) => {
+                assert_eq!(args, vec!["PROJ-123"]);
+            }
+            _ => panic!("expected external subcommand"),
         }
     }
 }
