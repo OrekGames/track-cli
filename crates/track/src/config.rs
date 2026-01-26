@@ -12,19 +12,28 @@ use std::path::{Path, PathBuf};
 /// Main configuration structure supporting multiple backends
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct Config {
+    /// Default backend to use (youtrack or jira)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     /// Global URL override (applies to any backend)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Global token override (applies to any backend)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Email for authentication (required for Jira)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     /// Default project shortName (e.g., "PROJ")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
     /// YouTrack-specific configuration
     #[serde(default, skip_serializing_if = "BackendConfig::is_empty")]
     pub youtrack: BackendConfig,
-    // Future: jira, linear, github, etc.
+    /// Jira-specific configuration
+    #[serde(default, skip_serializing_if = "JiraConfig::is_empty")]
+    pub jira: JiraConfig,
+    // Future: linear, github, etc.
 }
 
 /// Backend-specific configuration
@@ -39,6 +48,23 @@ pub struct BackendConfig {
 impl BackendConfig {
     pub fn is_empty(&self) -> bool {
         self.url.is_none() && self.token.is_none()
+    }
+}
+
+/// Jira-specific configuration
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+pub struct JiraConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+impl JiraConfig {
+    pub fn is_empty(&self) -> bool {
+        self.url.is_none() && self.email.is_none() && self.token.is_none()
     }
 }
 
@@ -59,7 +85,7 @@ impl Config {
             }
         }
 
-        // Support both TRACKER_* and legacy YOUTRACK_* environment variables
+        // Support TRACKER_*, YOUTRACK_*, and JIRA_* environment variables
         figment = figment
             .merge(Env::prefixed("TRACKER_"))
             .merge(Env::prefixed("YOUTRACK_").map(|key| {
@@ -67,6 +93,15 @@ impl Config {
                 match key.as_str() {
                     "url" => "youtrack.url".into(),
                     "token" => "youtrack.token".into(),
+                    _ => key.into(),
+                }
+            }))
+            .merge(Env::prefixed("JIRA_").map(|key| {
+                // Map JIRA_URL -> jira.url for nested config
+                match key.as_str() {
+                    "url" => "jira.url".into(),
+                    "email" => "jira.email".into(),
+                    "token" => "jira.token".into(),
                     _ => key.into(),
                 }
             }));
@@ -94,6 +129,18 @@ impl Config {
                     self.token = self.youtrack.token.take();
                 }
             }
+            Backend::Jira => {
+                // Jira needs url, email, and token
+                if self.url.is_none() {
+                    self.url = self.jira.url.take();
+                }
+                if self.email.is_none() {
+                    self.email = self.jira.email.take();
+                }
+                if self.token.is_none() {
+                    self.token = self.jira.token.take();
+                }
+            }
         }
     }
 
@@ -109,6 +156,7 @@ impl Config {
     pub fn validate(&self, backend: Backend) -> Result<()> {
         let backend_name = match backend {
             Backend::YouTrack => "YouTrack",
+            Backend::Jira => "Jira",
         };
 
         if self.url.is_none() {
@@ -123,6 +171,12 @@ impl Config {
                 backend_name
             ));
         }
+        // Jira requires email for Basic Auth
+        if backend == Backend::Jira && self.email.is_none() {
+            return Err(anyhow!(
+                "Jira email not configured. Set via JIRA_EMAIL env var or config file"
+            ));
+        }
         Ok(())
     }
 
@@ -130,8 +184,7 @@ impl Config {
     pub fn save(&self, path: &Path) -> Result<()> {
         let toml_string = toml::to_string_pretty(self)
             .map_err(|e| anyhow!("Failed to serialize config: {}", e))?;
-        fs::write(path, toml_string)
-            .map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+        fs::write(path, toml_string).map_err(|e| anyhow!("Failed to write config file: {}", e))?;
         Ok(())
     }
 
@@ -159,6 +212,32 @@ impl Config {
             Err(anyhow!(
                 "No .track.toml found. Run 'track init' first, or create the file manually."
             ))
+        }
+    }
+
+    /// Update the default backend in .track.toml
+    pub fn update_backend(backend: Backend) -> Result<()> {
+        let path = local_track_config_path()?;
+        if let Some(mut config) = Self::load_local_track_toml()? {
+            let backend_str = match backend {
+                Backend::YouTrack => "youtrack",
+                Backend::Jira => "jira",
+            };
+            config.backend = Some(backend_str.to_string());
+            config.save(&path)?;
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "No .track.toml found. Run 'track init' first, or create the file manually."
+            ))
+        }
+    }
+
+    /// Get the configured backend, defaulting to YouTrack
+    pub fn get_backend(&self) -> Backend {
+        match self.backend.as_deref() {
+            Some("jira") | Some("j") => Backend::Jira,
+            _ => Backend::YouTrack, // Default
         }
     }
 }
