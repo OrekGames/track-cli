@@ -1,6 +1,6 @@
 # Track CLI - Agent Guide
 
-> **Purpose**: Unified CLI for issue tracking systems (YouTrack, Jira). Use this tool to manage issues, projects, comments, and links programmatically during coding sessions.
+> **For AI agents**: Quick reference for programmatic issue tracking. Optimized for fast context retrieval and command generation.
 
 ## Quick Context
 
@@ -18,7 +18,7 @@
 | **Flag** | `-b youtrack` or `-b yt` (default) | `-b jira` or `-b j` |
 | **Auth** | Bearer token | Basic Auth (email + API token) |
 | **Query** | `project: PROJ #Unresolved` | `project = PROJ AND resolution IS EMPTY` (JQL) |
-| **Knowledge Base** | Yes (`article` commands) | No (uses Confluence) |
+| **Knowledge Base** | Yes (`article` commands) | Yes via Confluence (`article` commands) |
 | **Project Creation** | Yes | No (admin only) |
 
 ## Configuration
@@ -102,6 +102,21 @@ track -b jira config test      # Override to test Jira
 | Get | `track p g PROJ` | `track -b j p g PROJ` |
 | Fields | `track p f PROJ` | `track -b j p f PROJ` |
 | Create | `track p new -n "Name" -s "KEY"` | Not supported |
+
+### Article Operations (Knowledge Base)
+
+| Operation | YouTrack | Jira/Confluence |
+|-----------|----------|-----------------|
+| Get | `track a g KB-A-1` | `track -b j a g 123456` |
+| List | `track a ls --project PROJ` | `track -b j a ls --project 65957` |
+| Search | `track a s "query"` | `track -b j a s "query"` |
+| Create | `track a new -p PROJ -s "Title"` | `track -b j a new -p 65957 -s "Title"` |
+| Update | `track a u KB-A-1 --summary "New"` | `track -b j a u 123456 --summary "New"` |
+| Delete | `track a del KB-A-1` | `track -b j a del 123456` |
+| Comments | `track a comments KB-A-1` | `track -b j a comments 123456` |
+| Add comment | `track a cmt KB-A-1 -m "Text"` | `track -b j a cmt 123456 -m "Text"` |
+
+**Note**: Confluence uses numeric IDs for both pages and spaces. YouTrack uses readable IDs (e.g., `KB-A-1`).
 
 ### Command Aliases
 
@@ -301,29 +316,13 @@ track cache path       # Show cache file location
 
 ---
 
-## Knowledge Base (YouTrack Only)
+## Knowledge Base Notes
 
-```bash
-# Get article
-track a g KB-A-1
-
-# List articles
-track a ls --project PROJ --limit 20
-
-# Search
-track a s "search term" --limit 10
-
-# Create
-track a new --project PROJ --summary "Title" --content "Body text"
-track a new --project PROJ --summary "Title" --content-file ./doc.md
-
-# Update
-track a u KB-A-1 --summary "New Title"
-track a u KB-A-1 --content-file ./updated.md
-
-# Delete
-track a del KB-A-1
-```
+- **YouTrack**: Built-in Knowledge Base with readable IDs (`KB-A-1`)
+- **Jira**: Uses Confluence at same domain (`/wiki` path auto-appended)
+- **Confluence IDs**: Numeric for both pages (`123456`) and spaces (`65957`)
+- **Discover space IDs**: Run `track -b j a ls` to see existing pages with their space IDs
+- **Content**: Supports `--content "text"` or `--content-file ./doc.md`
 
 ---
 
@@ -390,11 +389,12 @@ track -b j config test             # Test connection
 
 ## Important Notes
 
-1. **Persistent backend**: Use `track config backend jira` to set default backend permanently.
-2. **Backend override**: Use `-b jira` or `-b j` to override the configured backend per-command.
-3. **JSON output**: Always use `-o json` for programmatic parsing.
+1. **Persistent backend**: `track config backend jira` sets default permanently
+2. **Backend override**: `-b jira` or `-b j` overrides per-command
+3. **JSON output**: Always use `-o json` for programmatic parsing
 4. **Issue shortcut**: `track PROJ-123` = `track issue get PROJ-123`
-5. **Default project**: Set with `track config project PROJ` to skip `-p` flag.
-6. **Field discovery**: Use `track p f PROJ` to see available custom fields.
-7. **Jira limitations**: No knowledge base, no project creation, no subtask conversion.
-8. **Query syntax differs**: YouTrack uses `project: PROJ`, Jira uses `project = PROJ`.
+5. **Default project**: `track config project PROJ` to skip `-p` flag
+6. **Field discovery**: `track p f PROJ` lists available custom fields
+7. **Jira limitations**: No project creation, no subtask conversion
+8. **Query syntax**: YouTrack `project: PROJ` vs Jira `project = PROJ`
+9. **Confluence IDs**: Numeric page IDs (`123456`) and space IDs (`65957`), not project keys

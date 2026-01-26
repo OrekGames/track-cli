@@ -115,10 +115,17 @@ fn handle_create(
     tags: &[String],
     format: OutputFormat,
 ) -> Result<()> {
-    // Resolve project shortName to internal ID
-    let project_id = issue_client
-        .resolve_project_id(project)
-        .with_context(|| format!("Failed to resolve project '{}'", project))?;
+    // For Confluence (Jira backend), space IDs are numeric and should be used directly
+    // For YouTrack, we need to resolve the project shortName to internal ID
+    let project_id = if project.chars().all(|c| c.is_ascii_digit()) {
+        // Numeric ID - use directly (Confluence space ID)
+        project.to_string()
+    } else {
+        // Named project - resolve via issue tracker
+        issue_client
+            .resolve_project_id(project)
+            .with_context(|| format!("Failed to resolve project '{}'", project))?
+    };
 
     // Resolve parent article ID if provided (fetch article to get internal ID)
     let parent_article_id = if let Some(parent_id) = parent {

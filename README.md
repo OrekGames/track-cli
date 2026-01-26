@@ -8,7 +8,7 @@ A command-line interface for issue tracking systems, built with Rust. Supports *
 - **Issue Management**: Get, create, update, delete, search issues
 - **Custom Fields**: Set priority, state, assignee, and any field
 - **Comments & Links**: Add comments and link issues together
-- **Knowledge Base**: Manage articles (YouTrack only)
+- **Knowledge Base**: Manage articles (YouTrack and Jira/Confluence)
 - **Output Formats**: Text (human-readable) and JSON (machine-readable)
 - **Flexible Config**: CLI flags, environment variables, or config file
 
@@ -215,14 +215,25 @@ track project create -n "Name" -s "KEY"
 track tags list
 ```
 
-### Articles (YouTrack only)
+### Articles (Knowledge Base)
+
+YouTrack uses its built-in Knowledge Base. Jira uses Confluence (automatically at same domain with `/wiki` path).
 
 ```bash
+# YouTrack
 track article get KB-A-1
 track article list --project PROJ
 track article search "query"
 track article create --project PROJ --summary "Title" --content "Body"
 track article update KB-A-1 --content-file ./doc.md
+
+# Jira/Confluence (use numeric space ID for --project)
+track -b j article get 123456
+track -b j article list --project 65957 --limit 20
+track -b j article search "query"
+track -b j article create --project 65957 --summary "Title" --content "Body"
+track -b j article update 123456 --summary "New Title"
+track -b j article delete 123456
 ```
 
 ### Config
@@ -289,9 +300,9 @@ track -o json PROJ-123      # JSON
 track --format json p ls    # JSON
 ```
 
-## Jira Limitations
+## Jira Notes
 
-- **Knowledge Base**: Jira uses Confluence (not supported)
+- **Knowledge Base**: Uses Confluence API (automatically at same domain with `/wiki` path)
 - **Project Creation**: Requires admin permissions (use web interface)
 - **Subtask Conversion**: Create as subtask from start with `--parent`
 

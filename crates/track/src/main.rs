@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::Parser;
 use cli::{Backend, Cli, Commands};
 use config::Config;
-use jira_backend::JiraClient;
+use jira_backend::{ConfluenceClient, JiraClient};
 use output::output_error;
 use std::process::ExitCode;
 use tracker_core::{IssueTracker, KnowledgeBase};
@@ -104,113 +104,15 @@ fn run(cli: Cli) -> Result<()> {
             run_with_client(&client, &client, &cli, &config)
         }
         Backend::Jira => {
-            let client = JiraClient::new(
-                config.url.as_ref().unwrap(),
-                config.email.as_ref().unwrap(),
-                config.token.as_ref().unwrap(),
-            );
-            // Jira doesn't have KnowledgeBase (that's Confluence), so pass a stub
-            run_with_client(&client, &NoKnowledgeBase, &cli, &config)
+            let url = config.url.as_ref().unwrap();
+            let email = config.email.as_ref().unwrap();
+            let token = config.token.as_ref().unwrap();
+
+            let client = JiraClient::new(url, email, token);
+            // Confluence is Atlassian's knowledge base, at the same domain with /wiki path
+            let confluence = ConfluenceClient::new(url, email, token);
+            run_with_client(&client, &confluence, &cli, &config)
         }
-    }
-}
-
-/// Stub implementation for backends that don't support KnowledgeBase
-struct NoKnowledgeBase;
-
-impl KnowledgeBase for NoKnowledgeBase {
-    fn get_article(&self, _id: &str) -> tracker_core::Result<tracker_core::Article> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn list_articles(
-        &self,
-        _project_id: Option<&str>,
-        _limit: usize,
-        _skip: usize,
-    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn search_articles(
-        &self,
-        _query: &str,
-        _limit: usize,
-        _skip: usize,
-    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn create_article(
-        &self,
-        _article: &tracker_core::CreateArticle,
-    ) -> tracker_core::Result<tracker_core::Article> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn update_article(
-        &self,
-        _id: &str,
-        _update: &tracker_core::UpdateArticle,
-    ) -> tracker_core::Result<tracker_core::Article> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn delete_article(&self, _id: &str) -> tracker_core::Result<()> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn get_child_articles(&self, _id: &str) -> tracker_core::Result<Vec<tracker_core::Article>> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn move_article(
-        &self,
-        _id: &str,
-        _new_parent_id: Option<&str>,
-    ) -> tracker_core::Result<tracker_core::Article> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn list_article_attachments(
-        &self,
-        _id: &str,
-    ) -> tracker_core::Result<Vec<tracker_core::ArticleAttachment>> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn get_article_comments(&self, _id: &str) -> tracker_core::Result<Vec<tracker_core::Comment>> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
-    }
-
-    fn add_article_comment(
-        &self,
-        _id: &str,
-        _text: &str,
-    ) -> tracker_core::Result<tracker_core::Comment> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "Knowledge base is not supported by this backend".to_string(),
-        ))
     }
 }
 
