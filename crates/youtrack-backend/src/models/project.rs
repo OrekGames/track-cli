@@ -74,3 +74,46 @@ pub struct CreateProject {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
+
+/// User that can be assigned to issues in a project
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct User {
+    pub id: String,
+    pub login: String,
+    #[serde(default, rename = "fullName")]
+    pub full_name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+/// Extended project custom field with bundle values
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCustomFieldExt {
+    pub id: String,
+    pub field: CustomFieldInfo,
+    #[serde(default)]
+    pub can_be_empty: bool,
+    #[serde(default)]
+    pub empty_field_text: Option<String>,
+    #[serde(default)]
+    pub bundle: Option<Bundle>,
+}
+
+/// Bundle containing enum values for a custom field
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Bundle {
+    pub id: String,
+    #[serde(default)]
+    pub values: Vec<BundleValue>,
+}
+
+/// Value in a bundle (for enum/state fields)
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleValue {
+    pub id: String,
+    pub name: String,
+}

@@ -1,22 +1,112 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use tracker_core::IssueTracker;
+use tracker_core::{IssueTracker, KnowledgeBase};
 
 const CACHE_FILE_NAME: &str = ".tracker-cache.json";
+const MAX_RECENT_ISSUES: usize = 50;
 
 /// Cached tracker context for AI assistants
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct TrackerCache {
     /// Timestamp of last cache update
     pub updated_at: Option<String>,
+    /// Backend metadata (type and URL)
+    #[serde(default)]
+    pub backend_metadata: Option<CachedBackendMetadata>,
+    /// Default project from config
+    #[serde(default)]
+    pub default_project: Option<String>,
     /// List of projects with their IDs
     pub projects: Vec<CachedProject>,
     /// Custom fields per project (keyed by project shortName)
     pub project_fields: Vec<ProjectFieldsCache>,
     /// Available tags
     pub tags: Vec<CachedTag>,
+    /// Available issue link types
+    #[serde(default)]
+    pub link_types: Vec<CachedLinkType>,
+    /// Pre-built query templates for the backend
+    #[serde(default)]
+    pub query_templates: Vec<CachedQueryTemplate>,
+    /// Assignable users per project
+    #[serde(default)]
+    pub project_users: Vec<ProjectUsersCache>,
+    /// Recently accessed issues (LRU, max 50)
+    #[serde(default)]
+    pub recent_issues: Vec<CachedRecentIssue>,
+    /// Knowledge base articles
+    #[serde(default)]
+    pub articles: Vec<CachedArticle>,
+    /// Article hierarchy (parent_id -> child_ids)
+    #[serde(default)]
+    pub article_tree: HashMap<String, Vec<String>>,
+}
+
+/// Backend metadata for context
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CachedBackendMetadata {
+    pub backend_type: String,
+    pub base_url: String,
+}
+
+/// Pre-built query template
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CachedQueryTemplate {
+    pub name: String,
+    pub description: String,
+    pub query: String,
+    pub backend: String,
+}
+
+/// Cached issue link type
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CachedLinkType {
+    pub id: String,
+    pub name: String,
+    pub source_to_target: Option<String>,
+    pub target_to_source: Option<String>,
+    pub directed: bool,
+}
+
+/// Cached user for project assignment
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CachedUser {
+    pub id: String,
+    pub login: Option<String>,
+    pub display_name: String,
+}
+
+/// Cached users for a project
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectUsersCache {
+    pub project_short_name: String,
+    pub project_id: String,
+    pub users: Vec<CachedUser>,
+}
+
+/// Recently accessed issue (for LRU cache)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CachedRecentIssue {
+    pub id: String,
+    pub id_readable: String,
+    pub summary: String,
+    pub project_short_name: String,
+    pub state: Option<String>,
+    pub last_accessed: String,
+}
+
+/// Cached article for knowledge base context
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CachedArticle {
+    pub id: String,
+    pub id_readable: String,
+    pub summary: String,
+    pub project_short_name: String,
+    pub parent_id: Option<String>,
+    pub has_children: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -39,6 +129,9 @@ pub struct CachedField {
     pub name: String,
     pub field_type: String,
     pub required: bool,
+    /// Enum values for enum-type fields (Priority, State, Type, etc.)
+    #[serde(default)]
+    pub values: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -88,9 +181,20 @@ impl TrackerCache {
     }
 
     /// Refresh cache from tracker API
-    pub fn refresh(client: &dyn IssueTracker) -> Result<Self> {
+    pub fn refresh(
+        client: &dyn IssueTracker,
+        backend_type: &str,
+        base_url: &str,
+        default_project: Option<&str>,
+    ) -> Result<Self> {
         let mut cache = Self {
             updated_at: Some(chrono::Utc::now().to_rfc3339()),
+            backend_metadata: Some(CachedBackendMetadata {
+                backend_type: backend_type.to_string(),
+                base_url: base_url.to_string(),
+            }),
+            default_project: default_project.map(|s| s.to_string()),
+            query_templates: Self::get_query_templates(backend_type),
             ..Self::default()
         };
 
@@ -115,6 +219,7 @@ impl TrackerCache {
                         name: f.name.clone(),
                         field_type: f.field_type.clone(),
                         required: f.required,
+                        values: f.values.clone(),
                     })
                     .collect();
 
@@ -137,7 +242,144 @@ impl TrackerCache {
                 .collect();
         }
 
+        // Fetch link types
+        if let Ok(link_types) = client.list_link_types() {
+            cache.link_types = link_types
+                .iter()
+                .map(|lt| CachedLinkType {
+                    id: lt.id.clone(),
+                    name: lt.name.clone(),
+                    source_to_target: lt.source_to_target.clone(),
+                    target_to_source: lt.target_to_source.clone(),
+                    directed: lt.directed,
+                })
+                .collect();
+        }
+
+        // Fetch project users
+        for project in &projects {
+            if let Ok(users) = client.list_project_users(&project.id) {
+                let cached_users: Vec<CachedUser> = users
+                    .iter()
+                    .map(|u| CachedUser {
+                        id: u.id.clone(),
+                        login: u.login.clone(),
+                        display_name: u.display_name.clone(),
+                    })
+                    .collect();
+
+                cache.project_users.push(ProjectUsersCache {
+                    project_short_name: project.short_name.clone(),
+                    project_id: project.id.clone(),
+                    users: cached_users,
+                });
+            }
+        }
+
         Ok(cache)
+    }
+
+    /// Refresh cache with articles from knowledge base (if available)
+    pub fn refresh_with_articles(
+        client: &dyn IssueTracker,
+        kb_client: Option<&dyn KnowledgeBase>,
+        backend_type: &str,
+        base_url: &str,
+        default_project: Option<&str>,
+    ) -> Result<Self> {
+        let mut cache = Self::refresh(client, backend_type, base_url, default_project)?;
+
+        // Fetch articles if knowledge base client is available
+        if let Some(kb) = kb_client {
+            if let Ok(articles) = kb.list_articles(None, 100, 0) {
+                cache.add_articles(articles);
+            }
+        }
+
+        Ok(cache)
+    }
+
+    /// Get query templates for a backend
+    fn get_query_templates(backend_type: &str) -> Vec<CachedQueryTemplate> {
+        match backend_type {
+            "youtrack" => vec![
+                CachedQueryTemplate {
+                    name: "unresolved".to_string(),
+                    description: "All unresolved issues in project".to_string(),
+                    query: "project: {PROJECT} #Unresolved".to_string(),
+                    backend: "youtrack".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "my_issues".to_string(),
+                    description: "Issues assigned to current user".to_string(),
+                    query: "project: {PROJECT} Assignee: me #Unresolved".to_string(),
+                    backend: "youtrack".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "recent".to_string(),
+                    description: "Recently updated issues".to_string(),
+                    query: "project: {PROJECT} updated: -7d .. Today".to_string(),
+                    backend: "youtrack".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "high_priority".to_string(),
+                    description: "High priority unresolved issues".to_string(),
+                    query: "project: {PROJECT} Priority: Critical,Major #Unresolved".to_string(),
+                    backend: "youtrack".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "in_progress".to_string(),
+                    description: "Issues currently in progress".to_string(),
+                    query: "project: {PROJECT} State: {In Progress}".to_string(),
+                    backend: "youtrack".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "bugs".to_string(),
+                    description: "Bug issues".to_string(),
+                    query: "project: {PROJECT} Type: Bug #Unresolved".to_string(),
+                    backend: "youtrack".to_string(),
+                },
+            ],
+            "jira" => vec![
+                CachedQueryTemplate {
+                    name: "unresolved".to_string(),
+                    description: "All unresolved issues in project".to_string(),
+                    query: "project = {PROJECT} AND resolution IS EMPTY".to_string(),
+                    backend: "jira".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "my_issues".to_string(),
+                    description: "Issues assigned to current user".to_string(),
+                    query: "project = {PROJECT} AND assignee = currentUser() AND resolution IS EMPTY".to_string(),
+                    backend: "jira".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "recent".to_string(),
+                    description: "Recently updated issues".to_string(),
+                    query: "project = {PROJECT} AND updated >= -7d".to_string(),
+                    backend: "jira".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "high_priority".to_string(),
+                    description: "High priority unresolved issues".to_string(),
+                    query: "project = {PROJECT} AND priority IN (Highest, High) AND resolution IS EMPTY".to_string(),
+                    backend: "jira".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "in_progress".to_string(),
+                    description: "Issues currently in progress".to_string(),
+                    query: "project = {PROJECT} AND status = \"In Progress\"".to_string(),
+                    backend: "jira".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "bugs".to_string(),
+                    description: "Bug issues".to_string(),
+                    query: "project = {PROJECT} AND issuetype = Bug AND resolution IS EMPTY".to_string(),
+                    backend: "jira".to_string(),
+                },
+            ],
+            _ => Vec::new(),
+        }
     }
 
     /// Get project ID by shortName (from cache)
@@ -165,5 +407,103 @@ impl TrackerCache {
             .iter()
             .find(|t| t.name.eq_ignore_ascii_case(name))
             .map(|t| t.id.as_str())
+    }
+
+    /// Get users for a project (from cache)
+    #[allow(dead_code)]
+    pub fn get_project_users(&self, short_name: &str) -> Option<&[CachedUser]> {
+        self.project_users
+            .iter()
+            .find(|pu| pu.project_short_name.eq_ignore_ascii_case(short_name))
+            .map(|pu| pu.users.as_slice())
+    }
+
+    /// Record access to an issue (for LRU tracking)
+    pub fn record_issue_access(&mut self, issue: &tracker_core::Issue) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let project_short_name = issue
+            .project
+            .short_name
+            .clone()
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+        // Extract state from custom fields
+        let state = issue.custom_fields.iter().find_map(|cf| {
+            if let tracker_core::CustomField::State { value, .. } = cf {
+                value.clone()
+            } else {
+                None
+            }
+        });
+
+        let recent = CachedRecentIssue {
+            id: issue.id.clone(),
+            id_readable: issue.id_readable.clone(),
+            summary: issue.summary.clone(),
+            project_short_name,
+            state,
+            last_accessed: now,
+        };
+
+        // Remove existing entry if present
+        self.recent_issues
+            .retain(|r| r.id_readable != issue.id_readable);
+
+        // Add at the front (most recent)
+        self.recent_issues.insert(0, recent);
+
+        // Enforce LRU limit
+        if self.recent_issues.len() > MAX_RECENT_ISSUES {
+            self.recent_issues.truncate(MAX_RECENT_ISSUES);
+        }
+    }
+
+    /// Add articles to cache (preserving existing recent_issues)
+    pub fn add_articles(&mut self, articles: Vec<tracker_core::Article>) {
+        // Build article tree and cache
+        self.articles.clear();
+        self.article_tree.clear();
+
+        for article in &articles {
+            let project_short_name = article
+                .project
+                .short_name
+                .clone()
+                .unwrap_or_else(|| "UNKNOWN".to_string());
+
+            let parent_id = article.parent_article.as_ref().map(|p| p.id.clone());
+
+            // Add to article tree
+            if let Some(ref pid) = parent_id {
+                self.article_tree
+                    .entry(pid.clone())
+                    .or_default()
+                    .push(article.id.clone());
+            }
+
+            self.articles.push(CachedArticle {
+                id: article.id.clone(),
+                id_readable: article.id_readable.clone(),
+                summary: article.summary.clone(),
+                project_short_name,
+                parent_id,
+                has_children: article.has_children,
+            });
+        }
+    }
+
+    /// Get link type by name (from cache)
+    #[allow(dead_code)]
+    pub fn get_link_type(&self, name: &str) -> Option<&CachedLinkType> {
+        self.link_types
+            .iter()
+            .find(|lt| lt.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Get recent issues (from cache)
+    #[allow(dead_code)]
+    pub fn get_recent_issues(&self, limit: usize) -> &[CachedRecentIssue] {
+        let end = std::cmp::min(limit, self.recent_issues.len());
+        &self.recent_issues[..end]
     }
 }

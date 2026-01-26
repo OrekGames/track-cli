@@ -31,6 +31,12 @@ echo "Copying binary to $INSTALL_DIR/$BINARY_NAME"
 cp "target/release/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
 chmod +x "$INSTALL_DIR/$BINARY_NAME"
 
+# On macOS, re-sign the binary to fix code signature after copying
+if [[ "$(uname)" == "Darwin" ]]; then
+    echo "Re-signing binary for macOS..."
+    codesign --force --sign - "$INSTALL_DIR/$BINARY_NAME"
+fi
+
 echo "Copying documentation to $DOCS_DIR"
 cp "$PROJECT_DIR/README.md" "$DOCS_DIR/README.md"
 cp "$PROJECT_DIR/AGENT_GUIDE.md" "$DOCS_DIR/AGENT_GUIDE.md"

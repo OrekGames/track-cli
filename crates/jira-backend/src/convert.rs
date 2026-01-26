@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use tracker_core::{
     Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueLink,
-    IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, Tag, UpdateIssue,
+    IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, Tag, UpdateIssue, User,
 };
 
 use crate::models::*;
@@ -116,6 +116,30 @@ impl From<JiraComment> for Comment {
                 name: u.display_name,
             }),
             created: parse_jira_datetime(&c.created),
+        }
+    }
+}
+
+/// Convert JiraIssueLinkType to tracker-core IssueLinkType
+impl From<JiraIssueLinkType> for IssueLinkType {
+    fn from(lt: JiraIssueLinkType) -> Self {
+        Self {
+            id: lt.id.unwrap_or_default(),
+            name: lt.name,
+            source_to_target: lt.outward,
+            target_to_source: lt.inward,
+            directed: true, // Jira links are typically directional
+        }
+    }
+}
+
+/// Convert JiraUser to tracker-core User
+impl From<JiraUser> for User {
+    fn from(u: JiraUser) -> Self {
+        Self {
+            id: u.account_id.clone().unwrap_or_default(),
+            login: u.account_id,
+            display_name: u.display_name.unwrap_or_else(|| "Unknown".to_string()),
         }
     }
 }
@@ -273,30 +297,51 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             name: "Priority".to_string(),
             field_type: "enum[1]".to_string(),
             required: false,
+            values: vec![
+                "Highest".to_string(),
+                "High".to_string(),
+                "Medium".to_string(),
+                "Low".to_string(),
+                "Lowest".to_string(),
+            ],
         },
         ProjectCustomField {
             id: "assignee".to_string(),
             name: "Assignee".to_string(),
             field_type: "user[1]".to_string(),
             required: false,
+            values: vec![], // Users are fetched separately
         },
         ProjectCustomField {
             id: "status".to_string(),
             name: "Status".to_string(),
             field_type: "state[1]".to_string(),
             required: true,
+            values: vec![
+                "To Do".to_string(),
+                "In Progress".to_string(),
+                "Done".to_string(),
+            ],
         },
         ProjectCustomField {
             id: "issuetype".to_string(),
             name: "Type".to_string(),
             field_type: "enum[1]".to_string(),
             required: true,
+            values: vec![
+                "Task".to_string(),
+                "Bug".to_string(),
+                "Story".to_string(),
+                "Epic".to_string(),
+                "Subtask".to_string(),
+            ],
         },
         ProjectCustomField {
             id: "labels".to_string(),
             name: "Labels".to_string(),
             field_type: "enum[*]".to_string(),
             required: false,
+            values: vec![], // Labels are created dynamically
         },
     ]
 }

@@ -40,12 +40,25 @@ pub trait IssueTracker: Send + Sync {
     /// Get custom fields defined for a project
     fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>>;
 
+    /// List users that can be assigned to issues in a project
+    fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
+        // Default implementation returns empty list
+        let _ = project_id;
+        Ok(Vec::new())
+    }
+
     // ========== Tag Operations ==========
 
     /// List all available tags
     fn list_tags(&self) -> Result<Vec<IssueTag>>;
 
     // ========== Link Operations ==========
+
+    /// List all available issue link types
+    fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
+        // Default implementation returns empty list
+        Ok(Vec::new())
+    }
 
     /// Get links for an issue
     fn get_issue_links(&self, issue_id: &str) -> Result<Vec<IssueLink>>;

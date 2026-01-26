@@ -3,8 +3,8 @@
 use crate::client::YouTrackClient;
 use tracker_core::{
     Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, Issue,
-    IssueLink, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result,
-    TrackerError, UpdateArticle, UpdateIssue,
+    IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
+    Result, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 impl IssueTracker for YouTrackClient {
@@ -68,9 +68,21 @@ impl IssueTracker for YouTrackClient {
             .map_err(TrackerError::from)
     }
 
+    fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
+        self.list_project_users(project_id)
+            .map(|users| users.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
     fn list_tags(&self) -> Result<Vec<IssueTag>> {
         self.list_tags()
             .map(|tags| tags.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
+        self.list_link_types()
+            .map(|link_types| link_types.into_iter().map(Into::into).collect())
             .map_err(TrackerError::from)
     }
 

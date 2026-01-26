@@ -81,6 +81,17 @@ pub struct ProjectCustomField {
     pub name: String,
     pub field_type: String,
     pub required: bool,
+    /// Enum values for enum-type fields (Priority, State, Type, etc.)
+    #[serde(default)]
+    pub values: Vec<String>,
+}
+
+/// User that can be assigned to issues
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: String,
+    pub login: Option<String>,
+    pub display_name: String,
 }
 
 /// Data for creating a new project

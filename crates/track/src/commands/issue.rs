@@ -1,8 +1,9 @@
+use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
 use crate::output::{output_list, output_result};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use tracker_core::{CreateIssue, CustomFieldUpdate, IssueTracker, UpdateIssue};
+use tracker_core::{CreateIssue, CustomFieldUpdate, Issue, IssueTracker, UpdateIssue};
 
 pub fn handle_issue(
     client: &dyn IssueTracker,
@@ -81,10 +82,22 @@ pub fn handle_issue(
     }
 }
 
+/// Record issue access in the cache for LRU tracking
+fn record_issue_access(issue: &Issue) {
+    // Try to load, update, and save cache; ignore errors since this is optional
+    if let Ok(mut cache) = TrackerCache::load(None) {
+        cache.record_issue_access(issue);
+        let _ = cache.save(None);
+    }
+}
+
 fn handle_get(client: &dyn IssueTracker, id: &str, full: bool, format: OutputFormat) -> Result<()> {
     let issue = client
         .get_issue(id)
         .with_context(|| format!("Failed to fetch issue '{}'", id))?;
+
+    // Record access for LRU tracking
+    record_issue_access(&issue);
 
     if !full {
         output_result(&issue, format);
@@ -514,6 +527,11 @@ fn handle_search(
     let issues = client
         .search_issues(query, limit, skip)
         .context("Failed to search issues")?;
+
+    // Record first result for quick access tracking (if any)
+    if let Some(first) = issues.first() {
+        record_issue_access(first);
+    }
 
     output_list(&issues, format);
     Ok(())

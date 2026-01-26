@@ -59,7 +59,12 @@ fn run(cli: Cli) -> Result<()> {
     if let Commands::Config { action } = &cli.command {
         use cli::ConfigCommands;
         match action {
-            ConfigCommands::Show | ConfigCommands::Clear | ConfigCommands::Path => {
+            ConfigCommands::Show
+            | ConfigCommands::Clear
+            | ConfigCommands::Path
+            | ConfigCommands::Keys
+            | ConfigCommands::Set { .. }
+            | ConfigCommands::Get { .. } => {
                 return handle_config_local(action, cli.format);
             }
             ConfigCommands::Backend { backend } => {
@@ -143,7 +148,7 @@ fn run_with_client(
         Commands::Tags { action } => commands::tags::handle_tags(issue_client, action, cli.format),
         Commands::Cache { action } => {
             let backend = cli.backend.unwrap_or_else(|| config.get_backend());
-            handle_cache(issue_client, action, cli.format, backend)
+            handle_cache(issue_client, Some(kb_client), action, cli.format, backend, config)
         }
         Commands::Config { action } => handle_config(issue_client, action, cli.format, config),
         Commands::Article { action } => {
@@ -167,29 +172,45 @@ fn run_with_client(
 
 fn handle_cache(
     client: &dyn IssueTracker,
+    kb_client: Option<&dyn KnowledgeBase>,
     action: &cli::CacheCommands,
     format: cli::OutputFormat,
     backend: Backend,
+    config: &Config,
 ) -> Result<()> {
     use cli::CacheCommands;
 
     match action {
         CacheCommands::Refresh => {
             // Cache works with any backend that implements IssueTracker
-            match backend {
-                Backend::YouTrack | Backend::Jira => {
-                    let cache = cache::TrackerCache::refresh(client)?;
-                    cache.save(None)?;
-                    match format {
-                        cli::OutputFormat::Json => {
-                            println!(r#"{{"success": true, "message": "Cache refreshed"}}"#);
-                        }
-                        cli::OutputFormat::Text => {
-                            use colored::Colorize;
-                            println!("{}", "Cache refreshed successfully".green());
-                            println!("  {}: {}", "Projects".dimmed(), cache.projects.len());
-                            println!("  {}: {}", "Tags".dimmed(), cache.tags.len());
-                        }
+            let backend_type = match backend {
+                Backend::YouTrack => "youtrack",
+                Backend::Jira => "jira",
+            };
+            let base_url = config.url.as_deref().unwrap_or("unknown");
+            let default_project = config.default_project.as_deref();
+
+            let cache = cache::TrackerCache::refresh_with_articles(client, kb_client, backend_type, base_url, default_project)?;
+            cache.save(None)?;
+
+            match format {
+                cli::OutputFormat::Json => {
+                    println!(r#"{{"success": true, "message": "Cache refreshed"}}"#);
+                }
+                cli::OutputFormat::Text => {
+                    use colored::Colorize;
+                    println!("{}", "Cache refreshed successfully".green());
+                    println!("  {}: {}", "Backend".dimmed(), backend_type.cyan());
+                    println!("  {}: {}", "Projects".dimmed(), cache.projects.len());
+                    println!("  {}: {}", "Tags".dimmed(), cache.tags.len());
+                    println!("  {}: {}", "Link types".dimmed(), cache.link_types.len());
+                    println!("  {}: {}", "Query templates".dimmed(), cache.query_templates.len());
+                    if !cache.project_users.is_empty() {
+                        let total_users: usize = cache.project_users.iter().map(|p| p.users.len()).sum();
+                        println!("  {}: {}", "Users".dimmed(), total_users);
+                    }
+                    if !cache.articles.is_empty() {
+                        println!("  {}: {}", "Articles".dimmed(), cache.articles.len());
                     }
                 }
             }
@@ -213,6 +234,15 @@ fn handle_cache(
                         );
                         return Ok(());
                     }
+
+                    // Backend metadata
+                    if let Some(meta) = &cache.backend_metadata {
+                        println!("{}: {} ({})", "Backend".dimmed(), meta.backend_type.cyan(), meta.base_url.dimmed());
+                    }
+                    if let Some(proj) = &cache.default_project {
+                        println!("{}: {}", "Default project".dimmed(), proj.cyan().bold());
+                    }
+
                     println!();
                     println!("{}:", "Projects".white().bold());
                     for p in &cache.projects {
@@ -223,6 +253,7 @@ fn handle_cache(
                             p.name
                         );
                     }
+
                     println!();
                     println!("{}:", "Custom Fields by Project".white().bold());
                     for pf in &cache.project_fields {
@@ -233,13 +264,82 @@ fn handle_cache(
                             } else {
                                 String::new()
                             };
-                            println!("    {} [{}]{}", f.name.white(), f.field_type.dimmed(), req);
+                            let values_str = if f.values.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" -> {}", f.values.join(", ").dimmed())
+                            };
+                            println!("    {} [{}]{}{}", f.name.white(), f.field_type.dimmed(), req, values_str);
                         }
                     }
+
                     println!();
                     println!("{}:", "Tags".white().bold());
-                    for t in &cache.tags {
-                        println!("  {} ({})", t.name.magenta(), t.id.dimmed());
+                    if cache.tags.is_empty() {
+                        println!("  {}", "(none)".dimmed());
+                    } else {
+                        for t in &cache.tags {
+                            println!("  {} ({})", t.name.magenta(), t.id.dimmed());
+                        }
+                    }
+
+                    // Link types
+                    if !cache.link_types.is_empty() {
+                        println!();
+                        println!("{}:", "Link Types".white().bold());
+                        for lt in &cache.link_types {
+                            let outward = lt.source_to_target.as_deref().unwrap_or("-");
+                            let inward = lt.target_to_source.as_deref().unwrap_or("-");
+                            println!("  {} ({} / {})", lt.name.cyan(), outward.dimmed(), inward.dimmed());
+                        }
+                    }
+
+                    // Query templates
+                    if !cache.query_templates.is_empty() {
+                        println!();
+                        println!("{}:", "Query Templates".white().bold());
+                        for qt in &cache.query_templates {
+                            println!("  {}: {}", qt.name.cyan(), qt.description.dimmed());
+                        }
+                    }
+
+                    // Project users
+                    if !cache.project_users.is_empty() {
+                        println!();
+                        println!("{}:", "Project Users".white().bold());
+                        for pu in &cache.project_users {
+                            let user_count = pu.users.len();
+                            let sample_users: Vec<&str> = pu.users.iter().take(3).map(|u| u.display_name.as_str()).collect();
+                            let sample_str = if user_count > 3 {
+                                format!("{}, ... ({} total)", sample_users.join(", "), user_count)
+                            } else {
+                                sample_users.join(", ")
+                            };
+                            println!("  {}: {}", pu.project_short_name.cyan(), sample_str.dimmed());
+                        }
+                    }
+
+                    // Recent issues
+                    if !cache.recent_issues.is_empty() {
+                        println!();
+                        println!("{}:", "Recent Issues".white().bold());
+                        for ri in cache.recent_issues.iter().take(10) {
+                            let state = ri.state.as_deref().unwrap_or("?");
+                            println!("  {} [{}] {}", ri.id_readable.cyan(), state.dimmed(), ri.summary);
+                        }
+                    }
+
+                    // Articles
+                    if !cache.articles.is_empty() {
+                        println!();
+                        println!("{}:", "Articles".white().bold());
+                        for a in cache.articles.iter().take(10) {
+                            let children = if a.has_children { " (+)" } else { "" };
+                            println!("  {}{} - {}", a.id_readable.cyan(), children.dimmed(), a.summary);
+                        }
+                        if cache.articles.len() > 10 {
+                            println!("  {} more...", cache.articles.len() - 10);
+                        }
                     }
                 }
             }
@@ -273,11 +373,176 @@ fn handle_config_backend(backend: Backend, format: cli::OutputFormat) -> Result<
     Ok(())
 }
 
+/// All valid configuration keys
+const VALID_CONFIG_KEYS: &[(&str, &str, &str)] = &[
+    ("backend", "youtrack | jira", "Default backend to use"),
+    ("url", "string", "Tracker instance URL"),
+    ("token", "string", "API token (YouTrack permanent token or Jira API token)"),
+    ("email", "string", "Email for authentication (required for Jira)"),
+    ("default_project", "string", "Default project shortName (e.g., \"PROJ\")"),
+    ("youtrack.url", "string", "YouTrack-specific URL (overrides 'url' when backend=youtrack)"),
+    ("youtrack.token", "string", "YouTrack-specific token"),
+    ("jira.url", "string", "Jira-specific URL (overrides 'url' when backend=jira)"),
+    ("jira.email", "string", "Jira-specific email"),
+    ("jira.token", "string", "Jira-specific token"),
+];
+
 /// Handle config commands that don't need API connection
 fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) -> Result<()> {
     use cli::ConfigCommands;
 
     match action {
+        ConfigCommands::Keys => {
+            match format {
+                cli::OutputFormat::Json => {
+                    let keys: Vec<serde_json::Value> = VALID_CONFIG_KEYS
+                        .iter()
+                        .map(|(key, value_type, description)| {
+                            serde_json::json!({
+                                "key": key,
+                                "type": value_type,
+                                "description": description
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&keys)?);
+                }
+                cli::OutputFormat::Text => {
+                    use colored::Colorize;
+                    println!("{}:", "Available Configuration Keys".white().bold());
+                    println!();
+                    for (key, value_type, description) in VALID_CONFIG_KEYS {
+                        println!("  {} ({})", key.cyan().bold(), value_type.dimmed());
+                        println!("    {}", description);
+                    }
+                    println!();
+                    println!("{}:", "Example .track.toml file".white().bold());
+                    println!(r#"
+  # Global settings
+  backend = "youtrack"
+  default_project = "PROJ"
+
+  # YouTrack-specific settings
+  [youtrack]
+  url = "https://youtrack.example.com"
+  token = "perm:xxx"
+
+  # Jira-specific settings (used when backend = "jira")
+  [jira]
+  url = "https://company.atlassian.net"
+  email = "user@company.com"
+  token = "api-token"
+"#);
+                    println!("{}:", "Usage".white().bold());
+                    println!("  Set a value:  {}", "track config set <key> <value>".cyan());
+                    println!("  Get a value:  {}", "track config get <key>".cyan());
+                    println!("  Show config:  {}", "track config show".cyan());
+                }
+            }
+            Ok(())
+        }
+        ConfigCommands::Set { key, value } => {
+            // Validate key
+            let valid_key = VALID_CONFIG_KEYS.iter().any(|(k, _, _)| *k == key);
+            if !valid_key {
+                return Err(anyhow::anyhow!(
+                    "Invalid configuration key: '{}'\nRun 'track config keys' to see valid keys.",
+                    key
+                ));
+            }
+
+            let config_path = config::local_track_config_path()?;
+            let mut cfg = Config::load_local_track_toml()?.unwrap_or_default();
+
+            // Set the value based on the key
+            match key.as_str() {
+                "backend" => {
+                    if value != "youtrack" && value != "jira" && value != "yt" && value != "j" {
+                        return Err(anyhow::anyhow!(
+                            "Invalid backend value: '{}'. Use 'youtrack' or 'jira'.",
+                            value
+                        ));
+                    }
+                    let normalized = if value == "yt" { "youtrack" } else if value == "j" { "jira" } else { value };
+                    cfg.backend = Some(normalized.to_string());
+                }
+                "url" => cfg.url = Some(value.clone()),
+                "token" => cfg.token = Some(value.clone()),
+                "email" => cfg.email = Some(value.clone()),
+                "default_project" => cfg.default_project = Some(value.clone()),
+                "youtrack.url" => cfg.youtrack.url = Some(value.clone()),
+                "youtrack.token" => cfg.youtrack.token = Some(value.clone()),
+                "jira.url" => cfg.jira.url = Some(value.clone()),
+                "jira.email" => cfg.jira.email = Some(value.clone()),
+                "jira.token" => cfg.jira.token = Some(value.clone()),
+                _ => unreachable!("Key validated above"),
+            }
+
+            cfg.save(&config_path)?;
+
+            match format {
+                cli::OutputFormat::Json => {
+                    println!(r#"{{"success": true, "key": "{}", "value": "{}"}}"#, key, value);
+                }
+                cli::OutputFormat::Text => {
+                    use colored::Colorize;
+                    println!("Set {} = {}", key.cyan().bold(), value.green());
+                }
+            }
+            Ok(())
+        }
+        ConfigCommands::Get { key } => {
+            // Validate key
+            let valid_key = VALID_CONFIG_KEYS.iter().any(|(k, _, _)| *k == key);
+            if !valid_key {
+                return Err(anyhow::anyhow!(
+                    "Invalid configuration key: '{}'\nRun 'track config keys' to see valid keys.",
+                    key
+                ));
+            }
+
+            let cfg = Config::load_local_track_toml()?.unwrap_or_default();
+
+            let value: Option<&str> = match key.as_str() {
+                "backend" => cfg.backend.as_deref(),
+                "url" => cfg.url.as_deref(),
+                "token" => cfg.token.as_deref(),
+                "email" => cfg.email.as_deref(),
+                "default_project" => cfg.default_project.as_deref(),
+                "youtrack.url" => cfg.youtrack.url.as_deref(),
+                "youtrack.token" => cfg.youtrack.token.as_deref(),
+                "jira.url" => cfg.jira.url.as_deref(),
+                "jira.email" => cfg.jira.email.as_deref(),
+                "jira.token" => cfg.jira.token.as_deref(),
+                _ => unreachable!("Key validated above"),
+            };
+
+            match format {
+                cli::OutputFormat::Json => {
+                    let output = serde_json::json!({
+                        "key": key,
+                        "value": value,
+                        "is_set": value.is_some()
+                    });
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                }
+                cli::OutputFormat::Text => {
+                    use colored::Colorize;
+                    if let Some(v) = value {
+                        // Mask tokens/secrets
+                        let display_value = if key.contains("token") {
+                            "(set - hidden)".to_string()
+                        } else {
+                            v.to_string()
+                        };
+                        println!("{} = {}", key.cyan(), display_value.green());
+                    } else {
+                        println!("{} is not set", key.cyan());
+                    }
+                }
+            }
+            Ok(())
+        }
         ConfigCommands::Show => {
             let config = Config::load_local_track_toml()?;
             match format {
@@ -288,7 +553,16 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                             "default_project": cfg.default_project,
                             "url": cfg.url,
                             "has_token": cfg.token.is_some(),
-                            "has_email": cfg.email.is_some()
+                            "has_email": cfg.email.is_some(),
+                            "youtrack": {
+                                "url": cfg.youtrack.url,
+                                "has_token": cfg.youtrack.token.is_some()
+                            },
+                            "jira": {
+                                "url": cfg.jira.url,
+                                "email": cfg.jira.email,
+                                "has_token": cfg.jira.token.is_some()
+                            }
                         });
                         println!("{}", serde_json::to_string_pretty(&output)?);
                     } else {
@@ -318,6 +592,32 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                                 "Default project".dimmed(),
                                 project.cyan().bold()
                             );
+                        }
+
+                        // Show backend-specific config if set
+                        if !cfg.youtrack.is_empty() {
+                            println!();
+                            println!("  {}:", "[youtrack]".white().bold());
+                            if let Some(url) = &cfg.youtrack.url {
+                                println!("    {}: {}", "url".dimmed(), url.cyan());
+                            }
+                            if cfg.youtrack.token.is_some() {
+                                println!("    {}: {}", "token".dimmed(), "(set)".green());
+                            }
+                        }
+
+                        if !cfg.jira.is_empty() {
+                            println!();
+                            println!("  {}:", "[jira]".white().bold());
+                            if let Some(url) = &cfg.jira.url {
+                                println!("    {}: {}", "url".dimmed(), url.cyan());
+                            }
+                            if let Some(email) = &cfg.jira.email {
+                                println!("    {}: {}", "email".dimmed(), email.cyan());
+                            }
+                            if cfg.jira.token.is_some() {
+                                println!("    {}: {}", "token".dimmed(), "(set)".green());
+                            }
                         }
                     } else {
                         println!("No .track.toml configuration found.");
@@ -439,6 +739,9 @@ fn handle_config(
         ConfigCommands::Show
         | ConfigCommands::Clear
         | ConfigCommands::Path
+        | ConfigCommands::Keys
+        | ConfigCommands::Set { .. }
+        | ConfigCommands::Get { .. }
         | ConfigCommands::Backend { .. } => {
             unreachable!("Local config commands should be handled before API validation")
         }
@@ -671,6 +974,12 @@ fn handle_issue_shortcut(
     let issue = client
         .get_issue(potential_id)
         .map_err(|e| anyhow::anyhow!("Failed to fetch issue '{}': {}", potential_id, e))?;
+
+    // Record access for LRU tracking (same as issue get command)
+    if let Ok(mut c) = cache::TrackerCache::load(None) {
+        c.record_issue_access(&issue);
+        let _ = c.save(None);
+    }
 
     if !full {
         output::output_result(&issue, format);

@@ -223,10 +223,10 @@ impl YouTrackClient {
         Err(YouTrackError::ProjectNotFound(identifier.to_string()))
     }
 
-    /// Get custom fields defined for a project
-    pub fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>> {
+    /// Get custom fields defined for a project (with bundle values for enum fields)
+    pub fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomFieldExt>> {
         let url = format!(
-            "{}/api/admin/projects/{}/customFields?fields=id,canBeEmpty,emptyFieldText,field(id,name,fieldType(id,presentation))",
+            "{}/api/admin/projects/{}/customFields?fields=id,canBeEmpty,emptyFieldText,field(id,name,fieldType(id,presentation)),bundle(id,values(id,name))",
             self.base_url, project_id
         );
 
@@ -238,8 +238,34 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
-        let fields: Vec<ProjectCustomField> = response.body_mut().read_json()?;
+        let fields: Vec<ProjectCustomFieldExt> = response.body_mut().read_json()?;
         Ok(fields)
+    }
+
+    /// List users that can be assigned to issues in a project
+    pub fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
+        let url = format!(
+            "{}/api/admin/projects/{}/team?fields=users(id,login,fullName,email)",
+            self.base_url, project_id
+        );
+
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        // Response contains a team object with users array
+        #[derive(serde::Deserialize)]
+        struct TeamResponse {
+            #[serde(default)]
+            users: Vec<User>,
+        }
+
+        let team: TeamResponse = response.body_mut().read_json()?;
+        Ok(team.users)
     }
 
     /// List all available issue tags

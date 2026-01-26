@@ -108,20 +108,23 @@ pub enum Commands {
         shell: Shell,
     },
     /// Initialize a local .track.toml config file
+    ///
+    /// Creates a configuration file in the current directory. Use 'track config keys' to see
+    /// all available configuration keys. You can later modify the file with 'track config set'.
     Init {
-        /// Tracker instance URL
+        /// Tracker instance URL (e.g., https://youtrack.example.com or https://company.atlassian.net)
         #[arg(long, required = true)]
         url: String,
-        /// API token
+        /// API token (YouTrack permanent token or Jira API token)
         #[arg(long, required = true)]
         token: String,
-        /// Default project ID or shortName (optional, validates against server if provided)
+        /// Default project ID or shortName (validates against server if provided)
         #[arg(long, short = 'p')]
         project: Option<String>,
-        /// Backend to use (youtrack or jira). Defaults to youtrack.
+        /// Backend to use. Defaults to youtrack.
         #[arg(long, short = 'b', value_enum, default_value_t = Backend::YouTrack)]
         backend: Backend,
-        /// Email for Jira authentication (required for Jira backend)
+        /// Email for Jira authentication (required for Jira backend, ignored for YouTrack)
         #[arg(long, short = 'e')]
         email: Option<String>,
     },
@@ -145,6 +148,18 @@ impl Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum ConfigCommands {
+    /// Set a configuration value (use 'config keys' to see available keys)
+    Set {
+        /// Configuration key to set (e.g., "url", "token", "backend", "jira.email")
+        key: String,
+        /// Value to set
+        value: String,
+    },
+    /// Get a configuration value
+    Get {
+        /// Configuration key to get
+        key: String,
+    },
     /// Set the default project for issue commands
     #[command(visible_alias = "proj")]
     Project {
@@ -159,6 +174,8 @@ pub enum ConfigCommands {
     },
     /// Show current local configuration
     Show,
+    /// List all available configuration keys
+    Keys,
     /// Clear local configuration (remove default project and backend)
     Clear,
     /// Show local config file path
@@ -1074,6 +1091,49 @@ mod tests {
                 assert_eq!(args, vec!["PROJ-123"]);
             }
             _ => panic!("expected external subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_config_set_command() {
+        let cli = Cli::parse_from(["track", "config", "set", "jira.email", "test@example.com"]);
+
+        match cli.command {
+            Commands::Config { action } => match action {
+                ConfigCommands::Set { key, value } => {
+                    assert_eq!(key, "jira.email");
+                    assert_eq!(value, "test@example.com");
+                }
+                _ => panic!("expected config set"),
+            },
+            _ => panic!("expected config command"),
+        }
+    }
+
+    #[test]
+    fn parses_config_get_command() {
+        let cli = Cli::parse_from(["track", "config", "get", "backend"]);
+
+        match cli.command {
+            Commands::Config { action } => match action {
+                ConfigCommands::Get { key } => {
+                    assert_eq!(key, "backend");
+                }
+                _ => panic!("expected config get"),
+            },
+            _ => panic!("expected config command"),
+        }
+    }
+
+    #[test]
+    fn parses_config_keys_command() {
+        let cli = Cli::parse_from(["track", "config", "keys"]);
+
+        match cli.command {
+            Commands::Config { action } => {
+                assert!(matches!(action, ConfigCommands::Keys));
+            }
+            _ => panic!("expected config command"),
         }
     }
 }

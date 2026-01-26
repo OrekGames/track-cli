@@ -75,9 +75,15 @@ impl From<yt::Project> for core::Project {
     }
 }
 
-/// Convert YouTrack ProjectCustomField to tracker-core ProjectCustomField
-impl From<yt::ProjectCustomField> for core::ProjectCustomField {
-    fn from(field: yt::ProjectCustomField) -> Self {
+/// Convert YouTrack ProjectCustomFieldExt to tracker-core ProjectCustomField (with values)
+impl From<yt::ProjectCustomFieldExt> for core::ProjectCustomField {
+    fn from(field: yt::ProjectCustomFieldExt) -> Self {
+        // Extract enum values from bundle if available
+        let values = field
+            .bundle
+            .map(|b| b.values.into_iter().map(|v| v.name).collect())
+            .unwrap_or_default();
+
         Self {
             id: field.id,
             name: field.field.name,
@@ -87,6 +93,31 @@ impl From<yt::ProjectCustomField> for core::ProjectCustomField {
                 .and_then(|ft| ft.presentation)
                 .unwrap_or_else(|| "unknown".to_string()),
             required: !field.can_be_empty,
+            values,
+        }
+    }
+}
+
+/// Convert YouTrack User to tracker-core User
+impl From<yt::User> for core::User {
+    fn from(user: yt::User) -> Self {
+        Self {
+            id: user.id,
+            login: Some(user.login),
+            display_name: user.full_name.unwrap_or_else(|| "Unknown".to_string()),
+        }
+    }
+}
+
+/// Convert YouTrack IssueLinkType to tracker-core IssueLinkType
+impl From<yt::IssueLinkType> for core::IssueLinkType {
+    fn from(lt: yt::IssueLinkType) -> Self {
+        Self {
+            id: lt.id,
+            name: lt.name,
+            source_to_target: lt.source_to_target,
+            target_to_source: lt.target_to_source,
+            directed: lt.directed,
         }
     }
 }

@@ -350,6 +350,51 @@ impl JiraClient {
         self.check_response(response)?;
         Ok(())
     }
+
+    /// List all issue link types
+    pub fn list_link_types(&self) -> Result<Vec<JiraIssueLinkType>> {
+        let url = self.api_url("/issueLinkType");
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LinkTypesResponse {
+            issue_link_types: Vec<JiraIssueLinkType>,
+        }
+
+        let result: LinkTypesResponse = response.body_mut().read_json()?;
+        Ok(result.issue_link_types)
+    }
+
+    /// List users assignable to issues in a project
+    pub fn list_assignable_users(&self, project_key: &str) -> Result<Vec<JiraUser>> {
+        let url = format!(
+            "{}?project={}",
+            self.api_url("/user/assignable/search"),
+            urlencoding::encode(project_key)
+        );
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let users: Vec<JiraUser> = response.body_mut().read_json()?;
+        Ok(users)
+    }
 }
 
 /// Simple base64 encoding function

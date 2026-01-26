@@ -1,8 +1,8 @@
 //! Implementation of tracker-core traits for JiraClient
 
 use tracker_core::{
-    Comment, CreateIssue, CreateProject, Issue, IssueLink, IssueTag, IssueTracker, Project,
-    ProjectCustomField, Result, TrackerError, UpdateIssue,
+    Comment, CreateIssue, CreateProject, Issue, IssueLink, IssueLinkType, IssueTag, IssueTracker,
+    Project, ProjectCustomField, Result, TrackerError, UpdateIssue, User,
 };
 
 use crate::client::JiraClient;
@@ -89,6 +89,18 @@ impl IssueTracker for JiraClient {
         // We'd need to search across issues to find all used labels
         // For now, return empty list
         Ok(Vec::new())
+    }
+
+    fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
+        self.list_link_types()
+            .map(|link_types| link_types.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
+        self.list_assignable_users(project_id)
+            .map(|users| users.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
     }
 
     fn get_issue_links(&self, issue_id: &str) -> Result<Vec<IssueLink>> {
