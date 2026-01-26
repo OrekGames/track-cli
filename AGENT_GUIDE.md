@@ -1,427 +1,400 @@
-# Agent Guide: Using the Track CLI
+# Track CLI - Agent Guide
 
-This guide is for AI agents (Claude Code, Cursor, etc.) that need to interact with issue tracking systems during coding sessions. The `track` CLI provides a programmatic interface to YouTrack (and future backends) with JSON output for easy parsing.
+> **Purpose**: Unified CLI for issue tracking systems (YouTrack, Jira). Use this tool to manage issues, projects, comments, and links programmatically during coding sessions.
 
-## Setup
+## Quick Context
 
-The binary is located at `target/release/track`. Configure it using one of:
+| Aspect | Details |
+|--------|---------|
+| **Binary** | `track` (or `target/release/track` if not installed) |
+| **Backends** | YouTrack (default), Jira (`-b jira` or `-b j`) |
+| **Output** | Text (default) or JSON (`-o json`) |
+| **Config** | `.track.toml` in project dir, env vars, or CLI flags |
 
-1. **Local config file**: Run `track init` to create `.track.toml` in the project directory
-2. **Environment variables**: `TRACKER_URL`, `TRACKER_TOKEN`
-3. **CLI flags**: `--url`, `--token`
+## Backend Comparison
+
+| Feature | YouTrack | Jira |
+|---------|----------|------|
+| **Flag** | `-b youtrack` or `-b yt` (default) | `-b jira` or `-b j` |
+| **Auth** | Bearer token | Basic Auth (email + API token) |
+| **Query** | `project: PROJ #Unresolved` | `project = PROJ AND resolution IS EMPTY` (JQL) |
+| **Knowledge Base** | Yes (`article` commands) | No (uses Confluence) |
+| **Project Creation** | Yes | No (admin only) |
+
+## Configuration
+
+### YouTrack
 
 ```bash
-# Initialize configuration (recommended - run once per project)
+# Initialize with persistent config
 track init --url https://youtrack.example.com --token YOUR_TOKEN --project PROJ
 
-# Or set up alias for explicit config
-TRACK="./target/release/track --config ./target/release/config.toml"
+# Or environment variables
+export YOUTRACK_URL=https://youtrack.example.com
+export YOUTRACK_TOKEN=perm:xxx
 
-# Test connection
-track config test
+# Or config file (.track.toml)
+backend = "youtrack"
+url = "https://youtrack.example.com"
+token = "perm:xxx"
+default_project = "PROJ"
 ```
 
-## Command Aliases
-
-All commands have short aliases for faster typing:
-
-| Command | Aliases | Notes |
-|---------|---------|-------|
-| `track PROJ-123` | - | **Shortcut**: same as `track issue get PROJ-123` |
-| `track open PROJ-123` | - | Open issue in browser |
-| `track open` | - | Open dashboard in browser |
-| `track config test` | - | Test connection (validates URL/token) |
-| `track issue` | `track i` | |
-| `track issue get` | `track i g` | |
-| `track issue create` | `track i new`, `track i c` | |
-| `track issue update` | `track i u` | |
-| `track issue search` | `track i s`, `track i find` | |
-| `track issue delete` | `track i rm`, `track i del` | |
-| `track issue comment` | `track i cmt` | |
-| `track issue complete` | `track i done`, `track i resolve` | |
-| `track issue start` | `track i start` | |
-| `track issue link` | `track i link` | |
-| `track issue comments` | `track i comments` | |
-| `track project` | `track p` | |
-| `track project list` | `track p ls` | |
-| `track project get` | `track p g` | |
-| `track project create` | `track p new`, `track p c` | |
-| `track project fields` | `track p f` | |
-| `track tags` | `track t` | |
-| `track tags list` | `track t ls` | |
-| `track config` | `track cfg` | |
-| `track config project` | `track cfg proj` | |
-| `track config show` | `track cfg show` | |
-| `track config clear` | `track cfg clear` | |
-| `track config path` | `track cfg path` | |
-| `track article` | `track a`, `track wiki` | |
-| `track article get` | `track a g` | |
-| `track article list` | `track a ls` | |
-| `track article search` | `track a s`, `track a find` | |
-| `track article create` | `track a new`, `track a c` | |
-| `track article update` | `track a u` | |
-| `track article delete` | `track a rm`, `track a del` | |
-| `track article comment` | `track a cmt` | |
-| `track completions` | - | |
-
-## Quick Reference
+### Jira
 
 ```bash
-# Initialize config (creates .track.toml - run once per project)
-track init --url https://youtrack.example.com --token YOUR_TOKEN --project OGIT
+# Initialize with persistent config
+track init --url https://your-domain.atlassian.net --token API_TOKEN --backend jira --email you@example.com
 
-# Test connection
-track config test
+# Or environment variables
+export JIRA_URL=https://your-domain.atlassian.net
+export JIRA_EMAIL=you@example.com
+export JIRA_TOKEN=your-api-token
 
-# Set default project (only needs to be done once if not set during init)
-$TRACK config project OGIT
-
-# Quick issue lookup (shortcut - no subcommand needed!)
-$TRACK OGIT-123              # Same as: track issue get OGIT-123
-$TRACK OGIT-123 --full       # With full context
-
-# Open issue in browser
-$TRACK open OGIT-123
-
-# List projects (shortNames now auto-resolve to internal IDs!)
-$TRACK -o json p ls
-
-# Get project details
-$TRACK -o json p g OGIT
-
-# Create a new project
-$TRACK p new -n "My Project" -s "MYPROJ" -d "Project description"
-
-# Get issue details (traditional syntax)
-$TRACK -o json i g OGIT-123
-
-# Get issue with full context (subtasks, links, comments)
-$TRACK i g OGIT-123 --full
-
-# Create issue (uses default project if -p not specified)
-$TRACK i new -s "Summary" -d "Description" --priority "Normal"
-
-# Create issue with explicit project
-$TRACK i new -p OGIT -s "Summary" --priority "Normal"
-
-# Update issue
-$TRACK i u OGIT-123 --field "Stage=In Progress"
-$TRACK i u OGIT-123 --field "Stage=Done" --priority "Minor"
-
-# Quick state transitions
-$TRACK i start OGIT-123           # Set to in-progress (Stage=Develop)
-$TRACK i complete OGIT-123        # Set to done (Stage=Done)
-
-# Add/view comments
-$TRACK i comment OGIT-123 -m "Work in progress notes"
-$TRACK i comments OGIT-123        # List comments
-
-# Link issues
-$TRACK i link OGIT-123 OGIT-456               # Relates (default)
-$TRACK i link OGIT-123 OGIT-456 -t depends    # Depends on
-
-# Search issues
-$TRACK -o json i s "project: OGIT #Unresolved" --limit 20
-
-# List available tags
-$TRACK -o json t ls
-
-# Get custom fields for a project
-$TRACK p f OGIT
+# Or config file (.track.toml)
+backend = "jira"
+url = "https://your-domain.atlassian.net"
+email = "you@example.com"
+token = "your-api-token"
 ```
 
-## Cache System (Recommended for AI Sessions)
-
-The cache stores tracker context locally so agents can understand available projects, fields, and tags without making repeated API calls.
+### Switching Backends
 
 ```bash
-# Refresh cache (run this once at session start)
-$TRACK cache refresh
+# Set default backend persistently
+track config backend jira      # Switch to Jira
+track config backend youtrack  # Switch to YouTrack
 
-# View cached context
-$TRACK cache show           # Human-readable
-$TRACK -o json cache show   # JSON for programmatic access
-
-# Find cache file location
-$TRACK cache path
+# Override per-command
+track -b jira PROJ-123         # Use Jira for this command only
 ```
 
-The cache file (`.tracker-cache.json`) contains:
-- All projects with their internal IDs and shortNames
-- Custom fields for each project (with types and required flags)
-- All available tags with their IDs
-
-**Workflow tip**: Run `track cache refresh` at the start of a session, then read the cache file directly for context without API calls.
-
-## Discovering Custom Fields
-
-Use `track p f <project>` to discover custom fields for a project:
+### Test Connection
 
 ```bash
-$TRACK p f OGIT
-# Output:
-# Custom fields for project OGIT:
-#   Priority [enum[1]] (required)
-#   Assignee [user[1]]
-#   Kanban State [enum[1]]
-#   Stage [state[1]] (required)
+track config test              # Uses configured backend
+track -b jira config test      # Override to test Jira
 ```
 
-### Example Custom Field Values (OGIT Project)
+---
 
-- **Priority** (SingleEnum): Normal, Major, Minor, Critical
-- **Assignee** (SingleUser): user login
-- **Kanban State** (SingleEnum): Ready to pull, In Progress, etc.
-- **Stage** (State): Backlog, In Progress, Done, etc.
+## Command Reference
 
-## Workflows
+### Issue Operations
 
-### Starting Work on an Issue
+| Operation | YouTrack | Jira |
+|-----------|----------|------|
+| Get issue | `track PROJ-123` | `track -b j PROJ-123` |
+| Get (JSON) | `track -o json PROJ-123` | `track -b j -o json PROJ-123` |
+| Get (full) | `track PROJ-123 --full` | `track -b j PROJ-123 --full` |
+| Create | `track i new -p PROJ -s "Summary"` | `track -b j i new -p PROJ -s "Summary"` |
+| Update | `track i u PROJ-123 --summary "New"` | `track -b j i u PROJ-123 --summary "New"` |
+| Delete | `track i del PROJ-123` | `track -b j i del PROJ-123` |
+| Search | `track i s "project: PROJ #Unresolved"` | `track -b j i s "project = PROJ"` |
+| Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` |
+| Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` |
+
+### Project Operations
+
+| Operation | YouTrack | Jira |
+|-----------|----------|------|
+| List | `track p ls` | `track -b j p ls` |
+| Get | `track p g PROJ` | `track -b j p g PROJ` |
+| Fields | `track p f PROJ` | `track -b j p f PROJ` |
+| Create | `track p new -n "Name" -s "KEY"` | Not supported |
+
+### Command Aliases
+
+| Full Command | Aliases |
+|--------------|---------|
+| `track issue` | `track i` |
+| `track issue get` | `track i g` |
+| `track issue create` | `track i new`, `track i c` |
+| `track issue update` | `track i u` |
+| `track issue search` | `track i s`, `track i find` |
+| `track issue delete` | `track i rm`, `track i del` |
+| `track issue comment` | `track i cmt` |
+| `track issue comments` | `track i comments` |
+| `track issue complete` | `track i done`, `track i resolve` |
+| `track issue start` | `track i start` |
+| `track issue link` | `track i link` |
+| `track project` | `track p` |
+| `track project list` | `track p ls` |
+| `track project get` | `track p g` |
+| `track project fields` | `track p f` |
+| `track tags list` | `track t ls` |
+| `track config` | `track cfg` |
+| `track article` | `track a`, `track wiki` |
+
+---
+
+## Search Query Syntax
+
+### YouTrack Query Examples
 
 ```bash
-# 1. Find the issue
-$TRACK -o json i s "project: OGIT summary:~'feature name'" --limit 5
+# Unresolved issues in project
+track i s "project: PROJ #Unresolved" --limit 20
 
-# 2. View issue details with full context (shows subtasks, links, comments)
-$TRACK i g OGIT-XX --full
+# By state
+track i s "project: PROJ State: {In Progress}"
 
-# 3. Start work (quick shortcut for setting state to in-progress)
-$TRACK i start OGIT-XX
+# By assignee
+track i s "project: PROJ Assignee: me"
 
-# Or manually set fields
-$TRACK i u OGIT-XX --field "Stage=Develop" --field "Kanban State=In Progress"
+# Combined
+track i s "project: PROJ #Unresolved Priority: Major"
 ```
 
-### Completing Work
+### Jira JQL Examples
 
 ```bash
-# Quick completion (sets Stage=Done)
-$TRACK i complete OGIT-XX
-# Or use aliases: track i done OGIT-XX
+# Unresolved issues in project
+track -b j i s "project = PROJ AND resolution IS EMPTY" --limit 20
 
-# With custom state values
-$TRACK i complete OGIT-XX --state "Resolved"
+# By status
+track -b j i s "project = PROJ AND status = 'In Progress'"
 
-# Or manually with additional context
-$TRACK i u OGIT-XX --field "Stage=Done" --description "Completed: implemented X, Y, Z. See commit abc123."
+# By assignee
+track -b j i s "assignee = currentUser()"
+
+# Combined
+track -b j i s "project = PROJ AND resolution IS EMPTY AND priority = Major"
 ```
 
-### Adding Comments
+### Query Syntax Comparison
+
+| Concept | YouTrack | Jira JQL |
+|---------|----------|----------|
+| Project filter | `project: PROJ` | `project = PROJ` |
+| Unresolved | `#Unresolved` | `resolution IS EMPTY` |
+| Resolved | `#Resolved` | `resolution IS NOT EMPTY` |
+| Open status | `State: Open` | `status = Open` |
+| In progress | `State: {In Progress}` | `status = "In Progress"` |
+| Current user | `Assignee: me` | `assignee = currentUser()` |
+| Priority | `Priority: Major` | `priority = Major` |
+| Text search | `summary:~'keyword'` | `summary ~ "keyword"` |
+| AND | implicit or `AND` | `AND` |
+| OR | `OR` | `OR` |
+
+---
+
+## Common Workflows
+
+### Get Issue Details
 
 ```bash
-# Add a comment to an issue
-$TRACK i comment OGIT-XX -m "Started implementation, found edge case in auth flow"
-$TRACK i cmt OGIT-XX -m "Fixed the edge case, tests passing"
+# YouTrack
+track PROJ-123                    # Basic info
+track PROJ-123 --full             # With comments, links, subtasks
+track -o json PROJ-123            # JSON for parsing
 
-# View comments on an issue
-$TRACK i comments OGIT-XX
-$TRACK i comments OGIT-XX --limit 5
+# Jira
+track -b j PROJ-123
+track -b j PROJ-123 --full
+track -b j -o json PROJ-123
 ```
 
-### Linking Issues
+### Create Issue
 
 ```bash
-# Link two issues as related (default)
-$TRACK i link OGIT-XX OGIT-YY
+# YouTrack
+track i new -p PROJ -s "Bug title" -d "Description" --priority "Major"
+track i new -s "Subtask" --parent PROJ-100   # Subtask
 
-# Create dependency link (XX depends on YY)
-$TRACK i link OGIT-XX OGIT-YY -t depends
-
-# Mark as duplicate
-$TRACK i link OGIT-XX OGIT-YY -t duplicates
-
-# Link type options: relates, depends, required, duplicates, duplicated-by, subtask, parent
+# Jira
+track -b j i new -p PROJ -s "Bug title" -d "Description"
+track -b j i new -s "Subtask" --parent PROJ-100
 ```
 
-### Creating a New Issue
+### Update Issue
 
 ```bash
-# With default project set, no need for -p flag
-$TRACK i new -s "Implement new feature" \
-  -d "Detailed description of what needs to be done" \
-  --priority "Normal" \
-  --field "Kanban State=Ready to pull"
+# YouTrack
+track i u PROJ-123 --summary "New title"
+track i u PROJ-123 --field "Priority=Critical"
+track i u PROJ-123 --field "Stage=Done"
 
-# Or explicitly specify project
-$TRACK i new -p OGIT -s "Feature for different project" --priority "Normal"
+# Jira
+track -b j i u PROJ-123 --summary "New title"
+track -b j i u PROJ-123 --description "Updated description"
 ```
 
-### Creating Subtasks
+### State Transitions
 
 ```bash
-# Create a subtask of an existing issue
-$TRACK i new -s "Implement component A" --parent OGIT-45 --priority "Normal"
+# YouTrack - Quick commands
+track i start PROJ-123       # Set to in-progress
+track i complete PROJ-123    # Set to done
 
-# Multiple subtasks for breaking down work
-$TRACK i new -s "Write unit tests" --parent OGIT-45
-$TRACK i new -s "Update documentation" --parent OGIT-45
-$TRACK i new -s "Code review fixes" --parent OGIT-45
+# YouTrack - Manual field update
+track i u PROJ-123 --field "Stage=In Progress"
+
+# Jira - Manual update (no quick commands)
+track -b j i u PROJ-123 --field "status=In Progress"
 ```
 
-## Session Startup Checklist
+### Comments
 
-1. **Initialize or verify config** (once per project):
-   ```bash
-   # First time setup
-   track init --url https://youtrack.example.com --token YOUR_TOKEN --project OGIT
+```bash
+# Add comment
+track i cmt PROJ-123 -m "Started implementation"
+track -b j i cmt PROJ-123 -m "Started implementation"
 
-   # Or verify existing config
-   $TRACK config show
-   $TRACK config test          # Test connection works
-   ```
+# List comments
+track i comments PROJ-123
+track -b j i comments PROJ-123
+```
 
-2. **Refresh cache** (once per session):
-   ```bash
-   $TRACK cache refresh
-   ```
+### Link Issues
 
-3. **Read cache for context** (optional - understand available fields):
-   ```bash
-   $TRACK -o json cache show
-   ```
+```bash
+# YouTrack
+track i link PROJ-1 PROJ-2               # Relates (default)
+track i link PROJ-1 PROJ-2 -t depends    # Depends on
+track i link PROJ-1 PROJ-2 -t subtask    # Subtask link
 
-4. **Check unresolved issues** (for context on current work):
-   ```bash
-   $TRACK -o json i s "project: OGIT #Unresolved" --limit 20
-   ```
+# Jira
+track -b j i link PROJ-1 PROJ-2
+track -b j i link PROJ-1 PROJ-2 -t Blocks
+```
 
-## Important Notes
+**Link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
 
-1. **Quick Issue Access**: Use `track PROJ-123` directly (no `issue get` subcommand needed)
-2. **Browser Access**: Use `track open PROJ-123` to open issues in your browser
-3. **Connection Test**: Use `track config test` to verify credentials work
-4. **Default Project**: Set with `track config project <ID>` - then `-p` is optional for issue creation
-5. **Subtasks**: Use `--parent ISSUE-ID` to create an issue as a subtask of another issue
-6. **Project ShortNames**: The CLI auto-resolves shortNames (OGIT) to internal IDs (0-2)
-7. **Field Names**: Field names are case-sensitive and project-specific. Use `track p f <project>` to discover them.
-8. **JSON Output**: Use `-o json` when parsing output programmatically
-9. **Tags**: Tags must already exist in the tracker. Use `track t ls` to see available tags.
-10. **Full Context**: Use `--full` with `issue get` or the shortcut to see subtasks, links, and comments in one view
-11. **Quick Transitions**: Use `start` and `complete` commands for common state changes. Customize state values with `--field` and `--state` flags.
-12. **Link Types**: Available types are `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
-13. **Error Messages**: Include full error chain context for debugging
+---
+
+## Session Startup
+
+```bash
+# 1. Verify connection
+track config test                  # YouTrack
+track -b jira config test          # Jira
+
+# 2. List projects (get context)
+track -o json p ls
+
+# 3. Get unresolved issues
+track -o json i s "project: PROJ #Unresolved" --limit 20     # YouTrack
+track -b j -o json i s "project = PROJ AND resolution IS EMPTY" --limit 20  # Jira
+
+# 4. (Optional) Refresh cache for offline context
+track cache refresh
+```
+
+---
+
+## Cache System
+
+The cache stores project metadata locally for fast context retrieval:
+
+```bash
+track cache refresh    # Fetch and store projects, fields, tags
+track cache show       # Display cached data
+track -o json cache show  # JSON format
+track cache path       # Show cache file location
+```
+
+**Cache file** (`.tracker-cache.json`) contains:
+- Projects with IDs and short names
+- Custom fields per project (types, required flags)
+- Available tags
+
+---
+
+## Knowledge Base (YouTrack Only)
+
+```bash
+# Get article
+track a g KB-A-1
+
+# List articles
+track a ls --project PROJ --limit 20
+
+# Search
+track a s "search term" --limit 10
+
+# Create
+track a new --project PROJ --summary "Title" --content "Body text"
+track a new --project PROJ --summary "Title" --content-file ./doc.md
+
+# Update
+track a u KB-A-1 --summary "New Title"
+track a u KB-A-1 --content-file ./updated.md
+
+# Delete
+track a del KB-A-1
+```
+
+---
 
 ## Output Formats
 
-- **Text** (default): Human-readable output for interactive use
-- **JSON** (`-o json`): Machine-readable output for programmatic parsing
-
-Always use `-o json` when you need to parse the output programmatically.
-
-## Knowledge Base (Articles)
-
-The `track article` commands allow you to manage Knowledge Base articles in YouTrack.
-
-### Article Commands Quick Reference
-
 ```bash
-# Get article by ID
-$TRACK -o json a g KB-A-1
+# Text output (default) - human readable
+track PROJ-123
 
-# List articles
-$TRACK -o json a ls --limit 20
-$TRACK -o json a ls --project PROJ --limit 10
-
-# Search articles
-$TRACK -o json a s "getting started" --limit 10
-
-# Create article
-$TRACK a new --project PROJ --summary "New Article" --content "Article content here"
-$TRACK a new --project PROJ --summary "Article with file" --content-file ./content.md
-
-# Create child article
-$TRACK a new --project PROJ --summary "Child Article" --parent KB-A-1
-
-# Update article
-$TRACK a u KB-A-1 --summary "Updated Title"
-$TRACK a u KB-A-1 --content "Updated content"
-$TRACK a u KB-A-1 --content-file ./updated-content.md
-
-# Delete article
-$TRACK a del KB-A-1
-
-# View article hierarchy (children)
-$TRACK a tree KB-A-1
-
-# Move article to new parent
-$TRACK a move KB-A-1 --parent KB-A-2   # Move under another article
-$TRACK a move KB-A-1                    # Move to root (no parent)
-
-# List attachments
-$TRACK -o json a attachments KB-A-1
-
-# Add comment to article
-$TRACK a comment KB-A-1 -m "This is a comment"
-$TRACK a cmt KB-A-1 -m "Short form"
-
-# List comments on article
-$TRACK a comments KB-A-1 --limit 10
+# JSON output - for programmatic parsing
+track -o json PROJ-123
+track --format json p ls
 ```
 
-### Article Workflows
+**Always use `-o json` when parsing output programmatically.**
 
-#### Creating Documentation
+---
 
-```bash
-# Create a root article for documentation
-$TRACK a new --project DOCS --summary "API Reference" --content "# API Reference\n\nThis section documents the API."
+## Error Handling
 
-# Create child articles for sections
-$TRACK a new --project DOCS --summary "Authentication" --parent KB-A-1 --content-file ./docs/auth.md
-$TRACK a new --project DOCS --summary "Endpoints" --parent KB-A-1 --content-file ./docs/endpoints.md
-$TRACK a new --project DOCS --summary "Error Codes" --parent KB-A-1 --content-file ./docs/errors.md
-```
+Common errors and solutions:
 
-#### Updating Documentation from Files
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `Unauthorized` | Invalid/expired token | Check token, regenerate if needed |
+| `Not found` | Issue/project doesn't exist | Verify ID, check project access |
+| `Project not found` | Invalid project key | Use `track p ls` to list valid projects |
+| `Connection refused` | Wrong URL or network issue | Verify URL, check network |
 
-```bash
-# Update article content from a markdown file
-$TRACK a u KB-A-5 --content-file ./docs/updated-auth.md
+---
 
-# Update both title and content
-$TRACK a u KB-A-5 --summary "Authentication (Updated)" --content-file ./docs/auth.md
-```
-
-#### Navigating Article Hierarchy
+## Quick Reference Card
 
 ```bash
-# See the structure under an article
-$TRACK a tree KB-A-1
+# === BACKEND CONFIGURATION ===
+track config backend youtrack      # Set default to YouTrack
+track config backend jira          # Set default to Jira
+track config show                  # Show current config (including backend)
 
-# Get full details of an article including content
-$TRACK -o json a g KB-A-1
+# === YOUTRACK (when default or with -b yt) ===
+track PROJ-123                     # Get issue
+track -o json PROJ-123             # Get as JSON
+track i s "project: PROJ #Unresolved" --limit 20
+track i new -p PROJ -s "Summary" --priority "Normal"
+track i u PROJ-123 --field "Stage=Done"
+track i cmt PROJ-123 -m "Comment"
+track i link PROJ-1 PROJ-2 -t depends
+track p ls                         # List projects
+track config test                  # Test connection
+
+# === JIRA (when default or with -b j) ===
+track -b j PROJ-123                # Get issue (or just 'track PROJ-123' if default is jira)
+track -b j -o json PROJ-123        # Get as JSON
+track -b j i s "project = PROJ AND resolution IS EMPTY" --limit 20
+track -b j i new -p PROJ -s "Summary"
+track -b j i u PROJ-123 --summary "New title"
+track -b j i cmt PROJ-123 -m "Comment"
+track -b j i link PROJ-1 PROJ-2
+track -b j p ls                    # List projects
+track -b j config test             # Test connection
 ```
 
-### Article Command Details
+---
 
-| Command | Description |
-|---------|-------------|
-| `article get <ID>` | Get article by ID with full content |
-| `article list` | List articles with optional `--project`, `--limit`, `--skip` |
-| `article search <QUERY>` | Search articles by text content |
-| `article create` | Create new article (requires `--project`, `--summary`) |
-| `article update <ID>` | Update article (summary, content, tags) |
-| `article delete <ID>` | Delete article by ID |
-| `article tree <ID>` | Show article and its children |
-| `article move <ID>` | Move article to new parent (or root) |
-| `article attachments <ID>` | List attachments on article |
-| `article comment <ID>` | Add comment to article |
-| `article comments <ID>` | List comments on article |
+## Important Notes
 
-## Shell Completions
-
-Generate shell completions for your preferred shell:
-
-```bash
-# Bash
-$TRACK completions bash > ~/.local/share/bash-completion/completions/track
-
-# Zsh
-$TRACK completions zsh > ~/.zfunc/_track
-
-# Fish
-$TRACK completions fish > ~/.config/fish/completions/track.fish
-
-# PowerShell
-$TRACK completions powershell > track.ps1
-```
+1. **Persistent backend**: Use `track config backend jira` to set default backend permanently.
+2. **Backend override**: Use `-b jira` or `-b j` to override the configured backend per-command.
+3. **JSON output**: Always use `-o json` for programmatic parsing.
+4. **Issue shortcut**: `track PROJ-123` = `track issue get PROJ-123`
+5. **Default project**: Set with `track config project PROJ` to skip `-p` flag.
+6. **Field discovery**: Use `track p f PROJ` to see available custom fields.
+7. **Jira limitations**: No knowledge base, no project creation, no subtask conversion.
+8. **Query syntax differs**: YouTrack uses `project: PROJ`, Jira uses `project = PROJ`.
