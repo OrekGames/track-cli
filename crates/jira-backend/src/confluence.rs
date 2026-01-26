@@ -65,7 +65,7 @@ impl ConfluenceClient {
     ) -> Result<ureq::http::Response<ureq::Body>> {
         let status = response.status().as_u16();
 
-        if status >= 200 && status < 300 {
+        if (200..300).contains(&status) {
             return Ok(response);
         }
 
@@ -209,7 +209,12 @@ impl ConfluenceClient {
     }
 
     /// Search pages using CQL (v1 API)
-    pub fn search_pages(&self, query: &str, limit: usize, start: usize) -> Result<ConfluenceSearchResult> {
+    pub fn search_pages(
+        &self,
+        query: &str,
+        limit: usize,
+        start: usize,
+    ) -> Result<ConfluenceSearchResult> {
         // Use CQL to search for pages
         let cql = format!("type=page AND text~\"{}\"", query.replace('"', "\\\""));
         let cql_encoded = urlencoding::encode(&cql);
@@ -254,7 +259,11 @@ impl ConfluenceClient {
     }
 
     /// Update an existing page
-    pub fn update_page(&self, page_id: &str, update: &UpdateConfluencePage) -> Result<ConfluencePage> {
+    pub fn update_page(
+        &self,
+        page_id: &str,
+        update: &UpdateConfluencePage,
+    ) -> Result<ConfluencePage> {
         let url = self.api_v2_url(&format!("/pages/{}", page_id));
 
         let response = self
@@ -287,7 +296,11 @@ impl ConfluenceClient {
     }
 
     /// Get child pages of a parent page
-    pub fn get_child_pages(&self, parent_id: &str, limit: usize) -> Result<ConfluenceChildrenResponse> {
+    pub fn get_child_pages(
+        &self,
+        parent_id: &str,
+        limit: usize,
+    ) -> Result<ConfluenceChildrenResponse> {
         let url = format!(
             "{}?limit={}",
             self.api_v2_url(&format!("/pages/{}/children", parent_id)),
@@ -359,7 +372,11 @@ impl ConfluenceClient {
     // ==================== Attachment Operations ====================
 
     /// List attachments on a page
-    pub fn get_page_attachments(&self, page_id: &str, limit: usize) -> Result<ConfluenceAttachmentList> {
+    pub fn get_page_attachments(
+        &self,
+        page_id: &str,
+        limit: usize,
+    ) -> Result<ConfluenceAttachmentList> {
         let url = format!(
             "{}?limit={}",
             self.api_v2_url(&format!("/pages/{}/attachments", page_id)),

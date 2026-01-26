@@ -14,7 +14,7 @@ impl From<JiraIssue> for Issue {
             .fields
             .description
             .as_ref()
-            .map(|d| adf_to_text(d))
+            .map(adf_to_text)
             .filter(|s| !s.is_empty());
 
         let is_resolved = j

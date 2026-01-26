@@ -12,7 +12,7 @@ use crate::models::confluence::*;
 impl KnowledgeBase for ConfluenceClient {
     fn get_article(&self, id: &str) -> Result<Article> {
         self.get_page(id)
-            .map(|p| confluence_page_to_article(p))
+            .map(confluence_page_to_article)
             .map_err(TrackerError::from)
     }
 
@@ -25,7 +25,12 @@ impl KnowledgeBase for ConfluenceClient {
         // Note: Confluence v2 API uses cursor-based pagination, not offset-based
         // The skip parameter is ignored here
         self.list_pages(project_id, limit, None)
-            .map(|r| r.results.into_iter().map(confluence_page_to_article).collect())
+            .map(|r| {
+                r.results
+                    .into_iter()
+                    .map(confluence_page_to_article)
+                    .collect()
+            })
             .map_err(TrackerError::from)
     }
 
@@ -65,7 +70,10 @@ impl KnowledgeBase for ConfluenceClient {
         // First get the current page to get the version number and current status
         let current = self.get_page(id).map_err(TrackerError::from)?;
         let current_version = current.version.as_ref().map(|v| v.number).unwrap_or(1);
-        let current_status = current.status.clone().unwrap_or_else(|| "current".to_string());
+        let current_status = current
+            .status
+            .clone()
+            .unwrap_or_else(|| "current".to_string());
 
         let update_request = UpdateConfluencePage {
             id: id.to_string(),
@@ -92,7 +100,12 @@ impl KnowledgeBase for ConfluenceClient {
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
         self.get_child_pages(parent_id, 100)
-            .map(|r| r.results.into_iter().map(confluence_page_to_article).collect())
+            .map(|r| {
+                r.results
+                    .into_iter()
+                    .map(confluence_page_to_article)
+                    .collect()
+            })
             .map_err(TrackerError::from)
     }
 
@@ -130,13 +143,23 @@ impl KnowledgeBase for ConfluenceClient {
 
     fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
         self.get_page_attachments(article_id, 100)
-            .map(|r| r.results.into_iter().map(confluence_attachment_to_article_attachment).collect())
+            .map(|r| {
+                r.results
+                    .into_iter()
+                    .map(confluence_attachment_to_article_attachment)
+                    .collect()
+            })
             .map_err(TrackerError::from)
     }
 
     fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
         self.get_page_comments(article_id, 100)
-            .map(|r| r.results.into_iter().map(confluence_comment_to_comment).collect())
+            .map(|r| {
+                r.results
+                    .into_iter()
+                    .map(confluence_comment_to_comment)
+                    .collect()
+            })
             .map_err(TrackerError::from)
     }
 

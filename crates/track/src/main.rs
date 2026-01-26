@@ -45,7 +45,14 @@ fn run(cli: Cli) -> Result<()> {
         email,
     } = &cli.command
     {
-        return handle_init(url, token, project.as_deref(), email.as_deref(), cli.format, *backend);
+        return handle_init(
+            url,
+            token,
+            project.as_deref(),
+            email.as_deref(),
+            cli.format,
+            *backend,
+        );
     }
 
     // Handle config commands that don't need API connection
@@ -429,7 +436,10 @@ fn handle_config(
             Ok(())
         }
         // These are handled elsewhere before API validation
-        ConfigCommands::Show | ConfigCommands::Clear | ConfigCommands::Path | ConfigCommands::Backend { .. } => {
+        ConfigCommands::Show
+        | ConfigCommands::Clear
+        | ConfigCommands::Path
+        | ConfigCommands::Backend { .. } => {
             unreachable!("Local config commands should be handled before API validation")
         }
     }
