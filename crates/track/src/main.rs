@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::Parser;
 use cli::{Backend, Cli, Commands};
 use config::Config;
+use jira_backend::JiraClient;
 use output::output_error;
 use std::process::ExitCode;
 use tracker_core::{IssueTracker, KnowledgeBase};
@@ -40,9 +41,11 @@ fn run(cli: Cli) -> Result<()> {
         url,
         token,
         project,
+        backend,
+        email,
     } = &cli.command
     {
-        return handle_init(url, token, project.as_deref(), cli.format, cli.backend);
+        return handle_init(url, token, project.as_deref(), email.as_deref(), cli.format, *backend);
     }
 
     // Handle config commands that don't need API connection
@@ -51,6 +54,9 @@ fn run(cli: Cli) -> Result<()> {
         match action {
             ConfigCommands::Show | ConfigCommands::Clear | ConfigCommands::Path => {
                 return handle_config_local(action, cli.format);
+            }
+            ConfigCommands::Backend { backend } => {
+                return handle_config_backend(*backend, cli.format);
             }
             ConfigCommands::Project { .. } | ConfigCommands::Test => {
                 // These commands need API connection
@@ -75,18 +81,136 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    let mut config = Config::load(cli.config.clone(), cli.backend)?;
+    // Determine effective backend: CLI flag takes precedence, then config, then default
+    let effective_backend = cli.backend.unwrap_or_else(|| {
+        // Try to get backend from config file
+        Config::load_local_track_toml()
+            .ok()
+            .flatten()
+            .map(|c| c.get_backend())
+            .unwrap_or(Backend::YouTrack)
+    });
+
+    let mut config = Config::load(cli.config.clone(), effective_backend)?;
     config.merge_with_cli(cli.url.clone(), cli.token.clone());
-    config.validate(cli.backend)?;
+    config.validate(effective_backend)?;
 
     // Create the appropriate backend client
     // We use the concrete client type to support both IssueTracker and KnowledgeBase
-    match cli.backend {
+    match effective_backend {
         Backend::YouTrack => {
             let client =
                 YouTrackClient::new(config.url.as_ref().unwrap(), config.token.as_ref().unwrap());
             run_with_client(&client, &client, &cli, &config)
         }
+        Backend::Jira => {
+            let client = JiraClient::new(
+                config.url.as_ref().unwrap(),
+                config.email.as_ref().unwrap(),
+                config.token.as_ref().unwrap(),
+            );
+            // Jira doesn't have KnowledgeBase (that's Confluence), so pass a stub
+            run_with_client(&client, &NoKnowledgeBase, &cli, &config)
+        }
+    }
+}
+
+/// Stub implementation for backends that don't support KnowledgeBase
+struct NoKnowledgeBase;
+
+impl KnowledgeBase for NoKnowledgeBase {
+    fn get_article(&self, _id: &str) -> tracker_core::Result<tracker_core::Article> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn list_articles(
+        &self,
+        _project_id: Option<&str>,
+        _limit: usize,
+        _skip: usize,
+    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn search_articles(
+        &self,
+        _query: &str,
+        _limit: usize,
+        _skip: usize,
+    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn create_article(
+        &self,
+        _article: &tracker_core::CreateArticle,
+    ) -> tracker_core::Result<tracker_core::Article> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn update_article(
+        &self,
+        _id: &str,
+        _update: &tracker_core::UpdateArticle,
+    ) -> tracker_core::Result<tracker_core::Article> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn delete_article(&self, _id: &str) -> tracker_core::Result<()> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn get_child_articles(&self, _id: &str) -> tracker_core::Result<Vec<tracker_core::Article>> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn move_article(
+        &self,
+        _id: &str,
+        _new_parent_id: Option<&str>,
+    ) -> tracker_core::Result<tracker_core::Article> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn list_article_attachments(
+        &self,
+        _id: &str,
+    ) -> tracker_core::Result<Vec<tracker_core::ArticleAttachment>> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn get_article_comments(&self, _id: &str) -> tracker_core::Result<Vec<tracker_core::Comment>> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
+    }
+
+    fn add_article_comment(
+        &self,
+        _id: &str,
+        _text: &str,
+    ) -> tracker_core::Result<tracker_core::Comment> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "Knowledge base is not supported by this backend".to_string(),
+        ))
     }
 }
 
@@ -98,14 +222,20 @@ fn run_with_client(
     config: &Config,
 ) -> Result<()> {
     match &cli.command {
-        Commands::Issue { action } => {
-            commands::issue::handle_issue(issue_client, action, cli.format, config.default_project.as_deref())
-        }
+        Commands::Issue { action } => commands::issue::handle_issue(
+            issue_client,
+            action,
+            cli.format,
+            config.default_project.as_deref(),
+        ),
         Commands::Project { action } => {
             commands::project::handle_project(issue_client, action, cli.format)
         }
         Commands::Tags { action } => commands::tags::handle_tags(issue_client, action, cli.format),
-        Commands::Cache { action } => handle_cache(issue_client, action, cli.format, cli.backend),
+        Commands::Cache { action } => {
+            let backend = cli.backend.unwrap_or_else(|| config.get_backend());
+            handle_cache(issue_client, action, cli.format, backend)
+        }
         Commands::Config { action } => handle_config(issue_client, action, cli.format, config),
         Commands::Article { action } => {
             commands::article::handle_article(issue_client, kb_client, action, cli.format)
@@ -118,9 +248,7 @@ fn run_with_client(
             // Already handled before config loading
             unreachable!("Init command should be handled before API validation")
         }
-        Commands::Open { id } => {
-            handle_open(id.as_deref(), config, cli.format)
-        }
+        Commands::Open { id } => handle_open(id.as_deref(), config, cli.format),
         Commands::External(args) => {
             // Handle shortcut: `track PROJ-123` as `track issue get PROJ-123`
             handle_issue_shortcut(issue_client, args, cli.format)
@@ -138,11 +266,9 @@ fn handle_cache(
 
     match action {
         CacheCommands::Refresh => {
-            // For now, cache only works with YouTrack backend
+            // Cache works with any backend that implements IssueTracker
             match backend {
-                Backend::YouTrack => {
-                    // We need the concrete client for cache refresh
-                    // This is a temporary solution until cache is made backend-agnostic
+                Backend::YouTrack | Backend::Jira => {
                     let cache = cache::TrackerCache::refresh(client)?;
                     cache.save(None)?;
                     match format {
@@ -218,6 +344,26 @@ fn handle_cache(
     }
 }
 
+/// Handle config backend command
+fn handle_config_backend(backend: Backend, format: cli::OutputFormat) -> Result<()> {
+    Config::update_backend(backend)?;
+    let backend_name = match backend {
+        Backend::YouTrack => "youtrack",
+        Backend::Jira => "jira",
+    };
+
+    match format {
+        cli::OutputFormat::Json => {
+            println!(r#"{{"success": true, "backend": "{}"}}"#, backend_name);
+        }
+        cli::OutputFormat::Text => {
+            use colored::Colorize;
+            println!("Default backend set to: {}", backend_name.cyan().bold());
+        }
+    }
+    Ok(())
+}
+
 /// Handle config commands that don't need API connection
 fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) -> Result<()> {
     use cli::ConfigCommands;
@@ -229,9 +375,11 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                 cli::OutputFormat::Json => {
                     if let Some(cfg) = &config {
                         let output = serde_json::json!({
+                            "backend": cfg.backend,
                             "default_project": cfg.default_project,
                             "url": cfg.url,
-                            "has_token": cfg.token.is_some()
+                            "has_token": cfg.token.is_some(),
+                            "has_email": cfg.email.is_some()
                         });
                         println!("{}", serde_json::to_string_pretty(&output)?);
                     } else {
@@ -244,8 +392,13 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                         let config_path = config::local_track_config_path()?;
                         println!("{}:", "Configuration".white().bold());
                         println!("  {}: {}", "File".dimmed(), config_path.display());
+                        let backend_name = cfg.backend.as_deref().unwrap_or("youtrack");
+                        println!("  {}: {}", "Backend".dimmed(), backend_name.cyan().bold());
                         if let Some(url) = &cfg.url {
                             println!("  {}: {}", "URL".dimmed(), url.cyan());
+                        }
+                        if cfg.email.is_some() {
+                            println!("  {}: {}", "Email".dimmed(), "(set)".green());
                         }
                         if cfg.token.is_some() {
                             println!("  {}: {}", "Token".dimmed(), "(set)".green());
@@ -269,18 +422,19 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
             Ok(())
         }
         ConfigCommands::Clear => {
-            // Clear default_project from .track.toml (keep url/token)
+            // Clear default_project and backend from .track.toml (keep url/token)
             let config_path = config::local_track_config_path()?;
             if let Some(mut cfg) = Config::load_local_track_toml()? {
                 cfg.default_project = None;
+                cfg.backend = None;
                 cfg.save(&config_path)?;
                 match format {
                     cli::OutputFormat::Json => {
-                        println!(r#"{{"success": true, "message": "Default project cleared"}}"#);
+                        println!(r#"{{"success": true, "message": "Configuration cleared"}}"#);
                     }
                     cli::OutputFormat::Text => {
                         use colored::Colorize;
-                        println!("{}", "Default project cleared.".green());
+                        println!("{}", "Default project and backend cleared.".green());
                     }
                 }
             } else {
@@ -300,9 +454,9 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
             println!("{}", path.display());
             Ok(())
         }
-        ConfigCommands::Project { .. } | ConfigCommands::Test => {
-            // This shouldn't be called - requires API
-            unreachable!("Project/Test command should be handled by handle_config")
+        ConfigCommands::Project { .. } | ConfigCommands::Test | ConfigCommands::Backend { .. } => {
+            // This shouldn't be called - handled elsewhere
+            unreachable!("Project/Test/Backend command should be handled elsewhere")
         }
     }
 }
@@ -363,11 +517,7 @@ fn handle_config(
                 }
                 cli::OutputFormat::Text => {
                     use colored::Colorize;
-                    println!(
-                        "{} Connected to {}",
-                        "✓".green().bold(),
-                        url.cyan()
-                    );
+                    println!("{} Connected to {}", "✓".green().bold(), url.cyan());
                     println!(
                         "  {} projects accessible",
                         projects.len().to_string().white().bold()
@@ -376,8 +526,8 @@ fn handle_config(
             }
             Ok(())
         }
-        // These are handled by handle_config_local before API validation
-        ConfigCommands::Show | ConfigCommands::Clear | ConfigCommands::Path => {
+        // These are handled elsewhere before API validation
+        ConfigCommands::Show | ConfigCommands::Clear | ConfigCommands::Path | ConfigCommands::Backend { .. } => {
             unreachable!("Local config commands should be handled before API validation")
         }
     }
@@ -387,6 +537,7 @@ fn handle_init(
     url: &str,
     token: &str,
     project: Option<&str>,
+    email: Option<&str>,
     format: cli::OutputFormat,
     backend: Backend,
 ) -> Result<()> {
@@ -409,19 +560,48 @@ fn handle_init(
         ));
     }
 
-    // If project is specified, validate it against the server
-    let validated_project = if let Some(proj) = project {
-        // Create temporary client to validate project
-        let client = match backend {
-            Backend::YouTrack => YouTrackClient::new(url, token),
-        };
-
-        let projects = client.list_projects().map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to connect to server or list projects: {}\nCheck your URL and token.",
-                e
+    // For Jira, require email
+    let effective_email: Option<String> = match backend {
+        Backend::Jira => {
+            Some(
+                email
+                    .map(|e| e.to_string())
+                    .or_else(|| std::env::var("JIRA_EMAIL").ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Jira requires email for authentication.\nUse --email flag or set JIRA_EMAIL environment variable."
+                        )
+                    })?,
             )
-        })?;
+        }
+        Backend::YouTrack => email.map(|e| e.to_string()),
+    };
+
+    // If project is specified, validate it against the server
+    let validated_project: Option<(String, String)> = if let Some(proj) = project {
+        // Create temporary client to validate project
+        let projects: Vec<tracker_core::Project> = match backend {
+            Backend::YouTrack => {
+                let client = YouTrackClient::new(url, token);
+                let tracker: &dyn IssueTracker = &client;
+                tracker.list_projects().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to connect to server or list projects: {}\nCheck your URL and token.",
+                        e
+                    )
+                })?
+            }
+            Backend::Jira => {
+                let client = JiraClient::new(url, effective_email.as_ref().unwrap(), token);
+                let tracker: &dyn IssueTracker = &client;
+                tracker.list_projects().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to connect to server or list projects: {}\nCheck your URL, email, and token.",
+                        e
+                    )
+                })?
+            }
+        };
 
         let matched = projects
             .iter()
@@ -437,12 +617,21 @@ fn handle_init(
         None
     };
 
-    // Create config with optional default project
+    // Create backend name string for config
+    let backend_str = match backend {
+        Backend::YouTrack => "youtrack",
+        Backend::Jira => "jira",
+    };
+
+    // Create config with backend and optional default project
     let config = Config {
+        backend: Some(backend_str.to_string()),
         url: Some(url.to_string()),
         token: Some(token.to_string()),
+        email: effective_email,
         default_project: validated_project.as_ref().map(|(_, name)| name.clone()),
         youtrack: Default::default(),
+        jira: Default::default(),
     };
 
     config.save(&config_path)?;
@@ -455,7 +644,8 @@ fn handle_init(
                 String::new()
             };
             println!(
-                r#"{{"success": true, "config_path": "{}"{}}}"#,
+                r#"{{"success": true, "backend": "{}", "config_path": "{}"{}}}"#,
+                backend_str,
                 config_path.display(),
                 project_json
             );
@@ -466,13 +656,14 @@ fn handle_init(
                 "Created config file:".green(),
                 config_path.display()
             );
+            println!("  {}: {}", "Backend".dimmed(), backend_str.cyan().bold());
             if let Some((_, name)) = &validated_project {
                 println!("  {}: {}", "Default project".dimmed(), name.cyan().bold());
             }
             println!();
             println!(
                 "{}",
-                "You can now use track commands without --url and --token flags.".dimmed()
+                "You can now use track commands without --url, --token, and -b flags.".dimmed()
             );
         }
     }
@@ -480,11 +671,7 @@ fn handle_init(
     Ok(())
 }
 
-fn handle_open(
-    id: Option<&str>,
-    config: &Config,
-    format: cli::OutputFormat,
-) -> Result<()> {
+fn handle_open(id: Option<&str>, config: &Config, format: cli::OutputFormat) -> Result<()> {
     use colored::Colorize;
 
     let base_url = config
@@ -511,7 +698,10 @@ fn handle_open(
             if result.is_ok() {
                 println!(r#"{{"success": true, "url": "{}"}}"#, url);
             } else {
-                println!(r#"{{"success": false, "url": "{}", "error": "Failed to open browser"}}"#, url);
+                println!(
+                    r#"{{"success": false, "url": "{}", "error": "Failed to open browser"}}"#,
+                    url
+                );
             }
         }
         cli::OutputFormat::Text => {

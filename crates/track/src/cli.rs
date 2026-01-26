@@ -13,9 +13,9 @@ pub struct Cli {
     #[arg(long, value_enum, global = true, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
 
-    /// Backend to use (youtrack, jira)
-    #[arg(long, short = 'b', value_enum, global = true, default_value_t = Backend::YouTrack, env = "TRACKER_BACKEND")]
-    pub backend: Backend,
+    /// Backend to use (youtrack, jira). If not specified, uses config or defaults to YouTrack.
+    #[arg(long, short = 'b', value_enum, global = true, env = "TRACKER_BACKEND")]
+    pub backend: Option<Backend>,
 
     /// Path to a TOML config file
     #[arg(long, env = "TRACKER_CONFIG", global = true, value_name = "PATH")]
@@ -37,9 +37,12 @@ pub struct Cli {
 pub enum Backend {
     /// YouTrack issue tracker
     #[default]
+    #[value(name = "youtrack", alias = "yt")]
     YouTrack,
+    /// Jira issue tracker
+    #[value(name = "jira", alias = "j")]
+    Jira,
     // Future backends:
-    // Jira,
     // Linear,
     // GitHub,
 }
@@ -115,6 +118,12 @@ pub enum Commands {
         /// Default project ID or shortName (optional, validates against server if provided)
         #[arg(long, short = 'p')]
         project: Option<String>,
+        /// Backend to use (youtrack or jira). Defaults to youtrack.
+        #[arg(long, short = 'b', value_enum, default_value_t = Backend::YouTrack)]
+        backend: Backend,
+        /// Email for Jira authentication (required for Jira backend)
+        #[arg(long, short = 'e')]
+        email: Option<String>,
     },
     /// Open an issue or the tracker dashboard in your browser
     Open {
@@ -142,9 +151,15 @@ pub enum ConfigCommands {
         /// Project ID or shortName (e.g., "OGIT" or "0-2")
         id: String,
     },
+    /// Set the default backend (youtrack or jira)
+    Backend {
+        /// Backend name: youtrack (or yt), jira (or j)
+        #[arg(value_enum)]
+        backend: Backend,
+    },
     /// Show current local configuration
     Show,
-    /// Clear local configuration (remove default project)
+    /// Clear local configuration (remove default project and backend)
     Clear,
     /// Show local config file path
     Path,
@@ -896,10 +911,14 @@ mod tests {
                 url,
                 token,
                 project,
+                backend,
+                email,
             } => {
                 assert_eq!(url, "https://youtrack.example.com");
                 assert_eq!(token, "perm:xxx");
                 assert!(project.is_none());
+                assert!(matches!(backend, Backend::YouTrack)); // Default
+                assert!(email.is_none());
             }
             _ => panic!("expected init command"),
         }
@@ -923,10 +942,45 @@ mod tests {
                 url,
                 token,
                 project,
+                backend,
+                ..
             } => {
                 assert_eq!(url, "https://youtrack.example.com");
                 assert_eq!(token, "perm:xxx");
                 assert_eq!(project.as_deref(), Some("PROJ"));
+                assert!(matches!(backend, Backend::YouTrack));
+            }
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn parses_init_command_with_jira_backend() {
+        let cli = Cli::parse_from([
+            "track",
+            "init",
+            "--url",
+            "https://example.atlassian.net",
+            "--token",
+            "api-token",
+            "--backend",
+            "jira",
+            "--email",
+            "test@example.com",
+        ]);
+
+        match cli.command {
+            Commands::Init {
+                url,
+                token,
+                backend,
+                email,
+                ..
+            } => {
+                assert_eq!(url, "https://example.atlassian.net");
+                assert_eq!(token, "api-token");
+                assert!(matches!(backend, Backend::Jira));
+                assert_eq!(email.as_deref(), Some("test@example.com"));
             }
             _ => panic!("expected init command"),
         }
@@ -976,6 +1030,36 @@ mod tests {
             Commands::Config { action } => match action {
                 ConfigCommands::Test => {}
                 _ => panic!("expected config test"),
+            },
+            _ => panic!("expected config command"),
+        }
+    }
+
+    #[test]
+    fn parses_config_backend_command() {
+        let cli = Cli::parse_from(["track", "config", "backend", "jira"]);
+
+        match cli.command {
+            Commands::Config { action } => match action {
+                ConfigCommands::Backend { backend } => {
+                    assert!(matches!(backend, Backend::Jira));
+                }
+                _ => panic!("expected config backend"),
+            },
+            _ => panic!("expected config command"),
+        }
+    }
+
+    #[test]
+    fn parses_config_backend_with_alias() {
+        let cli = Cli::parse_from(["track", "config", "backend", "yt"]);
+
+        match cli.command {
+            Commands::Config { action } => match action {
+                ConfigCommands::Backend { backend } => {
+                    assert!(matches!(backend, Backend::YouTrack));
+                }
+                _ => panic!("expected config backend"),
             },
             _ => panic!("expected config command"),
         }

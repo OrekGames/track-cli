@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 tracker-core = { workspace = true }
 youtrack-backend = { workspace = true }
+jira-backend = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 colored = { workspace = true }

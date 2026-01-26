@@ -1,11 +1,12 @@
 [workspace]
-members = ["crates/tracker-core", "crates/youtrack-backend", "crates/track"]
+members = ["crates/tracker-core", "crates/youtrack-backend", "crates/jira-backend", "crates/track"]
 resolver = "2"
 
 [workspace.dependencies]
 # Internal crates
 tracker-core = { path = "crates/tracker-core" }
 youtrack-backend = { path = "crates/youtrack-backend" }
+jira-backend = { path = "crates/jira-backend" }
 
 # HTTP & serialization
 ureq = { version = "3.1", features = ["json"] }
