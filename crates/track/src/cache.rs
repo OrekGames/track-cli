@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -505,5 +506,235 @@ impl TrackerCache {
     pub fn get_recent_issues(&self, limit: usize) -> &[CachedRecentIssue] {
         let end = std::cmp::min(limit, self.recent_issues.len());
         &self.recent_issues[..end]
+    }
+
+    /// Get the timestamp when cache was last updated
+    pub fn updated_at_datetime(&self) -> Option<DateTime<Utc>> {
+        self.updated_at
+            .as_ref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+    }
+
+    /// Get cache age as a Duration
+    pub fn age(&self) -> Option<Duration> {
+        self.updated_at_datetime()
+            .map(|updated| Utc::now().signed_duration_since(updated))
+    }
+
+    /// Check if cache is older than the given duration
+    pub fn is_stale(&self, max_age: Duration) -> bool {
+        match self.age() {
+            Some(age) => age > max_age,
+            None => true, // No timestamp means stale
+        }
+    }
+
+    /// Check if cache exists and has data
+    pub fn is_empty(&self) -> bool {
+        self.projects.is_empty() && self.updated_at.is_none()
+    }
+
+    /// Format cache age as human-readable string
+    pub fn age_string(&self) -> String {
+        match self.age() {
+            Some(age) => {
+                let total_seconds = age.num_seconds();
+                if total_seconds < 0 {
+                    "just now".to_string()
+                } else if total_seconds < 60 {
+                    format!("{} seconds ago", total_seconds)
+                } else if total_seconds < 3600 {
+                    let minutes = total_seconds / 60;
+                    if minutes == 1 {
+                        "1 minute ago".to_string()
+                    } else {
+                        format!("{} minutes ago", minutes)
+                    }
+                } else if total_seconds < 86400 {
+                    let hours = total_seconds / 3600;
+                    if hours == 1 {
+                        "1 hour ago".to_string()
+                    } else {
+                        format!("{} hours ago", hours)
+                    }
+                } else {
+                    let days = total_seconds / 86400;
+                    if days == 1 {
+                        "1 day ago".to_string()
+                    } else {
+                        format!("{} days ago", days)
+                    }
+                }
+            }
+            None => "never".to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_duration_hours() {
+        let d = parse_duration("1h").unwrap();
+        assert_eq!(d.num_hours(), 1);
+
+        let d = parse_duration("24h").unwrap();
+        assert_eq!(d.num_hours(), 24);
+    }
+
+    #[test]
+    fn test_parse_duration_minutes() {
+        let d = parse_duration("30m").unwrap();
+        assert_eq!(d.num_minutes(), 30);
+
+        let d = parse_duration("90m").unwrap();
+        assert_eq!(d.num_minutes(), 90);
+    }
+
+    #[test]
+    fn test_parse_duration_days() {
+        let d = parse_duration("1d").unwrap();
+        assert_eq!(d.num_days(), 1);
+
+        let d = parse_duration("7d").unwrap();
+        assert_eq!(d.num_days(), 7);
+    }
+
+    #[test]
+    fn test_parse_duration_seconds() {
+        let d = parse_duration("60s").unwrap();
+        assert_eq!(d.num_seconds(), 60);
+    }
+
+    #[test]
+    fn test_parse_duration_long_forms() {
+        // These use the simple suffixes
+        assert_eq!(parse_duration("15min").unwrap().num_minutes(), 15);
+        // day/days require space handling which is optional
+        // The main use case is simple suffixes: 1h, 30m, 1d
+    }
+
+    #[test]
+    fn test_parse_duration_default_to_hours() {
+        let d = parse_duration("2").unwrap();
+        assert_eq!(d.num_hours(), 2);
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("-1h").is_err());
+        assert!(parse_duration("0h").is_err());
+    }
+
+    #[test]
+    fn test_cache_is_empty() {
+        let cache = TrackerCache::default();
+        assert!(cache.is_empty());
+
+        let cache = TrackerCache {
+            updated_at: Some("2024-01-01T00:00:00Z".to_string()),
+            projects: vec![CachedProject {
+                id: "1".to_string(),
+                short_name: "PROJ".to_string(),
+                name: "Project".to_string(),
+                description: None,
+            }],
+            ..Default::default()
+        };
+        assert!(!cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_age_string() {
+        // Test with no timestamp
+        let cache = TrackerCache::default();
+        assert_eq!(cache.age_string(), "never");
+
+        // Test with recent timestamp
+        let now = Utc::now();
+        let cache = TrackerCache {
+            updated_at: Some(now.to_rfc3339()),
+            ..Default::default()
+        };
+        let age_str = cache.age_string();
+        assert!(age_str.contains("seconds") || age_str == "just now");
+    }
+
+    #[test]
+    fn test_cache_is_stale() {
+        let now = Utc::now();
+
+        // Fresh cache (just updated)
+        let cache = TrackerCache {
+            updated_at: Some(now.to_rfc3339()),
+            ..Default::default()
+        };
+        assert!(!cache.is_stale(Duration::hours(1)));
+
+        // Stale cache (2 hours old, max age 1 hour)
+        let two_hours_ago = now - Duration::hours(2);
+        let cache = TrackerCache {
+            updated_at: Some(two_hours_ago.to_rfc3339()),
+            ..Default::default()
+        };
+        assert!(cache.is_stale(Duration::hours(1)));
+        assert!(!cache.is_stale(Duration::hours(3)));
+
+        // No timestamp = stale
+        let cache = TrackerCache::default();
+        assert!(cache.is_stale(Duration::hours(1)));
+    }
+}
+
+/// Parse a duration string like "1h", "30m", "1d" into a chrono Duration
+///
+/// Supported formats:
+/// - `1h`, `2h` - hours
+/// - `30m`, `15min` - minutes
+/// - `1d` - days
+/// - `60s` - seconds
+/// - `2` - defaults to hours
+pub fn parse_duration(s: &str) -> Result<Duration> {
+    let s = s.trim().to_lowercase();
+    if s.is_empty() {
+        return Err(anyhow!("Empty duration string"));
+    }
+
+    // Try to parse as a number with a suffix
+    let (num_str, unit) = if s.ends_with("min") {
+        (&s[..s.len() - 3], "m")
+    } else if s.ends_with('d') {
+        (&s[..s.len() - 1], "d")
+    } else if s.ends_with('h') {
+        (&s[..s.len() - 1], "h")
+    } else if s.ends_with('m') {
+        (&s[..s.len() - 1], "m")
+    } else if s.ends_with('s') {
+        (&s[..s.len() - 1], "s")
+    } else {
+        // Default to hours if no suffix
+        (s.as_str(), "h")
+    };
+
+    let num: i64 = num_str
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("Invalid duration: '{}'. Use format like '1h', '30m', '1d'", s))?;
+
+    if num <= 0 {
+        return Err(anyhow!("Duration must be positive"));
+    }
+
+    match unit {
+        "d" => Ok(Duration::days(num)),
+        "h" => Ok(Duration::hours(num)),
+        "m" => Ok(Duration::minutes(num)),
+        "s" => Ok(Duration::seconds(num)),
+        _ => Err(anyhow!("Unknown duration unit: {}", unit)),
     }
 }

@@ -11,6 +11,7 @@
 | **Output** | Text (default) or JSON (`-o json`) |
 | **Config** | `.track.toml` in project dir, env vars, or CLI flags |
 | **Cache** | `.tracker-cache.json` - run `track cache refresh` for context |
+| **AI Context** | `track context` - aggregated context in single command |
 
 ## Backend Comparison
 
@@ -106,9 +107,12 @@ track config get default_project
 | Get (JSON) | `track -o json PROJ-123` | `track -b j -o json PROJ-123` |
 | Get (full) | `track PROJ-123 --full` | `track -b j PROJ-123 --full` |
 | Create | `track i new -p PROJ -s "Summary"` | `track -b j i new -p PROJ -s "Summary"` |
+| Create (validate) | `track i new -p PROJ -s "Summary" --validate` | Same with `-b j` |
 | Update | `track i u PROJ-123 --summary "New"` | `track -b j i u PROJ-123 --summary "New"` |
+| Update (validate) | `track i u PROJ-123 --field "State=Done" --validate` | Same with `-b j` |
 | Delete | `track i del PROJ-123` | `track -b j i del PROJ-123` |
 | Search | `track i s "project: PROJ #Unresolved"` | `track -b j i s "project = PROJ"` |
+| Search (template) | `track i s -T unresolved -p PROJ` | Same with `-b j` |
 | Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` |
 | Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` |
 
@@ -158,6 +162,75 @@ track config get default_project
 | `track tags list` | `track t ls` |
 | `track config` | `track cfg` |
 | `track article` | `track a`, `track wiki` |
+| `track context` | `track ctx` |
+
+---
+
+## Batch Operations
+
+Update, delete, start, or complete multiple issues in a single command using comma-separated IDs.
+
+### Batch Update
+
+```bash
+# Update multiple issues at once
+track i u PROJ-1,PROJ-2,PROJ-3 --field "Priority=Major"
+
+# Update state for multiple issues
+track i u PROJ-1,PROJ-2 --state "In Progress"
+
+# Validate before batch update
+track i u PROJ-1,PROJ-2 --field "State=Done" --validate
+```
+
+### Batch Start/Complete
+
+```bash
+# Start work on multiple issues
+track i start PROJ-1,PROJ-2,PROJ-3
+
+# Complete multiple issues
+track i done PROJ-1,PROJ-2 --state Done
+```
+
+### Batch Delete
+
+```bash
+# Delete multiple issues
+track i del PROJ-1,PROJ-2,PROJ-3
+```
+
+### Batch Output Format
+
+Text output shows success/failure summary:
+```
+✓ 3 issues updated
+  ✓ PROJ-1
+  ✓ PROJ-2
+  ✓ PROJ-3
+```
+
+Partial failures show both:
+```
+⚠ 2/3 issues updated (1 failed)
+  ✓ PROJ-1
+  ✗ PROJ-2 - Invalid value for field 'State'
+  ✓ PROJ-3
+```
+
+JSON output provides structured results:
+```json
+{
+  "total": 3,
+  "succeeded": 2,
+  "failed": 1,
+  "results": [
+    {"id": "PROJ-1", "success": true, "id_readable": "PROJ-1"},
+    {"id": "PROJ-2", "success": false, "error": "Invalid value..."},
+    {"id": "PROJ-3", "success": true, "id_readable": "PROJ-3"}
+  ]
+}
+```
 
 ---
 
@@ -303,7 +376,13 @@ track -b j i link PROJ-1 PROJ-2 -t Blocks
 track config test                  # YouTrack
 track -b jira config test          # Jira
 
-# 2. Refresh cache (recommended - provides comprehensive context)
+# 2. Get aggregated context (recommended - single command for all AI context)
+track context                      # Full context from cache
+track context --refresh            # Force refresh from API
+track context --include-issues     # Include unresolved issues
+track -o json context              # JSON for parsing
+
+# Alternative: Refresh cache separately
 track cache refresh
 
 # 3. View cached context (includes projects, fields, users, query templates)
@@ -315,7 +394,81 @@ track -o json i s "project: PROJ #Unresolved" --limit 20     # YouTrack
 track -b j -o json i s "project = PROJ AND resolution IS EMPTY" --limit 20  # Jira
 ```
 
-**Tip**: The cache includes query templates - use `track cache show` to see pre-built queries for common searches.
+**Tip**: Use `track context -o json` for a single-command context dump optimized for AI sessions.
+
+### Cache Freshness
+
+Check cache age and conditionally refresh:
+
+```bash
+# Check cache status (age, freshness, data counts)
+track cache status
+track -o json cache status
+
+# Conditional refresh - only if cache is older than duration
+track cache refresh --if-stale 1h      # Refresh if older than 1 hour
+track cache refresh --if-stale 30m     # Refresh if older than 30 minutes
+track cache refresh --if-stale 1d      # Refresh if older than 1 day
+
+# Force refresh (always)
+track cache refresh
+```
+
+**Duration formats**: `1h` (hours), `30m` (minutes), `1d` (days), `60s` (seconds)
+
+---
+
+## AI-Optimized Features
+
+### Context Command
+
+Aggregates all relevant data for AI sessions in a single call:
+
+```bash
+track context                        # Full context (projects, fields, users, templates)
+track context --project PROJ         # Filter to specific project
+track context --refresh              # Force refresh from API
+track context --include-issues       # Include unresolved issues
+track context --issue-limit 25       # Limit included issues (default: 10)
+track -o json context                # JSON output for parsing
+```
+
+**Output includes**: Backend info, projects, custom fields with enum values, tags, link types, query templates, assignable users, recent issues.
+
+### Template-Based Search
+
+Use pre-built query templates instead of raw queries (avoids backend syntax errors):
+
+```bash
+# Use template with project
+track i s --template unresolved --project PROJ
+track i s -T my_issues -p PROJ
+
+# Available templates (see: track cache show)
+# - unresolved: All unresolved issues
+# - my_issues: Assigned to current user
+# - recent: Recently updated (7 days)
+# - high_priority: Critical/Major priority
+# - in_progress: Currently in progress
+# - bugs: Bug type issues
+```
+
+### Field Validation
+
+Validate custom fields before creating/updating (prevents API errors):
+
+```bash
+# Validate before creating
+track i new -p PROJ -s "Title" --field "Priority=Major" --validate
+
+# Validate only (dry run - doesn't create)
+track i new -p PROJ -s "Title" --field "Priority=Invalid" --validate --dry-run
+# Error: Invalid value 'Invalid' for field 'Priority'. Valid values: Critical, Major, Normal, Minor
+
+# Validate before updating
+track i u PROJ-123 --field "State=Done" --validate
+track i u PROJ-123 --field "State=Done" --validate --dry-run
+```
 
 ---
 

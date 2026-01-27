@@ -154,6 +154,30 @@ fn run_with_client(
         Commands::Article { action } => {
             commands::article::handle_article(issue_client, kb_client, action, cli.format)
         }
+        Commands::Context {
+            project,
+            refresh,
+            include_issues,
+            issue_limit,
+        } => {
+            let backend = cli.backend.unwrap_or_else(|| config.get_backend());
+            let backend_type = match backend {
+                Backend::YouTrack => "youtrack",
+                Backend::Jira => "jira",
+            };
+            commands::context::handle_context(
+                issue_client,
+                Some(kb_client),
+                project.as_deref(),
+                *refresh,
+                *include_issues,
+                *issue_limit,
+                cli.format,
+                backend_type,
+                config.url.as_deref().unwrap_or("unknown"),
+                config.default_project.as_deref(),
+            )
+        }
         Commands::Completions { .. } => {
             // Already handled before config loading
             unreachable!("Completions command should be handled before API validation")
@@ -181,7 +205,35 @@ fn handle_cache(
     use cli::CacheCommands;
 
     match action {
-        CacheCommands::Refresh => {
+        CacheCommands::Refresh { if_stale } => {
+            // Check if we should skip refresh based on --if-stale
+            if let Some(stale_duration) = if_stale {
+                let max_age = cache::parse_duration(stale_duration)?;
+                let existing_cache = cache::TrackerCache::load(None).unwrap_or_default();
+
+                if !existing_cache.is_stale(max_age) {
+                    // Cache is fresh, skip refresh
+                    match format {
+                        cli::OutputFormat::Json => {
+                            let age_seconds = existing_cache.age().map(|a| a.num_seconds()).unwrap_or(0);
+                            println!(
+                                r#"{{"success": true, "skipped": true, "message": "Cache is fresh", "age_seconds": {}}}"#,
+                                age_seconds
+                            );
+                        }
+                        cli::OutputFormat::Text => {
+                            use colored::Colorize;
+                            println!(
+                                "{} (last updated {})",
+                                "Cache is fresh, skipping refresh".green(),
+                                existing_cache.age_string().cyan()
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+
             // Cache works with any backend that implements IssueTracker
             let backend_type = match backend {
                 Backend::YouTrack => "youtrack",
@@ -211,6 +263,82 @@ fn handle_cache(
                     }
                     if !cache.articles.is_empty() {
                         println!("  {}: {}", "Articles".dimmed(), cache.articles.len());
+                    }
+                }
+            }
+            Ok(())
+        }
+        CacheCommands::Status => {
+            let cache = cache::TrackerCache::load(None).unwrap_or_default();
+
+            match format {
+                cli::OutputFormat::Json => {
+                    let age_seconds = cache.age().map(|a| a.num_seconds());
+                    let updated_at = cache.updated_at.clone();
+                    let is_empty = cache.is_empty();
+
+                    let status = serde_json::json!({
+                        "exists": !is_empty,
+                        "updated_at": updated_at,
+                        "age_seconds": age_seconds,
+                        "age_human": cache.age_string(),
+                        "projects_count": cache.projects.len(),
+                        "tags_count": cache.tags.len(),
+                        "recent_issues_count": cache.recent_issues.len(),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&status)?);
+                }
+                cli::OutputFormat::Text => {
+                    use colored::Colorize;
+
+                    if cache.is_empty() {
+                        println!(
+                            "{}: {}",
+                            "Cache status".white().bold(),
+                            "empty".yellow()
+                        );
+                        println!(
+                            "  Run '{}' to populate the cache.",
+                            "track cache refresh".cyan()
+                        );
+                        return Ok(());
+                    }
+
+                    let age_str = cache.age_string();
+                    let freshness = if let Some(age) = cache.age() {
+                        if age.num_hours() < 1 {
+                            "fresh".green().to_string()
+                        } else if age.num_hours() < 24 {
+                            "recent".yellow().to_string()
+                        } else {
+                            "stale".red().to_string()
+                        }
+                    } else {
+                        "unknown".dimmed().to_string()
+                    };
+
+                    println!("{}: {}", "Cache status".white().bold(), freshness);
+                    println!("  {}: {}", "Last updated".dimmed(), age_str.cyan());
+                    if let Some(updated) = &cache.updated_at {
+                        println!("  {}: {}", "Timestamp".dimmed(), updated.dimmed());
+                    }
+                    if let Some(meta) = &cache.backend_metadata {
+                        println!("  {}: {}", "Backend".dimmed(), meta.backend_type.cyan());
+                    }
+                    println!("  {}: {}", "Projects".dimmed(), cache.projects.len());
+                    println!("  {}: {}", "Tags".dimmed(), cache.tags.len());
+                    println!("  {}: {}", "Recent issues".dimmed(), cache.recent_issues.len());
+
+                    // Suggest refresh if stale
+                    if let Some(age) = cache.age() {
+                        if age.num_hours() >= 24 {
+                            println!();
+                            println!(
+                                "  {} Run '{}' to update.",
+                                "Tip:".yellow(),
+                                "track cache refresh".cyan()
+                            );
+                        }
                     }
                 }
             }

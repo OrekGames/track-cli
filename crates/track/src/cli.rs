@@ -101,6 +101,25 @@ pub enum Commands {
         #[command(subcommand)]
         action: ArticleCommands,
     },
+    /// Aggregate context for AI assistants (projects, fields, users, queries)
+    #[command(visible_alias = "ctx")]
+    Context {
+        /// Specific project to focus context on
+        #[arg(long, short = 'p')]
+        project: Option<String>,
+
+        /// Force refresh from API (ignore cached data)
+        #[arg(long)]
+        refresh: bool,
+
+        /// Include unresolved issues in context
+        #[arg(long)]
+        include_issues: bool,
+
+        /// Maximum issues to include when using --include-issues (default: 10)
+        #[arg(long, default_value_t = 10)]
+        issue_limit: usize,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -187,7 +206,13 @@ pub enum ConfigCommands {
 #[derive(Subcommand, Debug)]
 pub enum CacheCommands {
     /// Refresh the local cache with current tracker data
-    Refresh,
+    Refresh {
+        /// Only refresh if cache is older than specified duration (e.g., "1h", "30m", "1d")
+        #[arg(long, value_name = "DURATION")]
+        if_stale: Option<String>,
+    },
+    /// Show cache freshness status (age, last update time)
+    Status,
     /// Show cached context (for AI assistants)
     Show,
     /// Show cache file path
@@ -245,11 +270,17 @@ pub enum IssueCommands {
         /// Parent issue ID to create this as a subtask (e.g., PROJ-123)
         #[arg(long, conflicts_with = "json")]
         parent: Option<String>,
+        /// Validate custom fields against project schema before creating
+        #[arg(long)]
+        validate: bool,
+        /// Validate only, do not create the issue (requires --validate)
+        #[arg(long, requires = "validate")]
+        dry_run: bool,
         /// JSON payload for issue creation
-        #[arg(long, conflicts_with_all = ["project", "summary", "description", "fields", "state", "priority", "assignee", "tags", "parent"], value_name = "JSON")]
+        #[arg(long, conflicts_with_all = ["project", "summary", "description", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
         json: Option<String>,
     },
-    /// Update existing issue
+    /// Update existing issue(s) - supports comma-separated IDs for batch updates
     #[command(visible_alias = "u", group(
         ArgGroup::new("update_fields")
             .args(["summary", "description", "fields", "state", "priority", "assignee", "tags", "json"])
@@ -257,8 +288,9 @@ pub enum IssueCommands {
             .multiple(true)
     ))]
     Update {
-        /// Issue ID (e.g., PROJ-123)
-        id: String,
+        /// Issue ID(s) - comma-separated for batch updates (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
+        #[arg(value_delimiter = ',')]
+        ids: Vec<String>,
         /// New summary
         #[arg(long, short = 's')]
         summary: Option<String>,
@@ -285,15 +317,31 @@ pub enum IssueCommands {
         /// Tag name (can be repeated)
         #[arg(long = "tag", short = 't', conflicts_with = "json")]
         tags: Vec<String>,
+        /// Validate custom fields against project schema before updating
+        #[arg(long)]
+        validate: bool,
+        /// Validate only, do not update the issue (requires --validate)
+        #[arg(long, requires = "validate")]
+        dry_run: bool,
         /// JSON payload for issue update
-        #[arg(long, conflicts_with_all = ["summary", "description", "fields", "state", "priority", "assignee", "tags"], value_name = "JSON")]
+        #[arg(long, conflicts_with_all = ["summary", "description", "fields", "state", "priority", "assignee", "tags", "validate", "dry_run"], value_name = "JSON")]
         json: Option<String>,
     },
     /// Search issues
     #[command(visible_alias = "s", visible_alias = "find")]
     Search {
         /// Search query (e.g., "project: MyProject #Unresolved")
-        query: String,
+        #[arg(required_unless_present = "template")]
+        query: Option<String>,
+
+        /// Use a pre-built query template (see: track cache show for available templates)
+        #[arg(long, short = 'T', conflicts_with = "query")]
+        template: Option<String>,
+
+        /// Project for template substitution (replaces {PROJECT} in template)
+        #[arg(long, short = 'p')]
+        project: Option<String>,
+
         /// Maximum number of results
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -301,11 +349,12 @@ pub enum IssueCommands {
         #[arg(long, default_value_t = 0)]
         skip: usize,
     },
-    /// Delete issue by ID
+    /// Delete issue(s) by ID - supports comma-separated IDs for batch deletion
     #[command(visible_alias = "rm", visible_alias = "del")]
     Delete {
-        /// Issue ID (e.g., PROJ-123)
-        id: String,
+        /// Issue ID(s) - comma-separated for batch deletion (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
+        #[arg(value_delimiter = ',')]
+        ids: Vec<String>,
     },
     /// Add a comment to an issue
     #[command(visible_alias = "cmt")]
@@ -334,10 +383,11 @@ pub enum IssueCommands {
         #[arg(long = "type", short = 't', default_value = "relates")]
         link_type: String,
     },
-    /// Start work on an issue (set state to in-progress)
+    /// Start work on issue(s) (set state to in-progress) - supports comma-separated IDs
     Start {
-        /// Issue ID (e.g., PROJ-123)
-        id: String,
+        /// Issue ID(s) - comma-separated for batch (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
+        #[arg(value_delimiter = ',')]
+        ids: Vec<String>,
         /// State field name (default: "Stage")
         #[arg(long, default_value = "Stage")]
         field: String,
@@ -345,11 +395,12 @@ pub enum IssueCommands {
         #[arg(long, default_value = "Develop")]
         state: String,
     },
-    /// Complete an issue (set state to done/resolved)
+    /// Complete issue(s) (set state to done/resolved) - supports comma-separated IDs
     #[command(visible_alias = "done", visible_alias = "resolve")]
     Complete {
-        /// Issue ID (e.g., PROJ-123)
-        id: String,
+        /// Issue ID(s) - comma-separated for batch (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
+        #[arg(value_delimiter = ',')]
+        ids: Vec<String>,
         /// State field name (default: "Stage")
         #[arg(long, default_value = "Stage")]
         field: String,
@@ -631,8 +682,8 @@ mod tests {
 
         match cli.command {
             Commands::Issue { action } => match action {
-                IssueCommands::Update { id, json, .. } => {
-                    assert_eq!(id, "PROJ-1");
+                IssueCommands::Update { ids, json, .. } => {
+                    assert_eq!(ids, vec!["PROJ-1"]);
                     assert_eq!(json.as_deref(), Some("{\"summary\":\"Updated\"}"));
                 }
                 _ => panic!("expected issue update"),
@@ -697,8 +748,8 @@ mod tests {
 
         match cli.command {
             Commands::Issue { action } => match action {
-                IssueCommands::Update { id, state, .. } => {
-                    assert_eq!(id, "PROJ-1");
+                IssueCommands::Update { ids, state, .. } => {
+                    assert_eq!(ids, vec!["PROJ-1"]);
                     assert_eq!(state.as_deref(), Some("Resolved"));
                 }
                 _ => panic!("expected issue update"),
@@ -851,8 +902,8 @@ mod tests {
 
         match cli.command {
             Commands::Issue { action } => match action {
-                IssueCommands::Start { id, field, state } => {
-                    assert_eq!(id, "PROJ-123");
+                IssueCommands::Start { ids, field, state } => {
+                    assert_eq!(ids, vec!["PROJ-123"]);
                     assert_eq!(field, "Stage");
                     assert_eq!(state, "Develop");
                 }
@@ -870,8 +921,8 @@ mod tests {
 
         match cli.command {
             Commands::Issue { action } => match action {
-                IssueCommands::Complete { id, field, state } => {
-                    assert_eq!(id, "PROJ-123");
+                IssueCommands::Complete { ids, field, state } => {
+                    assert_eq!(ids, vec!["PROJ-123"]);
                     assert_eq!(field, "State");
                     assert_eq!(state, "Resolved");
                 }
@@ -887,8 +938,8 @@ mod tests {
 
         match cli.command {
             Commands::Issue { action } => match action {
-                IssueCommands::Complete { id, .. } => {
-                    assert_eq!(id, "PROJ-123");
+                IssueCommands::Complete { ids, .. } => {
+                    assert_eq!(ids, vec!["PROJ-123"]);
                 }
                 _ => panic!("expected issue complete via done alias"),
             },
@@ -1134,6 +1185,417 @@ mod tests {
                 assert!(matches!(action, ConfigCommands::Keys));
             }
             _ => panic!("expected config command"),
+        }
+    }
+
+    #[test]
+    fn parses_context_command() {
+        let cli = Cli::parse_from(["track", "context"]);
+
+        match cli.command {
+            Commands::Context {
+                project,
+                refresh,
+                include_issues,
+                issue_limit,
+            } => {
+                assert!(project.is_none());
+                assert!(!refresh);
+                assert!(!include_issues);
+                assert_eq!(issue_limit, 10);
+            }
+            _ => panic!("expected context command"),
+        }
+    }
+
+    #[test]
+    fn parses_context_command_with_flags() {
+        let cli = Cli::parse_from([
+            "track",
+            "context",
+            "--project",
+            "PROJ",
+            "--refresh",
+            "--include-issues",
+            "--issue-limit",
+            "25",
+        ]);
+
+        match cli.command {
+            Commands::Context {
+                project,
+                refresh,
+                include_issues,
+                issue_limit,
+            } => {
+                assert_eq!(project.as_deref(), Some("PROJ"));
+                assert!(refresh);
+                assert!(include_issues);
+                assert_eq!(issue_limit, 25);
+            }
+            _ => panic!("expected context command"),
+        }
+    }
+
+    #[test]
+    fn parses_context_alias() {
+        let cli = Cli::parse_from(["track", "ctx"]);
+
+        assert!(matches!(cli.command, Commands::Context { .. }));
+    }
+
+    #[test]
+    fn parses_search_with_query() {
+        let cli = Cli::parse_from(["track", "issue", "search", "project: PROJ #Unresolved"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Search {
+                    query,
+                    template,
+                    project,
+                    limit,
+                    skip,
+                } => {
+                    assert_eq!(query.as_deref(), Some("project: PROJ #Unresolved"));
+                    assert!(template.is_none());
+                    assert!(project.is_none());
+                    assert_eq!(limit, 20);
+                    assert_eq!(skip, 0);
+                }
+                _ => panic!("expected issue search"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_search_with_template() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "search",
+            "--template",
+            "unresolved",
+            "--project",
+            "PROJ",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Search {
+                    query,
+                    template,
+                    project,
+                    ..
+                } => {
+                    assert!(query.is_none());
+                    assert_eq!(template.as_deref(), Some("unresolved"));
+                    assert_eq!(project.as_deref(), Some("PROJ"));
+                }
+                _ => panic!("expected issue search"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_search_with_template_short_flags() {
+        let cli = Cli::parse_from(["track", "i", "s", "-T", "my_issues", "-p", "PROJ"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Search {
+                    query,
+                    template,
+                    project,
+                    ..
+                } => {
+                    assert!(query.is_none());
+                    assert_eq!(template.as_deref(), Some("my_issues"));
+                    assert_eq!(project.as_deref(), Some("PROJ"));
+                }
+                _ => panic!("expected issue search"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn rejects_search_with_both_query_and_template() {
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "search",
+            "some query",
+            "--template",
+            "unresolved",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_create_with_validate_flag() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Test",
+            "--validate",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Create {
+                    validate, dry_run, ..
+                } => {
+                    assert!(validate);
+                    assert!(!dry_run);
+                }
+                _ => panic!("expected issue create"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_create_with_validate_and_dry_run() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Test",
+            "--validate",
+            "--dry-run",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Create {
+                    validate, dry_run, ..
+                } => {
+                    assert!(validate);
+                    assert!(dry_run);
+                }
+                _ => panic!("expected issue create"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn rejects_dry_run_without_validate() {
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Test",
+            "--dry-run",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_update_with_validate_flag() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "update",
+            "PROJ-123",
+            "--field",
+            "Priority=Major",
+            "--validate",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Update {
+                    validate, dry_run, ..
+                } => {
+                    assert!(validate);
+                    assert!(!dry_run);
+                }
+                _ => panic!("expected issue update"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_update_with_validate_and_dry_run() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "update",
+            "PROJ-123",
+            "--field",
+            "State=Done",
+            "--validate",
+            "--dry-run",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Update {
+                    validate, dry_run, ..
+                } => {
+                    assert!(validate);
+                    assert!(dry_run);
+                }
+                _ => panic!("expected issue update"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_cache_refresh_command() {
+        let cli = Cli::parse_from(["track", "cache", "refresh"]);
+
+        match cli.command {
+            Commands::Cache { action } => match action {
+                CacheCommands::Refresh { if_stale } => {
+                    assert!(if_stale.is_none());
+                }
+                _ => panic!("expected cache refresh"),
+            },
+            _ => panic!("expected cache command"),
+        }
+    }
+
+    #[test]
+    fn parses_cache_refresh_with_if_stale() {
+        let cli = Cli::parse_from(["track", "cache", "refresh", "--if-stale", "1h"]);
+
+        match cli.command {
+            Commands::Cache { action } => match action {
+                CacheCommands::Refresh { if_stale } => {
+                    assert_eq!(if_stale.as_deref(), Some("1h"));
+                }
+                _ => panic!("expected cache refresh"),
+            },
+            _ => panic!("expected cache command"),
+        }
+    }
+
+    #[test]
+    fn parses_cache_status_command() {
+        let cli = Cli::parse_from(["track", "cache", "status"]);
+
+        match cli.command {
+            Commands::Cache { action } => {
+                assert!(matches!(action, CacheCommands::Status));
+            }
+            _ => panic!("expected cache command"),
+        }
+    }
+
+    // =========================================================================
+    // Batch Operations Tests
+    // =========================================================================
+
+    #[test]
+    fn parses_update_with_multiple_ids() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "update",
+            "PROJ-1,PROJ-2,PROJ-3",
+            "--field",
+            "Priority=Major",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Update { ids, fields, .. } => {
+                    assert_eq!(ids, vec!["PROJ-1", "PROJ-2", "PROJ-3"]);
+                    assert_eq!(fields, vec!["Priority=Major"]);
+                }
+                _ => panic!("expected issue update"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_delete_with_multiple_ids() {
+        let cli = Cli::parse_from(["track", "issue", "delete", "PROJ-1,PROJ-2"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Delete { ids } => {
+                    assert_eq!(ids, vec!["PROJ-1", "PROJ-2"]);
+                }
+                _ => panic!("expected issue delete"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_start_with_multiple_ids() {
+        let cli = Cli::parse_from(["track", "issue", "start", "PROJ-1,PROJ-2,PROJ-3"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Start { ids, field, state } => {
+                    assert_eq!(ids, vec!["PROJ-1", "PROJ-2", "PROJ-3"]);
+                    assert_eq!(field, "Stage");
+                    assert_eq!(state, "Develop");
+                }
+                _ => panic!("expected issue start"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_complete_with_multiple_ids() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "complete",
+            "PROJ-1,PROJ-2",
+            "--state",
+            "Done",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Complete { ids, state, .. } => {
+                    assert_eq!(ids, vec!["PROJ-1", "PROJ-2"]);
+                    assert_eq!(state, "Done");
+                }
+                _ => panic!("expected issue complete"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_single_id_in_batch_commands() {
+        // Single ID should work the same way - stored in a Vec with one element
+        let cli = Cli::parse_from(["track", "issue", "update", "PROJ-1", "--field", "Priority=Major"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Update { ids, .. } => {
+                    assert_eq!(ids, vec!["PROJ-1"]);
+                }
+                _ => panic!("expected issue update"),
+            },
+            _ => panic!("expected issue command"),
         }
     }
 }

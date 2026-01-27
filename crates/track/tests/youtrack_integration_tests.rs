@@ -284,7 +284,7 @@ fn test_issue_delete_command_exists() {
         .assert()
         .success()
         .stdout(predicate::str::contains("delete"))
-        .stdout(predicate::str::contains("Delete issue by ID"));
+        .stdout(predicate::str::contains("Delete issue(s) by ID"));
 }
 
 #[test]
