@@ -10,6 +10,7 @@
 | **Backends** | YouTrack (default), Jira (`-b jira` or `-b j`) |
 | **Output** | Text (default) or JSON (`-o json`) |
 | **Config** | `.track.toml` in project dir, env vars, or CLI flags |
+| **Cache** | `.tracker-cache.json` - run `track cache refresh` for context |
 
 ## Backend Comparison
 
@@ -75,6 +76,23 @@ track -b jira PROJ-123         # Use Jira for this command only
 track config test              # Uses configured backend
 track -b jira config test      # Override to test Jira
 ```
+
+### Config Management
+
+```bash
+# View/modify configuration
+track config show              # Show current config
+track config keys              # List all available config keys
+track config get <key>         # Get a specific value
+track config set <key> <value> # Set a specific value
+
+# Examples
+track config set backend jira
+track config set jira.email "user@example.com"
+track config get default_project
+```
+
+**Available config keys**: `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `jira.url`, `jira.email`, `jira.token`
 
 ---
 
@@ -285,34 +303,62 @@ track -b j i link PROJ-1 PROJ-2 -t Blocks
 track config test                  # YouTrack
 track -b jira config test          # Jira
 
-# 2. List projects (get context)
-track -o json p ls
+# 2. Refresh cache (recommended - provides comprehensive context)
+track cache refresh
 
-# 3. Get unresolved issues
+# 3. View cached context (includes projects, fields, users, query templates)
+track cache show                   # Text output
+track -o json cache show           # JSON for parsing
+
+# 4. Get unresolved issues
 track -o json i s "project: PROJ #Unresolved" --limit 20     # YouTrack
 track -b j -o json i s "project = PROJ AND resolution IS EMPTY" --limit 20  # Jira
-
-# 4. (Optional) Refresh cache for offline context
-track cache refresh
 ```
+
+**Tip**: The cache includes query templates - use `track cache show` to see pre-built queries for common searches.
 
 ---
 
 ## Cache System
 
-The cache stores project metadata locally for fast context retrieval:
+The cache stores comprehensive tracker context locally for fast lookups and AI context:
 
 ```bash
-track cache refresh    # Fetch and store projects, fields, tags
-track cache show       # Display cached data
-track -o json cache show  # JSON format
-track cache path       # Show cache file location
+track cache refresh       # Fetch and store all cacheable data
+track cache show          # Display cached data (text)
+track -o json cache show  # JSON format (for programmatic use)
+track cache path          # Show cache file location
 ```
 
 **Cache file** (`.tracker-cache.json`) contains:
-- Projects with IDs and short names
-- Custom fields per project (types, required flags)
-- Available tags
+
+| Data | Description |
+|------|-------------|
+| **Backend metadata** | Backend type and base URL |
+| **Default project** | From config, for context |
+| **Projects** | IDs, short names, descriptions |
+| **Custom fields** | Per project: name, type, required flag, **enum values** |
+| **Tags** | Available tags with IDs |
+| **Link types** | Issue link types (Relates, Blocks, Depends, etc.) |
+| **Query templates** | Pre-built queries per backend (see below) |
+| **Project users** | Assignable users per project |
+| **Recent issues** | LRU cache of last 50 accessed issues |
+| **Articles** | Knowledge base articles with hierarchy |
+
+### Query Templates
+
+The cache includes pre-built query templates for common searches. Use `track cache show` to see them:
+
+| Template | YouTrack Query | Jira JQL |
+|----------|---------------|----------|
+| `unresolved` | `project: {PROJECT} #Unresolved` | `project = {PROJECT} AND resolution IS EMPTY` |
+| `my_issues` | `project: {PROJECT} Assignee: me #Unresolved` | `project = {PROJECT} AND assignee = currentUser() AND resolution IS EMPTY` |
+| `recent` | `project: {PROJECT} updated: -7d .. Today` | `project = {PROJECT} AND updated >= -7d` |
+| `high_priority` | `project: {PROJECT} Priority: Critical,Major #Unresolved` | `project = {PROJECT} AND priority IN (Highest, High) AND resolution IS EMPTY` |
+| `in_progress` | `project: {PROJECT} State: {In Progress}` | `project = {PROJECT} AND status = "In Progress"` |
+| `bugs` | `project: {PROJECT} Type: Bug #Unresolved` | `project = {PROJECT} AND issuetype = Bug AND resolution IS EMPTY` |
+
+Replace `{PROJECT}` with the actual project key (e.g., `PROJ`)
 
 ---
 
@@ -357,10 +403,16 @@ Common errors and solutions:
 ## Quick Reference Card
 
 ```bash
+# === SETUP & CONTEXT ===
+track config test                  # Test connection
+track cache refresh                # Refresh cache (recommended first step)
+track cache show                   # View cached context (projects, fields, users, query templates)
+
 # === BACKEND CONFIGURATION ===
 track config backend youtrack      # Set default to YouTrack
 track config backend jira          # Set default to Jira
 track config show                  # Show current config (including backend)
+track config keys                  # List all config keys
 
 # === YOUTRACK (when default or with -b yt) ===
 track PROJ-123                     # Get issue
@@ -394,7 +446,9 @@ track -b j config test             # Test connection
 3. **JSON output**: Always use `-o json` for programmatic parsing
 4. **Issue shortcut**: `track PROJ-123` = `track issue get PROJ-123`
 5. **Default project**: `track config project PROJ` to skip `-p` flag
-6. **Field discovery**: `track p f PROJ` lists available custom fields
-7. **Jira limitations**: No project creation, no subtask conversion
-8. **Query syntax**: YouTrack `project: PROJ` vs Jira `project = PROJ`
-9. **Confluence IDs**: Numeric page IDs (`123456`) and space IDs (`65957`), not project keys
+6. **Field discovery**: `track p f PROJ` or `track cache show` lists custom fields with valid values
+7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, and articles
+8. **Query templates**: Cache includes pre-built queries - check `track cache show` for available templates
+9. **Jira limitations**: No project creation, no subtask conversion
+10. **Query syntax**: YouTrack `project: PROJ` vs Jira `project = PROJ`
+11. **Confluence IDs**: Numeric page IDs (`123456`) and space IDs (`65957`), not project keys

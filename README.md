@@ -243,6 +243,9 @@ track config test           # Test connection
 track config show           # Show current config
 track config backend jira   # Set default backend
 track config project PROJ   # Set default project
+track config set <key> <value>  # Set any config value
+track config get <key>      # Get a config value
+track config keys           # List all available config keys
 track config clear          # Clear default project and backend
 track config path           # Show config file path
 ```
@@ -254,6 +257,14 @@ track cache refresh         # Refresh local cache
 track cache show            # Show cached data
 track cache path            # Show cache location
 ```
+
+The cache stores comprehensive tracker context for fast lookups:
+- Projects, custom fields (with enum values), and tags
+- Issue link types
+- Assignable users per project
+- Knowledge base articles
+- Query templates for both backends
+- Recently accessed issues (LRU, max 50)
 
 ## Command Aliases
 
