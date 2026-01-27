@@ -433,7 +433,7 @@ track context --issue-limit 25       # Limit included issues (default: 10)
 track -o json context                # JSON output for parsing
 ```
 
-**Output includes**: Backend info, projects, custom fields with enum values, tags, link types, query templates, assignable users, recent issues.
+**Output includes**: Backend info, projects, custom fields with enum values, tags, link types, query templates, assignable users, workflow hints (state transitions), recent issues.
 
 ### Template-Based Search
 
@@ -469,6 +469,55 @@ track i new -p PROJ -s "Title" --field "Priority=Invalid" --validate --dry-run
 track i u PROJ-123 --field "State=Done" --validate
 track i u PROJ-123 --field "State=Done" --validate --dry-run
 ```
+
+### Workflow Hints
+
+The cache includes workflow hints showing valid state transitions for each project. This helps prevent state transition failures due to workflow constraints.
+
+```bash
+# View workflow hints in context
+track context -p PROJ
+
+# Output includes:
+# Workflow Hints:
+#   PROJ (Stage):
+#     States: Backlog → Develop → Review → Test → Done*
+#     Transitions: 10 forward, 4 backward (* = resolved)
+```
+
+**JSON structure** (from `track -o json context`):
+```json
+{
+  "workflow_hints": [{
+    "project_short_name": "PROJ",
+    "state_fields": [{
+      "field_name": "Stage",
+      "states": [
+        {"name": "Backlog", "is_resolved": false, "ordinal": 1},
+        {"name": "Develop", "is_resolved": false, "ordinal": 2},
+        {"name": "Done", "is_resolved": true, "ordinal": 6}
+      ],
+      "transitions": [
+        {"from": "Backlog", "to": "Develop", "transition_type": "forward"},
+        {"from": "Backlog", "to": "Done", "transition_type": "to_resolved"},
+        {"from": "Done", "to": "Backlog", "transition_type": "reopen"}
+      ]
+    }]
+  }]
+}
+```
+
+**Transition types**:
+- `forward`: Moving later in workflow (typical progression)
+- `backward`: Moving earlier in workflow (rework/rejection)
+- `to_resolved`: Moving to a resolved/completed state
+- `reopen`: Moving from resolved back to unresolved
+
+**Use cases**:
+- Before state transitions, check if the transition is valid
+- Prefer `forward` transitions for normal workflow
+- Use `to_resolved` transitions for completion
+- Warn user about `backward` transitions (may indicate rework)
 
 ---
 

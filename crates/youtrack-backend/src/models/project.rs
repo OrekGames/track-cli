@@ -116,4 +116,10 @@ pub struct Bundle {
 pub struct BundleValue {
     pub id: String,
     pub name: String,
+    /// Whether this state value represents a resolved/completed state (state bundles only)
+    #[serde(default)]
+    pub is_resolved: Option<bool>,
+    /// Ordinal position in the workflow (state bundles only, used for transition hints)
+    #[serde(default)]
+    pub ordinal: Option<i32>,
 }

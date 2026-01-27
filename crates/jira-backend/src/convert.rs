@@ -291,6 +291,8 @@ pub fn map_link_type(link_type: &str) -> &str {
 
 /// Get standard Jira custom fields for a project
 pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
+    use tracker_core::StateValueInfo;
+
     vec![
         ProjectCustomField {
             id: "priority".to_string(),
@@ -304,6 +306,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                 "Low".to_string(),
                 "Lowest".to_string(),
             ],
+            state_values: vec![],
         },
         ProjectCustomField {
             id: "assignee".to_string(),
@@ -311,6 +314,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             field_type: "user[1]".to_string(),
             required: false,
             values: vec![], // Users are fetched separately
+            state_values: vec![],
         },
         ProjectCustomField {
             id: "status".to_string(),
@@ -321,6 +325,23 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                 "To Do".to_string(),
                 "In Progress".to_string(),
                 "Done".to_string(),
+            ],
+            state_values: vec![
+                StateValueInfo {
+                    name: "To Do".to_string(),
+                    is_resolved: false,
+                    ordinal: 0,
+                },
+                StateValueInfo {
+                    name: "In Progress".to_string(),
+                    is_resolved: false,
+                    ordinal: 1,
+                },
+                StateValueInfo {
+                    name: "Done".to_string(),
+                    is_resolved: true,
+                    ordinal: 2,
+                },
             ],
         },
         ProjectCustomField {
@@ -335,6 +356,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                 "Epic".to_string(),
                 "Subtask".to_string(),
             ],
+            state_values: vec![],
         },
         ProjectCustomField {
             id: "labels".to_string(),
@@ -342,6 +364,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             field_type: "enum[*]".to_string(),
             required: false,
             values: vec![], // Labels are created dynamically
+            state_values: vec![],
         },
     ]
 }

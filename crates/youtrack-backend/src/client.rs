@@ -224,9 +224,10 @@ impl YouTrackClient {
     }
 
     /// Get custom fields defined for a project (with bundle values for enum fields)
+    /// For state fields, also fetches isResolved and ordinal for workflow hints
     pub fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomFieldExt>> {
         let url = format!(
-            "{}/api/admin/projects/{}/customFields?fields=id,canBeEmpty,emptyFieldText,field(id,name,fieldType(id,presentation)),bundle(id,values(id,name))",
+            "{}/api/admin/projects/{}/customFields?fields=id,canBeEmpty,emptyFieldText,field(id,name,fieldType(id,presentation)),bundle(id,values(id,name,isResolved,ordinal))",
             self.base_url, project_id
         );
 

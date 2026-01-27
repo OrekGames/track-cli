@@ -6,9 +6,11 @@ A command-line interface for issue tracking systems, built with Rust. Supports *
 
 - **Multi-Backend**: YouTrack and Jira with the same commands
 - **Issue Management**: Get, create, update, delete, search issues
-- **Custom Fields**: Set priority, state, assignee, and any field
+- **Batch Operations**: Update, delete, or complete multiple issues at once
+- **Custom Fields**: Set priority, state, assignee, and any field with validation
 - **Comments & Links**: Add comments and link issues together
 - **Knowledge Base**: Manage articles (YouTrack and Jira/Confluence)
+- **AI-Optimized**: Context aggregation, query templates, workflow hints
 - **Output Formats**: Text (human-readable) and JSON (machine-readable)
 - **Flexible Config**: CLI flags, environment variables, or config file
 
@@ -165,24 +167,30 @@ track open PROJ-123         # Open in browser
 track issue get PROJ-123
 track i g PROJ-123 --full
 
-# Create
+# Create (with validation)
 track issue create -p PROJ -s "Summary" -d "Description"
 track i new -s "Subtask" --parent PROJ-100 --priority "Major"
+track i new -p PROJ -s "Title" --field "Priority=Major" --validate
 
-# Update
+# Update (single or batch)
 track issue update PROJ-123 --summary "New title"
 track i u PROJ-123 --field "Priority=Critical"
+track i u PROJ-1,PROJ-2,PROJ-3 --field "Priority=Major"  # Batch update
 
-# State transitions
-track issue start PROJ-123      # In progress
-track issue complete PROJ-123   # Done
+# State transitions (single or batch)
+track issue start PROJ-123              # In progress
+track issue complete PROJ-123           # Done
+track i start PROJ-1,PROJ-2,PROJ-3      # Batch start
+track i done PROJ-1,PROJ-2 --state Done # Batch complete
 
-# Search
+# Search (with query or template)
 track issue search "project: PROJ #Unresolved" --limit 20
 track i s "project: PROJ State: Open"
+track i s --template unresolved --project PROJ  # Use query template
 
-# Delete
+# Delete (single or batch)
 track issue delete PROJ-123
+track i del PROJ-1,PROJ-2,PROJ-3        # Batch delete
 ```
 
 ### Comments
@@ -253,18 +261,32 @@ track config path           # Show config file path
 ### Cache
 
 ```bash
-track cache refresh         # Refresh local cache
-track cache show            # Show cached data
-track cache path            # Show cache location
+track cache refresh              # Refresh local cache
+track cache refresh --if-stale 1h  # Only refresh if older than 1 hour
+track cache status               # Check cache age and freshness
+track cache show                 # Show cached data
+track cache path                 # Show cache location
 ```
 
 The cache stores comprehensive tracker context for fast lookups:
 - Projects, custom fields (with enum values), and tags
-- Issue link types
+- Issue link types and workflow hints (state transitions)
 - Assignable users per project
 - Knowledge base articles
 - Query templates for both backends
 - Recently accessed issues (LRU, max 50)
+
+### Context (AI-Optimized)
+
+```bash
+track context                    # Aggregated context for AI sessions
+track context --project PROJ     # Filter to specific project
+track context --refresh          # Force refresh from API
+track context --include-issues   # Include unresolved issues
+track -o json context            # JSON output for parsing
+```
+
+Single command to get all relevant data: projects, fields, users, query templates, workflow hints, and recent issues.
 
 ## Command Aliases
 
@@ -278,12 +300,14 @@ The cache stores comprehensive tracker context for fast lookups:
 | `track issue delete` | `track i rm`, `track i del` |
 | `track issue comment` | `track i cmt` |
 | `track issue complete` | `track i done`, `track i resolve` |
+| `track issue start` | `track i start` |
 | `track project` | `track p` |
 | `track project list` | `track p ls` |
 | `track project fields` | `track p f` |
 | `track tags` | `track t` |
 | `track article` | `track a`, `track wiki` |
 | `track config` | `track cfg` |
+| `track context` | `track ctx` |
 
 ## Query Syntax
 
@@ -362,10 +386,12 @@ See `crates/jira-backend/` for reference.
 ## For AI Agents
 
 See [AGENT_GUIDE.md](./AGENT_GUIDE.md) for:
-- Parallel command examples for both backends
-- Query syntax comparison
+- AI-optimized features: context command, query templates, workflow hints
+- Batch operations for efficient multi-issue updates
+- Field validation to prevent API errors
+- Query syntax comparison (YouTrack vs Jira JQL)
 - Session startup checklist
-- JSON output for parsing
+- JSON output parsing examples
 
 ## License
 

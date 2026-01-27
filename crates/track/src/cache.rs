@@ -35,6 +35,9 @@ pub struct TrackerCache {
     /// Assignable users per project
     #[serde(default)]
     pub project_users: Vec<ProjectUsersCache>,
+    /// Workflow hints per project (state transitions)
+    #[serde(default)]
+    pub workflow_hints: Vec<ProjectWorkflowHints>,
     /// Recently accessed issues (LRU, max 50)
     #[serde(default)]
     pub recent_issues: Vec<CachedRecentIssue>,
@@ -141,6 +144,48 @@ pub struct CachedTag {
     pub name: String,
 }
 
+/// Workflow hints for a project's state fields
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectWorkflowHints {
+    pub project_short_name: String,
+    pub project_id: String,
+    /// State fields with their workflow information
+    pub state_fields: Vec<StateFieldWorkflow>,
+}
+
+/// Workflow information for a single state field
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StateFieldWorkflow {
+    /// Field name (e.g., "State", "Stage")
+    pub field_name: String,
+    /// Available states in workflow order (sorted by ordinal)
+    pub states: Vec<WorkflowState>,
+    /// Valid transitions from each state
+    pub transitions: Vec<StateTransition>,
+}
+
+/// A state in the workflow with metadata
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WorkflowState {
+    /// State name
+    pub name: String,
+    /// Whether this is a resolved/completed state
+    pub is_resolved: bool,
+    /// Position in workflow (lower = earlier)
+    pub ordinal: i32,
+}
+
+/// Valid transition between states
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StateTransition {
+    /// Source state name
+    pub from: String,
+    /// Target state name
+    pub to: String,
+    /// Transition type: "forward", "backward", "to_resolved", "reopen"
+    pub transition_type: String,
+}
+
 impl TrackerCache {
     /// Load cache from file
     pub fn load(cache_dir: Option<PathBuf>) -> Result<Self> {
@@ -211,7 +256,7 @@ impl TrackerCache {
             })
             .collect();
 
-        // Fetch custom fields for each project
+        // Fetch custom fields for each project and build workflow hints
         for project in &projects {
             if let Ok(fields) = client.get_project_custom_fields(&project.id) {
                 let cached_fields: Vec<CachedField> = fields
@@ -229,6 +274,12 @@ impl TrackerCache {
                     project_id: project.id.clone(),
                     fields: cached_fields,
                 });
+
+                // Build workflow hints for state fields
+                let workflow_hints = Self::build_workflow_hints(&project.short_name, &project.id, &fields);
+                if !workflow_hints.state_fields.is_empty() {
+                    cache.workflow_hints.push(workflow_hints);
+                }
             }
         }
 
@@ -381,6 +432,88 @@ impl TrackerCache {
             ],
             _ => Vec::new(),
         }
+    }
+
+    /// Build workflow hints from project custom fields
+    fn build_workflow_hints(
+        project_short_name: &str,
+        project_id: &str,
+        fields: &[tracker_core::ProjectCustomField],
+    ) -> ProjectWorkflowHints {
+        let mut state_fields = Vec::new();
+
+        for field in fields {
+            // Only process state fields that have state_values
+            if !field.state_values.is_empty() {
+                // Sort states by ordinal
+                let mut states: Vec<WorkflowState> = field
+                    .state_values
+                    .iter()
+                    .map(|sv| WorkflowState {
+                        name: sv.name.clone(),
+                        is_resolved: sv.is_resolved,
+                        ordinal: sv.ordinal,
+                    })
+                    .collect();
+                states.sort_by_key(|s| s.ordinal);
+
+                // Build transitions based on workflow order
+                let transitions = Self::build_transitions(&states);
+
+                state_fields.push(StateFieldWorkflow {
+                    field_name: field.name.clone(),
+                    states,
+                    transitions,
+                });
+            }
+        }
+
+        ProjectWorkflowHints {
+            project_short_name: project_short_name.to_string(),
+            project_id: project_id.to_string(),
+            state_fields,
+        }
+    }
+
+    /// Build state transitions based on workflow order
+    /// Heuristics:
+    /// - Forward transitions: state can typically go to adjacent or nearby forward states
+    /// - Resolved states: typically reachable from later workflow stages
+    /// - Reopen: resolved states can go back to unresolved states
+    fn build_transitions(states: &[WorkflowState]) -> Vec<StateTransition> {
+        let mut transitions = Vec::new();
+
+        for (i, from_state) in states.iter().enumerate() {
+            for (j, to_state) in states.iter().enumerate() {
+                if i == j {
+                    continue; // Skip self-transitions
+                }
+
+                let transition_type = if from_state.is_resolved && !to_state.is_resolved {
+                    // Going from resolved back to unresolved
+                    "reopen"
+                } else if !from_state.is_resolved && to_state.is_resolved {
+                    // Going to a resolved state
+                    "to_resolved"
+                } else if to_state.ordinal > from_state.ordinal {
+                    // Moving forward in workflow
+                    "forward"
+                } else {
+                    // Moving backward in workflow
+                    "backward"
+                };
+
+                // Include all transitions but mark their type
+                // AI can use this to understand which transitions are typical vs atypical
+                transitions.push(StateTransition {
+                    from: from_state.name.clone(),
+                    to: to_state.name.clone(),
+                    transition_type: transition_type.to_string(),
+                });
+            }
+        }
+
+        transitions
     }
 
     /// Get project ID by shortName (from cache)

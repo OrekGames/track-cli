@@ -84,6 +84,22 @@ pub struct ProjectCustomField {
     /// Enum values for enum-type fields (Priority, State, Type, etc.)
     #[serde(default)]
     pub values: Vec<String>,
+    /// State values with workflow metadata (for state-type fields only)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_values: Vec<StateValueInfo>,
+}
+
+/// State value with workflow metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateValueInfo {
+    /// State name (e.g., "Open", "In Progress", "Done")
+    pub name: String,
+    /// Whether this state represents a resolved/completed state
+    #[serde(default)]
+    pub is_resolved: bool,
+    /// Ordinal position in the workflow (lower = earlier in workflow)
+    #[serde(default)]
+    pub ordinal: i32,
 }
 
 /// User that can be assigned to issues

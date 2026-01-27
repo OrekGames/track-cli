@@ -78,22 +78,48 @@ impl From<yt::Project> for core::Project {
 /// Convert YouTrack ProjectCustomFieldExt to tracker-core ProjectCustomField (with values)
 impl From<yt::ProjectCustomFieldExt> for core::ProjectCustomField {
     fn from(field: yt::ProjectCustomFieldExt) -> Self {
-        // Extract enum values from bundle if available
-        let values = field
-            .bundle
-            .map(|b| b.values.into_iter().map(|v| v.name).collect())
-            .unwrap_or_default();
+        let field_type = field
+            .field
+            .field_type
+            .as_ref()
+            .and_then(|ft| ft.presentation.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Check if this is a state field (field_type starts with "state")
+        let is_state_field = field_type.starts_with("state");
+
+        // Extract enum values and state values from bundle if available
+        let (values, state_values) = match field.bundle {
+            Some(bundle) => {
+                let values: Vec<String> = bundle.values.iter().map(|v| v.name.clone()).collect();
+
+                // For state fields, also extract workflow metadata
+                let state_values: Vec<core::StateValueInfo> = if is_state_field {
+                    bundle
+                        .values
+                        .iter()
+                        .map(|v| core::StateValueInfo {
+                            name: v.name.clone(),
+                            is_resolved: v.is_resolved.unwrap_or(false),
+                            ordinal: v.ordinal.unwrap_or(0),
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                };
+
+                (values, state_values)
+            }
+            None => (vec![], vec![]),
+        };
 
         Self {
             id: field.id,
             name: field.field.name,
-            field_type: field
-                .field
-                .field_type
-                .and_then(|ft| ft.presentation)
-                .unwrap_or_else(|| "unknown".to_string()),
+            field_type,
             required: !field.can_be_empty,
             values,
+            state_values,
         }
     }
 }
