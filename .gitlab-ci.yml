@@ -35,7 +35,8 @@ test:unit:
   script:
     - rustc --version && cargo --version
     # Exclude bin-only crates from --lib/--doc to avoid "no library targets" errors.
-    - cargo test --workspace --all-features --exclude track --exclude agent-harness --lib --doc
+    - cargo test --workspace --all-features --exclude track --exclude agent-harness --lib
+    - cargo test --workspace --all-features --exclude track --exclude agent-harness --doc
     - cargo test -p track --all-features --bins
     - cargo test -p agent-harness --all-features --bins
   rules:
