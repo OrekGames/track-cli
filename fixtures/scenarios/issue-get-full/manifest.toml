@@ -1,0 +1,83 @@
+# Request-to-Response Mapping for issue-get-full scenario
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project"
+file = "get_project_DEMO.json"
+[responses.args]
+id = "DEMO"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields.json"
+[responses.args]
+project_id = "*"
+
+# =============================================================================
+# Issue Get Operations
+# =============================================================================
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-1.json"
+[responses.args]
+id = "DEMO-1"
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-5_with_subtasks.json"
+[responses.args]
+id = "DEMO-5"
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-8_with_links.json"
+[responses.args]
+id = "DEMO-8"
+
+# =============================================================================
+# Full Context Operations (for --full flag)
+# =============================================================================
+
+[[responses]]
+method = "get_comments"
+file = "get_comments_DEMO-1.json"
+[responses.args]
+issue_id = "DEMO-1"
+
+[[responses]]
+method = "get_issue_links"
+file = "get_issue_links_DEMO-1.json"
+[responses.args]
+issue_id = "DEMO-1"
+
+[[responses]]
+method = "get_comments"
+file = "get_comments_DEMO-5.json"
+[responses.args]
+issue_id = "DEMO-5"
+
+[[responses]]
+method = "get_issue_links"
+file = "get_issue_links_DEMO-8.json"
+[responses.args]
+issue_id = "DEMO-8"
+
+# =============================================================================
+# Supporting Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"
+
+[[responses]]
+method = "list_link_types"
+file = "list_link_types.json"

@@ -1,0 +1,13 @@
+{
+  "success": true,
+  "message": "Cache refreshed successfully",
+  "updated_at": "2024-01-20T10:00:00Z",
+  "items_refreshed": {
+    "projects": 2,
+    "custom_fields": 4,
+    "tags": 7,
+    "link_types": 4,
+    "users": 5,
+    "articles": 3
+  }
+}

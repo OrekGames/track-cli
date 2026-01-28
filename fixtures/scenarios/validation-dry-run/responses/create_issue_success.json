@@ -1,0 +1,27 @@
+{
+  "id": "2-10",
+  "id_readable": "DEMO-10",
+  "summary": "Test Issue",
+  "project": {
+    "id": "0-1",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "SingleEnum": {
+        "name": "Priority",
+        "value": "High"
+      }
+    },
+    {
+      "SingleEnum": {
+        "name": "Type",
+        "value": "Bug"
+      }
+    }
+  ],
+  "created": "2024-01-20T10:00:00Z",
+  "tags": [],
+  "updated": "2024-01-20T10:00:00Z",
+  "description": null
+}

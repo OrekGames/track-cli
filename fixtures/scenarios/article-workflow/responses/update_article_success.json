@@ -1,0 +1,13 @@
+{
+  "id": "kb-1",
+  "id_readable": "KB-A-1",
+  "summary": "Getting Started",
+  "content": "Updated documentation...",
+  "project": { "id": "0-1", "name": "Demo Project", "short_name": "DEMO" },
+  "parent_article": null,
+  "has_children": false,
+  "tags": [],
+  "created": "2024-01-01T10:00:00Z",
+  "updated": "2024-01-20T11:00:00Z",
+  "reporter": null
+}

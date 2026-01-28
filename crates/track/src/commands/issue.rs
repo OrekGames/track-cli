@@ -469,7 +469,10 @@ fn validate_custom_fields(
             Some(def) => {
                 // If field has enum values, validate the value is in the list
                 if !def.values.is_empty() {
-                    let value_valid = def.values.iter().any(|v| v.eq_ignore_ascii_case(field_value));
+                    let value_valid = def
+                        .values
+                        .iter()
+                        .any(|v| v.eq_ignore_ascii_case(field_value));
                     if !value_valid {
                         return Err(anyhow!(
                             "Invalid value '{}' for field '{}'. Valid values: {}",
@@ -706,8 +709,11 @@ fn resolve_search_query(
                 .iter()
                 .find(|qt| qt.name.eq_ignore_ascii_case(tmpl))
                 .ok_or_else(|| {
-                    let available: Vec<&str> =
-                        cache.query_templates.iter().map(|t| t.name.as_str()).collect();
+                    let available: Vec<&str> = cache
+                        .query_templates
+                        .iter()
+                        .map(|t| t.name.as_str())
+                        .collect();
                     anyhow!(
                         "Template '{}' not found. Available templates: {}",
                         tmpl,
@@ -732,9 +738,7 @@ fn resolve_search_query(
         }
 
         // Neither provided
-        (None, None) => Err(anyhow!(
-            "Either a search query or --template is required"
-        )),
+        (None, None) => Err(anyhow!("Either a search query or --template is required")),
     }
 }
 
@@ -1207,7 +1211,11 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
             } else {
                 println!(
                     "{} {}/{} issues {} ({} failed)",
-                    if succeeded > 0 { "⚠".yellow() } else { "✗".red() },
+                    if succeeded > 0 {
+                        "⚠".yellow()
+                    } else {
+                        "✗".red()
+                    },
                     succeeded,
                     results.len(),
                     action,
@@ -1282,6 +1290,9 @@ mod tests {
     fn resolve_query_requires_query_or_template() {
         let result = resolve_search_query(None, None, None, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Either a search query"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Either a search query"));
     }
 }

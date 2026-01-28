@@ -1,0 +1,44 @@
+# Config Management Scenario
+# Tests: configuration operations including API-based validation
+
+[scenario]
+name = "config-management"
+description = "Test configuration verification via API"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["config", "settings", "setup"]
+
+[setup]
+prompt = """
+You have access to a configured YouTrack instance with project DEMO.
+
+Task:
+1. List all projects to verify the connection is working
+2. Get the DEMO project details to validate the default project setting
+
+This verifies that the configuration is correct by fetching data from the API.
+Use the track CLI commands.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+The CLI is configured with a valid YouTrack URL and token.
+Commands: track project list, track project get DEMO
+"""
+
+[expected_outcomes]
+projects_listed = { method_called = "list_projects" }
+project_verified = { method_called = "get_project" }
+
+[scoring]
+min_commands = 2
+max_commands = 4
+optimal_commands = 2
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+under_optimal = 5

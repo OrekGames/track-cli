@@ -1,0 +1,46 @@
+# JSON Output Scenario
+# Tests: JSON output format for machine parsing
+
+[scenario]
+name = "json-output"
+description = "Test JSON output format for all major operations"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["json", "output", "parsing"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Get issue DEMO-1 in JSON format
+2. List projects in JSON format
+3. Get project fields for DEMO in JSON format
+
+Use the -o json or --format json flag for all commands.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+JSON output is useful for scripting and AI parsing.
+Use: track -o json <command> or track --format json <command>
+"""
+
+[expected_outcomes]
+issue_json = { method_called = "get_issue", contains = "DEMO-1" }
+projects_json = { method_called = "list_projects" }
+fields_json = { method_called = "get_project_custom_fields" }
+
+[scoring]
+min_commands = 3
+max_commands = 5
+optimal_commands = 3
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+json_output = 15
+under_optimal = 5

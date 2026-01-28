@@ -136,18 +136,9 @@ fn main() -> Result<()> {
             format,
             api_key,
             min_score,
-        } => {
-            run_scenario(
-                &scenario,
-                provider,
-                model,
-                max_turns,
-                verbose,
-                format,
-                api_key,
-                min_score,
-            )
-        }
+        } => run_scenario(
+            &scenario, provider, model, max_turns, verbose, format, api_key, min_score,
+        ),
 
         Commands::RunAll {
             path,
@@ -158,18 +149,9 @@ fn main() -> Result<()> {
             min_score,
             fail_fast,
             format,
-        } => {
-            run_all_scenarios(
-                &path,
-                provider,
-                model,
-                max_turns,
-                api_key,
-                min_score,
-                fail_fast,
-                format,
-            )
-        }
+        } => run_all_scenarios(
+            &path, provider, model, max_turns, api_key, min_score, fail_fast, format,
+        ),
 
         Commands::List { path } => list_scenarios(&path),
 
@@ -455,11 +437,7 @@ fn run_all_scenarios(
         }));
 
         if matches!(format, OutputFormat::Text) {
-            let status = if passed {
-                "PASS".green()
-            } else {
-                "FAIL".red()
-            };
+            let status = if passed { "PASS".green() } else { "FAIL".red() };
             println!(
                 "  {} - {:.0}% ({} calls, {} turns)",
                 status,
@@ -477,7 +455,10 @@ fn run_all_scenarios(
     // Final summary
     match format {
         OutputFormat::Json => {
-            let passed_count = results.iter().filter(|r| r["passed"].as_bool().unwrap_or(false)).count();
+            let passed_count = results
+                .iter()
+                .filter(|r| r["passed"].as_bool().unwrap_or(false))
+                .count();
             let output = serde_json::json!({
                 "all_passed": all_passed,
                 "total": results.len(),
@@ -489,7 +470,10 @@ fn run_all_scenarios(
         }
         OutputFormat::Text => {
             println!("\n{}", "─".repeat(60));
-            let passed_count = results.iter().filter(|r| r["passed"].as_bool().unwrap_or(false)).count();
+            let passed_count = results
+                .iter()
+                .filter(|r| r["passed"].as_bool().unwrap_or(false))
+                .count();
             if all_passed {
                 println!(
                     "  {} {}/{} scenarios passed",

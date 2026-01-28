@@ -1,0 +1,8 @@
+[
+  {
+    "id": "comment-1",
+    "text": "First comment",
+    "author": { "login": "john.doe" },
+    "created": "2024-01-12T10:00:00Z"
+  }
+]

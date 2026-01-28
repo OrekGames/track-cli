@@ -225,8 +225,7 @@ impl Scenario {
 
     /// Check if this scenario is compatible with a given backend
     pub fn is_compatible_with(&self, backend: &str) -> bool {
-        self.scenario.backend == "any"
-            || self.scenario.backend.eq_ignore_ascii_case(backend)
+        self.scenario.backend == "any" || self.scenario.backend.eq_ignore_ascii_case(backend)
     }
 }
 

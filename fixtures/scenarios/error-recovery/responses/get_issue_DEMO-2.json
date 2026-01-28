@@ -1,0 +1,23 @@
+{
+  "id": "2-2",
+  "id_readable": "DEMO-2",
+  "summary": "Add password reset feature",
+  "description": "Allow users to reset passwords via email",
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "Open",
+        "is_resolved": false
+      }
+    }
+  ],
+  "tags": [],
+  "created": "2024-01-12T10:00:00Z",
+  "updated": "2024-01-12T10:00:00Z"
+}

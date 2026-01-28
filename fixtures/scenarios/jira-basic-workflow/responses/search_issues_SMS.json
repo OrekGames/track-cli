@@ -1,0 +1,28 @@
+[
+  {
+    "id": "10001",
+    "id_readable": "SMS-1",
+    "summary": "Implement SMS gateway integration",
+    "description": "Integrate with SMS gateway provider",
+    "project": { "id": "10000", "name": "SMS Project", "short_name": "SMS" },
+    "custom_fields": [
+      { "State": { "name": "Status", "value": "Open", "is_resolved": false } }
+    ],
+    "tags": [],
+    "created": "2024-01-10T09:00:00Z",
+    "updated": "2024-01-15T14:30:00Z"
+  },
+  {
+    "id": "10002",
+    "id_readable": "SMS-2",
+    "summary": "Add message templates",
+    "description": null,
+    "project": { "id": "10000", "name": "SMS Project", "short_name": "SMS" },
+    "custom_fields": [
+      { "State": { "name": "Status", "value": "Open", "is_resolved": false } }
+    ],
+    "tags": [],
+    "created": "2024-01-11T09:00:00Z",
+    "updated": "2024-01-11T09:00:00Z"
+  }
+]

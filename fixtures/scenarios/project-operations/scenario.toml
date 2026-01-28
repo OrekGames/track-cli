@@ -1,0 +1,49 @@
+# Project Operations Scenario
+# Tests: project list, get, fields, create
+
+[scenario]
+name = "project-operations"
+description = "Test project listing, retrieval, field discovery, and creation"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["projects", "fields", "schema"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance.
+
+Task:
+1. List all available projects
+2. Get details for project DEMO
+3. Show the custom fields available in project DEMO
+4. Create a new project with short name "TEST" and name "Test Project"
+
+Use the track CLI to accomplish these tasks.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+The instance has projects DEMO and OTHER.
+Projects have custom fields: State, Priority, Type, Assignee.
+"""
+
+[expected_outcomes]
+projects_listed = { method_called = "list_projects" }
+project_retrieved = { method_called = "get_project" }
+fields_retrieved = { method_called = "get_project_custom_fields" }
+project_created = { method_called = "create_project" }
+
+[scoring]
+min_commands = 4
+max_commands = 6
+optimal_commands = 4
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

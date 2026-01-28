@@ -1,0 +1,14 @@
+{
+  "id": "10001",
+  "id_readable": "SMS-1",
+  "summary": "Implement SMS gateway integration",
+  "description": "Integrate with SMS gateway provider",
+  "project": { "id": "10000", "name": "SMS Project", "short_name": "SMS" },
+  "custom_fields": [
+    { "State": { "name": "Status", "value": "In Progress", "is_resolved": false } },
+    { "SingleEnum": { "name": "Priority", "value": "Medium" } }
+  ],
+  "tags": [],
+  "created": "2024-01-10T09:00:00Z",
+  "updated": "2024-01-20T10:00:00Z"
+}

@@ -1,0 +1,87 @@
+# Request-to-Response Mapping for issue-create-advanced scenario
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project"
+file = "get_project_DEMO.json"
+[responses.args]
+id = "DEMO"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields.json"
+[responses.args]
+project_id = "*"
+
+# =============================================================================
+# Issue Get Operations (for parent reference)
+# =============================================================================
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-1.json"
+[responses.args]
+id = "DEMO-1"
+
+# =============================================================================
+# Issue Create Operations
+# =============================================================================
+
+# Basic create
+[[responses]]
+method = "create_issue"
+file = "create_issue_basic.json"
+[responses.when]
+body_contains = "feature X"
+
+# Create with custom fields
+[[responses]]
+method = "create_issue"
+file = "create_issue_custom_fields.json"
+[responses.when]
+body_contains = "priority bug"
+
+# Create subtask
+[[responses]]
+method = "create_issue"
+file = "create_issue_subtask.json"
+[responses.when]
+body_contains = "Subtask"
+
+# Create with tags
+[[responses]]
+method = "create_issue"
+file = "create_issue_with_tags.json"
+[responses.when]
+body_contains = "Tagged"
+
+# Create via JSON
+[[responses]]
+method = "create_issue"
+file = "create_issue_json.json"
+[responses.when]
+body_contains = "JSON"
+
+# Generic fallback
+[[responses]]
+method = "create_issue"
+file = "create_issue_success.json"
+
+# =============================================================================
+# Supporting Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"
+
+[[responses]]
+method = "list_users"
+file = "list_users.json"

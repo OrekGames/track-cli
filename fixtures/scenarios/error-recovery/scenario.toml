@@ -1,0 +1,55 @@
+# Error Recovery Scenario
+# Tests: Agent's ability to handle errors and recover
+
+[scenario]
+name = "error-recovery"
+description = "Handle a 404 error gracefully and find the correct issue"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["errors", "recovery", "resilience"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Get issue DEMO-999 (this will fail - issue doesn't exist)
+2. When you receive an error, search for open issues in DEMO project
+3. Get the first issue from the search results
+4. Add a comment "Found this issue after recovery"
+
+Use the track CLI. Expect that some commands may fail.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Note: Issue DEMO-999 does NOT exist.
+The project has open issues DEMO-1 and DEMO-2.
+"""
+
+[expected_outcomes]
+# Agent should have attempted to get the non-existent issue
+attempted_missing = { method_called = "get_issue", issue = "DEMO-999" }
+
+# Agent should have searched for issues after the error
+search_performed = { method_called = "search_issues" }
+
+# Agent should have successfully gotten an issue
+issue_retrieved = "DEMO-1"
+
+# Agent should have added a comment
+comment_added = { method_called = "add_comment", contains = "recovery" }
+
+[scoring]
+min_commands = 4        # get (fail) + search + get + comment
+max_commands = 8        # Allow some exploration
+optimal_commands = 5    # get (fail) + search + get + comment + maybe one extra
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -5      # Lower penalty for expected errors
+
+[scoring.bonuses]
+cache_use = 10

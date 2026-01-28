@@ -1,0 +1,49 @@
+# Tags Operations Scenario
+# Tests: tags list and tagging issues
+
+[scenario]
+name = "tags-operations"
+description = "Test tag listing and applying tags to issues"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["tags", "labeling", "organization"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. List all available tags
+2. Create a new issue with tags "urgent" and "frontend"
+   Summary: "Fix UI glitch", Type: "Bug"
+3. Update issue DEMO-1 to add tag "backend"
+4. Update issue DEMO-2 to add multiple tags: "reviewed", "ready-for-release"
+
+Use the track CLI with --tag flag for creating/updating.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Available tags: backend, frontend, urgent, reviewed, ready-for-release, api, docs
+Tags are applied via: --tag "tagname" (can be repeated)
+"""
+
+[expected_outcomes]
+tags_listed = { method_called = "list_tags" }
+issue_with_tags = { method_called = "create_issue", contains = "Fix UI glitch" }
+tag_added = { method_called = "update_issue", issue = "DEMO-1" }
+multi_tags_added = { method_called = "update_issue", issue = "DEMO-2" }
+
+[scoring]
+min_commands = 4
+max_commands = 7
+optimal_commands = 4
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

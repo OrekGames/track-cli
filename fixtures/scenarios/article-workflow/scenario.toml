@@ -1,0 +1,59 @@
+# Article Workflow Scenario
+# Tests: article CRUD operations (knowledge base)
+
+[scenario]
+name = "article-workflow"
+description = "Test knowledge base article operations"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["articles", "wiki", "knowledge-base"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. List articles in the DEMO project
+2. Search for articles containing "setup"
+3. Get article KB-A-1
+4. Create a new article with summary "Getting Started Guide" and content "Welcome to the project..."
+5. Update article KB-A-1 with new content "Updated documentation..."
+6. Add a comment to article KB-A-1 with text "Reviewed and approved"
+7. List comments on article KB-A-1
+8. Show the article tree for KB-A-1
+9. Delete article KB-A-2
+
+Use the track article commands.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Project DEMO has a knowledge base with articles KB-A-1 and KB-A-2.
+Article operations: get, list, search, create, update, delete, tree, comment, comments.
+"""
+
+[expected_outcomes]
+articles_listed = { method_called = "list_articles" }
+articles_searched = { method_called = "search_articles", contains = "setup" }
+article_retrieved = { method_called = "get_article", contains = "KB-A-1" }
+article_created = { method_called = "create_article", contains = "Getting Started" }
+article_updated = { method_called = "update_article", contains = "KB-A-1" }
+comment_added = { method_called = "add_article_comment", contains = "Reviewed" }
+comments_listed = { method_called = "get_article_comments" }
+tree_shown = { method_called = "get_child_articles" }
+article_deleted = { method_called = "delete_article", contains = "KB-A-2" }
+
+[scoring]
+min_commands = 9
+max_commands = 14
+optimal_commands = 9
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

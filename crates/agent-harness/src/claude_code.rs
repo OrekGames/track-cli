@@ -3,7 +3,7 @@
 //! Invokes Claude Code as a subprocess and captures its behavior for evaluation.
 //! This allows testing how Claude Code specifically performs on scenarios.
 
-use  crate::runner::{CommandExecution, SessionResult};
+use crate::runner::{CommandExecution, SessionResult};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -325,10 +325,7 @@ fn find_track_binary() -> String {
 }
 
 /// Parse streaming JSON output from Claude Code
-fn parse_stream_output(
-    stdout: impl std::io::Read,
-    verbose: bool,
-) -> Result<Vec<ClaudeCodeEvent>> {
+fn parse_stream_output(stdout: impl std::io::Read, verbose: bool) -> Result<Vec<ClaudeCodeEvent>> {
     let reader = BufReader::new(stdout);
     let mut events = Vec::new();
 

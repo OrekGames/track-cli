@@ -1,0 +1,22 @@
+{
+  "id": "2-3",
+  "id_readable": "DEMO-3",
+  "summary": "Completed issue",
+  "project": {
+    "id": "0-1",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "Done",
+        "is_resolved": true
+      }
+    }
+  ],
+  "updated": "2024-01-20T10:00:00Z",
+  "tags": [],
+  "description": null,
+  "created": "2024-01-20T10:00:00Z"
+}

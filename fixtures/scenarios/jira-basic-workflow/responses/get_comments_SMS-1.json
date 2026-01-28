@@ -1,0 +1,20 @@
+{
+  "comments": [
+    {
+      "id": "10001",
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "Starting work on this issue" }]
+          }
+        ]
+      },
+      "author": { "displayName": "John Doe" },
+      "created": "2024-01-20T10:00:00.000+0000"
+    }
+  ],
+  "total": 1
+}

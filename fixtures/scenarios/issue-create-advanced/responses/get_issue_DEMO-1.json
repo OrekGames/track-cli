@@ -1,0 +1,22 @@
+{
+  "id": "2-1",
+  "id_readable": "DEMO-1",
+  "summary": "Implement user authentication",
+  "project": {
+    "id": "0-1",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "Open",
+        "is_resolved": false
+      }
+    }
+  ],
+  "created": "2024-01-10T09:00:00Z",
+  "tags": [],
+  "updated": "2024-01-10T09:00:00Z",
+  "description": null
+}

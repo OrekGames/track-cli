@@ -16,7 +16,6 @@ use tracker_core::{
     Result, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
-
 /// A mock client that reads responses from fixture files
 pub struct MockClient {
     /// Root directory containing the scenario
@@ -69,9 +68,8 @@ impl MockClient {
 
         // Load manifest
         let manifest_path = scenario_dir.join("manifest.toml");
-        let manifest = Manifest::load(&manifest_path).map_err(|e| {
-            TrackerError::Io(format!("Failed to load mock manifest: {}", e))
-        })?;
+        let manifest = Manifest::load(&manifest_path)
+            .map_err(|e| TrackerError::Io(format!("Failed to load mock manifest: {}", e)))?;
 
         // Open call log file
         let log_path = scenario_dir.join("call_log.jsonl");
@@ -108,7 +106,11 @@ impl MockClient {
     fn load_response<T: for<'de> Deserialize<'de>>(&self, filename: &str) -> Result<T> {
         let path = self.response_path(filename);
         let content = std::fs::read_to_string(&path).map_err(|e| {
-            TrackerError::Io(format!("Failed to read mock response {}: {}", path.display(), e))
+            TrackerError::Io(format!(
+                "Failed to read mock response {}: {}",
+                path.display(),
+                e
+            ))
         })?;
 
         serde_json::from_str(&content).map_err(|e| {
@@ -172,14 +174,7 @@ impl MockClient {
         // Load and parse response
         let response: T = self.load_response(&filename)?;
 
-        self.log_call(
-            method,
-            &args,
-            Some(&filename),
-            None,
-            mapping.status,
-            start,
-        );
+        self.log_call(method, &args, Some(&filename), None, mapping.status, start);
 
         Ok(response)
     }
@@ -237,18 +232,13 @@ impl MockClient {
     /// Clear the call log
     pub fn clear_call_log(&self) -> Result<()> {
         let log_path = self.scenario_dir.join("call_log.jsonl");
-        std::fs::write(&log_path, "").map_err(|e| {
-            TrackerError::Io(format!("Failed to clear call log: {}", e))
-        })
+        std::fs::write(&log_path, "")
+            .map_err(|e| TrackerError::Io(format!("Failed to clear call log: {}", e)))
     }
 
     /// Get total number of calls made
     pub fn call_count(&self) -> usize {
-        self.call_counts
-            .lock()
-            .unwrap()
-            .values()
-            .sum()
+        self.call_counts.lock().unwrap().values().sum()
     }
 }
 

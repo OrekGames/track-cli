@@ -1,0 +1,17 @@
+{
+  "id": "2-104",
+  "id_readable": "DEMO-104",
+  "summary": "JSON created issue",
+  "description": null,
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    { "SingleEnum": { "name": "Priority", "value": "High" } }
+  ],
+  "tags": [],
+  "created": "2024-01-20T10:00:00Z",
+  "updated": "2024-01-20T10:00:00Z"
+}

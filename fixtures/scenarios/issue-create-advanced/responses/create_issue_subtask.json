@@ -1,0 +1,15 @@
+{
+  "id": "2-102",
+  "id_readable": "DEMO-102",
+  "summary": "Subtask for feature X",
+  "description": null,
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [],
+  "tags": [],
+  "created": "2024-01-20T10:00:00Z",
+  "updated": "2024-01-20T10:00:00Z"
+}

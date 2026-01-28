@@ -1,0 +1,47 @@
+{
+  "projects": [
+    {
+      "id": "0-1",
+      "name": "Demo Project",
+      "short_name": "DEMO",
+      "description": "A demo project for testing"
+    }
+  ],
+  "custom_fields": [
+    {
+      "name": "State",
+      "field_type": "state",
+      "values": ["Open", "In Progress", "Done"]
+    },
+    {
+      "name": "Priority",
+      "field_type": "enum",
+      "values": ["Low", "Normal", "High", "Critical"]
+    },
+    {
+      "name": "Type",
+      "field_type": "enum",
+      "values": ["Bug", "Task", "Feature", "Improvement"]
+    }
+  ],
+  "tags": [
+    { "name": "backend" },
+    { "name": "frontend" },
+    { "name": "urgent" }
+  ],
+  "link_types": [
+    { "name": "Relates", "source_to_target": "relates to" },
+    { "name": "Depends", "source_to_target": "depends on" },
+    { "name": "Subtask", "source_to_target": "subtask of" }
+  ],
+  "workflow_hints": {
+    "state_field": "State",
+    "start_state": "In Progress",
+    "done_states": ["Done"]
+  },
+  "query_templates": {
+    "unresolved": "project: {project} #Unresolved",
+    "my-issues": "project: {project} Assignee: me",
+    "high-priority": "project: {project} Priority: High,Critical"
+  }
+}

@@ -1,0 +1,68 @@
+# Request-to-Response Mapping for error-recovery scenario
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+# =============================================================================
+# Issue Operations - Errors
+# =============================================================================
+
+# This will return a 404 error
+[[responses]]
+method = "get_issue"
+file = "error_404.json"
+status = 404
+[responses.args]
+id = "DEMO-999"
+
+# =============================================================================
+# Issue Operations - Success
+# =============================================================================
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-1.json"
+[responses.args]
+id = "DEMO-1"
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-2.json"
+[responses.args]
+id = "DEMO-2"
+
+# Search returns multiple issues
+[[responses]]
+method = "search_issues"
+file = "search_issues_open.json"
+[responses.args]
+query = "*"
+
+# =============================================================================
+# Comment Operations
+# =============================================================================
+
+[[responses]]
+method = "add_comment"
+file = "add_comment_DEMO-1.json"
+[responses.args]
+issue_id = "DEMO-1"
+
+[[responses]]
+method = "add_comment"
+file = "add_comment_DEMO-2.json"
+[responses.args]
+issue_id = "DEMO-2"
+
+# =============================================================================
+# Other Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"

@@ -1,0 +1,13 @@
+{
+  "id": "kb-2",
+  "id_readable": "KB-A-2",
+  "summary": "API Reference",
+  "content": "API documentation for developers.\n\n## Endpoints\n\n...",
+  "project": { "id": "0-1", "name": "Demo Project", "short_name": "DEMO" },
+  "parent_article": null,
+  "has_children": false,
+  "tags": [{ "id": "tag-api", "name": "api" }],
+  "created": "2024-01-05T11:00:00Z",
+  "updated": "2024-01-10T09:00:00Z",
+  "reporter": { "login": "jane.smith", "name": "Jane Smith" }
+}

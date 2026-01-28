@@ -276,7 +276,8 @@ impl TrackerCache {
                 });
 
                 // Build workflow hints for state fields
-                let workflow_hints = Self::build_workflow_hints(&project.short_name, &project.id, &fields);
+                let workflow_hints =
+                    Self::build_workflow_hints(&project.short_name, &project.id, &fields);
                 if !workflow_hints.state_fields.is_empty() {
                     cache.workflow_hints.push(workflow_hints);
                 }
@@ -735,10 +736,12 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
         (s.as_str(), "h")
     };
 
-    let num: i64 = num_str
-        .trim()
-        .parse()
-        .map_err(|_| anyhow!("Invalid duration: '{}'. Use format like '1h', '30m', '1d'", s))?;
+    let num: i64 = num_str.trim().parse().map_err(|_| {
+        anyhow!(
+            "Invalid duration: '{}'. Use format like '1h', '30m', '1d'",
+            s
+        )
+    })?;
 
     if num <= 0 {
         return Err(anyhow!("Duration must be positive"));

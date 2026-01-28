@@ -1,0 +1,57 @@
+# Request-to-Response Mapping for issue-linking scenario
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project"
+file = "get_project_DEMO.json"
+[responses.args]
+id = "DEMO"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields.json"
+[responses.args]
+project_id = "*"
+
+# =============================================================================
+# Issue Operations
+# =============================================================================
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_generic.json"
+[responses.args]
+id = "*"
+
+# =============================================================================
+# Link Operations
+# =============================================================================
+
+[[responses]]
+method = "link_issues"
+file = "link_issues_success.json"
+
+[[responses]]
+method = "list_link_types"
+file = "list_link_types.json"
+
+[[responses]]
+method = "get_issue_links"
+file = "get_issue_links.json"
+[responses.args]
+issue_id = "*"
+
+# =============================================================================
+# Supporting Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"

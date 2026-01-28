@@ -1,0 +1,6 @@
+{
+  "id": "comment-100",
+  "text": "This is a status update",
+  "author": { "login": "john.doe", "name": "John Doe" },
+  "created": "2024-01-20T10:00:00Z"
+}

@@ -1,0 +1,45 @@
+# Issue Delete Scenario
+# Tests: single and batch issue deletion
+
+[scenario]
+name = "issue-delete"
+description = "Test single and batch issue deletion operations"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["delete", "cleanup", "batch"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Delete issue DEMO-10 (single deletion)
+2. Delete issues DEMO-11, DEMO-12, DEMO-13 in a single batch operation
+3. Verify deletion by attempting to get DEMO-10 (should fail)
+
+Use the track issue delete command. For batch deletion, use comma-separated IDs.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Issues DEMO-10 through DEMO-13 are test issues that can be safely deleted.
+Batch deletion: track issue delete DEMO-11,DEMO-12,DEMO-13
+"""
+
+[expected_outcomes]
+single_delete = { method_called = "delete_issue", issue = "DEMO-10" }
+batch_delete = { method_called = "delete_issue", min_calls = 3 }
+verify_deleted = { method_called = "get_issue", issue = "DEMO-10" }
+
+[scoring]
+min_commands = 3
+max_commands = 6
+optimal_commands = 3
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -10
+
+[scoring.bonuses]
+under_optimal = 5

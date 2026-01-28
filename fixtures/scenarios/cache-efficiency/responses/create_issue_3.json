@@ -1,0 +1,35 @@
+{
+  "id": "2-12",
+  "id_readable": "DEMO-12",
+  "summary": "Update password validation",
+  "description": null,
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "Open",
+        "is_resolved": false
+      }
+    },
+    {
+      "SingleEnum": {
+        "name": "Priority",
+        "value": "Normal"
+      }
+    },
+    {
+      "SingleEnum": {
+        "name": "Type",
+        "value": "Bug"
+      }
+    }
+  ],
+  "tags": [],
+  "created": "2024-01-16T10:02:00Z",
+  "updated": "2024-01-16T10:02:00Z"
+}

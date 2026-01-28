@@ -1,0 +1,30 @@
+{
+  "id": "2-10",
+  "id_readable": "DEMO-10",
+  "summary": "Fix UI glitch",
+  "project": {
+    "id": "0-1",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "SingleEnum": {
+        "name": "Type",
+        "value": "Bug"
+      }
+    }
+  ],
+  "tags": [
+    {
+      "id": "tag-2",
+      "name": "urgent"
+    },
+    {
+      "id": "tag-3",
+      "name": "frontend"
+    }
+  ],
+  "created": "2024-01-20T10:00:00Z",
+  "updated": "2024-01-20T10:00:00Z",
+  "description": null
+}

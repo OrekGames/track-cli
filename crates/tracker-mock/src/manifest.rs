@@ -90,8 +90,8 @@ pub struct ConditionMatcher {
 impl Manifest {
     /// Load a manifest from a TOML file
     pub fn load(path: &Path) -> Result<Self, ManifestError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ManifestError::Io(path.to_path_buf(), e))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| ManifestError::Io(path.to_path_buf(), e))?;
 
         toml::from_str(&content).map_err(|e| ManifestError::Parse(path.to_path_buf(), e))
     }
@@ -115,9 +115,10 @@ impl Manifest {
             }
 
             // Check argument matching
-            let args_match = mapping.args.iter().all(|(key, matcher)| {
-                args.get(key).map(|v| matcher.matches(v)).unwrap_or(false)
-            });
+            let args_match = mapping
+                .args
+                .iter()
+                .all(|(key, matcher)| args.get(key).map(|v| matcher.matches(v)).unwrap_or(false));
 
             if !args_match && !mapping.args.is_empty() {
                 continue;

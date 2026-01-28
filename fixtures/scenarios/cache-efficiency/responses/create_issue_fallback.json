@@ -1,0 +1,23 @@
+{
+  "id": "2-99",
+  "id_readable": "DEMO-99",
+  "summary": "Created issue",
+  "description": null,
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "Open",
+        "is_resolved": false
+      }
+    }
+  ],
+  "tags": [],
+  "created": "2024-01-16T10:00:00Z",
+  "updated": "2024-01-16T10:00:00Z"
+}

@@ -133,6 +133,9 @@ mod tests {
         });
 
         let args = parse_track_input(&input).unwrap();
-        assert_eq!(args, vec!["issue", "comment", "DEMO-1", "-m", "Hello world"]);
+        assert_eq!(
+            args,
+            vec!["issue", "comment", "DEMO-1", "-m", "Hello world"]
+        );
     }
 }

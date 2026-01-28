@@ -1,0 +1,29 @@
+{
+  "id": "2-1",
+  "id_readable": "DEMO-1",
+  "summary": "Generic test issue",
+  "description": "A test issue for batch operations",
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "In Progress",
+        "is_resolved": false
+      }
+    },
+    {
+      "SingleEnum": {
+        "name": "Priority",
+        "value": "High"
+      }
+    }
+  ],
+  "tags": [],
+  "created": "2024-01-10T09:00:00Z",
+  "updated": "2024-01-20T10:00:00Z"
+}

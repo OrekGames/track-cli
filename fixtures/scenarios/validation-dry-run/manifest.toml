@@ -1,0 +1,69 @@
+# Request-to-Response Mapping for validation-dry-run scenario
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project"
+file = "get_project_DEMO.json"
+[responses.args]
+id = "DEMO"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields.json"
+[responses.args]
+project_id = "*"
+
+# =============================================================================
+# Issue Operations
+# =============================================================================
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-1.json"
+[responses.args]
+id = "DEMO-1"
+
+# =============================================================================
+# Validation Operations
+# =============================================================================
+
+[[responses]]
+method = "validate_issue"
+file = "validate_success.json"
+
+[[responses]]
+method = "dry_run_create"
+file = "dry_run_create.json"
+
+[[responses]]
+method = "dry_run_update"
+file = "dry_run_update.json"
+
+# =============================================================================
+# Create/Update (if validation passes and they proceed)
+# =============================================================================
+
+[[responses]]
+method = "create_issue"
+file = "create_issue_success.json"
+
+[[responses]]
+method = "update_issue"
+file = "update_issue_success.json"
+[responses.args]
+id = "*"
+
+# =============================================================================
+# Supporting Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"

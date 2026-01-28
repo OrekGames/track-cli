@@ -115,9 +115,8 @@ fn run(cli: Cli) -> Result<()> {
 
     // Check if mock mode is enabled
     if let Some(mock_dir) = tracker_mock::get_mock_dir() {
-        let client = MockClient::new(&mock_dir).map_err(|e| {
-            anyhow::anyhow!("Failed to initialize mock client: {}", e)
-        })?;
+        let client = MockClient::new(&mock_dir)
+            .map_err(|e| anyhow::anyhow!("Failed to initialize mock client: {}", e))?;
         return run_with_client(&client, &client, &cli, &config);
     }
 
@@ -162,7 +161,14 @@ fn run_with_client(
         Commands::Tags { action } => commands::tags::handle_tags(issue_client, action, cli.format),
         Commands::Cache { action } => {
             let backend = cli.backend.unwrap_or_else(|| config.get_backend());
-            handle_cache(issue_client, Some(kb_client), action, cli.format, backend, config)
+            handle_cache(
+                issue_client,
+                Some(kb_client),
+                action,
+                cli.format,
+                backend,
+                config,
+            )
         }
         Commands::Config { action } => handle_config(issue_client, action, cli.format, config),
         Commands::Article { action } => {
@@ -233,7 +239,8 @@ fn handle_cache(
                     // Cache is fresh, skip refresh
                     match format {
                         cli::OutputFormat::Json => {
-                            let age_seconds = existing_cache.age().map(|a| a.num_seconds()).unwrap_or(0);
+                            let age_seconds =
+                                existing_cache.age().map(|a| a.num_seconds()).unwrap_or(0);
                             println!(
                                 r#"{{"success": true, "skipped": true, "message": "Cache is fresh", "age_seconds": {}}}"#,
                                 age_seconds
@@ -260,7 +267,13 @@ fn handle_cache(
             let base_url = config.url.as_deref().unwrap_or("unknown");
             let default_project = config.default_project.as_deref();
 
-            let cache = cache::TrackerCache::refresh_with_articles(client, kb_client, backend_type, base_url, default_project)?;
+            let cache = cache::TrackerCache::refresh_with_articles(
+                client,
+                kb_client,
+                backend_type,
+                base_url,
+                default_project,
+            )?;
             cache.save(None)?;
 
             match format {
@@ -274,9 +287,14 @@ fn handle_cache(
                     println!("  {}: {}", "Projects".dimmed(), cache.projects.len());
                     println!("  {}: {}", "Tags".dimmed(), cache.tags.len());
                     println!("  {}: {}", "Link types".dimmed(), cache.link_types.len());
-                    println!("  {}: {}", "Query templates".dimmed(), cache.query_templates.len());
+                    println!(
+                        "  {}: {}",
+                        "Query templates".dimmed(),
+                        cache.query_templates.len()
+                    );
                     if !cache.project_users.is_empty() {
-                        let total_users: usize = cache.project_users.iter().map(|p| p.users.len()).sum();
+                        let total_users: usize =
+                            cache.project_users.iter().map(|p| p.users.len()).sum();
                         println!("  {}: {}", "Users".dimmed(), total_users);
                     }
                     if !cache.articles.is_empty() {
@@ -310,11 +328,7 @@ fn handle_cache(
                     use colored::Colorize;
 
                     if cache.is_empty() {
-                        println!(
-                            "{}: {}",
-                            "Cache status".white().bold(),
-                            "empty".yellow()
-                        );
+                        println!("{}: {}", "Cache status".white().bold(), "empty".yellow());
                         println!(
                             "  Run '{}' to populate the cache.",
                             "track cache refresh".cyan()
@@ -345,7 +359,11 @@ fn handle_cache(
                     }
                     println!("  {}: {}", "Projects".dimmed(), cache.projects.len());
                     println!("  {}: {}", "Tags".dimmed(), cache.tags.len());
-                    println!("  {}: {}", "Recent issues".dimmed(), cache.recent_issues.len());
+                    println!(
+                        "  {}: {}",
+                        "Recent issues".dimmed(),
+                        cache.recent_issues.len()
+                    );
 
                     // Suggest refresh if stale
                     if let Some(age) = cache.age() {
@@ -383,7 +401,12 @@ fn handle_cache(
 
                     // Backend metadata
                     if let Some(meta) = &cache.backend_metadata {
-                        println!("{}: {} ({})", "Backend".dimmed(), meta.backend_type.cyan(), meta.base_url.dimmed());
+                        println!(
+                            "{}: {} ({})",
+                            "Backend".dimmed(),
+                            meta.backend_type.cyan(),
+                            meta.base_url.dimmed()
+                        );
                     }
                     if let Some(proj) = &cache.default_project {
                         println!("{}: {}", "Default project".dimmed(), proj.cyan().bold());
@@ -415,7 +438,13 @@ fn handle_cache(
                             } else {
                                 format!(" -> {}", f.values.join(", ").dimmed())
                             };
-                            println!("    {} [{}]{}{}", f.name.white(), f.field_type.dimmed(), req, values_str);
+                            println!(
+                                "    {} [{}]{}{}",
+                                f.name.white(),
+                                f.field_type.dimmed(),
+                                req,
+                                values_str
+                            );
                         }
                     }
 
@@ -436,7 +465,12 @@ fn handle_cache(
                         for lt in &cache.link_types {
                             let outward = lt.source_to_target.as_deref().unwrap_or("-");
                             let inward = lt.target_to_source.as_deref().unwrap_or("-");
-                            println!("  {} ({} / {})", lt.name.cyan(), outward.dimmed(), inward.dimmed());
+                            println!(
+                                "  {} ({} / {})",
+                                lt.name.cyan(),
+                                outward.dimmed(),
+                                inward.dimmed()
+                            );
                         }
                     }
 
@@ -455,13 +489,22 @@ fn handle_cache(
                         println!("{}:", "Project Users".white().bold());
                         for pu in &cache.project_users {
                             let user_count = pu.users.len();
-                            let sample_users: Vec<&str> = pu.users.iter().take(3).map(|u| u.display_name.as_str()).collect();
+                            let sample_users: Vec<&str> = pu
+                                .users
+                                .iter()
+                                .take(3)
+                                .map(|u| u.display_name.as_str())
+                                .collect();
                             let sample_str = if user_count > 3 {
                                 format!("{}, ... ({} total)", sample_users.join(", "), user_count)
                             } else {
                                 sample_users.join(", ")
                             };
-                            println!("  {}: {}", pu.project_short_name.cyan(), sample_str.dimmed());
+                            println!(
+                                "  {}: {}",
+                                pu.project_short_name.cyan(),
+                                sample_str.dimmed()
+                            );
                         }
                     }
 
@@ -471,7 +514,12 @@ fn handle_cache(
                         println!("{}:", "Recent Issues".white().bold());
                         for ri in cache.recent_issues.iter().take(10) {
                             let state = ri.state.as_deref().unwrap_or("?");
-                            println!("  {} [{}] {}", ri.id_readable.cyan(), state.dimmed(), ri.summary);
+                            println!(
+                                "  {} [{}] {}",
+                                ri.id_readable.cyan(),
+                                state.dimmed(),
+                                ri.summary
+                            );
                         }
                     }
 
@@ -481,7 +529,12 @@ fn handle_cache(
                         println!("{}:", "Articles".white().bold());
                         for a in cache.articles.iter().take(10) {
                             let children = if a.has_children { " (+)" } else { "" };
-                            println!("  {}{} - {}", a.id_readable.cyan(), children.dimmed(), a.summary);
+                            println!(
+                                "  {}{} - {}",
+                                a.id_readable.cyan(),
+                                children.dimmed(),
+                                a.summary
+                            );
                         }
                         if cache.articles.len() > 10 {
                             println!("  {} more...", cache.articles.len() - 10);
@@ -523,12 +576,32 @@ fn handle_config_backend(backend: Backend, format: cli::OutputFormat) -> Result<
 const VALID_CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ("backend", "youtrack | jira", "Default backend to use"),
     ("url", "string", "Tracker instance URL"),
-    ("token", "string", "API token (YouTrack permanent token or Jira API token)"),
-    ("email", "string", "Email for authentication (required for Jira)"),
-    ("default_project", "string", "Default project shortName (e.g., \"PROJ\")"),
-    ("youtrack.url", "string", "YouTrack-specific URL (overrides 'url' when backend=youtrack)"),
+    (
+        "token",
+        "string",
+        "API token (YouTrack permanent token or Jira API token)",
+    ),
+    (
+        "email",
+        "string",
+        "Email for authentication (required for Jira)",
+    ),
+    (
+        "default_project",
+        "string",
+        "Default project shortName (e.g., \"PROJ\")",
+    ),
+    (
+        "youtrack.url",
+        "string",
+        "YouTrack-specific URL (overrides 'url' when backend=youtrack)",
+    ),
     ("youtrack.token", "string", "YouTrack-specific token"),
-    ("jira.url", "string", "Jira-specific URL (overrides 'url' when backend=jira)"),
+    (
+        "jira.url",
+        "string",
+        "Jira-specific URL (overrides 'url' when backend=jira)",
+    ),
     ("jira.email", "string", "Jira-specific email"),
     ("jira.token", "string", "Jira-specific token"),
 ];
@@ -563,7 +636,8 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                     }
                     println!();
                     println!("{}:", "Example .track.toml file".white().bold());
-                    println!(r#"
+                    println!(
+                        r#"
   # Global settings
   backend = "youtrack"
   default_project = "PROJ"
@@ -578,9 +652,13 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
   url = "https://company.atlassian.net"
   email = "user@company.com"
   token = "api-token"
-"#);
+"#
+                    );
                     println!("{}:", "Usage".white().bold());
-                    println!("  Set a value:  {}", "track config set <key> <value>".cyan());
+                    println!(
+                        "  Set a value:  {}",
+                        "track config set <key> <value>".cyan()
+                    );
                     println!("  Get a value:  {}", "track config get <key>".cyan());
                     println!("  Show config:  {}", "track config show".cyan());
                 }
@@ -609,7 +687,13 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                             value
                         ));
                     }
-                    let normalized = if value == "yt" { "youtrack" } else if value == "j" { "jira" } else { value };
+                    let normalized = if value == "yt" {
+                        "youtrack"
+                    } else if value == "j" {
+                        "jira"
+                    } else {
+                        value
+                    };
                     cfg.backend = Some(normalized.to_string());
                 }
                 "url" => cfg.url = Some(value.clone()),
@@ -628,7 +712,10 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
 
             match format {
                 cli::OutputFormat::Json => {
-                    println!(r#"{{"success": true, "key": "{}", "value": "{}"}}"#, key, value);
+                    println!(
+                        r#"{{"success": true, "key": "{}", "value": "{}"}}"#,
+                        key, value
+                    );
                 }
                 cli::OutputFormat::Text => {
                     use colored::Colorize;
@@ -1136,11 +1223,7 @@ fn print_eval_result(
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "N/A".to_string())
             );
-            println!(
-                "{}: {:?}",
-                "Efficiency".white().bold(),
-                result.efficiency
-            );
+            println!("{}: {:?}", "Efficiency".white().bold(), result.efficiency);
 
             // Outcomes
             println!("\n{}:", "Expected Outcomes".white().bold());
@@ -1202,7 +1285,11 @@ fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Result<
     use tracker_mock::{EvaluationResult, Evaluator, MockClient, Scenario};
 
     match action {
-        EvalCommands::Run { scenario, min_score, strict } => {
+        EvalCommands::Run {
+            scenario,
+            min_score,
+            strict,
+        } => {
             // Load scenario and call log
             let scenario_data = Scenario::load_from_dir(scenario)
                 .map_err(|e| anyhow::anyhow!("Failed to load scenario: {}", e))?;
@@ -1249,7 +1336,11 @@ fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Result<
             Ok(())
         }
 
-        EvalCommands::RunAll { path, min_score, fail_fast } => {
+        EvalCommands::RunAll {
+            path,
+            min_score,
+            fail_fast,
+        } => {
             let entries = std::fs::read_dir(path)
                 .map_err(|e| anyhow::anyhow!("Failed to read scenarios directory: {}", e))?;
 
@@ -1282,7 +1373,10 @@ fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Result<
                 let calls = match client.read_call_log() {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("Warning: Failed to read call log for {}: {}", scenario_data.scenario.name, e);
+                        eprintln!(
+                            "Warning: Failed to read call log for {}: {}",
+                            scenario_data.scenario.name, e
+                        );
                         continue;
                     }
                 };
@@ -1292,7 +1386,12 @@ fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Result<
                         cli::OutputFormat::Json => {}
                         cli::OutputFormat::Text => {
                             use colored::Colorize;
-                            println!("{}: {} - {}", "SKIP".yellow(), scenario_data.scenario.name, "empty call log".dimmed());
+                            println!(
+                                "{}: {} - {}",
+                                "SKIP".yellow(),
+                                scenario_data.scenario.name,
+                                "empty call log".dimmed()
+                            );
                         }
                     }
                     continue;
@@ -1316,16 +1415,19 @@ fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Result<
             // Print summary
             match format {
                 cli::OutputFormat::Json => {
-                    let summary: Vec<_> = results.iter().map(|(name, result, passed)| {
-                        serde_json::json!({
-                            "scenario": name,
-                            "passed": passed,
-                            "score": result.score,
-                            "score_percent": result.score_percent,
-                            "total_calls": result.total_calls,
-                            "success": result.success,
+                    let summary: Vec<_> = results
+                        .iter()
+                        .map(|(name, result, passed)| {
+                            serde_json::json!({
+                                "scenario": name,
+                                "passed": passed,
+                                "score": result.score,
+                                "score_percent": result.score_percent,
+                                "total_calls": result.total_calls,
+                                "success": result.success,
+                            })
                         })
-                    }).collect();
+                        .collect();
                     let output = serde_json::json!({
                         "all_passed": all_passed,
                         "total": results.len(),
@@ -1434,10 +1536,7 @@ fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Result<
                         println!("    {}", scenario.scenario.description);
                         println!("    Path: {}", scenario_path.display().to_string().dimmed());
                         if !scenario.scenario.tags.is_empty() {
-                            println!(
-                                "    Tags: {}",
-                                scenario.scenario.tags.join(", ").magenta()
-                            );
+                            println!("    Tags: {}", scenario.scenario.tags.join(", ").magenta());
                         }
                     }
                     println!();

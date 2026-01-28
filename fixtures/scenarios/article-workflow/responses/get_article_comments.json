@@ -1,0 +1,8 @@
+[
+  {
+    "id": "comment-1",
+    "text": "Reviewed and approved",
+    "author": { "login": "john.doe", "name": "John Doe" },
+    "created": "2024-01-20T12:00:00Z"
+  }
+]

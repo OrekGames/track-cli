@@ -1,0 +1,19 @@
+{
+  "id": "2-101",
+  "id_readable": "DEMO-101",
+  "summary": "High priority bug",
+  "description": null,
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    { "SingleEnum": { "name": "Priority", "value": "Critical" } },
+    { "SingleEnum": { "name": "Type", "value": "Bug" } },
+    { "SingleUser": { "name": "Assignee", "login": "john.doe", "display_name": "John Doe" } }
+  ],
+  "tags": [],
+  "created": "2024-01-20T10:00:00Z",
+  "updated": "2024-01-20T10:00:00Z"
+}

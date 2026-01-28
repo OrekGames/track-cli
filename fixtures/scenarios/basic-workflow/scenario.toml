@@ -1,0 +1,52 @@
+# Basic Workflow Scenario
+# Tests: Issue lookup, commenting, and state change
+
+[scenario]
+name = "basic-workflow"
+description = "Find an issue, add a comment, and mark it as done"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["issues", "comments", "state-change"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Find issue DEMO-1 and review its current state
+2. Add a comment "Starting work on this issue"
+3. Mark the issue as "In Progress"
+
+Use the track CLI to accomplish this task efficiently.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+The DEMO project has the following states: Open, In Progress, Done.
+Issue DEMO-1 is currently in the Open state.
+"""
+
+[expected_outcomes]
+# The agent should fetch the issue
+issue_fetched = "DEMO-1"
+
+# The agent should add a comment
+comment_added = { method_called = "add_comment", issue = "DEMO-1", contains = "Starting" }
+
+# The agent should update the issue state
+state_updated = { method_called = "update_issue", issue = "DEMO-1" }
+
+[scoring]
+min_commands = 3        # Absolute minimum: get, comment, update
+max_commands = 6        # Allow some exploration
+optimal_commands = 4    # get + list_projects (optional) + comment + update
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

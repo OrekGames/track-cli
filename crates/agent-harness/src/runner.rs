@@ -256,7 +256,9 @@ impl SessionRunner {
         prompt.push_str("```\n");
         prompt.push_str("track issue get <ID>              # Get issue details\n");
         prompt.push_str("track issue search <query>        # Search issues\n");
-        prompt.push_str("track issue create -p <proj> -s <summary> [--state <state>] [--priority <priority>]\n");
+        prompt.push_str(
+            "track issue create -p <proj> -s <summary> [--state <state>] [--priority <priority>]\n",
+        );
         prompt.push_str("track issue update <ID> [--state <state>] [--summary <summary>]\n");
         prompt.push_str("track issue comment <ID> -m <message>\n");
         prompt.push_str("track issue comments <ID>         # List comments\n");

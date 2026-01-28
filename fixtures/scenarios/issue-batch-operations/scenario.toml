@@ -1,0 +1,50 @@
+# Issue Batch Operations Scenario
+# Tests: batch update, delete, start, complete with comma-separated IDs
+
+[scenario]
+name = "issue-batch-operations"
+description = "Test batch operations on multiple issues using comma-separated IDs"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["batch", "update", "delete", "state-change"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Update issues DEMO-1, DEMO-2, DEMO-3 to set Priority=High
+2. Start work on issues DEMO-4, DEMO-5 (set them to "In Progress")
+3. Complete issues DEMO-6, DEMO-7 (set them to "Done")
+4. Delete issues DEMO-8, DEMO-9
+
+Use batch operations with comma-separated IDs for efficiency.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+The DEMO project has issues DEMO-1 through DEMO-9.
+States: Open, In Progress, Done
+Priority: Low, Normal, High, Critical
+"""
+
+[expected_outcomes]
+batch_update = { method_called = "update_issue", min_calls = 3 }
+batch_start = { method_called = "update_issue", min_calls = 2 }
+batch_complete = { method_called = "update_issue", min_calls = 2 }
+batch_delete = { method_called = "delete_issue", min_calls = 2 }
+
+[scoring]
+min_commands = 4
+max_commands = 12
+optimal_commands = 4
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

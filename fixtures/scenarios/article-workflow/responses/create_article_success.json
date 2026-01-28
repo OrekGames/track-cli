@@ -1,0 +1,13 @@
+{
+  "id": "kb-3",
+  "id_readable": "KB-A-3",
+  "summary": "Getting Started Guide",
+  "content": "Welcome to the project...",
+  "project": { "id": "0-1", "name": "Demo Project", "short_name": "DEMO" },
+  "parent_article": null,
+  "has_children": false,
+  "tags": [],
+  "created": "2024-01-20T10:00:00Z",
+  "updated": "2024-01-20T10:00:00Z",
+  "reporter": { "login": "john.doe", "name": "John Doe" }
+}

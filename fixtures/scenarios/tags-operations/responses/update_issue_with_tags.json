@@ -1,0 +1,20 @@
+{
+  "id": "2-1",
+  "id_readable": "DEMO-1",
+  "summary": "Implement user authentication",
+  "description": null,
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    { "State": { "name": "State", "value": "Open", "is_resolved": false } }
+  ],
+  "tags": [
+    { "id": "tag-1", "name": "backend" },
+    { "id": "tag-4", "name": "reviewed" }
+  ],
+  "created": "2024-01-10T09:00:00Z",
+  "updated": "2024-01-20T10:00:00Z"
+}

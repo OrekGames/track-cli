@@ -1,0 +1,101 @@
+# Request-to-Response Mapping for basic-workflow scenario
+#
+# Each [[responses]] entry maps a method call to a response file.
+# Supports: exact matching, wildcards, sequences, and conditional matching.
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project"
+file = "get_project_DEMO.json"
+[responses.args]
+id = "DEMO"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields.json"
+[responses.args]
+project_id = "*"
+
+# =============================================================================
+# Issue Operations
+# =============================================================================
+
+# Get issue DEMO-1 (the main issue in this scenario)
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-1.json"
+[responses.args]
+id = "DEMO-1"
+
+# Search for issues in DEMO project
+[[responses]]
+method = "search_issues"
+file = "search_issues_DEMO.json"
+[responses.args]
+query = "*"
+
+# Update issue DEMO-1 (returns updated issue)
+[[responses]]
+method = "update_issue"
+file = "update_issue_DEMO-1.json"
+[responses.args]
+id = "DEMO-1"
+
+# =============================================================================
+# Comment Operations
+# =============================================================================
+
+# Add comment to DEMO-1
+[[responses]]
+method = "add_comment"
+file = "add_comment_DEMO-1.json"
+[responses.args]
+issue_id = "DEMO-1"
+
+# Get comments for DEMO-1
+[[responses]]
+method = "get_comments"
+file = "get_comments_DEMO-1.json"
+[responses.args]
+issue_id = "DEMO-1"
+
+# =============================================================================
+# Link Operations
+# =============================================================================
+
+[[responses]]
+method = "get_issue_links"
+file = "get_issue_links_DEMO-1.json"
+[responses.args]
+issue_id = "DEMO-1"
+
+[[responses]]
+method = "list_link_types"
+file = "list_link_types.json"
+
+# =============================================================================
+# Tag Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"
+
+# =============================================================================
+# Error Responses (for testing error handling)
+# =============================================================================
+
+# 404 for non-existent issues
+[[responses]]
+method = "get_issue"
+file = "error_404.json"
+status = 404
+[responses.args]
+id = "NOTFOUND-999"

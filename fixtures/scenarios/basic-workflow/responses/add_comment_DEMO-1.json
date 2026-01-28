@@ -1,0 +1,9 @@
+{
+  "id": "comment-123",
+  "text": "Starting work on this issue",
+  "author": {
+    "login": "agent",
+    "name": "AI Agent"
+  },
+  "created": "2024-01-15T15:00:00Z"
+}

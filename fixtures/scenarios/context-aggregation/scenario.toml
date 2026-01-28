@@ -1,0 +1,50 @@
+# Context Aggregation Scenario
+# Tests: context command which aggregates multiple API calls
+
+[scenario]
+name = "context-aggregation"
+description = "Test the context aggregation command for AI sessions"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["context", "ai", "aggregation"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Force refresh the context from the API using `track context --refresh`
+2. Optionally include unresolved issues with `--include-issues`
+
+IMPORTANT: You MUST use the --refresh flag to fetch fresh data from the API.
+The context command without --refresh uses cached data.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+The context command aggregates: projects, fields, users, query templates, workflow hints.
+CRITICAL: Use --refresh to fetch from API: track context --refresh
+Without --refresh, it returns cached data and doesn't make API calls.
+"""
+
+[expected_outcomes]
+# Context command fetches projects
+projects_fetched = { method_called = "list_projects" }
+# Context command fetches custom fields
+fields_fetched = { method_called = "get_project_custom_fields" }
+# Context command fetches tags
+tags_fetched = { method_called = "list_tags" }
+
+[scoring]
+min_commands = 1
+max_commands = 3
+optimal_commands = 1
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

@@ -1,0 +1,46 @@
+# Cache Operations Scenario
+# Tests: cache refresh which triggers API calls to fetch fresh data
+
+[scenario]
+name = "cache-operations"
+description = "Test cache refresh operations that fetch data from API"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["cache", "performance", "offline"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Refresh the cache to get fresh data from the server
+2. List all projects (to verify the data)
+3. Get the custom fields for project DEMO
+
+The cache refresh command fetches projects, custom fields, tags, and other data from the API.
+Use the track CLI commands.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Cache refresh fetches: projects, custom fields, tags, link types, users.
+Commands: track cache refresh, track project list, track project fields DEMO
+"""
+
+[expected_outcomes]
+projects_listed = { method_called = "list_projects" }
+fields_fetched = { method_called = "get_project_custom_fields" }
+
+[scoring]
+min_commands = 2
+max_commands = 5
+optimal_commands = 3
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

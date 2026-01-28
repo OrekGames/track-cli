@@ -1,0 +1,11 @@
+{
+  "keys": [
+    "url",
+    "token",
+    "default_project",
+    "default_backend",
+    "jira.url",
+    "jira.email",
+    "jira.token"
+  ]
+}

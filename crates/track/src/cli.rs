@@ -1649,7 +1649,14 @@ mod tests {
     #[test]
     fn parses_single_id_in_batch_commands() {
         // Single ID should work the same way - stored in a Vec with one element
-        let cli = Cli::parse_from(["track", "issue", "update", "PROJ-1", "--field", "Priority=Major"]);
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "update",
+            "PROJ-1",
+            "--field",
+            "Priority=Major",
+        ]);
 
         match cli.command {
             Commands::Issue { action } => match action {

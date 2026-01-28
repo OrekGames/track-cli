@@ -1,0 +1,15 @@
+[
+  {
+    "id": "kb-1",
+    "id_readable": "KB-A-1",
+    "summary": "Getting Started",
+    "content": "Welcome to the project documentation. This guide covers setup and configuration.",
+    "project": { "id": "0-1", "name": "Demo Project", "short_name": "DEMO" },
+    "parent_article": null,
+    "has_children": false,
+    "tags": [],
+    "created": "2024-01-01T10:00:00Z",
+    "updated": "2024-01-15T14:00:00Z",
+    "reporter": null
+  }
+]

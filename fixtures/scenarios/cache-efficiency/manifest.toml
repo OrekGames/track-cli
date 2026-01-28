@@ -1,0 +1,73 @@
+# Request-to-Response Mapping for cache-efficiency scenario
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project"
+file = "get_project_DEMO.json"
+[responses.args]
+id = "*"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields.json"
+[responses.args]
+project_id = "*"
+
+# =============================================================================
+# Issue Creation - Return created issues
+# =============================================================================
+
+# First issue
+[[responses]]
+method = "create_issue"
+file = "create_issue_1.json"
+[responses.args]
+summary = "*"
+[responses.when]
+body_contains = "login"
+
+# Second issue
+[[responses]]
+method = "create_issue"
+file = "create_issue_2.json"
+[responses.args]
+summary = "*"
+[responses.when]
+body_contains = "remember"
+
+# Third issue
+[[responses]]
+method = "create_issue"
+file = "create_issue_3.json"
+[responses.args]
+summary = "*"
+[responses.when]
+body_contains = "password"
+
+# Fallback for any create
+[[responses]]
+method = "create_issue"
+file = "create_issue_fallback.json"
+[responses.args]
+summary = "*"
+
+# =============================================================================
+# Other Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"
+
+[[responses]]
+method = "search_issues"
+file = "search_issues.json"
+[responses.args]
+query = "*"

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "link-8a",
+    "direction": "OUTWARD",
+    "link_type": {
+      "id": "lt-relates",
+      "name": "Relates",
+      "source_to_target": "relates to",
+      "target_to_source": "relates to",
+      "directed": false
+    },
+    "issues": [
+      { "id": "2-9", "id_readable": "DEMO-9", "summary": "Related issue" }
+    ]
+  },
+  {
+    "id": "link-8b",
+    "direction": "OUTWARD",
+    "link_type": {
+      "id": "lt-depends",
+      "name": "Depends",
+      "source_to_target": "depends on",
+      "target_to_source": "is required for",
+      "directed": true
+    },
+    "issues": [
+      { "id": "2-10", "id_readable": "DEMO-10", "summary": "Dependency" }
+    ]
+  }
+]

@@ -1,0 +1,28 @@
+[
+  {
+    "id": "kb-1-1",
+    "id_readable": "KB-A-1-1",
+    "summary": "Installation",
+    "content": "Installation guide...",
+    "project": { "id": "0-1", "name": "Demo Project", "short_name": "DEMO" },
+    "parent_article": { "id": "kb-1", "id_readable": "KB-A-1", "summary": "Getting Started" },
+    "has_children": false,
+    "tags": [],
+    "created": "2024-01-02T10:00:00Z",
+    "updated": "2024-01-02T10:00:00Z",
+    "reporter": null
+  },
+  {
+    "id": "kb-1-2",
+    "id_readable": "KB-A-1-2",
+    "summary": "Configuration",
+    "content": "Configuration guide...",
+    "project": { "id": "0-1", "name": "Demo Project", "short_name": "DEMO" },
+    "parent_article": { "id": "kb-1", "id_readable": "KB-A-1", "summary": "Getting Started" },
+    "has_children": false,
+    "tags": [],
+    "created": "2024-01-03T10:00:00Z",
+    "updated": "2024-01-03T10:00:00Z",
+    "reporter": null
+  }
+]

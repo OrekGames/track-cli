@@ -1,0 +1,11 @@
+[
+  {
+    "id": "comment-1",
+    "text": "Created from product requirements document",
+    "author": {
+      "login": "pm",
+      "name": "Product Manager"
+    },
+    "created": "2024-01-10T09:05:00Z"
+  }
+]

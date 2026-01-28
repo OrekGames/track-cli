@@ -1,0 +1,7 @@
+{
+  "url": "https://youtrack.example.com",
+  "token": "perm:****",
+  "default_project": "DEMO",
+  "default_backend": "youtrack",
+  "config_path": "~/.config/track/config.toml"
+}

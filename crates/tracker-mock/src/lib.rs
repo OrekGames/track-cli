@@ -48,5 +48,7 @@ pub fn is_mock_enabled() -> bool {
 
 /// Get the mock directory from environment, if set
 pub fn get_mock_dir() -> Option<std::path::PathBuf> {
-    std::env::var(MOCK_DIR_ENV).ok().map(std::path::PathBuf::from)
+    std::env::var(MOCK_DIR_ENV)
+        .ok()
+        .map(std::path::PathBuf::from)
 }

@@ -1,0 +1,47 @@
+{
+  "id": "2-1",
+  "id_readable": "DEMO-1",
+  "summary": "Implement user authentication",
+  "description": "Add login/logout functionality to the application.\n\nAcceptance criteria:\n- Users can log in with email/password\n- Session expires after 24 hours\n- Password reset via email",
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "In Progress",
+        "is_resolved": false
+      }
+    },
+    {
+      "SingleEnum": {
+        "name": "Priority",
+        "value": "Normal"
+      }
+    },
+    {
+      "SingleEnum": {
+        "name": "Type",
+        "value": "Task"
+      }
+    },
+    {
+      "SingleUser": {
+        "name": "Assignee",
+        "login": "john.doe",
+        "display_name": "John Doe"
+      }
+    }
+  ],
+  "tags": [
+    {
+      "id": "tag-1",
+      "name": "backend"
+    }
+  ],
+  "created": "2024-01-10T09:00:00Z",
+  "updated": "2024-01-15T15:05:00Z"
+}

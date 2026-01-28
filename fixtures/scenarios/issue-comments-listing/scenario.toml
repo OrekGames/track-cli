@@ -1,0 +1,50 @@
+# Issue Comments Listing Scenario
+# Tests: listing and adding comments to issues
+
+[scenario]
+name = "issue-comments-listing"
+description = "Test comment operations including listing and adding"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["comments", "collaboration"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Get all comments on issue DEMO-1
+2. Get comments on DEMO-1 with a limit of 5
+3. Add a comment to DEMO-1: "This is a status update"
+4. Add a comment to DEMO-2: "Needs review"
+5. Get comments on DEMO-2 to verify
+
+Use the track issue comment and track issue comments commands.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+DEMO-1 has 10 existing comments.
+DEMO-2 has 3 existing comments.
+"""
+
+[expected_outcomes]
+comments_listed = { method_called = "get_comments", issue = "DEMO-1" }
+comments_limited = { method_called = "get_comments", issue = "DEMO-1" }
+comment_added_1 = { method_called = "add_comment", issue = "DEMO-1", contains = "status" }
+comment_added_2 = { method_called = "add_comment", issue = "DEMO-2", contains = "review" }
+comments_verified = { method_called = "get_comments", issue = "DEMO-2" }
+
+[scoring]
+min_commands = 5
+max_commands = 8
+optimal_commands = 5
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -15
+
+[scoring.bonuses]
+under_optimal = 5

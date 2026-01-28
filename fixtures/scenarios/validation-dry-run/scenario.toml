@@ -1,0 +1,47 @@
+# Validation Scenario
+# Tests: create and update operations with validation
+
+[scenario]
+name = "validation-dry-run"
+description = "Test field validation for issue operations"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["validation", "fields", "create", "update"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Create an issue with --validate flag to check field values before submitting
+   Summary: "Test Issue", Priority: "High", Type: "Bug"
+2. Update issue DEMO-1 with --validate to verify the field change
+   Set Priority to "Critical"
+
+Use the --validate flag to ensure fields are valid before submission.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Validation checks field values against project schema before submission.
+Valid Priority values: Low, Normal, High, Critical
+Valid Type values: Bug, Task, Feature, Improvement
+"""
+
+[expected_outcomes]
+issue_created = { method_called = "create_issue", contains = "Test Issue" }
+issue_updated = { method_called = "update_issue", issue = "DEMO-1" }
+
+[scoring]
+min_commands = 2
+max_commands = 4
+optimal_commands = 2
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

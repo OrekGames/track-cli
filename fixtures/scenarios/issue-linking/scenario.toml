@@ -1,0 +1,49 @@
+# Issue Linking Scenario
+# Tests: issue link with different relationship types
+
+[scenario]
+name = "issue-linking"
+description = "Test linking issues with various relationship types"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["links", "relationships", "dependencies"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Link DEMO-1 to DEMO-2 as "relates to" (default link type)
+2. Link DEMO-3 to DEMO-4 as "depends on" (DEMO-3 depends on DEMO-4)
+3. Link DEMO-5 to DEMO-6 as "blocks" (DEMO-5 blocks DEMO-6)
+4. Link DEMO-7 as a subtask of DEMO-8
+
+Use the track CLI link command with appropriate types.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Available link types: relates, depends, blocks, subtask, parent, duplicate
+Issues DEMO-1 through DEMO-8 exist in the project.
+"""
+
+[expected_outcomes]
+relates_link = { method_called = "link_issues", min_calls = 1 }
+depends_link = { method_called = "link_issues", min_calls = 1 }
+blocks_link = { method_called = "link_issues", min_calls = 1 }
+subtask_link = { method_called = "link_issues", min_calls = 1 }
+
+[scoring]
+min_commands = 4
+max_commands = 8
+optimal_commands = 4
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

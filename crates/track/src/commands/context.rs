@@ -116,18 +116,16 @@ pub fn handle_context(
     // Load or refresh cache
     let cache = if refresh {
         // Force refresh from API
-        let cache =
-            TrackerCache::refresh(client, backend_type, base_url, default_project)
-                .context("Failed to refresh cache from API")?;
+        let cache = TrackerCache::refresh(client, backend_type, base_url, default_project)
+            .context("Failed to refresh cache from API")?;
         cache.save(None)?;
         cache
     } else {
         // Try to load existing cache, refresh if empty
         let loaded = TrackerCache::load(None).unwrap_or_default();
         if loaded.projects.is_empty() {
-            let cache =
-                TrackerCache::refresh(client, backend_type, base_url, default_project)
-                    .context("Failed to refresh cache from API")?;
+            let cache = TrackerCache::refresh(client, backend_type, base_url, default_project)
+                .context("Failed to refresh cache from API")?;
             cache.save(None)?;
             cache
         } else {
@@ -153,21 +151,21 @@ pub fn handle_context(
 
     // Filter to specific project if requested
     if let Some(proj) = project {
-        context.projects.retain(|p| {
-            p.short_name.eq_ignore_ascii_case(proj) || p.id == proj
-        });
-        context.project_fields.retain(|pf| {
-            pf.project_short_name.eq_ignore_ascii_case(proj) || pf.project_id == proj
-        });
-        context.assignable_users.retain(|pu| {
-            pu.project_short_name.eq_ignore_ascii_case(proj) || pu.project_id == proj
-        });
-        context.workflow_hints.retain(|wh| {
-            wh.project_short_name.eq_ignore_ascii_case(proj) || wh.project_id == proj
-        });
-        context.recent_issues.retain(|ri| {
-            ri.project_short_name.eq_ignore_ascii_case(proj)
-        });
+        context
+            .projects
+            .retain(|p| p.short_name.eq_ignore_ascii_case(proj) || p.id == proj);
+        context
+            .project_fields
+            .retain(|pf| pf.project_short_name.eq_ignore_ascii_case(proj) || pf.project_id == proj);
+        context
+            .assignable_users
+            .retain(|pu| pu.project_short_name.eq_ignore_ascii_case(proj) || pu.project_id == proj);
+        context
+            .workflow_hints
+            .retain(|wh| wh.project_short_name.eq_ignore_ascii_case(proj) || wh.project_id == proj);
+        context
+            .recent_issues
+            .retain(|ri| ri.project_short_name.eq_ignore_ascii_case(proj));
     }
 
     // Fetch unresolved issues if requested
@@ -216,10 +214,7 @@ pub fn handle_context(
             }
 
             println!();
-            println!(
-                "{}:",
-                "Projects".white().bold()
-            );
+            println!("{}:", "Projects".white().bold());
             for p in &context.projects {
                 println!("  {} - {}", p.short_name.cyan().bold(), p.name);
             }
@@ -235,7 +230,11 @@ pub fn handle_context(
                         } else if f.values.len() <= 5 {
                             format!(" [{}]", f.values.join(", "))
                         } else {
-                            format!(" [{}, ... ({} values)]", f.values[..3].join(", "), f.values.len())
+                            format!(
+                                " [{}, ... ({} values)]",
+                                f.values[..3].join(", "),
+                                f.values.len()
+                            )
                         };
                         println!(
                             "    {} ({}){}",
@@ -269,13 +268,22 @@ pub fn handle_context(
                 println!("{}:", "Assignable Users".white().bold());
                 for pu in &context.assignable_users {
                     let count = pu.users.len();
-                    let sample: Vec<&str> = pu.users.iter().take(5).map(|u| u.display_name.as_str()).collect();
+                    let sample: Vec<&str> = pu
+                        .users
+                        .iter()
+                        .take(5)
+                        .map(|u| u.display_name.as_str())
+                        .collect();
                     let sample_str = if count > 5 {
                         format!("{}, ... ({} total)", sample.join(", "), count)
                     } else {
                         sample.join(", ")
                     };
-                    println!("  {}: {}", pu.project_short_name.cyan(), sample_str.dimmed());
+                    println!(
+                        "  {}: {}",
+                        pu.project_short_name.cyan(),
+                        sample_str.dimmed()
+                    );
                 }
             }
 
@@ -284,23 +292,35 @@ pub fn handle_context(
                 println!("{}:", "Workflow Hints".white().bold());
                 for wh in &context.workflow_hints {
                     for sf in &wh.state_fields {
-                        println!("  {} ({}):", wh.project_short_name.cyan(), sf.field_name.white());
+                        println!(
+                            "  {} ({}):",
+                            wh.project_short_name.cyan(),
+                            sf.field_name.white()
+                        );
 
                         // Show states in order with resolved marker
-                        let states_str: Vec<String> = sf.states.iter().map(|s| {
-                            if s.is_resolved {
-                                format!("{}*", s.name)
-                            } else {
-                                s.name.clone()
-                            }
-                        }).collect();
+                        let states_str: Vec<String> = sf
+                            .states
+                            .iter()
+                            .map(|s| {
+                                if s.is_resolved {
+                                    format!("{}*", s.name)
+                                } else {
+                                    s.name.clone()
+                                }
+                            })
+                            .collect();
                         println!("    States: {}", states_str.join(" → ").dimmed());
 
                         // Show forward transitions summary
-                        let forward_count = sf.transitions.iter()
+                        let forward_count = sf
+                            .transitions
+                            .iter()
                             .filter(|t| t.transition_type == "forward")
                             .count();
-                        let backward_count = sf.transitions.iter()
+                        let backward_count = sf
+                            .transitions
+                            .iter()
                             .filter(|t| t.transition_type == "backward")
                             .count();
                         println!(
@@ -317,7 +337,12 @@ pub fn handle_context(
                 println!("{}:", "Recent Issues".white().bold());
                 for ri in context.recent_issues.iter().take(10) {
                     let state = ri.state.as_deref().unwrap_or("?");
-                    println!("  {} [{}] {}", ri.id_readable.cyan(), state.dimmed(), ri.summary);
+                    println!(
+                        "  {} [{}] {}",
+                        ri.id_readable.cyan(),
+                        state.dimmed(),
+                        ri.summary
+                    );
                 }
             }
 
@@ -327,7 +352,11 @@ pub fn handle_context(
                 for issue in issues {
                     let state = issue.state.as_deref().unwrap_or("?");
                     let priority = issue.priority.as_deref().unwrap_or("");
-                    let assignee = issue.assignee.as_deref().map(|a| format!(" @{}", a)).unwrap_or_default();
+                    let assignee = issue
+                        .assignee
+                        .as_deref()
+                        .map(|a| format!(" @{}", a))
+                        .unwrap_or_default();
                     println!(
                         "  {} [{}] {}{} - {}",
                         issue.id_readable.cyan(),
@@ -340,10 +369,7 @@ pub fn handle_context(
             }
 
             println!();
-            println!(
-                "{}",
-                "Use -o json for machine-readable output.".dimmed()
-            );
+            println!("{}", "Use -o json for machine-readable output.".dimmed());
         }
     }
 

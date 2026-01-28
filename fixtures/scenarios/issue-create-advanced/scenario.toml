@@ -1,0 +1,64 @@
+# Issue Create Advanced Scenario
+# Tests: creating issues with parent, tags, custom fields, JSON payload
+
+[scenario]
+name = "issue-create-advanced"
+description = "Test advanced issue creation with all options"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["create", "custom-fields", "subtasks", "tags"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Create a basic issue with summary and description
+   Summary: "Implement feature X"
+   Description: "Detailed requirements for feature X"
+
+2. Create an issue with custom fields
+   Summary: "High priority bug"
+   Priority: Critical, Type: Bug, Assignee: john.doe
+
+3. Create a subtask under DEMO-1
+   Summary: "Subtask for feature X"
+   Parent: DEMO-1
+
+4. Create an issue with multiple tags
+   Summary: "Tagged issue"
+   Tags: backend, urgent, api
+
+5. Create an issue using JSON payload (--json flag)
+   Use JSON: {"summary": "JSON created issue", "priority": "High"}
+
+Use the track issue create command with various flags.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Create options: --summary, --description, --field, --priority, --assignee, --tag, --parent, --json
+Custom fields: Priority, Type, Assignee, State
+Tags: backend, frontend, urgent, api, docs
+"""
+
+[expected_outcomes]
+basic_create = { method_called = "create_issue", contains = "feature X" }
+custom_fields_create = { method_called = "create_issue", contains = "priority bug" }
+subtask_create = { method_called = "create_issue", contains = "Subtask" }
+tagged_create = { method_called = "create_issue", contains = "Tagged" }
+json_create = { method_called = "create_issue", contains = "JSON" }
+
+[scoring]
+min_commands = 5
+max_commands = 10
+optimal_commands = 5
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

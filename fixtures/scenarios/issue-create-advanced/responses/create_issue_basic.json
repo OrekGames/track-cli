@@ -1,0 +1,15 @@
+{
+  "id": "2-100",
+  "id_readable": "DEMO-100",
+  "summary": "Implement feature X",
+  "description": "Detailed requirements for feature X",
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [],
+  "tags": [],
+  "created": "2024-01-20T10:00:00Z",
+  "updated": "2024-01-20T10:00:00Z"
+}

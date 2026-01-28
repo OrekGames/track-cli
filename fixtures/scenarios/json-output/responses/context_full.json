@@ -1,0 +1,11 @@
+{
+  "projects": [
+    { "id": "0-1", "name": "Demo Project", "short_name": "DEMO" }
+  ],
+  "custom_fields": [
+    { "name": "State", "field_type": "state", "values": ["Open", "In Progress", "Done"] },
+    { "name": "Priority", "field_type": "enum", "values": ["Low", "Normal", "High", "Critical"] }
+  ],
+  "tags": [{ "name": "backend" }, { "name": "frontend" }],
+  "link_types": [{ "name": "Relates" }, { "name": "Depends" }]
+}

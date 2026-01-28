@@ -1,0 +1,29 @@
+{
+  "id": "2-1",
+  "id_readable": "DEMO-1",
+  "summary": "Test issue for validation",
+  "description": "A test issue",
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "Open",
+        "is_resolved": false
+      }
+    },
+    {
+      "SingleEnum": {
+        "name": "Priority",
+        "value": "Normal"
+      }
+    }
+  ],
+  "tags": [],
+  "created": "2024-01-10T09:00:00Z",
+  "updated": "2024-01-15T14:30:00Z"
+}

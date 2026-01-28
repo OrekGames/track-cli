@@ -1,0 +1,19 @@
+{
+  "id": "2-103",
+  "id_readable": "DEMO-103",
+  "summary": "Tagged issue",
+  "description": null,
+  "project": {
+    "id": "0-1",
+    "name": "Demo Project",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [],
+  "tags": [
+    { "id": "tag-backend", "name": "backend" },
+    { "id": "tag-urgent", "name": "urgent" },
+    { "id": "tag-api", "name": "api" }
+  ],
+  "created": "2024-01-20T10:00:00Z",
+  "updated": "2024-01-20T10:00:00Z"
+}

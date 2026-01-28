@@ -1,0 +1,54 @@
+# Cache Efficiency Scenario
+# Tests: Agent's ability to use cached data effectively
+
+[scenario]
+name = "cache-efficiency"
+description = "Create multiple issues efficiently using cached project data"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["cache", "efficiency", "batch"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+Create 3 issues in the DEMO project with these summaries:
+1. "Fix login timeout bug"
+2. "Add remember me checkbox"
+3. "Update password validation"
+
+All issues should have Priority=Normal and Type=Bug.
+
+Hints:
+- Use 'track cache show' to see available project fields
+- Use JSON output mode (-o json) for parsing
+- Avoid redundant API calls by reusing information
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+The cache is pre-populated with project information.
+Valid Priority values: Low, Normal, High, Critical
+Valid Type values: Bug, Task, Feature, Improvement
+"""
+
+[expected_outcomes]
+# All three issues should be created
+issue_1_created = { method_called = "create_issue", contains = "login" }
+issue_2_created = { method_called = "create_issue", contains = "remember" }
+issue_3_created = { method_called = "create_issue", contains = "password" }
+
+[scoring]
+min_commands = 3        # Just the 3 create commands
+max_commands = 7        # Allow cache check + list_projects + 3 creates + extra
+optimal_commands = 4    # cache show + 3 creates
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -15   # Higher penalty - should use cache
+
+[scoring.bonuses]
+cache_use = 15         # Bonus for using cache
+under_optimal = 5

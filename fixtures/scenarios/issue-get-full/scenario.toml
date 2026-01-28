@@ -1,0 +1,49 @@
+# Issue Get Full Scenario
+# Tests: getting issue with full details (comments, links, subtasks)
+
+[scenario]
+name = "issue-get-full"
+description = "Test getting issue with full context including comments, links, and subtasks"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["get", "full", "context"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Get issue DEMO-1 with full details (use --full flag) to see comments and links
+2. Get issue DEMO-5 with full details to see its subtasks
+3. Get issue DEMO-8 with full details to see its linked issues
+
+Use the track issue get command with --full flag to get full context.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+The --full flag includes: comments, links, subtasks, activity history.
+DEMO-1 has comments and links.
+DEMO-5 is a parent issue with subtasks.
+DEMO-8 has multiple linked issues.
+Use: track DEMO-1 --full or track issue get DEMO-1 --full
+"""
+
+[expected_outcomes]
+full_get_1 = { method_called = "get_issue", issue = "DEMO-1" }
+full_get_subtasks = { method_called = "get_issue", issue = "DEMO-5" }
+full_get_links = { method_called = "get_issue", issue = "DEMO-8" }
+
+[scoring]
+min_commands = 3
+max_commands = 8
+optimal_commands = 3
+base_score = 100
+
+[scoring.penalties]
+extra_command = -3
+redundant_fetch = -5
+command_error = -15
+
+[scoring.bonuses]
+under_optimal = 5

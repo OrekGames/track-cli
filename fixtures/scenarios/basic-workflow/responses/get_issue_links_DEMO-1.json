@@ -1,0 +1,20 @@
+[
+  {
+    "id": "link-1",
+    "direction": "OUTWARD",
+    "link_type": {
+      "id": "lt-1",
+      "name": "Subtask",
+      "source_to_target": "is parent for",
+      "target_to_source": "is subtask of",
+      "directed": true
+    },
+    "issues": [
+      {
+        "id": "2-3",
+        "id_readable": "DEMO-3",
+        "summary": "Create login form UI"
+      }
+    ]
+  }
+]

@@ -1,0 +1,8 @@
+{
+  "valid": true,
+  "fields_validated": [
+    { "name": "Priority", "value": "High", "valid": true },
+    { "name": "Type", "value": "Bug", "valid": true }
+  ],
+  "warnings": []
+}

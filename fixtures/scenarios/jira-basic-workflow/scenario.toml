@@ -1,0 +1,50 @@
+# Jira Basic Workflow Scenario
+# Tests: basic operations using Jira backend
+
+[scenario]
+name = "jira-basic-workflow"
+description = "Test basic issue operations with Jira backend"
+backend = "jira"
+difficulty = "easy"
+tags = ["jira", "issues", "comments", "state-change"]
+
+[setup]
+prompt = """
+You have access to a Jira instance with project SMS.
+
+Task:
+1. Find issue SMS-1 and review its current state
+2. Add a comment "Starting work on this issue"
+3. Update the issue status to "In Progress"
+4. Search for open issues in the SMS project
+
+Use the track CLI with the -b jira flag (or --backend jira).
+"""
+default_project = "SMS"
+cache_available = true
+context = """
+The SMS project has the following statuses: Open, In Progress, Done.
+Issue SMS-1 is currently in the Open status.
+Jira uses JQL for searching: "project = SMS AND status = 'Open'"
+"""
+
+[expected_outcomes]
+issue_fetched = "SMS-1"
+comment_added = { method_called = "add_comment", issue = "SMS-1", contains = "Starting" }
+state_updated = { method_called = "update_issue", issue = "SMS-1" }
+issues_searched = { method_called = "search_issues", contains = "SMS" }
+
+[scoring]
+min_commands = 4
+max_commands = 7
+optimal_commands = 4
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

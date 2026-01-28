@@ -142,8 +142,7 @@ impl Evaluator {
         // Calculate final score
         let final_score =
             base_score + score_breakdown.total_bonuses + score_breakdown.total_penalties;
-        let score_percent =
-            ((final_score as f64 / base_score as f64) * 100.0).clamp(0.0, 100.0);
+        let score_percent = ((final_score as f64 / base_score as f64) * 100.0).clamp(0.0, 100.0);
 
         // Generate suggestions
         let suggestions = self.generate_suggestions(calls, &outcomes, &efficiency);
@@ -365,7 +364,11 @@ impl Evaluator {
     }
 
     /// Calculate efficiency rating based on command count
-    fn calculate_efficiency(&self, total_calls: usize, scoring: &ScoringConfig) -> EfficiencyRating {
+    fn calculate_efficiency(
+        &self,
+        total_calls: usize,
+        scoring: &ScoringConfig,
+    ) -> EfficiencyRating {
         let optimal = scoring.optimal_commands.unwrap_or(usize::MAX);
         let max = scoring.max_commands.unwrap_or(usize::MAX);
         let min = scoring.min_commands.unwrap_or(0);
@@ -525,16 +528,13 @@ impl Evaluator {
         // Efficiency suggestions
         match efficiency {
             EfficiencyRating::Inefficient => {
-                suggestions.push(
-                    "Consider using the cache system to reduce API calls".to_string()
-                );
-                suggestions.push(
-                    "Avoid fetching the same resource multiple times".to_string()
-                );
+                suggestions.push("Consider using the cache system to reduce API calls".to_string());
+                suggestions.push("Avoid fetching the same resource multiple times".to_string());
             }
             EfficiencyRating::Acceptable => {
                 suggestions.push(
-                    "Good job! Consider combining operations where possible for optimal efficiency".to_string()
+                    "Good job! Consider combining operations where possible for optimal efficiency"
+                        .to_string(),
                 );
             }
             _ => {}
@@ -582,9 +582,10 @@ mod tests {
                 context: None,
                 cache_available: false,
             },
-            expected_outcomes: [
-                ("issue_fetched".to_string(), ExpectedOutcome::String("DEMO-1".to_string())),
-            ]
+            expected_outcomes: [(
+                "issue_fetched".to_string(),
+                ExpectedOutcome::String("DEMO-1".to_string()),
+            )]
             .into_iter()
             .collect(),
             scoring: ScoringConfig {
@@ -617,9 +618,7 @@ mod tests {
         let scenario = make_test_scenario();
         let evaluator = Evaluator::new(scenario);
 
-        let calls = vec![
-            make_call("get_issue", vec![("id", "DEMO-1")]),
-        ];
+        let calls = vec![make_call("get_issue", vec![("id", "DEMO-1")])];
 
         let result = evaluator.evaluate(&calls);
 
@@ -633,9 +632,7 @@ mod tests {
         let scenario = make_test_scenario();
         let evaluator = Evaluator::new(scenario);
 
-        let calls = vec![
-            make_call("get_issue", vec![("id", "WRONG-1")]),
-        ];
+        let calls = vec![make_call("get_issue", vec![("id", "WRONG-1")])];
 
         let result = evaluator.evaluate(&calls);
 

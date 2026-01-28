@@ -1,0 +1,13 @@
+{
+  "updated_at": "2024-01-20T08:00:00Z",
+  "projects": [
+    { "id": "0-1", "short_name": "DEMO", "name": "Demo Project" },
+    { "id": "0-2", "short_name": "OTHER", "name": "Another Project" }
+  ],
+  "custom_fields": [
+    { "name": "State", "values": ["Open", "In Progress", "Done"] },
+    { "name": "Priority", "values": ["Low", "Normal", "High", "Critical"] }
+  ],
+  "tags": ["backend", "frontend", "urgent", "api", "docs"],
+  "link_types": ["Relates", "Depends", "Subtask", "Duplicate"]
+}

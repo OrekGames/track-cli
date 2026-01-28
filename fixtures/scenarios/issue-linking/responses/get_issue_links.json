@@ -1,0 +1,16 @@
+[
+  {
+    "id": "link-1",
+    "direction": "OUTWARD",
+    "link_type": {
+      "id": "lt-relates",
+      "name": "Relates",
+      "source_to_target": "relates to",
+      "target_to_source": "relates to",
+      "directed": false
+    },
+    "issues": [
+      { "id": "2-2", "id_readable": "DEMO-2", "summary": "Related issue" }
+    ]
+  }
+]

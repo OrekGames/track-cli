@@ -1,0 +1,73 @@
+# Request-to-Response Mapping for issue-batch-operations scenario
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project"
+file = "get_project_DEMO.json"
+[responses.args]
+id = "DEMO"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields.json"
+[responses.args]
+project_id = "*"
+
+# =============================================================================
+# Issue Get Operations (for any DEMO-* issue)
+# =============================================================================
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_generic.json"
+[responses.args]
+id = "*"
+
+# =============================================================================
+# Issue Update Operations
+# =============================================================================
+
+[[responses]]
+method = "update_issue"
+file = "update_issue_generic.json"
+[responses.args]
+id = "*"
+
+# =============================================================================
+# Issue Delete Operations
+# =============================================================================
+
+[[responses]]
+method = "delete_issue"
+file = "delete_issue_success.json"
+[responses.args]
+id = "*"
+
+# =============================================================================
+# Search Operations
+# =============================================================================
+
+[[responses]]
+method = "search_issues"
+file = "search_issues_DEMO.json"
+[responses.args]
+query = "*"
+
+# =============================================================================
+# Supporting Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"
+
+[[responses]]
+method = "list_link_types"
+file = "list_link_types.json"

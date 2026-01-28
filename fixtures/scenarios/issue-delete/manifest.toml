@@ -1,0 +1,57 @@
+# Request-to-Response Mapping for issue-delete scenario
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project"
+file = "get_project_DEMO.json"
+[responses.args]
+id = "DEMO"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields.json"
+[responses.args]
+project_id = "*"
+
+# =============================================================================
+# Issue Get Operations
+# =============================================================================
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_generic.json"
+[responses.args]
+id = "*"
+
+# After deletion, return 404
+[[responses]]
+method = "get_issue"
+file = "error_404.json"
+status = 404
+[responses.args]
+id = "DEMO-10"
+
+# =============================================================================
+# Issue Delete Operations
+# =============================================================================
+
+[[responses]]
+method = "delete_issue"
+file = "delete_issue_success.json"
+[responses.args]
+id = "*"
+
+# =============================================================================
+# Supporting Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"

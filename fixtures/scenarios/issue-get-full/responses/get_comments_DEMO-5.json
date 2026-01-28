@@ -1,0 +1,8 @@
+[
+  {
+    "id": "comment-5",
+    "text": "Comment on parent issue",
+    "author": { "login": "jane.smith" },
+    "created": "2024-01-12T10:00:00Z"
+  }
+]

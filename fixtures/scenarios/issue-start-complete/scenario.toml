@@ -1,0 +1,50 @@
+# Issue Start/Complete Scenario
+# Tests: issue start and complete commands for state transitions
+
+[scenario]
+name = "issue-start-complete"
+description = "Test issue state transitions with start and complete commands"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["state", "workflow", "transitions"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Start work on issue DEMO-1 (transition to "In Progress")
+2. Start work on DEMO-2 with a custom state field "Stage" and value "Develop"
+3. Complete issue DEMO-3 (transition to "Done")
+4. Complete issue DEMO-4 with a custom state "Resolved" using the "Status" field
+
+Use the track issue start and track issue complete commands.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Default field for state: "State"
+Default start state: "In Progress"
+Default complete state: "Done"
+Custom fields can be specified with --field and --state flags.
+"""
+
+[expected_outcomes]
+issue_started = { method_called = "update_issue", issue = "DEMO-1" }
+issue_started_custom = { method_called = "update_issue", issue = "DEMO-2" }
+issue_completed = { method_called = "update_issue", issue = "DEMO-3" }
+issue_completed_custom = { method_called = "update_issue", issue = "DEMO-4" }
+
+[scoring]
+min_commands = 4
+max_commands = 6
+optimal_commands = 4
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

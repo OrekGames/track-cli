@@ -1,0 +1,51 @@
+# Issue Search Templates Scenario
+# Tests: search with query templates and pagination
+
+[scenario]
+name = "issue-search-templates"
+description = "Test issue search with templates and advanced options"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["search", "templates", "query"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Search for unresolved issues using the "unresolved" template
+2. Search using the "my-issues" template for current user's assigned issues
+3. Search with a custom query: "project: DEMO State: Open Priority: High"
+4. Search with pagination: get first 10 results, then skip 10 and get next 10
+5. Search in a specific project using --project flag with template
+
+Use the track issue search command with --template and --query options.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+Available templates: unresolved, my-issues, recent, high-priority
+Search options: --query, --template, --project, --limit, --skip
+YouTrack query syntax: "project: PROJ State: {In Progress}"
+"""
+
+[expected_outcomes]
+template_search = { method_called = "search_issues", min_calls = 1 }
+my_issues_search = { method_called = "search_issues", min_calls = 1 }
+custom_query_search = { method_called = "search_issues", contains = "High" }
+paginated_search = { method_called = "search_issues", min_calls = 2 }
+project_template_search = { method_called = "search_issues", contains = "DEMO" }
+
+[scoring]
+min_commands = 5
+max_commands = 8
+optimal_commands = 5
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

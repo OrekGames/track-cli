@@ -59,7 +59,14 @@ fn test_eval_list_shows_scenarios() {
 fn test_eval_list_json_format() {
     let path = fixtures_path();
     track()
-        .args(["eval", "list", "--path", path.to_str().unwrap(), "-o", "json"])
+        .args([
+            "eval",
+            "list",
+            "--path",
+            path.to_str().unwrap(),
+            "-o",
+            "json",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"name\""))
@@ -144,7 +151,10 @@ fn test_mock_mode_get_issue() {
 
     // Verify the call was logged
     let log_content = fs::read_to_string(&log_path).unwrap();
-    assert!(log_content.contains("get_issue"), "Call log should contain get_issue");
+    assert!(
+        log_content.contains("get_issue"),
+        "Call log should contain get_issue"
+    );
 }
 
 #[test]
@@ -165,7 +175,13 @@ fn test_mock_mode_full_workflow() {
 
     track()
         .env("TRACK_MOCK_DIR", path.to_str().unwrap())
-        .args(["issue", "comment", "DEMO-1", "-m", "Starting work on this issue"])
+        .args([
+            "issue",
+            "comment",
+            "DEMO-1",
+            "-m",
+            "Starting work on this issue",
+        ])
         .assert()
         .success();
 
@@ -286,5 +302,8 @@ fn test_mock_mode_error_handling() {
 
     // The call should still be logged
     let log_content = fs::read_to_string(&log_path).unwrap();
-    assert!(log_content.contains("get_issue"), "Failed calls should also be logged");
+    assert!(
+        log_content.contains("get_issue"),
+        "Failed calls should also be logged"
+    );
 }

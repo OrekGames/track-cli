@@ -1,0 +1,21 @@
+{
+  "dry_run": true,
+  "would_create": {
+    "project": "DEMO",
+    "summary": "Dry Run Test",
+    "custom_fields": [
+      { "name": "Priority", "value": "Critical" }
+    ]
+  },
+  "api_request": {
+    "method": "POST",
+    "url": "/api/issues",
+    "body": {
+      "project": { "id": "0-1" },
+      "summary": "Dry Run Test",
+      "customFields": [
+        { "$type": "SingleEnumIssueCustomField", "name": "Priority", "value": { "name": "Critical" } }
+      ]
+    }
+  }
+}

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "field-1",
+    "name": "State",
+    "field_type": "state",
+    "required": true,
+    "values": ["Open", "In Progress", "Done"]
+  },
+  {
+    "id": "field-2",
+    "name": "Priority",
+    "field_type": "enum",
+    "required": true,
+    "values": ["Low", "Normal", "High", "Critical"]
+  },
+  {
+    "id": "field-3",
+    "name": "Type",
+    "field_type": "enum",
+    "required": true,
+    "values": ["Bug", "Task", "Feature", "Improvement"]
+  }
+]

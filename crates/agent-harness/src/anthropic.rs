@@ -161,7 +161,9 @@ pub struct Usage {
 impl MessageResponse {
     /// Check if the response contains tool use
     pub fn has_tool_use(&self) -> bool {
-        self.content.iter().any(|block| matches!(block, ContentBlock::ToolUse { .. }))
+        self.content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
     }
 
     /// Get all tool use blocks

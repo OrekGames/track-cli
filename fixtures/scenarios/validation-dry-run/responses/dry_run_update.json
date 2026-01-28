@@ -1,0 +1,18 @@
+{
+  "dry_run": true,
+  "would_update": {
+    "issue": "DEMO-1",
+    "changes": [
+      { "field": "Priority", "from": "Normal", "to": "Critical" }
+    ]
+  },
+  "api_request": {
+    "method": "POST",
+    "url": "/api/issues/DEMO-1",
+    "body": {
+      "customFields": [
+        { "$type": "SingleEnumIssueCustomField", "name": "Priority", "value": { "name": "Critical" } }
+      ]
+    }
+  }
+}
