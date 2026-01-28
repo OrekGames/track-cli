@@ -7,7 +7,7 @@
 #   1. Builds the project in release mode
 #   2. Creates ~/.tracker-cli directory
 #   3. Copies the track binary there
-#   4. Copies documentation (README.md, AGENT_GUIDE.md)
+#   4. Copies documentation (README.md, agent_guide.md)
 #   5. Adds the directory to PATH in shell config files
 
 set -euo pipefail
@@ -39,7 +39,7 @@ fi
 
 echo "Copying documentation to $DOCS_DIR"
 cp "$PROJECT_DIR/README.md" "$DOCS_DIR/README.md"
-cp "$PROJECT_DIR/AGENT_GUIDE.md" "$DOCS_DIR/AGENT_GUIDE.md"
+cp "$PROJECT_DIR/docs/agent_guide.md" "$DOCS_DIR/agent_guide.md"
 
 # Function to add PATH to a shell config file
 add_to_path() {
@@ -84,7 +84,7 @@ echo ""
 echo "Installed files:"
 echo "  Binary: $INSTALL_DIR/$BINARY_NAME"
 echo "  Docs:   $DOCS_DIR/README.md"
-echo "          $DOCS_DIR/AGENT_GUIDE.md"
+echo "          $DOCS_DIR/agent_guide.md"
 echo ""
 echo "To use the 'track' command immediately, run one of:"
 echo "  source ~/.zshrc    # for zsh"
@@ -97,4 +97,4 @@ echo "  track --version"
 echo ""
 echo "View documentation:"
 echo "  cat $DOCS_DIR/README.md"
-echo "  cat $DOCS_DIR/AGENT_GUIDE.md"
+echo "  cat $DOCS_DIR/agent_guide.md"

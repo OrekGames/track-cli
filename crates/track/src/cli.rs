@@ -89,6 +89,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: CacheCommands,
     },
+    /// Evaluate AI agent performance against mock scenarios
+    Eval {
+        #[command(subcommand)]
+        action: EvalCommands,
+    },
     /// Local configuration (default project, etc.)
     #[command(visible_alias = "cfg")]
     Config {
@@ -217,6 +222,64 @@ pub enum CacheCommands {
     Show,
     /// Show cache file path
     Path,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EvalCommands {
+    /// Run evaluation on a scenario's call log
+    Run {
+        /// Path to scenario directory (containing scenario.toml and call_log.jsonl)
+        #[arg(required = true)]
+        scenario: PathBuf,
+
+        /// Minimum score percentage required for success (for CI)
+        #[arg(long, default_value_t = 0)]
+        min_score: u8,
+
+        /// Require all expected outcomes to pass
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Run all scenarios in a directory and report results
+    RunAll {
+        /// Path to fixtures directory (default: ./fixtures/scenarios)
+        #[arg(long, default_value = "./fixtures/scenarios")]
+        path: PathBuf,
+
+        /// Minimum score percentage required for each scenario
+        #[arg(long, default_value_t = 70)]
+        min_score: u8,
+
+        /// Stop on first failure
+        #[arg(long)]
+        fail_fast: bool,
+    },
+    /// List available scenarios
+    List {
+        /// Path to fixtures directory (default: ./fixtures/scenarios)
+        #[arg(long, default_value = "./fixtures/scenarios")]
+        path: PathBuf,
+    },
+    /// Show scenario details and prompt
+    Show {
+        /// Path to scenario directory
+        #[arg(required = true)]
+        scenario: PathBuf,
+    },
+    /// Clear the call log for a scenario (prepare for new evaluation)
+    Clear {
+        /// Path to scenario directory
+        #[arg(required = true)]
+        scenario: PathBuf,
+    },
+    /// Clear all call logs in a directory
+    ClearAll {
+        /// Path to fixtures directory (default: ./fixtures/scenarios)
+        #[arg(long, default_value = "./fixtures/scenarios")]
+        path: PathBuf,
+    },
+    /// Check mock mode status and environment
+    Status,
 }
 
 #[derive(Subcommand, Debug)]

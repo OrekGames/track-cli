@@ -1,0 +1,131 @@
+# Agent Evaluation Results
+
+This document tracks the performance of different AI providers when using the `track` CLI tool. Tests are run using the `track-agent` evaluation harness against mock scenarios.
+
+## Test Configuration
+
+- **Evaluation Date**: 2025-01-27
+- **Max Turns**: 20
+- **Min Passing Score**: 70%
+- **Total Scenarios**: 20
+
+## Results by Provider
+
+### Claude Code (CLI)
+
+**Provider**: `claude-code`
+**Pass Rate**: 20/20 (100%)
+
+| Scenario | Score | API Calls | Turns | Status |
+|----------|-------|-----------|-------|--------|
+| basic-workflow | 100% | 3 | 5 | ✓ PASS |
+| cache-efficiency | 100% | 6 | 6 | ✓ PASS |
+| cache-operations | 85% | 8 | 5 | ✓ PASS |
+| config-management | 100% | 3 | 4 | ✓ PASS |
+| context-aggregation | 90% | 5 | 2 | ✓ PASS |
+| error-recovery | 95% | 4 | 7 | ✓ PASS |
+| issue-batch-operations | 100% | 9 | 6 | ✓ PASS |
+| issue-comments-listing | 90% | 5 | 6 | ✓ PASS |
+| issue-create-advanced | 100% | 10 | 9 | ✓ PASS |
+| issue-delete | 90% | 6 | 8 | ✓ PASS |
+| issue-get-full | 90% | 8 | 7 | ✓ PASS |
+| issue-linking | 100% | 4 | 7 | ✓ PASS |
+| issue-search-templates | 100% | 5 | 9 | ✓ PASS |
+| issue-start-complete | 100% | 4 | 6 | ✓ PASS |
+| jira-basic-workflow | 100% | 4 | 9 | ✓ PASS |
+| json-output | 100% | 4 | 4 | ✓ PASS |
+| project-operations | 100% | 6 | 5 | ✓ PASS |
+| tags-operations | 80% | 9 | 14 | ✓ PASS |
+| validation-dry-run | 90% | 6 | 4 | ✓ PASS |
+| article-workflow | 90% | 11 | 10 | ✓ PASS |
+
+**Average Score**: 95%
+**Average Turns**: 6.65
+
+---
+
+### Anthropic API
+
+**Provider**: `anthropic`
+**Status**: Not yet tested
+
+| Scenario | Score | API Calls | Turns | Status |
+|----------|-------|-----------|-------|--------|
+| — | — | — | — | — |
+
+---
+
+### OpenAI / ChatGPT
+
+**Provider**: `openai`
+**Status**: Not yet tested
+
+| Scenario | Score | API Calls | Turns | Status |
+|----------|-------|-----------|-------|--------|
+| — | — | — | — | — |
+
+---
+
+### Other Providers
+
+Additional providers can be added as they are tested.
+
+---
+
+## Scenario Descriptions
+
+| Scenario | Description | Difficulty |
+|----------|-------------|------------|
+| basic-workflow | Basic issue get, update, comment flow | Easy |
+| cache-efficiency | Tests efficient use of cache to minimize API calls | Medium |
+| cache-operations | Cache refresh and status operations | Easy |
+| config-management | Configuration verification via API | Easy |
+| context-aggregation | Context command for AI session aggregation | Easy |
+| error-recovery | Handling 404 errors and recovering gracefully | Medium |
+| issue-batch-operations | Batch update and delete operations | Medium |
+| issue-comments-listing | Adding and listing issue comments | Easy |
+| issue-create-advanced | Advanced issue creation with fields, tags, subtasks | Medium |
+| issue-delete | Single and batch issue deletion | Easy |
+| issue-get-full | Getting issues with full context (--full flag) | Easy |
+| issue-linking | Creating links between issues | Easy |
+| issue-search-templates | Using search templates for common queries | Easy |
+| issue-start-complete | Workflow transitions (start/complete) | Easy |
+| jira-basic-workflow | Basic operations with Jira backend | Easy |
+| json-output | JSON output format for machine parsing | Easy |
+| project-operations | Project list, get, fields, create | Easy |
+| tags-operations | Tag listing and applying tags to issues | Easy |
+| validation-dry-run | Field validation for issue operations | Medium |
+| article-workflow | Knowledge base article CRUD operations | Medium |
+
+## Running Tests
+
+```bash
+# Run all scenarios with a specific provider
+./scripts/run-agent-eval.sh --provider claude-code --all
+
+# Run a single scenario
+./scripts/run-agent-eval.sh --provider claude-code basic-workflow
+
+# Run with verbose output
+./scripts/run-agent-eval.sh --provider claude-code --verbose basic-workflow
+
+# List available scenarios
+./scripts/run-agent-eval.sh list
+```
+
+## Scoring
+
+- **Base Score**: 100 points
+- **Penalties**:
+  - Extra commands beyond optimal: -3 to -5 points each
+  - Redundant fetches: -5 to -10 points each
+  - Command errors: -10 to -15 points each
+- **Bonuses**:
+  - Under optimal commands: +5 points
+  - Cache usage: +10 points
+
+## Notes
+
+- Tests use a mock server that intercepts API calls and returns fixture responses
+- The `--refresh` flag is required for context commands to make API calls (otherwise uses cache)
+- Jira scenarios require proper environment setup (JIRA_URL, JIRA_EMAIL, JIRA_TOKEN)

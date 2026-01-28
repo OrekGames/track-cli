@@ -1,0 +1,21 @@
+[package]
+name = "agent-harness"
+version = "0.1.0"
+edition = "2021"
+description = "AI agent evaluation harness for track CLI"
+
+[[bin]]
+name = "track-agent"
+path = "src/main.rs"
+
+[dependencies]
+tracker-mock = { path = "../tracker-mock" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+colored = { workspace = true }
+ureq = { workspace = true }
+chrono = { workspace = true }
+tempfile = "3.14"
+shell-words = "1.1"

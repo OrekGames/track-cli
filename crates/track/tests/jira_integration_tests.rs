@@ -538,7 +538,7 @@ fn test_jira_issue_comments() {
     let found = comments_arr.iter().any(|c| {
         c["text"]
             .as_str()
-            .map_or(false, |t| t.contains("test comment"))
+            .is_some_and(|t| t.contains("test comment"))
     });
     assert!(found, "Should find the comment we added");
 

@@ -705,6 +705,54 @@ impl TrackerCache {
     }
 }
 
+/// Parse a duration string like "1h", "30m", "1d" into a chrono Duration
+///
+/// Supported formats:
+/// - `1h`, `2h` - hours
+/// - `30m`, `15min` - minutes
+/// - `1d` - days
+/// - `60s` - seconds
+/// - `2` - defaults to hours
+pub fn parse_duration(s: &str) -> Result<Duration> {
+    let s = s.trim().to_lowercase();
+    if s.is_empty() {
+        return Err(anyhow!("Empty duration string"));
+    }
+
+    // Try to parse as a number with a suffix
+    let (num_str, unit) = if s.ends_with("min") {
+        (&s[..s.len() - 3], "m")
+    } else if s.ends_with('d') {
+        (&s[..s.len() - 1], "d")
+    } else if s.ends_with('h') {
+        (&s[..s.len() - 1], "h")
+    } else if s.ends_with('m') {
+        (&s[..s.len() - 1], "m")
+    } else if s.ends_with('s') {
+        (&s[..s.len() - 1], "s")
+    } else {
+        // Default to hours if no suffix
+        (s.as_str(), "h")
+    };
+
+    let num: i64 = num_str
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("Invalid duration: '{}'. Use format like '1h', '30m', '1d'", s))?;
+
+    if num <= 0 {
+        return Err(anyhow!("Duration must be positive"));
+    }
+
+    match unit {
+        "d" => Ok(Duration::days(num)),
+        "h" => Ok(Duration::hours(num)),
+        "m" => Ok(Duration::minutes(num)),
+        "s" => Ok(Duration::seconds(num)),
+        _ => Err(anyhow!("Unknown duration unit: {}", unit)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,53 +869,5 @@ mod tests {
         // No timestamp = stale
         let cache = TrackerCache::default();
         assert!(cache.is_stale(Duration::hours(1)));
-    }
-}
-
-/// Parse a duration string like "1h", "30m", "1d" into a chrono Duration
-///
-/// Supported formats:
-/// - `1h`, `2h` - hours
-/// - `30m`, `15min` - minutes
-/// - `1d` - days
-/// - `60s` - seconds
-/// - `2` - defaults to hours
-pub fn parse_duration(s: &str) -> Result<Duration> {
-    let s = s.trim().to_lowercase();
-    if s.is_empty() {
-        return Err(anyhow!("Empty duration string"));
-    }
-
-    // Try to parse as a number with a suffix
-    let (num_str, unit) = if s.ends_with("min") {
-        (&s[..s.len() - 3], "m")
-    } else if s.ends_with('d') {
-        (&s[..s.len() - 1], "d")
-    } else if s.ends_with('h') {
-        (&s[..s.len() - 1], "h")
-    } else if s.ends_with('m') {
-        (&s[..s.len() - 1], "m")
-    } else if s.ends_with('s') {
-        (&s[..s.len() - 1], "s")
-    } else {
-        // Default to hours if no suffix
-        (s.as_str(), "h")
-    };
-
-    let num: i64 = num_str
-        .trim()
-        .parse()
-        .map_err(|_| anyhow!("Invalid duration: '{}'. Use format like '1h', '30m', '1d'", s))?;
-
-    if num <= 0 {
-        return Err(anyhow!("Duration must be positive"));
-    }
-
-    match unit {
-        "d" => Ok(Duration::days(num)),
-        "h" => Ok(Duration::hours(num)),
-        "m" => Ok(Duration::minutes(num)),
-        "s" => Ok(Duration::seconds(num)),
-        _ => Err(anyhow!("Unknown duration unit: {}", unit)),
     }
 }

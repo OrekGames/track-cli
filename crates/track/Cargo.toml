@@ -12,6 +12,7 @@ path = "src/main.rs"
 tracker-core = { workspace = true }
 youtrack-backend = { workspace = true }
 jira-backend = { workspace = true }
+tracker-mock = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 colored = { workspace = true }
@@ -27,3 +28,4 @@ open = { workspace = true }
 [dev-dependencies]
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+serial_test = "3.1"

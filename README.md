@@ -385,7 +385,7 @@ See `crates/jira-backend/` for reference.
 
 ## For AI Agents
 
-See [AGENT_GUIDE.md](./AGENT_GUIDE.md) for:
+See [Agent Guide](docs/agent_guide.md) for:
 - AI-optimized features: context command, query templates, workflow hints
 - Batch operations for efficient multi-issue updates
 - Field validation to prevent API errors

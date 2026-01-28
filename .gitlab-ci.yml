@@ -238,7 +238,7 @@ package:
     - cd dist && sha256sum *.tar.gz *.zip > checksums-sha256.txt && cd ..
     - cat dist/checksums-sha256.txt
   artifacts:
-    paths:
+    paths:THe 
       - dist/
     expire_in: 1 week
   rules:

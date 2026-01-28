@@ -11,6 +11,19 @@ Cargo.lock
 *~
 .idea/
 
+# Testing
+**/call_log.jsonl
+
+# CLI output files (config/cache)
+.track-config.json
+.tracker-cache.json
+.yt-config.json
+.track.toml
+**/.track-config.json
+**/.tracker-cache.json
+**/.yt-config.json
+**/.track.toml
+
 # AI coding agents
 .claude/
 .codex/
@@ -18,3 +31,4 @@ Cargo.lock
 .cursor/
 .continue/
 .windsurf/
+CLAUDE.md
