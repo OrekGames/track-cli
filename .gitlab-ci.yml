@@ -28,13 +28,16 @@ variables:
 # Test Stage
 # ------------------------------------------------------------------------------
 
-test:
+test:unit:
   stage: test
   image: rust:1.93
   <<: *cargo-cache
   script:
     - rustc --version && cargo --version
-    - cargo test --workspace --all-features
+    # Exclude bin-only crates from --lib/--doc to avoid "no library targets" errors.
+    - cargo test --workspace --all-features --exclude track --exclude agent-harness --lib --doc
+    - cargo test -p track --all-features --bins
+    - cargo test -p agent-harness --all-features --bins
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

@@ -2,6 +2,9 @@
 //!
 //! Invokes Claude Code as a subprocess and captures its behavior for evaluation.
 //! This allows testing how Claude Code specifically performs on scenarios.
+//! This is intended to be used in ephemeral or test environments and runs claude
+//! without requiring it request permissions. Use caution when running it against
+//! your local machine.
 
 use crate::runner::{CommandExecution, SessionResult};
 use anyhow::{Context, Result};
