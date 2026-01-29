@@ -390,3 +390,99 @@ impl From<&core::UpdateArticle> for yt::UpdateArticle {
         }
     }
 }
+
+// ============================================================================
+// Custom Field Admin Conversions
+// ============================================================================
+
+/// Convert YouTrack CustomFieldResponse to tracker-core CustomFieldDefinition
+pub fn custom_field_response_to_core(field: yt::CustomFieldResponse) -> core::CustomFieldDefinition {
+    core::CustomFieldDefinition {
+        id: field.id,
+        name: field.name,
+        field_type: field.field_type.id,
+        instances_count: field.instances,
+    }
+}
+
+/// Convert YouTrack BundleResponse to tracker-core BundleDefinition
+pub fn bundle_response_to_core(bundle: yt::BundleResponse) -> core::BundleDefinition {
+    // Extract bundle type from $type field (e.g., "EnumBundle" -> "enum")
+    let bundle_type = match bundle.bundle_type.as_str() {
+        "EnumBundle" => "enum",
+        "StateBundle" => "state",
+        "OwnedFieldBundle" => "ownedField",
+        "VersionBundle" => "version",
+        "BuildBundle" => "build",
+        other => other,
+    }
+    .to_string();
+
+    core::BundleDefinition {
+        id: bundle.id,
+        name: bundle.name,
+        bundle_type,
+        values: bundle
+            .values
+            .into_iter()
+            .map(bundle_value_response_to_core)
+            .collect(),
+    }
+}
+
+/// Convert YouTrack BundleValueResponse to tracker-core BundleValueDefinition
+pub fn bundle_value_response_to_core(value: yt::BundleValueResponse) -> core::BundleValueDefinition {
+    core::BundleValueDefinition {
+        id: value.id,
+        name: value.name,
+        description: value.description,
+        is_resolved: value.is_resolved,
+        ordinal: value.ordinal,
+    }
+}
+
+/// Convert YouTrack ProjectCustomFieldResponse to tracker-core ProjectCustomField
+pub fn project_custom_field_response_to_core(
+    field: yt::ProjectCustomFieldResponse,
+) -> core::ProjectCustomField {
+    let field_type = field
+        .field
+        .field_type
+        .as_ref()
+        .map(|ft| ft.id.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let is_state_field = field_type.starts_with("state");
+
+    let (values, state_values) = match field.bundle {
+        Some(bundle) => {
+            let values: Vec<String> = bundle.values.iter().map(|v| v.name.clone()).collect();
+
+            let state_values: Vec<core::StateValueInfo> = if is_state_field {
+                bundle
+                    .values
+                    .iter()
+                    .map(|v| core::StateValueInfo {
+                        name: v.name.clone(),
+                        is_resolved: v.is_resolved.unwrap_or(false),
+                        ordinal: v.ordinal.unwrap_or(0),
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            (values, state_values)
+        }
+        None => (vec![], vec![]),
+    };
+
+    core::ProjectCustomField {
+        id: field.id,
+        name: field.field.name,
+        field_type,
+        required: !field.can_be_empty,
+        values,
+        state_values,
+    }
+}

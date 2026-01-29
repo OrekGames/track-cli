@@ -685,4 +685,152 @@ impl YouTrackClient {
         let created_comment: ArticleComment = response.body_mut().read_json()?;
         Ok(created_comment)
     }
+
+    // ========================================================================
+    // Custom Field Admin Operations
+    // ========================================================================
+
+    const DEFAULT_CUSTOM_FIELD_FIELDS: &'static str = "id,name,fieldType(id,presentation)";
+    const DEFAULT_BUNDLE_FIELDS: &'static str =
+        "id,name,$type,values(id,name,description,isResolved,ordinal)";
+
+    /// List all custom field definitions (instance-wide)
+    pub fn list_custom_field_definitions(&self) -> Result<Vec<CustomFieldResponse>> {
+        let url = format!(
+            "{}/api/admin/customFieldSettings/customFields?fields={}",
+            self.base_url,
+            Self::DEFAULT_CUSTOM_FIELD_FIELDS
+        );
+
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let fields: Vec<CustomFieldResponse> = response.body_mut().read_json()?;
+        Ok(fields)
+    }
+
+    /// Create a new custom field definition
+    pub fn create_custom_field(
+        &self,
+        create: &CreateCustomFieldRequest,
+    ) -> Result<CustomFieldResponse> {
+        let url = format!(
+            "{}/api/admin/customFieldSettings/customFields?fields={}",
+            self.base_url,
+            Self::DEFAULT_CUSTOM_FIELD_FIELDS
+        );
+
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(create)
+            .map_err(|e| self.handle_error(e))?;
+
+        let field: CustomFieldResponse = response.body_mut().read_json()?;
+        Ok(field)
+    }
+
+    /// List bundles of a given type (enum, state, etc.)
+    pub fn list_bundles(&self, bundle_type: &str) -> Result<Vec<BundleResponse>> {
+        let url = format!(
+            "{}/api/admin/customFieldSettings/bundles/{}?fields={}",
+            self.base_url,
+            bundle_type,
+            Self::DEFAULT_BUNDLE_FIELDS
+        );
+
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let bundles: Vec<BundleResponse> = response.body_mut().read_json()?;
+        Ok(bundles)
+    }
+
+    /// Create a new bundle
+    pub fn create_bundle(
+        &self,
+        bundle_type: &str,
+        create: &CreateBundleRequest,
+    ) -> Result<BundleResponse> {
+        let url = format!(
+            "{}/api/admin/customFieldSettings/bundles/{}?fields={}",
+            self.base_url,
+            bundle_type,
+            Self::DEFAULT_BUNDLE_FIELDS
+        );
+
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(create)
+            .map_err(|e| self.handle_error(e))?;
+
+        let bundle: BundleResponse = response.body_mut().read_json()?;
+        Ok(bundle)
+    }
+
+    /// Add a value to an existing bundle
+    pub fn add_bundle_value(
+        &self,
+        bundle_type: &str,
+        bundle_id: &str,
+        value: &CreateBundleValueRequest,
+    ) -> Result<BundleValueResponse> {
+        let url = format!(
+            "{}/api/admin/customFieldSettings/bundles/{}/{}/values?fields=id,name,description,isResolved,ordinal",
+            self.base_url, bundle_type, bundle_id
+        );
+
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(value)
+            .map_err(|e| self.handle_error(e))?;
+
+        let created_value: BundleValueResponse = response.body_mut().read_json()?;
+        Ok(created_value)
+    }
+
+    /// Attach a custom field to a project
+    pub fn attach_field_to_project(
+        &self,
+        project_id: &str,
+        attach: &AttachFieldRequest,
+    ) -> Result<ProjectCustomFieldResponse> {
+        let url = format!(
+            "{}/api/admin/projects/{}/customFields?fields=id,field(id,name,fieldType(id,presentation)),bundle(id,values(id,name,isResolved,ordinal)),canBeEmpty,emptyFieldText",
+            self.base_url, project_id
+        );
+
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(attach)
+            .map_err(|e| self.handle_error(e))?;
+
+        let field: ProjectCustomFieldResponse = response.body_mut().read_json()?;
+        Ok(field)
+    }
 }

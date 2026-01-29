@@ -2,7 +2,8 @@ use crate::cli::OutputFormat;
 use colored::Colorize;
 use serde::Serialize;
 use tracker_core::{
-    Article, ArticleAttachment, Comment, CustomField, Issue, IssueTag, Project, ProjectCustomField,
+    Article, ArticleAttachment, BundleDefinition, Comment, CustomField, CustomFieldDefinition,
+    Issue, IssueTag, Project, ProjectCustomField,
 };
 
 pub fn output_result<T: Serialize + Displayable>(result: &T, format: OutputFormat) {
@@ -297,5 +298,36 @@ impl Displayable for Comment {
             .unwrap_or_else(|| "Unknown date".to_string());
 
         format!("[{}] {} - {}", date.dimmed(), author.cyan(), self.text)
+    }
+}
+
+impl Displayable for CustomFieldDefinition {
+    fn display(&self) -> String {
+        format!(
+            "{} [{}] ({})",
+            self.name.white().bold(),
+            self.field_type.dimmed(),
+            self.id.dimmed()
+        )
+    }
+}
+
+impl Displayable for BundleDefinition {
+    fn display(&self) -> String {
+        let values: Vec<&str> = self.values.iter().map(|v| v.name.as_str()).collect();
+        let values_str = if values.is_empty() {
+            "(no values)".dimmed().to_string()
+        } else {
+            values.join(", ")
+        };
+
+        format!(
+            "{} [{}] ({})\n  {}: {}",
+            self.name.white().bold(),
+            self.bundle_type.dimmed(),
+            self.id.dimmed(),
+            "Values".dimmed(),
+            values_str
+        )
     }
 }

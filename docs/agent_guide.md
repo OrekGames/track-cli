@@ -124,6 +124,28 @@ track config get default_project
 | Get | `track p g PROJ` | `track -b j p g PROJ` |
 | Fields | `track p f PROJ` | `track -b j p f PROJ` |
 | Create | `track p new -n "Name" -s "KEY"` | Not supported |
+| Attach field | `track p attach-field PROJ -f <field-id> --bundle <bundle-id>` | Not supported |
+
+### Custom Field Admin (YouTrack only)
+
+| Operation | Command |
+|-----------|---------|
+| List fields | `track field list` or `track field ls` |
+| Create field | `track field create "Name" -t enum` |
+| Create field with values + attach | `track field new "Name" -t enum -p PROJ -v "Val1,Val2,Val3"` |
+| List bundles | `track bundle list -t enum` |
+| Create bundle | `track bundle create "Name" -t enum -v "Val1,Val2"` |
+| Add bundle value | `track bundle add-value <id> -t enum -v "NewValue"` |
+
+**Field types**: `enum`, `multi-enum`, `state`, `text`, `date`, `integer`, `float`, `period`
+
+**Bundle types**: `enum`, `state`, `ownedField`, `version`, `build`
+
+**State fields with resolved markers**:
+```bash
+track field new "Status" -t state -p PROJ -v "Open,In Progress,Done" --resolved "Done"
+track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fixed,Closed"
+```
 
 ### Article Operations (Knowledge Base)
 
@@ -163,6 +185,11 @@ track config get default_project
 | `track config` | `track cfg` |
 | `track article` | `track a`, `track wiki` |
 | `track context` | `track ctx` |
+| `track field list` | `track field ls` |
+| `track field create` | `track field c` |
+| `track field new` | `track field setup` |
+| `track bundle list` | `track bundle ls` |
+| `track bundle create` | `track bundle c` |
 
 ---
 
@@ -627,6 +654,12 @@ track i link PROJ-1 PROJ-2 -t depends
 track p ls                         # List projects
 track config test                  # Test connection
 
+# === CUSTOM FIELD ADMIN (YouTrack only) ===
+track field list                   # List field definitions
+track field new "Priority" -t enum -p PROJ -v "Low,Medium,High"
+track bundle list -t enum          # List bundles
+track bundle create "Status" -t state -v "Open,Done" --resolved "Done"
+
 # === JIRA (when default or with -b j) ===
 track -b j PROJ-123                # Get issue (or just 'track PROJ-123' if default is jira)
 track -b j -o json PROJ-123        # Get as JSON
@@ -651,6 +684,7 @@ track -b j config test             # Test connection
 6. **Field discovery**: `track p f PROJ` or `track cache show` lists custom fields with valid values
 7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, and articles
 8. **Query templates**: Cache includes pre-built queries - check `track cache show` for available templates
-9. **Jira limitations**: No project creation, no subtask conversion
+9. **Jira limitations**: No project creation, no subtask conversion, no custom field admin
 10. **Query syntax**: YouTrack `project: PROJ` vs Jira `project = PROJ`
 11. **Confluence IDs**: Numeric page IDs (`123456`) and space IDs (`65957`), not project keys
+12. **Custom field admin**: YouTrack only - use `track field new` for convenience command that creates field with values and attaches to project

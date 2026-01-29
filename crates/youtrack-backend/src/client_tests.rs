@@ -610,4 +610,362 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    // ========== Custom Field Admin API Tests ==========
+
+    #[tokio::test]
+    async fn test_list_custom_field_definitions() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/admin/customFieldSettings/customFields"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "127-1",
+                    "name": "Priority",
+                    "fieldType": {
+                        "id": "enum[1]",
+                        "presentation": "enum"
+                    }
+                },
+                {
+                    "id": "127-2",
+                    "name": "State",
+                    "fieldType": {
+                        "id": "state[1]",
+                        "presentation": "state"
+                    }
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let fields = client.list_custom_field_definitions().unwrap();
+
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "Priority");
+        assert_eq!(fields[0].field_type.id, "enum[1]");
+        assert_eq!(fields[1].name, "State");
+        assert_eq!(fields[1].field_type.id, "state[1]");
+    }
+
+    #[tokio::test]
+    async fn test_create_custom_field() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/admin/customFieldSettings/customFields"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(body_json(serde_json::json!({
+                "name": "Test Field",
+                "fieldType": {
+                    "id": "enum[1]"
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "127-10",
+                "name": "Test Field",
+                "fieldType": {
+                    "id": "enum[1]",
+                    "presentation": "enum"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = admin::CreateCustomFieldRequest {
+            name: "Test Field".to_string(),
+            field_type: admin::FieldTypeRef {
+                id: "enum[1]".to_string(),
+            },
+        };
+
+        let field = client.create_custom_field(&create).unwrap();
+        assert_eq!(field.id, "127-10");
+        assert_eq!(field.name, "Test Field");
+    }
+
+    #[tokio::test]
+    async fn test_list_bundles() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/admin/customFieldSettings/bundles/enum"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "$type": "EnumBundle",
+                    "id": "129-1",
+                    "name": "Priority Bundle",
+                    "values": [
+                        {"id": "129-1-1", "name": "Low", "ordinal": 0},
+                        {"id": "129-1-2", "name": "Medium", "ordinal": 1},
+                        {"id": "129-1-3", "name": "High", "ordinal": 2}
+                    ]
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let bundles = client.list_bundles("enum").unwrap();
+
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].name, "Priority Bundle");
+        assert_eq!(bundles[0].bundle_type, "EnumBundle");
+        assert_eq!(bundles[0].values.len(), 3);
+        assert_eq!(bundles[0].values[0].name, "Low");
+    }
+
+    #[tokio::test]
+    async fn test_list_state_bundles() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/admin/customFieldSettings/bundles/state"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "$type": "StateBundle",
+                    "id": "131-1",
+                    "name": "Issue Status",
+                    "values": [
+                        {"id": "131-1-1", "name": "Open", "isResolved": false, "ordinal": 0},
+                        {"id": "131-1-2", "name": "In Progress", "isResolved": false, "ordinal": 1},
+                        {"id": "131-1-3", "name": "Done", "isResolved": true, "ordinal": 2}
+                    ]
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let bundles = client.list_bundles("state").unwrap();
+
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].bundle_type, "StateBundle");
+        assert_eq!(bundles[0].values[0].is_resolved, Some(false));
+        assert_eq!(bundles[0].values[2].is_resolved, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_create_bundle() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/admin/customFieldSettings/bundles/enum"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "$type": "EnumBundle",
+                "id": "129-10",
+                "name": "Test Priority",
+                "values": [
+                    {"id": "129-10-1", "name": "Low", "ordinal": 0},
+                    {"id": "129-10-2", "name": "High", "ordinal": 1}
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = admin::CreateBundleRequest {
+            name: "Test Priority".to_string(),
+            values: vec![
+                admin::CreateBundleValueRequest {
+                    name: "Low".to_string(),
+                    description: None,
+                    is_resolved: None,
+                    ordinal: Some(0),
+                },
+                admin::CreateBundleValueRequest {
+                    name: "High".to_string(),
+                    description: None,
+                    is_resolved: None,
+                    ordinal: Some(1),
+                },
+            ],
+        };
+
+        let bundle = client.create_bundle("enum", &create).unwrap();
+        assert_eq!(bundle.id, "129-10");
+        assert_eq!(bundle.name, "Test Priority");
+        assert_eq!(bundle.values.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_create_state_bundle() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/admin/customFieldSettings/bundles/state"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "$type": "StateBundle",
+                "id": "131-10",
+                "name": "Test Status",
+                "values": [
+                    {"id": "131-10-1", "name": "Open", "isResolved": false, "ordinal": 0},
+                    {"id": "131-10-2", "name": "Closed", "isResolved": true, "ordinal": 1}
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = admin::CreateBundleRequest {
+            name: "Test Status".to_string(),
+            values: vec![
+                admin::CreateBundleValueRequest {
+                    name: "Open".to_string(),
+                    description: None,
+                    is_resolved: Some(false),
+                    ordinal: Some(0),
+                },
+                admin::CreateBundleValueRequest {
+                    name: "Closed".to_string(),
+                    description: None,
+                    is_resolved: Some(true),
+                    ordinal: Some(1),
+                },
+            ],
+        };
+
+        let bundle = client.create_bundle("state", &create).unwrap();
+        assert_eq!(bundle.bundle_type, "StateBundle");
+        assert_eq!(bundle.values[0].is_resolved, Some(false));
+        assert_eq!(bundle.values[1].is_resolved, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_add_bundle_value() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/admin/customFieldSettings/bundles/enum/129-10/values"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(body_json(serde_json::json!({
+                "name": "Critical",
+                "ordinal": 2
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "129-10-3",
+                "name": "Critical",
+                "ordinal": 2
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let value = admin::CreateBundleValueRequest {
+            name: "Critical".to_string(),
+            description: None,
+            is_resolved: None,
+            ordinal: Some(2),
+        };
+
+        let created = client.add_bundle_value("enum", "129-10", &value).unwrap();
+        assert_eq!(created.id, "129-10-3");
+        assert_eq!(created.name, "Critical");
+    }
+
+    #[tokio::test]
+    async fn test_attach_field_to_project() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/admin/projects/0-1/customFields"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "128-1",
+                "field": {
+                    "id": "127-10",
+                    "name": "Test Field",
+                    "fieldType": {
+                        "id": "enum[1]",
+                        "presentation": "enum"
+                    }
+                },
+                "canBeEmpty": true,
+                "bundle": {
+                    "id": "129-10",
+                    "values": [
+                        {"id": "129-10-1", "name": "Low"},
+                        {"id": "129-10-2", "name": "High"}
+                    ]
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let attach = admin::AttachFieldRequest {
+            type_name: "EnumProjectCustomField".to_string(),
+            field: admin::CustomFieldRef {
+                id: "127-10".to_string(),
+            },
+            bundle: Some(admin::BundleRef {
+                type_name: "EnumBundle".to_string(),
+                id: "129-10".to_string(),
+            }),
+            can_be_empty: true,
+            empty_field_text: None,
+        };
+
+        let attached = client.attach_field_to_project("0-1", &attach).unwrap();
+        assert_eq!(attached.id, "128-1");
+        assert_eq!(attached.field.name, "Test Field");
+        assert!(attached.can_be_empty);
+        assert!(attached.bundle.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_attach_state_field_to_project() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/admin/projects/0-1/customFields"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "128-2",
+                "field": {
+                    "id": "127-11",
+                    "name": "Status",
+                    "fieldType": {
+                        "id": "state[1]",
+                        "presentation": "state"
+                    }
+                },
+                "canBeEmpty": false,
+                "bundle": {
+                    "id": "131-10",
+                    "values": [
+                        {"id": "131-10-1", "name": "Open", "isResolved": false},
+                        {"id": "131-10-2", "name": "Done", "isResolved": true}
+                    ]
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let attach = admin::AttachFieldRequest {
+            type_name: "StateProjectCustomField".to_string(),
+            field: admin::CustomFieldRef {
+                id: "127-11".to_string(),
+            },
+            bundle: Some(admin::BundleRef {
+                type_name: "StateBundle".to_string(),
+                id: "131-10".to_string(),
+            }),
+            can_be_empty: false,
+            empty_field_text: None,
+        };
+
+        let attached = client.attach_field_to_project("0-1", &attach).unwrap();
+        assert_eq!(attached.id, "128-2");
+        assert!(!attached.can_be_empty);
+    }
 }

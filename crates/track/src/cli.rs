@@ -106,6 +106,16 @@ pub enum Commands {
         #[command(subcommand)]
         action: ArticleCommands,
     },
+    /// Custom field admin operations (YouTrack only)
+    Field {
+        #[command(subcommand)]
+        action: FieldCommands,
+    },
+    /// Bundle admin operations (YouTrack only)
+    Bundle {
+        #[command(subcommand)]
+        action: BundleCommands,
+    },
     /// Aggregate context for AI assistants (projects, fields, users, queries)
     #[command(visible_alias = "ctx")]
     Context {
@@ -502,6 +512,100 @@ pub enum ProjectCommands {
     Fields {
         /// Project ID or short name (e.g., "OGIT" or "0-2")
         id: String,
+    },
+    /// Attach a custom field to a project
+    AttachField {
+        /// Project ID or short name
+        project: String,
+        /// Field ID to attach
+        #[arg(long, short = 'f', required = true)]
+        field: String,
+        /// Bundle ID (required for enum/state fields)
+        #[arg(long)]
+        bundle: Option<String>,
+        /// Make field required (cannot be empty)
+        #[arg(long)]
+        required: bool,
+        /// Text to show when field is empty
+        #[arg(long)]
+        empty_text: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FieldCommands {
+    /// List all custom field definitions
+    #[command(visible_alias = "ls")]
+    List,
+    /// Create a new custom field definition
+    #[command(visible_alias = "c")]
+    Create {
+        /// Field name
+        name: String,
+        /// Field type: enum, multi-enum, state, text, date, integer, float, period
+        #[arg(long, short = 't', default_value = "enum")]
+        field_type: String,
+    },
+    /// Create a field with values and attach to project in one step
+    #[command(visible_alias = "setup")]
+    New {
+        /// Field name
+        name: String,
+        /// Field type: enum, state
+        #[arg(long, short = 't', default_value = "enum")]
+        field_type: String,
+        /// Project to attach to
+        #[arg(long, short = 'p', required = true)]
+        project: String,
+        /// Comma-separated values for the field
+        #[arg(long, short = 'v', value_delimiter = ',', required = true)]
+        values: Vec<String>,
+        /// Value(s) that represent resolved state (for state fields, comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        resolved: Vec<String>,
+        /// Make the field required (cannot be empty)
+        #[arg(long)]
+        required: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BundleCommands {
+    /// List bundles by type
+    #[command(visible_alias = "ls")]
+    List {
+        /// Bundle type: enum, state, ownedField, version, build
+        #[arg(long, short = 't', default_value = "enum")]
+        bundle_type: String,
+    },
+    /// Create a new bundle with optional initial values
+    #[command(visible_alias = "c")]
+    Create {
+        /// Bundle name
+        name: String,
+        /// Bundle type: enum, state
+        #[arg(long, short = 't', default_value = "enum")]
+        bundle_type: String,
+        /// Initial values (comma-separated)
+        #[arg(long, short = 'v', value_delimiter = ',')]
+        values: Vec<String>,
+        /// Value(s) that represent resolved state (for state bundles, comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        resolved: Vec<String>,
+    },
+    /// Add a value to an existing bundle
+    AddValue {
+        /// Bundle ID
+        bundle_id: String,
+        /// Bundle type: enum, state
+        #[arg(long, short = 't', required = true)]
+        bundle_type: String,
+        /// Value name to add
+        #[arg(long, short = 'v', required = true)]
+        value: String,
+        /// Mark this value as resolved (for state bundles)
+        #[arg(long)]
+        resolved: bool,
     },
 }
 

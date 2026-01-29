@@ -285,3 +285,245 @@ pub struct ArticleAttachment {
     pub url: Option<String>,
     pub created: Option<DateTime<Utc>>,
 }
+
+// ============================================================================
+// Custom Field Admin Models
+// ============================================================================
+
+/// Type of custom field
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CustomFieldType {
+    /// Single enum value selection
+    SingleEnum,
+    /// Multiple enum value selection
+    MultiEnum,
+    /// State field with workflow support
+    State,
+    /// Free-form text field
+    Text,
+    /// Date field
+    Date,
+    /// Integer number field
+    Integer,
+    /// Floating point number field
+    Float,
+    /// Time period field
+    Period,
+}
+
+impl CustomFieldType {
+    /// Convert to YouTrack field type ID
+    pub fn to_youtrack_id(&self) -> &'static str {
+        match self {
+            CustomFieldType::SingleEnum => "enum[1]",
+            CustomFieldType::MultiEnum => "enum[*]",
+            CustomFieldType::State => "state[1]",
+            CustomFieldType::Text => "text[1]",
+            CustomFieldType::Date => "date",
+            CustomFieldType::Integer => "integer",
+            CustomFieldType::Float => "float",
+            CustomFieldType::Period => "period",
+        }
+    }
+
+    /// Convert to YouTrack project custom field $type name
+    pub fn to_project_custom_field_type(&self) -> &'static str {
+        match self {
+            CustomFieldType::SingleEnum => "EnumProjectCustomField",
+            CustomFieldType::MultiEnum => "EnumProjectCustomField",
+            CustomFieldType::State => "StateProjectCustomField",
+            CustomFieldType::Text => "TextProjectCustomField",
+            CustomFieldType::Date => "DateProjectCustomField",
+            CustomFieldType::Integer => "SimpleProjectCustomField",
+            CustomFieldType::Float => "SimpleProjectCustomField",
+            CustomFieldType::Period => "PeriodProjectCustomField",
+        }
+    }
+
+    /// Parse from string representation
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "enum" | "single-enum" | "singleenum" => Some(CustomFieldType::SingleEnum),
+            "multi-enum" | "multienum" => Some(CustomFieldType::MultiEnum),
+            "state" => Some(CustomFieldType::State),
+            "text" => Some(CustomFieldType::Text),
+            "date" => Some(CustomFieldType::Date),
+            "integer" | "int" => Some(CustomFieldType::Integer),
+            "float" => Some(CustomFieldType::Float),
+            "period" => Some(CustomFieldType::Period),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CustomFieldType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            CustomFieldType::SingleEnum => "enum",
+            CustomFieldType::MultiEnum => "multi-enum",
+            CustomFieldType::State => "state",
+            CustomFieldType::Text => "text",
+            CustomFieldType::Date => "date",
+            CustomFieldType::Integer => "integer",
+            CustomFieldType::Float => "float",
+            CustomFieldType::Period => "period",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Type of bundle for storing field values
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BundleType {
+    /// Enumeration values
+    Enum,
+    /// State values with workflow support
+    State,
+    /// Owned field bundle (for assignee-like fields)
+    OwnedField,
+    /// Version bundle
+    Version,
+    /// Build bundle
+    Build,
+}
+
+impl BundleType {
+    /// Convert to YouTrack API path segment
+    pub fn to_api_path(&self) -> &'static str {
+        match self {
+            BundleType::Enum => "enum",
+            BundleType::State => "state",
+            BundleType::OwnedField => "ownedField",
+            BundleType::Version => "version",
+            BundleType::Build => "build",
+        }
+    }
+
+    /// Convert to YouTrack $type name for API references
+    pub fn to_youtrack_type(&self) -> &'static str {
+        match self {
+            BundleType::Enum => "EnumBundle",
+            BundleType::State => "StateBundle",
+            BundleType::OwnedField => "OwnedFieldBundle",
+            BundleType::Version => "VersionBundle",
+            BundleType::Build => "BuildBundle",
+        }
+    }
+
+    /// Parse from string representation
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "enum" => Some(BundleType::Enum),
+            "state" => Some(BundleType::State),
+            "ownedfield" | "owned" | "owned-field" => Some(BundleType::OwnedField),
+            "version" => Some(BundleType::Version),
+            "build" => Some(BundleType::Build),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for BundleType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            BundleType::Enum => "enum",
+            BundleType::State => "state",
+            BundleType::OwnedField => "ownedField",
+            BundleType::Version => "version",
+            BundleType::Build => "build",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Data for creating a new custom field definition
+#[derive(Debug, Clone)]
+pub struct CreateCustomField {
+    /// Field name
+    pub name: String,
+    /// Field type
+    pub field_type: CustomFieldType,
+}
+
+/// Data for creating a new bundle
+#[derive(Debug, Clone)]
+pub struct CreateBundle {
+    /// Bundle name
+    pub name: String,
+    /// Bundle type
+    pub bundle_type: BundleType,
+    /// Initial values for the bundle
+    pub values: Vec<CreateBundleValue>,
+}
+
+/// Data for creating a bundle value
+#[derive(Debug, Clone)]
+pub struct CreateBundleValue {
+    /// Value name
+    pub name: String,
+    /// Optional description
+    pub description: Option<String>,
+    /// Whether this value represents a resolved state (for state bundles)
+    pub is_resolved: Option<bool>,
+    /// Ordinal position in workflow (for state bundles)
+    pub ordinal: Option<i32>,
+}
+
+/// Data for attaching a custom field to a project
+#[derive(Debug, Clone)]
+pub struct AttachFieldToProject {
+    /// Field ID to attach
+    pub field_id: String,
+    /// Bundle ID (required for enum/state fields)
+    pub bundle_id: Option<String>,
+    /// Whether the field can be empty
+    pub can_be_empty: bool,
+    /// Text to display when field is empty
+    pub empty_field_text: Option<String>,
+    /// Field type for the $type discriminator (e.g., CustomFieldType::SingleEnum)
+    pub field_type: Option<CustomFieldType>,
+    /// Bundle type (required if bundle_id is set)
+    pub bundle_type: Option<BundleType>,
+}
+
+/// Global custom field definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomFieldDefinition {
+    /// Field ID
+    pub id: String,
+    /// Field name
+    pub name: String,
+    /// Field type string (e.g., "enum[1]", "state[1]")
+    pub field_type: String,
+    /// Number of projects using this field
+    #[serde(default)]
+    pub instances_count: i32,
+}
+
+/// Bundle definition (collection of values for enum/state fields)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleDefinition {
+    /// Bundle ID
+    pub id: String,
+    /// Bundle name
+    pub name: String,
+    /// Bundle type
+    pub bundle_type: String,
+    /// Values in the bundle
+    pub values: Vec<BundleValueDefinition>,
+}
+
+/// Single value in a bundle
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleValueDefinition {
+    /// Value ID
+    pub id: String,
+    /// Value name
+    pub name: String,
+    /// Optional description
+    pub description: Option<String>,
+    /// Whether this value represents a resolved state (for state bundles)
+    pub is_resolved: Option<bool>,
+    /// Ordinal position in workflow
+    pub ordinal: Option<i32>,
+}

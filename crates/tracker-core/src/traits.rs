@@ -47,6 +47,64 @@ pub trait IssueTracker: Send + Sync {
         Ok(Vec::new())
     }
 
+    // ========== Custom Field Admin Operations ==========
+
+    /// List all custom field definitions (instance-wide)
+    fn list_custom_field_definitions(&self) -> Result<Vec<CustomFieldDefinition>> {
+        Err(crate::error::TrackerError::InvalidInput(
+            "Custom field management not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Create a new custom field definition
+    fn create_custom_field(&self, field: &CreateCustomField) -> Result<CustomFieldDefinition> {
+        let _ = field;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Custom field creation not supported by this backend".to_string(),
+        ))
+    }
+
+    /// List all bundles of a given type
+    fn list_bundles(&self, bundle_type: BundleType) -> Result<Vec<BundleDefinition>> {
+        let _ = bundle_type;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Bundle management not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Create a new bundle with values
+    fn create_bundle(&self, bundle: &CreateBundle) -> Result<BundleDefinition> {
+        let _ = bundle;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Bundle creation not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Add values to an existing bundle
+    fn add_bundle_values(
+        &self,
+        bundle_id: &str,
+        bundle_type: BundleType,
+        values: &[CreateBundleValue],
+    ) -> Result<Vec<BundleValueDefinition>> {
+        let _ = (bundle_id, bundle_type, values);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Bundle modification not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Attach a custom field to a project
+    fn attach_field_to_project(
+        &self,
+        project_id: &str,
+        attachment: &AttachFieldToProject,
+    ) -> Result<ProjectCustomField> {
+        let _ = (project_id, attachment);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Field attachment not supported by this backend".to_string(),
+        ))
+    }
+
     // ========== Tag Operations ==========
 
     /// List all available tags

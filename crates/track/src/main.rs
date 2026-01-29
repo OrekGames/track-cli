@@ -16,6 +16,9 @@ use tracker_core::{IssueTracker, KnowledgeBase};
 use tracker_mock::MockClient;
 use youtrack_backend::YouTrackClient;
 
+/// Embedded agent guide content - written to project directory during `track init`
+const AGENT_GUIDE: &str = include_str!("../../../docs/agent_guide.md");
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -173,6 +176,12 @@ fn run_with_client(
         Commands::Config { action } => handle_config(issue_client, action, cli.format, config),
         Commands::Article { action } => {
             commands::article::handle_article(issue_client, kb_client, action, cli.format)
+        }
+        Commands::Field { action } => {
+            commands::field::handle_field(issue_client, action, cli.format)
+        }
+        Commands::Bundle { action } => {
+            commands::bundle::handle_bundle(issue_client, action, cli.format)
         }
         Commands::Context {
             project,
@@ -1084,6 +1093,13 @@ fn handle_init(
 
     config.save(&config_path)?;
 
+    // Write agent guide to the same directory as the config
+    let guide_path = config_path
+        .parent()
+        .map(|p| p.join("AGENT_GUIDE.md"))
+        .unwrap_or_else(|| std::path::PathBuf::from("AGENT_GUIDE.md"));
+    std::fs::write(&guide_path, AGENT_GUIDE)?;
+
     match format {
         cli::OutputFormat::Json => {
             let project_json = if let Some((_, name)) = &validated_project {
@@ -1092,9 +1108,10 @@ fn handle_init(
                 String::new()
             };
             println!(
-                r#"{{"success": true, "backend": "{}", "config_path": "{}"{}}}"#,
+                r#"{{"success": true, "backend": "{}", "config_path": "{}", "guide_path": "{}"{}}}"#,
                 backend_str,
                 config_path.display(),
+                guide_path.display(),
                 project_json
             );
         }
@@ -1104,6 +1121,11 @@ fn handle_init(
                 "Created config file:".green(),
                 config_path.display()
             );
+            println!(
+                "{} {}",
+                "Created agent guide:".green(),
+                guide_path.display()
+            );
             println!("  {}: {}", "Backend".dimmed(), backend_str.cyan().bold());
             if let Some((_, name)) = &validated_project {
                 println!("  {}: {}", "Default project".dimmed(), name.cyan().bold());
@@ -1112,6 +1134,10 @@ fn handle_init(
             println!(
                 "{}",
                 "You can now use track commands without --url, --token, and -b flags.".dimmed()
+            );
+            println!(
+                "{}",
+                "AI agents can reference AGENT_GUIDE.md for CLI usage patterns.".dimmed()
             );
         }
     }

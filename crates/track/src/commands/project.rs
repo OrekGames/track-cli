@@ -1,7 +1,7 @@
 use crate::cli::{OutputFormat, ProjectCommands};
 use crate::output::{output_list, output_result};
 use anyhow::{Context, Result};
-use tracker_core::{CreateProject, IssueTracker};
+use tracker_core::{AttachFieldToProject, CreateProject, IssueTracker};
 
 pub fn handle_project(
     client: &dyn IssueTracker,
@@ -17,6 +17,21 @@ pub fn handle_project(
             description,
         } => handle_create(client, name, short_name, description.clone(), format),
         ProjectCommands::Fields { id } => handle_fields(client, id, format),
+        ProjectCommands::AttachField {
+            project,
+            field,
+            bundle,
+            required,
+            empty_text,
+        } => handle_attach_field(
+            client,
+            project,
+            field,
+            bundle.as_deref(),
+            *required,
+            empty_text.clone(),
+            format,
+        ),
     }
 }
 
@@ -73,5 +88,36 @@ fn handle_fields(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> R
         .with_context(|| format!("Failed to fetch custom fields for project '{}'", id))?;
 
     output_list(&fields, format);
+    Ok(())
+}
+
+fn handle_attach_field(
+    client: &dyn IssueTracker,
+    project: &str,
+    field_id: &str,
+    bundle_id: Option<&str>,
+    required: bool,
+    empty_text: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    // Resolve project shortName to internal ID if needed
+    let project_id = client
+        .resolve_project_id(project)
+        .with_context(|| format!("Failed to resolve project '{}'", project))?;
+
+    let attachment = AttachFieldToProject {
+        field_id: field_id.to_string(),
+        bundle_id: bundle_id.map(String::from),
+        can_be_empty: !required,
+        empty_field_text: empty_text,
+        field_type: None, // Will default to EnumProjectCustomField
+        bundle_type: None, // Will default to EnumBundle
+    };
+
+    let attached = client
+        .attach_field_to_project(&project_id, &attachment)
+        .with_context(|| format!("Failed to attach field '{}' to project '{}'", field_id, project))?;
+
+    output_result(&attached, format);
     Ok(())
 }

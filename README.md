@@ -8,6 +8,7 @@ A command-line interface for issue tracking systems, built with Rust. Supports *
 - **Issue Management**: Get, create, update, delete, search issues
 - **Batch Operations**: Update, delete, or complete multiple issues at once
 - **Custom Fields**: Set priority, state, assignee, and any field with validation
+- **Field Admin**: Create custom fields and bundles, attach to projects (YouTrack)
 - **Comments & Links**: Add comments and link issues together
 - **Knowledge Base**: Manage articles (YouTrack and Jira/Confluence)
 - **AI-Optimized**: Context aggregation, query templates, workflow hints
@@ -223,6 +224,35 @@ track project create -n "Name" -s "KEY"
 track tags list
 ```
 
+### Custom Fields Admin (YouTrack only)
+
+```bash
+# List all custom field definitions
+track field list
+
+# Create a field definition
+track field create "Priority" -t enum
+
+# Create field with values and attach to project (convenience command)
+track field new "Sprint Phase" -t enum -p PROJ -v "Planning,Development,Testing,Done"
+
+# For state fields with resolved markers
+track field new "Bug Status" -t state -p PROJ -v "Open,In Progress,Fixed,Closed" --resolved "Fixed,Closed"
+
+# List bundles by type
+track bundle list -t enum
+track bundle list -t state
+
+# Create a bundle with values
+track bundle create "Priority Levels" -t enum -v "Low,Medium,High,Critical"
+
+# Add value to existing bundle
+track bundle add-value <bundle-id> -t enum -v "Urgent"
+
+# Attach a field to a project
+track project attach-field PROJ -f <field-id> --bundle <bundle-id>
+```
+
 ### Articles (Knowledge Base)
 
 YouTrack uses its built-in Knowledge Base. Jira uses Confluence (automatically at same domain with `/wiki` path).
@@ -308,6 +338,11 @@ Single command to get all relevant data: projects, fields, users, query template
 | `track article` | `track a`, `track wiki` |
 | `track config` | `track cfg` |
 | `track context` | `track ctx` |
+| `track field list` | `track field ls` |
+| `track field create` | `track field c` |
+| `track field new` | `track field setup` |
+| `track bundle list` | `track bundle ls` |
+| `track bundle create` | `track bundle c` |
 
 ## Query Syntax
 

@@ -1,10 +1,17 @@
 //! IssueTracker and KnowledgeBase trait implementations for YouTrackClient
 
 use crate::client::YouTrackClient;
+use crate::convert;
+use crate::models::{
+    AttachFieldRequest, BundleRef, CreateBundleRequest, CreateBundleValueRequest,
+    CreateCustomFieldRequest, CustomFieldRef, FieldTypeRef,
+};
 use tracker_core::{
-    Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, Issue,
-    IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
-    Result, TrackerError, UpdateArticle, UpdateIssue, User,
+    Article, ArticleAttachment, AttachFieldToProject, BundleDefinition, BundleType,
+    BundleValueDefinition, Comment, CreateArticle, CreateBundle, CreateBundleValue,
+    CreateCustomField, CreateIssue, CreateProject, CustomFieldDefinition, Issue, IssueLink,
+    IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result,
+    TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 impl IssueTracker for YouTrackClient {
@@ -116,6 +123,119 @@ impl IssueTracker for YouTrackClient {
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         self.get_comments(issue_id)
             .map(|comments| comments.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    // ========== Custom Field Admin Operations ==========
+
+    fn list_custom_field_definitions(&self) -> Result<Vec<CustomFieldDefinition>> {
+        self.list_custom_field_definitions()
+            .map(|fields| fields.into_iter().map(convert::custom_field_response_to_core).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn create_custom_field(&self, field: &CreateCustomField) -> Result<CustomFieldDefinition> {
+        let request = CreateCustomFieldRequest {
+            name: field.name.clone(),
+            field_type: FieldTypeRef {
+                id: field.field_type.to_youtrack_id().to_string(),
+            },
+        };
+
+        self.create_custom_field(&request)
+            .map(convert::custom_field_response_to_core)
+            .map_err(TrackerError::from)
+    }
+
+    fn list_bundles(&self, bundle_type: BundleType) -> Result<Vec<BundleDefinition>> {
+        self.list_bundles(bundle_type.to_api_path())
+            .map(|bundles| bundles.into_iter().map(convert::bundle_response_to_core).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn create_bundle(&self, bundle: &CreateBundle) -> Result<BundleDefinition> {
+        let request = CreateBundleRequest {
+            name: bundle.name.clone(),
+            values: bundle
+                .values
+                .iter()
+                .map(|v| CreateBundleValueRequest {
+                    name: v.name.clone(),
+                    description: v.description.clone(),
+                    is_resolved: v.is_resolved,
+                    ordinal: v.ordinal,
+                })
+                .collect(),
+        };
+
+        self.create_bundle(bundle.bundle_type.to_api_path(), &request)
+            .map(convert::bundle_response_to_core)
+            .map_err(TrackerError::from)
+    }
+
+    fn add_bundle_values(
+        &self,
+        bundle_id: &str,
+        bundle_type: BundleType,
+        values: &[CreateBundleValue],
+    ) -> Result<Vec<BundleValueDefinition>> {
+        let mut results = Vec::new();
+
+        for value in values {
+            let request = CreateBundleValueRequest {
+                name: value.name.clone(),
+                description: value.description.clone(),
+                is_resolved: value.is_resolved,
+                ordinal: value.ordinal,
+            };
+
+            let created = self
+                .add_bundle_value(bundle_type.to_api_path(), bundle_id, &request)
+                .map_err(TrackerError::from)?;
+
+            results.push(convert::bundle_value_response_to_core(created));
+        }
+
+        Ok(results)
+    }
+
+    fn attach_field_to_project(
+        &self,
+        project_id: &str,
+        attachment: &AttachFieldToProject,
+    ) -> Result<ProjectCustomField> {
+        // Determine the $type based on field type (default to EnumProjectCustomField if not specified)
+        let type_name = attachment
+            .field_type
+            .map(|ft| ft.to_project_custom_field_type())
+            .unwrap_or("EnumProjectCustomField")
+            .to_string();
+
+        // Build bundle reference with $type if bundle_id is provided
+        let bundle = match (&attachment.bundle_id, &attachment.bundle_type) {
+            (Some(id), Some(bt)) => Some(BundleRef {
+                type_name: bt.to_youtrack_type().to_string(),
+                id: id.clone(),
+            }),
+            (Some(id), None) => Some(BundleRef {
+                type_name: "EnumBundle".to_string(), // Default to EnumBundle
+                id: id.clone(),
+            }),
+            _ => None,
+        };
+
+        let request = AttachFieldRequest {
+            type_name,
+            field: CustomFieldRef {
+                id: attachment.field_id.clone(),
+            },
+            bundle,
+            can_be_empty: attachment.can_be_empty,
+            empty_field_text: attachment.empty_field_text.clone(),
+        };
+
+        self.attach_field_to_project(project_id, &request)
+            .map(convert::project_custom_field_response_to_core)
             .map_err(TrackerError::from)
     }
 }
