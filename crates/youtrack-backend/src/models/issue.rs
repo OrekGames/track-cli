@@ -123,6 +123,11 @@ pub enum CustomFieldUpdate {
         name: String,
         value: Option<EnumValueInput>,
     },
+    #[serde(rename = "MultiEnumIssueCustomField")]
+    MultiEnum {
+        name: String,
+        value: Vec<EnumValueInput>,
+    },
     #[serde(rename = "StateIssueCustomField")]
     State {
         name: String,
@@ -302,6 +307,27 @@ mod tests {
         let json = serde_json::to_string(&field).unwrap();
         assert!(json.contains("\"$type\":\"SingleUserIssueCustomField\""));
         assert!(json.contains("\"login\":\"john.doe\""));
+    }
+
+    #[test]
+    fn custom_field_update_multi_enum_serializes_correctly() {
+        let field = CustomFieldUpdate::MultiEnum {
+            name: "Platform".to_string(),
+            value: vec![
+                EnumValueInput {
+                    name: "Windows".to_string(),
+                },
+                EnumValueInput {
+                    name: "macOS".to_string(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&field).unwrap();
+        assert!(json.contains("\"$type\":\"MultiEnumIssueCustomField\""));
+        assert!(json.contains("\"name\":\"Platform\""));
+        assert!(json.contains("\"name\":\"Windows\""));
+        assert!(json.contains("\"name\":\"macOS\""));
     }
 
     #[test]

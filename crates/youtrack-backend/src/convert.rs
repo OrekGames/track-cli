@@ -255,6 +255,15 @@ impl From<&core::CustomFieldUpdate> for yt::CustomFieldUpdate {
                     }),
                 }
             }
+            core::CustomFieldUpdate::MultiEnum { name, values } => {
+                yt::CustomFieldUpdate::MultiEnum {
+                    name: name.clone(),
+                    value: values
+                        .iter()
+                        .map(|v| yt::EnumValueInput { name: v.clone() })
+                        .collect(),
+                }
+            }
             core::CustomFieldUpdate::State { name, value } => yt::CustomFieldUpdate::State {
                 name: name.clone(),
                 value: Some(yt::StateValueInput {

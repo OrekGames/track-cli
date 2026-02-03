@@ -453,6 +453,11 @@ fn build_custom_fields(
                 name,
                 login: value,
             },
+            // enum[*] = multi-enum, supports comma-separated values
+            Some(ft) if ft.contains("enum[*]") || ft.contains("multi-enum") => {
+                let values = value.split(',').map(|v| v.trim().to_string()).collect();
+                CustomFieldUpdate::MultiEnum { name, values }
+            }
             _ => CustomFieldUpdate::SingleEnum { name, value },
         };
 
@@ -502,10 +507,11 @@ fn validate_custom_fields(
         .with_context(|| format!("Failed to fetch custom fields for project '{}'", project_id))?;
 
     for field in custom_fields {
-        let (field_name, field_value) = match field {
-            CustomFieldUpdate::SingleEnum { name, value } => (name.as_str(), value.as_str()),
-            CustomFieldUpdate::State { name, value } => (name.as_str(), value.as_str()),
-            CustomFieldUpdate::SingleUser { name, login } => (name.as_str(), login.as_str()),
+        let field_name = match field {
+            CustomFieldUpdate::SingleEnum { name, .. } => name.as_str(),
+            CustomFieldUpdate::MultiEnum { name, .. } => name.as_str(),
+            CustomFieldUpdate::State { name, .. } => name.as_str(),
+            CustomFieldUpdate::SingleUser { name, .. } => name.as_str(),
         };
 
         // Find the field definition
@@ -515,19 +521,30 @@ fn validate_custom_fields(
 
         match field_def {
             Some(def) => {
-                // If field has enum values, validate the value is in the list
                 if !def.values.is_empty() {
-                    let value_valid = def
-                        .values
-                        .iter()
-                        .any(|v| v.eq_ignore_ascii_case(field_value));
-                    if !value_valid {
-                        return Err(anyhow!(
-                            "Invalid value '{}' for field '{}'. Valid values: {}",
-                            field_value,
-                            field_name,
-                            def.values.join(", ")
-                        ));
+                    // Collect all values to validate
+                    let values_to_check: Vec<&str> = match field {
+                        CustomFieldUpdate::SingleEnum { value, .. } => vec![value.as_str()],
+                        CustomFieldUpdate::MultiEnum { values, .. } => {
+                            values.iter().map(|v| v.as_str()).collect()
+                        }
+                        CustomFieldUpdate::State { value, .. } => vec![value.as_str()],
+                        CustomFieldUpdate::SingleUser { login, .. } => vec![login.as_str()],
+                    };
+
+                    for val in &values_to_check {
+                        let value_valid = def
+                            .values
+                            .iter()
+                            .any(|v| v.eq_ignore_ascii_case(val));
+                        if !value_valid {
+                            return Err(anyhow!(
+                                "Invalid value '{}' for field '{}'. Valid values: {}",
+                                val,
+                                field_name,
+                                def.values.join(", ")
+                            ));
+                        }
                     }
                 }
             }
@@ -1371,16 +1388,29 @@ mod tests {
                 values: vec![],
                 state_values: vec![],
             },
+            ProjectCustomField {
+                id: "4".to_string(),
+                name: "Platform".to_string(),
+                field_type: "enum[*]".to_string(),
+                required: true,
+                values: vec![
+                    "Windows".to_string(),
+                    "macOS".to_string(),
+                    "Linux".to_string(),
+                ],
+                state_values: vec![],
+            },
         ];
 
         let fields = vec![
             "Phase=Planning".to_string(),
             "System=Web".to_string(),
             "Reviewer=alice".to_string(),
+            "Platform=Windows, macOS".to_string(),
         ];
         let result = build_custom_fields(&fields, None, None, None, Some(&schema)).unwrap();
 
-        assert_eq!(result.len(), 3);
+        assert_eq!(result.len(), 4);
         assert!(
             matches!(&result[0], CustomFieldUpdate::State { name, value } if name == "Phase" && value == "Planning"),
             "Phase should be detected as State, got: {:?}",
@@ -1396,6 +1426,13 @@ mod tests {
             "Reviewer should be detected as SingleUser, got: {:?}",
             result[2]
         );
+        match &result[3] {
+            CustomFieldUpdate::MultiEnum { name, values } => {
+                assert_eq!(name, "Platform");
+                assert_eq!(values, &["Windows", "macOS"]);
+            }
+            other => panic!("Platform should be detected as MultiEnum, got: {:?}", other),
+        }
     }
 
     #[test]

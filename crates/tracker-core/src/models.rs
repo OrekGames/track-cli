@@ -206,6 +206,7 @@ pub struct UpdateIssue {
 #[derive(Debug, Clone)]
 pub enum CustomFieldUpdate {
     SingleEnum { name: String, value: String },
+    MultiEnum { name: String, values: Vec<String> },
     State { name: String, value: String },
     SingleUser { name: String, login: String },
 }
