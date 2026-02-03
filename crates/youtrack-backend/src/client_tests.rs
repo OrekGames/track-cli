@@ -921,6 +921,214 @@ mod tests {
         assert!(attached.bundle.is_some());
     }
 
+    // ========== Error Response Body Parsing Tests ==========
+
+    #[tokio::test]
+    async fn test_bad_request_with_json_error_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "Bad Request",
+                "error_description": "Missing required field: Priority"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = CreateIssue {
+            project: ProjectIdentifier {
+                id: "0-1".to_string(),
+            },
+            summary: "Test".to_string(),
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+        };
+
+        let result = client.create_issue(&create);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        match &err {
+            crate::error::YouTrackError::Api { status, message } => {
+                assert_eq!(*status, 400);
+                assert!(
+                    message.contains("Missing required field: Priority"),
+                    "Error message should contain field validation detail, got: {message}"
+                );
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bad_request_with_error_message_field() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error_message": "Invalid value for field 'Type'"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = CreateIssue {
+            project: ProjectIdentifier {
+                id: "0-1".to_string(),
+            },
+            summary: "Test".to_string(),
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+        };
+
+        let result = client.create_issue(&create);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        match &err {
+            crate::error::YouTrackError::Api { status, message } => {
+                assert_eq!(*status, 400);
+                assert!(
+                    message.contains("Invalid value for field 'Type'"),
+                    "Error message should contain error_message content, got: {message}"
+                );
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bad_request_with_plain_text_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_string("Something went wrong on the server side"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = CreateIssue {
+            project: ProjectIdentifier {
+                id: "0-1".to_string(),
+            },
+            summary: "Test".to_string(),
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+        };
+
+        let result = client.create_issue(&create);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        match &err {
+            crate::error::YouTrackError::Api { status, message } => {
+                assert_eq!(*status, 400);
+                assert!(
+                    message.contains("Something went wrong"),
+                    "Error message should contain raw body text, got: {message}"
+                );
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_not_found_with_json_error_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues/PROJ-99999"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": "Not Found",
+                "error_description": "Entity with id PROJ-99999 not found"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = client.get_issue("PROJ-99999");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match &err {
+            crate::error::YouTrackError::Api { status, message } => {
+                assert_eq!(*status, 404);
+                assert!(
+                    message.contains("PROJ-99999 not found"),
+                    "Error message should contain entity detail, got: {message}"
+                );
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unauthorized_with_body_still_returns_unauthorized_variant() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues/PROJ-123"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": "Unauthorized",
+                "error_description": "Invalid token"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "bad-token");
+        let result = client.get_issue("PROJ-123");
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::error::YouTrackError::Unauthorized
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_bad_request_with_empty_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = CreateIssue {
+            project: ProjectIdentifier {
+                id: "0-1".to_string(),
+            },
+            summary: "Test".to_string(),
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+        };
+
+        let result = client.create_issue(&create);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        match &err {
+            crate::error::YouTrackError::Api { status, message } => {
+                assert_eq!(*status, 400);
+                assert_eq!(message, "HTTP 400");
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn test_attach_state_field_to_project() {
         let mock_server = MockServer::start().await;

@@ -17,6 +17,7 @@ impl YouTrackClient {
     pub fn new(base_url: &str, token: &str) -> Self {
         let agent = Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
+            .http_status_as_error(false)
             .build()
             .into();
 
@@ -32,23 +33,54 @@ impl YouTrackClient {
     }
 
     fn handle_error(&self, err: ureq::Error) -> YouTrackError {
-        match &err {
-            ureq::Error::StatusCode(code) => {
-                if *code == 401 {
-                    YouTrackError::Unauthorized
-                } else if *code == 404 {
-                    YouTrackError::Api {
-                        status: *code,
-                        message: "Resource not found".to_string(),
-                    }
-                } else {
-                    YouTrackError::Api {
-                        status: *code,
-                        message: err.to_string(),
-                    }
-                }
+        YouTrackError::Http(err)
+    }
+
+    /// Check response status and return error with body details if not successful
+    fn check_response(
+        &self,
+        mut response: ureq::http::Response<ureq::Body>,
+    ) -> Result<ureq::http::Response<ureq::Body>> {
+        let status = response.status().as_u16();
+
+        if (200..300).contains(&status) {
+            return Ok(response);
+        }
+
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .unwrap_or_else(|_| String::new());
+
+        let message = if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body) {
+            let mut parts = Vec::new();
+
+            if let Some(error) = error_json.get("error").and_then(|v| v.as_str()) {
+                parts.push(error.to_string());
             }
-            _ => YouTrackError::Http(err),
+
+            if let Some(desc) = error_json.get("error_description").and_then(|v| v.as_str()) {
+                parts.push(desc.to_string());
+            }
+
+            if let Some(msg) = error_json.get("error_message").and_then(|v| v.as_str()) {
+                parts.push(msg.to_string());
+            }
+
+            if parts.is_empty() {
+                body
+            } else {
+                parts.join(": ")
+            }
+        } else if body.is_empty() {
+            format!("HTTP {}", status)
+        } else {
+            body
+        };
+
+        match status {
+            401 => Err(YouTrackError::Unauthorized),
+            _ => Err(YouTrackError::Api { status, message }),
         }
     }
 
@@ -58,7 +90,7 @@ impl YouTrackClient {
             self.base_url, id, DEFAULT_ISSUE_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -66,6 +98,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let issue: Issue = response.body_mut().read_json()?;
         Ok(issue)
     }
@@ -80,7 +113,7 @@ impl YouTrackClient {
             skip
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -88,6 +121,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let issues: Vec<Issue> = response.body_mut().read_json()?;
         Ok(issues)
     }
@@ -98,7 +132,7 @@ impl YouTrackClient {
             self.base_url, DEFAULT_ISSUE_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -107,6 +141,7 @@ impl YouTrackClient {
             .send_json(create)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let issue: Issue = response.body_mut().read_json()?;
         Ok(issue)
     }
@@ -117,7 +152,7 @@ impl YouTrackClient {
             self.base_url, id, DEFAULT_ISSUE_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -126,6 +161,7 @@ impl YouTrackClient {
             .send_json(update)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let issue: Issue = response.body_mut().read_json()?;
         Ok(issue)
     }
@@ -133,12 +169,14 @@ impl YouTrackClient {
     pub fn delete_issue(&self, id: &str) -> Result<()> {
         let url = format!("{}/api/issues/{}", self.base_url, id);
 
-        self.agent
+        let response = self
+            .agent
             .delete(&url)
             .header("Authorization", &self.auth_header())
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        self.check_response(response)?;
         Ok(())
     }
 
@@ -148,7 +186,7 @@ impl YouTrackClient {
             self.base_url, DEFAULT_PROJECT_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -156,6 +194,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let projects: Vec<Project> = response.body_mut().read_json()?;
         Ok(projects)
     }
@@ -166,7 +205,7 @@ impl YouTrackClient {
             self.base_url, id, DEFAULT_PROJECT_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -174,6 +213,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let project: Project = response.body_mut().read_json()?;
         Ok(project)
     }
@@ -184,7 +224,7 @@ impl YouTrackClient {
             self.base_url, DEFAULT_PROJECT_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -193,6 +233,7 @@ impl YouTrackClient {
             .send_json(create)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let project: Project = response.body_mut().read_json()?;
         Ok(project)
     }
@@ -234,7 +275,7 @@ impl YouTrackClient {
             self.base_url, project_id
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -242,6 +283,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let fields: Vec<ProjectCustomFieldExt> = response.body_mut().read_json()?;
         Ok(fields)
     }
@@ -253,13 +295,15 @@ impl YouTrackClient {
             self.base_url, project_id
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
             .header("Accept", "application/json")
             .call()
             .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
 
         // Response contains a team object with users array
         #[derive(serde::Deserialize)]
@@ -279,7 +323,7 @@ impl YouTrackClient {
             self.base_url
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -287,6 +331,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let tags: Vec<IssueTag> = response.body_mut().read_json()?;
         Ok(tags)
     }
@@ -298,7 +343,7 @@ impl YouTrackClient {
             self.base_url
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -306,6 +351,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let link_types: Vec<IssueLinkType> = response.body_mut().read_json()?;
         Ok(link_types)
     }
@@ -317,7 +363,7 @@ impl YouTrackClient {
             self.base_url, issue_id
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -325,6 +371,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let links: Vec<IssueLink> = response.body_mut().read_json()?;
         Ok(links)
     }
@@ -348,7 +395,8 @@ impl YouTrackClient {
             id_readable: target_issue_id.to_string(),
         };
 
-        self.agent
+        let response = self
+            .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
             .header("Content-Type", "application/json")
@@ -356,6 +404,7 @@ impl YouTrackClient {
             .send_json(&body)
             .map_err(|e| self.handle_error(e))?;
 
+        self.check_response(response)?;
         Ok(())
     }
 
@@ -423,7 +472,7 @@ impl YouTrackClient {
             text: text.to_string(),
         };
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -432,6 +481,7 @@ impl YouTrackClient {
             .send_json(&comment)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let created_comment: IssueComment = response.body_mut().read_json()?;
         Ok(created_comment)
     }
@@ -443,7 +493,7 @@ impl YouTrackClient {
             self.base_url, issue_id
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -451,6 +501,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let comments: Vec<IssueComment> = response.body_mut().read_json()?;
         Ok(comments)
     }
@@ -466,7 +517,7 @@ impl YouTrackClient {
             self.base_url, id, DEFAULT_ARTICLE_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -474,6 +525,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let article: Article = response.body_mut().read_json()?;
         Ok(article)
     }
@@ -485,7 +537,7 @@ impl YouTrackClient {
             self.base_url, DEFAULT_ARTICLE_FIELDS, limit, skip
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -493,6 +545,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let articles: Vec<Article> = response.body_mut().read_json()?;
         Ok(articles)
     }
@@ -508,7 +561,7 @@ impl YouTrackClient {
             skip
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -516,6 +569,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let articles: Vec<Article> = response.body_mut().read_json()?;
         Ok(articles)
     }
@@ -527,7 +581,7 @@ impl YouTrackClient {
             self.base_url, DEFAULT_ARTICLE_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -536,6 +590,7 @@ impl YouTrackClient {
             .send_json(create)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let article: Article = response.body_mut().read_json()?;
         Ok(article)
     }
@@ -547,7 +602,7 @@ impl YouTrackClient {
             self.base_url, id, DEFAULT_ARTICLE_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -556,6 +611,7 @@ impl YouTrackClient {
             .send_json(update)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let article: Article = response.body_mut().read_json()?;
         Ok(article)
     }
@@ -564,12 +620,14 @@ impl YouTrackClient {
     pub fn delete_article(&self, id: &str) -> Result<()> {
         let url = format!("{}/api/articles/{}", self.base_url, id);
 
-        self.agent
+        let response = self
+            .agent
             .delete(&url)
             .header("Authorization", &self.auth_header())
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        self.check_response(response)?;
         Ok(())
     }
 
@@ -580,7 +638,7 @@ impl YouTrackClient {
             self.base_url, parent_id, DEFAULT_ARTICLE_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -588,6 +646,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let articles: Vec<Article> = response.body_mut().read_json()?;
         Ok(articles)
     }
@@ -611,7 +670,7 @@ impl YouTrackClient {
             parent_article: new_parent_id.map(|id| ArticleIdentifier { id: id.to_string() }),
         };
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -620,6 +679,7 @@ impl YouTrackClient {
             .send_json(&body)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let article: Article = response.body_mut().read_json()?;
         Ok(article)
     }
@@ -631,7 +691,7 @@ impl YouTrackClient {
             self.base_url, article_id
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -639,6 +699,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let attachments: Vec<ArticleAttachment> = response.body_mut().read_json()?;
         Ok(attachments)
     }
@@ -650,7 +711,7 @@ impl YouTrackClient {
             self.base_url, article_id
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -658,6 +719,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let comments: Vec<ArticleComment> = response.body_mut().read_json()?;
         Ok(comments)
     }
@@ -673,7 +735,7 @@ impl YouTrackClient {
             text: text.to_string(),
         };
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -682,6 +744,7 @@ impl YouTrackClient {
             .send_json(&comment)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let created_comment: ArticleComment = response.body_mut().read_json()?;
         Ok(created_comment)
     }
@@ -702,7 +765,7 @@ impl YouTrackClient {
             Self::DEFAULT_CUSTOM_FIELD_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -710,6 +773,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let fields: Vec<CustomFieldResponse> = response.body_mut().read_json()?;
         Ok(fields)
     }
@@ -725,7 +789,7 @@ impl YouTrackClient {
             Self::DEFAULT_CUSTOM_FIELD_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -734,6 +798,7 @@ impl YouTrackClient {
             .send_json(create)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let field: CustomFieldResponse = response.body_mut().read_json()?;
         Ok(field)
     }
@@ -747,7 +812,7 @@ impl YouTrackClient {
             Self::DEFAULT_BUNDLE_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .header("Authorization", &self.auth_header())
@@ -755,6 +820,7 @@ impl YouTrackClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let bundles: Vec<BundleResponse> = response.body_mut().read_json()?;
         Ok(bundles)
     }
@@ -772,7 +838,7 @@ impl YouTrackClient {
             Self::DEFAULT_BUNDLE_FIELDS
         );
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -781,6 +847,7 @@ impl YouTrackClient {
             .send_json(create)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let bundle: BundleResponse = response.body_mut().read_json()?;
         Ok(bundle)
     }
@@ -797,7 +864,7 @@ impl YouTrackClient {
             self.base_url, bundle_type, bundle_id
         );
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -806,6 +873,7 @@ impl YouTrackClient {
             .send_json(value)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let created_value: BundleValueResponse = response.body_mut().read_json()?;
         Ok(created_value)
     }
@@ -821,7 +889,7 @@ impl YouTrackClient {
             self.base_url, project_id
         );
 
-        let mut response = self
+        let response = self
             .agent
             .post(&url)
             .header("Authorization", &self.auth_header())
@@ -830,6 +898,7 @@ impl YouTrackClient {
             .send_json(attach)
             .map_err(|e| self.handle_error(e))?;
 
+        let mut response = self.check_response(response)?;
         let field: ProjectCustomFieldResponse = response.body_mut().read_json()?;
         Ok(field)
     }

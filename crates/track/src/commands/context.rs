@@ -225,6 +225,11 @@ pub fn handle_context(
                 for pf in &context.project_fields {
                     println!("  {}:", pf.project_short_name.cyan());
                     for f in &pf.fields {
+                        let required_str = if f.required {
+                            " *required".red().bold().to_string()
+                        } else {
+                            String::new()
+                        };
                         let values_str = if f.values.is_empty() {
                             String::new()
                         } else if f.values.len() <= 5 {
@@ -237,10 +242,25 @@ pub fn handle_context(
                             )
                         };
                         println!(
-                            "    {} ({}){}",
+                            "    {} ({}){}{}",
                             f.name.white(),
                             f.field_type.dimmed(),
+                            required_str,
                             values_str.dimmed()
+                        );
+                    }
+                    // Summary line for required fields
+                    let required_names: Vec<&str> = pf
+                        .fields
+                        .iter()
+                        .filter(|f| f.required)
+                        .map(|f| f.name.as_str())
+                        .collect();
+                    if !required_names.is_empty() {
+                        println!(
+                            "    {}: {}",
+                            "Required".red().bold(),
+                            required_names.join(", ").white()
                         );
                     }
                 }

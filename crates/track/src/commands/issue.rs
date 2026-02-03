@@ -3,7 +3,9 @@ use crate::cli::{IssueCommands, OutputFormat};
 use crate::output::{output_list, output_result};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use tracker_core::{CreateIssue, CustomFieldUpdate, Issue, IssueTracker, UpdateIssue};
+use tracker_core::{
+    CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
+};
 
 pub fn handle_issue(
     client: &dyn IssueTracker,
@@ -254,7 +256,17 @@ fn handle_create(
             .resolve_project_id(&project_input)
             .with_context(|| format!("Failed to resolve project '{}'", project_input))?;
 
-        let custom_fields = build_custom_fields(fields, state, priority, assignee)?;
+        // Fetch project schema for field type detection
+        let schema = if !fields.is_empty() {
+            client
+                .get_project_custom_fields(&project_id)
+                .ok()
+        } else {
+            None
+        };
+
+        let custom_fields =
+            build_custom_fields(fields, state, priority, assignee, schema.as_deref())?;
 
         let create = CreateIssue {
             project_id: project_id.clone(),
@@ -346,7 +358,22 @@ fn handle_update(
     let update = if let Some(payload) = json {
         parse_update_payload(payload)?
     } else {
-        let custom_fields = build_custom_fields(fields, state, priority, assignee)?;
+        // Fetch project schema for field type detection when generic fields are provided
+        let schema = if !fields.is_empty() {
+            client
+                .get_issue(id)
+                .ok()
+                .and_then(|issue| {
+                    client
+                        .get_project_custom_fields(&issue.project.id)
+                        .ok()
+                })
+        } else {
+            None
+        };
+
+        let custom_fields =
+            build_custom_fields(fields, state, priority, assignee, schema.as_deref())?;
 
         UpdateIssue {
             summary: summary.map(|s| s.to_string()),
@@ -397,18 +424,39 @@ fn handle_update(
 }
 
 /// Build a list of custom field updates from CLI arguments.
+///
+/// When `project_fields` is provided, the field type is detected from the project schema
+/// so that state fields, user fields, and enum fields get the correct `$type` discriminator.
+/// Without schema info, generic `--field` arguments default to SingleEnum.
 fn build_custom_fields(
     fields: &[String],
     state: Option<&str>,
     priority: Option<&str>,
     assignee: Option<&str>,
+    project_fields: Option<&[ProjectCustomField]>,
 ) -> Result<Vec<CustomFieldUpdate>> {
     let mut custom_fields = Vec::new();
 
-    // Parse generic field=value pairs
+    // Parse generic field=value pairs with type detection
     for field in fields {
         let (name, value) = parse_field_value(field)?;
-        custom_fields.push(CustomFieldUpdate::SingleEnum { name, value });
+
+        let detected_type = project_fields.and_then(|pf| {
+            pf.iter()
+                .find(|f| f.name.eq_ignore_ascii_case(&name))
+                .map(|f| f.field_type.as_str())
+        });
+
+        let update = match detected_type {
+            Some(ft) if ft.contains("state") => CustomFieldUpdate::State { name, value },
+            Some(ft) if ft.contains("user") => CustomFieldUpdate::SingleUser {
+                name,
+                login: value,
+            },
+            _ => CustomFieldUpdate::SingleEnum { name, value },
+        };
+
+        custom_fields.push(update);
     }
 
     // Add state if provided
@@ -1051,7 +1099,22 @@ fn handle_update_single(
     let update = if let Some(payload) = json {
         parse_update_payload(payload)?
     } else {
-        let custom_fields = build_custom_fields(fields, state, priority, assignee)?;
+        // Fetch project schema for field type detection when generic fields are provided
+        let schema = if !fields.is_empty() {
+            client
+                .get_issue(id)
+                .ok()
+                .and_then(|issue| {
+                    client
+                        .get_project_custom_fields(&issue.project.id)
+                        .ok()
+                })
+        } else {
+            None
+        };
+
+        let custom_fields =
+            build_custom_fields(fields, state, priority, assignee, schema.as_deref())?;
 
         UpdateIssue {
             summary: summary.map(|s| s.to_string()),
@@ -1274,9 +1337,65 @@ mod tests {
     fn builds_custom_fields_from_cli_args() {
         let fields = vec!["Type=Bug".to_string(), "Component=UI".to_string()];
         let result =
-            build_custom_fields(&fields, Some("Open"), Some("Major"), Some("john")).unwrap();
+            build_custom_fields(&fields, Some("Open"), Some("Major"), Some("john"), None).unwrap();
 
         assert_eq!(result.len(), 5); // 2 fields + state + priority + assignee
+    }
+
+    #[test]
+    fn builds_custom_fields_with_type_detection() {
+        use tracker_core::ProjectCustomField;
+
+        let schema = vec![
+            ProjectCustomField {
+                id: "1".to_string(),
+                name: "Phase".to_string(),
+                field_type: "state[1]".to_string(),
+                required: true,
+                values: vec!["Planning".to_string(), "Development".to_string()],
+                state_values: vec![],
+            },
+            ProjectCustomField {
+                id: "2".to_string(),
+                name: "System".to_string(),
+                field_type: "enum[1]".to_string(),
+                required: true,
+                values: vec!["Web".to_string(), "Mobile".to_string()],
+                state_values: vec![],
+            },
+            ProjectCustomField {
+                id: "3".to_string(),
+                name: "Reviewer".to_string(),
+                field_type: "user[1]".to_string(),
+                required: false,
+                values: vec![],
+                state_values: vec![],
+            },
+        ];
+
+        let fields = vec![
+            "Phase=Planning".to_string(),
+            "System=Web".to_string(),
+            "Reviewer=alice".to_string(),
+        ];
+        let result = build_custom_fields(&fields, None, None, None, Some(&schema)).unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(
+            matches!(&result[0], CustomFieldUpdate::State { name, value } if name == "Phase" && value == "Planning"),
+            "Phase should be detected as State, got: {:?}",
+            result[0]
+        );
+        assert!(
+            matches!(&result[1], CustomFieldUpdate::SingleEnum { name, value } if name == "System" && value == "Web"),
+            "System should be detected as SingleEnum, got: {:?}",
+            result[1]
+        );
+        assert!(
+            matches!(&result[2], CustomFieldUpdate::SingleUser { name, login } if name == "Reviewer" && login == "alice"),
+            "Reviewer should be detected as SingleUser, got: {:?}",
+            result[2]
+        );
     }
 
     #[test]
