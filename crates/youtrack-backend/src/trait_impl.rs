@@ -130,7 +130,12 @@ impl IssueTracker for YouTrackClient {
 
     fn list_custom_field_definitions(&self) -> Result<Vec<CustomFieldDefinition>> {
         self.list_custom_field_definitions()
-            .map(|fields| fields.into_iter().map(convert::custom_field_response_to_core).collect())
+            .map(|fields| {
+                fields
+                    .into_iter()
+                    .map(convert::custom_field_response_to_core)
+                    .collect()
+            })
             .map_err(TrackerError::from)
     }
 
@@ -149,7 +154,12 @@ impl IssueTracker for YouTrackClient {
 
     fn list_bundles(&self, bundle_type: BundleType) -> Result<Vec<BundleDefinition>> {
         self.list_bundles(bundle_type.to_api_path())
-            .map(|bundles| bundles.into_iter().map(convert::bundle_response_to_core).collect())
+            .map(|bundles| {
+                bundles
+                    .into_iter()
+                    .map(convert::bundle_response_to_core)
+                    .collect()
+            })
             .map_err(TrackerError::from)
     }
 

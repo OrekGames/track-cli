@@ -35,9 +35,7 @@ fn handle_list(client: &dyn IssueTracker, bundle_type: &str, format: OutputForma
         )
     })?;
 
-    let bundles = client
-        .list_bundles(bt)
-        .context("Failed to list bundles")?;
+    let bundles = client.list_bundles(bt).context("Failed to list bundles")?;
 
     match format {
         OutputFormat::Json => {

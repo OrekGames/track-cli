@@ -110,13 +110,18 @@ fn handle_attach_field(
         bundle_id: bundle_id.map(String::from),
         can_be_empty: !required,
         empty_field_text: empty_text,
-        field_type: None, // Will default to EnumProjectCustomField
+        field_type: None,  // Will default to EnumProjectCustomField
         bundle_type: None, // Will default to EnumBundle
     };
 
     let attached = client
         .attach_field_to_project(&project_id, &attachment)
-        .with_context(|| format!("Failed to attach field '{}' to project '{}'", field_id, project))?;
+        .with_context(|| {
+            format!(
+                "Failed to attach field '{}' to project '{}'",
+                field_id, project
+            )
+        })?;
 
     output_result(&attached, format);
     Ok(())

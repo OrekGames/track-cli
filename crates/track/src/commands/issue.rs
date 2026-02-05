@@ -258,9 +258,7 @@ fn handle_create(
 
         // Fetch project schema for field type detection
         let schema = if !fields.is_empty() {
-            client
-                .get_project_custom_fields(&project_id)
-                .ok()
+            client.get_project_custom_fields(&project_id).ok()
         } else {
             None
         };
@@ -363,11 +361,7 @@ fn handle_update(
             client
                 .get_issue(id)
                 .ok()
-                .and_then(|issue| {
-                    client
-                        .get_project_custom_fields(&issue.project.id)
-                        .ok()
-                })
+                .and_then(|issue| client.get_project_custom_fields(&issue.project.id).ok())
         } else {
             None
         };
@@ -449,10 +443,7 @@ fn build_custom_fields(
 
         let update = match detected_type {
             Some(ft) if ft.contains("state") => CustomFieldUpdate::State { name, value },
-            Some(ft) if ft.contains("user") => CustomFieldUpdate::SingleUser {
-                name,
-                login: value,
-            },
+            Some(ft) if ft.contains("user") => CustomFieldUpdate::SingleUser { name, login: value },
             // enum[*] = multi-enum, supports comma-separated values
             Some(ft) if ft.contains("enum[*]") || ft.contains("multi-enum") => {
                 let values = value.split(',').map(|v| v.trim().to_string()).collect();
@@ -533,10 +524,7 @@ fn validate_custom_fields(
                     };
 
                     for val in &values_to_check {
-                        let value_valid = def
-                            .values
-                            .iter()
-                            .any(|v| v.eq_ignore_ascii_case(val));
+                        let value_valid = def.values.iter().any(|v| v.eq_ignore_ascii_case(val));
                         if !value_valid {
                             return Err(anyhow!(
                                 "Invalid value '{}' for field '{}'. Valid values: {}",
@@ -1121,11 +1109,7 @@ fn handle_update_single(
             client
                 .get_issue(id)
                 .ok()
-                .and_then(|issue| {
-                    client
-                        .get_project_custom_fields(&issue.project.id)
-                        .ok()
-                })
+                .and_then(|issue| client.get_project_custom_fields(&issue.project.id).ok())
         } else {
             None
         };

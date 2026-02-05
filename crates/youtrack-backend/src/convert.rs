@@ -405,7 +405,9 @@ impl From<&core::UpdateArticle> for yt::UpdateArticle {
 // ============================================================================
 
 /// Convert YouTrack CustomFieldResponse to tracker-core CustomFieldDefinition
-pub fn custom_field_response_to_core(field: yt::CustomFieldResponse) -> core::CustomFieldDefinition {
+pub fn custom_field_response_to_core(
+    field: yt::CustomFieldResponse,
+) -> core::CustomFieldDefinition {
     core::CustomFieldDefinition {
         id: field.id,
         name: field.name,
@@ -440,7 +442,9 @@ pub fn bundle_response_to_core(bundle: yt::BundleResponse) -> core::BundleDefini
 }
 
 /// Convert YouTrack BundleValueResponse to tracker-core BundleValueDefinition
-pub fn bundle_value_response_to_core(value: yt::BundleValueResponse) -> core::BundleValueDefinition {
+pub fn bundle_value_response_to_core(
+    value: yt::BundleValueResponse,
+) -> core::BundleValueDefinition {
     core::BundleValueDefinition {
         id: value.id,
         name: value.name,

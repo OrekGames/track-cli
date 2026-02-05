@@ -26,14 +26,7 @@ pub fn handle_field(
             resolved,
             required,
         } => handle_new(
-            client,
-            name,
-            field_type,
-            project,
-            values,
-            resolved,
-            *required,
-            format,
+            client, name, field_type, project, values, resolved, *required, format,
         ),
     }
 }
@@ -55,10 +48,7 @@ fn handle_list(client: &dyn IssueTracker, format: OutputFormat) -> Result<()> {
                 println!("{:<40} {:<20} NAME", "ID", "TYPE");
                 println!("{}", "-".repeat(80));
                 for field in fields {
-                    println!(
-                        "{:<40} {:<20} {}",
-                        field.id, field.field_type, field.name
-                    );
+                    println!("{:<40} {:<20} {}", field.id, field.field_type, field.name);
                 }
             }
         }
@@ -101,8 +91,12 @@ fn handle_new(
     format: OutputFormat,
 ) -> Result<()> {
     // Parse field type
-    let field_type = CustomFieldType::parse(field_type_str)
-        .ok_or_else(|| anyhow!("Invalid field type: {}. Valid types: enum, state", field_type_str))?;
+    let field_type = CustomFieldType::parse(field_type_str).ok_or_else(|| {
+        anyhow!(
+            "Invalid field type: {}. Valid types: enum, state",
+            field_type_str
+        )
+    })?;
 
     // Determine bundle type based on field type
     let bundle_type = match field_type {

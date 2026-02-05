@@ -844,7 +844,9 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/api/admin/customFieldSettings/bundles/enum/129-10/values"))
+            .and(path(
+                "/api/admin/customFieldSettings/bundles/enum/129-10/values",
+            ))
             .and(header("Authorization", "Bearer test-token"))
             .and(body_json(serde_json::json!({
                 "name": "Critical",
