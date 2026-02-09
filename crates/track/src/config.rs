@@ -258,6 +258,9 @@ fn config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
     if let Some(path) = get_xdg_config_path() {
         push_unique(&mut paths, path);
     }
+    if let Some(path) = get_install_dir_config_path() {
+        push_unique(&mut paths, path);
+    }
     if let Some(path) = get_local_config_path() {
         push_unique(&mut paths, path);
     }
@@ -296,6 +299,15 @@ fn get_local_config_path() -> Option<PathBuf> {
     std::env::current_dir()
         .ok()
         .map(|dir| dir.join("config.toml"))
+}
+
+/// Returns the path to the global install directory config (~/.tracker-cli/.track.toml)
+fn get_install_dir_config_path() -> Option<PathBuf> {
+    BaseDirs::new().map(|dirs| {
+        dirs.home_dir()
+            .join(".tracker-cli")
+            .join(".track.toml")
+    })
 }
 
 /// Returns the path to the local .track.toml file in the current directory
