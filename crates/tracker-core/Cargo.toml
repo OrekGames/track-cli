@@ -8,3 +8,6 @@ description = "Core traits and types for issue tracker backends"
 thiserror = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

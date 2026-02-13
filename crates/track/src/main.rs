@@ -9,12 +9,109 @@ use anyhow::Result;
 use clap::Parser;
 use cli::{Backend, Cli, Commands};
 use config::Config;
+use github_backend::GitHubClient;
+use gitlab_backend::GitLabClient;
 use jira_backend::{ConfluenceClient, JiraClient};
 use output::output_error;
 use std::process::ExitCode;
 use tracker_core::{IssueTracker, KnowledgeBase};
 use tracker_mock::MockClient;
 use youtrack_backend::YouTrackClient;
+
+/// A no-op KnowledgeBase for backends that don't support articles (GitHub).
+struct NoopKnowledgeBase;
+
+impl KnowledgeBase for NoopKnowledgeBase {
+    fn get_article(&self, _id: &str) -> tracker_core::Result<tracker_core::Article> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "This backend does not support articles/knowledge base".to_string(),
+        ))
+    }
+
+    fn list_articles(
+        &self,
+        _project_id: Option<&str>,
+        _limit: usize,
+        _skip: usize,
+    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
+        Ok(Vec::new())
+    }
+
+    fn search_articles(
+        &self,
+        _query: &str,
+        _limit: usize,
+        _skip: usize,
+    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
+        Ok(Vec::new())
+    }
+
+    fn create_article(
+        &self,
+        _article: &tracker_core::CreateArticle,
+    ) -> tracker_core::Result<tracker_core::Article> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "This backend does not support articles/knowledge base".to_string(),
+        ))
+    }
+
+    fn update_article(
+        &self,
+        _id: &str,
+        _update: &tracker_core::UpdateArticle,
+    ) -> tracker_core::Result<tracker_core::Article> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "This backend does not support articles/knowledge base".to_string(),
+        ))
+    }
+
+    fn delete_article(&self, _id: &str) -> tracker_core::Result<()> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "This backend does not support articles/knowledge base".to_string(),
+        ))
+    }
+
+    fn get_child_articles(
+        &self,
+        _parent_id: &str,
+    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
+        Ok(Vec::new())
+    }
+
+    fn move_article(
+        &self,
+        _article_id: &str,
+        _new_parent_id: Option<&str>,
+    ) -> tracker_core::Result<tracker_core::Article> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "This backend does not support articles/knowledge base".to_string(),
+        ))
+    }
+
+    fn list_article_attachments(
+        &self,
+        _article_id: &str,
+    ) -> tracker_core::Result<Vec<tracker_core::ArticleAttachment>> {
+        Ok(Vec::new())
+    }
+
+    fn get_article_comments(
+        &self,
+        _article_id: &str,
+    ) -> tracker_core::Result<Vec<tracker_core::Comment>> {
+        Ok(Vec::new())
+    }
+
+    fn add_article_comment(
+        &self,
+        _article_id: &str,
+        _text: &str,
+    ) -> tracker_core::Result<tracker_core::Comment> {
+        Err(tracker_core::TrackerError::InvalidInput(
+            "This backend does not support articles/knowledge base".to_string(),
+        ))
+    }
+}
 
 /// Embedded agent guide content - written to project directory during `track init`
 const AGENT_GUIDE: &str = include_str!("../../../docs/agent_guide.md");
@@ -141,6 +238,41 @@ fn run(cli: Cli) -> Result<()> {
             let confluence = ConfluenceClient::new(url, email, token);
             run_with_client(&client, &confluence, &cli, &config)
         }
+        Backend::GitHub => {
+            let owner = config
+                .github
+                .owner
+                .as_deref()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "GitHub owner not configured. Set via 'track config set github.owner <OWNER>' or GITHUB_OWNER env var"
+                    )
+                })?;
+            let repo = config
+                .github
+                .repo
+                .as_deref()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "GitHub repo not configured. Set via 'track config set github.repo <REPO>' or GITHUB_REPO env var"
+                    )
+                })?;
+            let token = config.token.as_ref().unwrap();
+            let client = if let Some(api_url) = config.url.as_deref() {
+                GitHubClient::with_base_url(api_url, owner, repo, token)
+            } else {
+                GitHubClient::new(owner, repo, token)
+            };
+            let kb = NoopKnowledgeBase;
+            run_with_client(&client, &kb, &cli, &config)
+        }
+        Backend::GitLab => {
+            let base_url = config.url.as_ref().unwrap();
+            let token = config.token.as_ref().unwrap();
+            let project_id = config.gitlab.project_id.as_deref();
+            let client = GitLabClient::new(base_url, token, project_id);
+            run_with_client(&client, &client, &cli, &config)
+        }
     }
 }
 
@@ -193,6 +325,8 @@ fn run_with_client(
             let backend_type = match backend {
                 Backend::YouTrack => "youtrack",
                 Backend::Jira => "jira",
+                Backend::GitHub => "github",
+                Backend::GitLab => "gitlab",
             };
             commands::context::handle_context(
                 issue_client,
@@ -272,6 +406,8 @@ fn handle_cache(
             let backend_type = match backend {
                 Backend::YouTrack => "youtrack",
                 Backend::Jira => "jira",
+                Backend::GitHub => "github",
+                Backend::GitLab => "gitlab",
             };
             let base_url = config.url.as_deref().unwrap_or("unknown");
             let default_project = config.default_project.as_deref();
@@ -458,12 +594,22 @@ fn handle_cache(
                     }
 
                     println!();
-                    println!("{}:", "Tags".white().bold());
+                    println!("{}:", "Tags/Labels".white().bold());
                     if cache.tags.is_empty() {
                         println!("  {}", "(none)".dimmed());
                     } else {
                         for t in &cache.tags {
-                            println!("  {} ({})", t.name.magenta(), t.id.dimmed());
+                            let color_str = t
+                                .color
+                                .as_deref()
+                                .map(|c| format!(" [{}]", c))
+                                .unwrap_or_default();
+                            println!(
+                                "  {} ({}){}",
+                                t.name.magenta(),
+                                t.id.dimmed(),
+                                color_str.dimmed()
+                            );
                         }
                     }
 
@@ -567,6 +713,8 @@ fn handle_config_backend(backend: Backend, format: cli::OutputFormat) -> Result<
     let backend_name = match backend {
         Backend::YouTrack => "youtrack",
         Backend::Jira => "jira",
+        Backend::GitHub => "github",
+        Backend::GitLab => "gitlab",
     };
 
     match format {
@@ -583,7 +731,11 @@ fn handle_config_backend(backend: Backend, format: cli::OutputFormat) -> Result<
 
 /// All valid configuration keys
 const VALID_CONFIG_KEYS: &[(&str, &str, &str)] = &[
-    ("backend", "youtrack | jira", "Default backend to use"),
+    (
+        "backend",
+        "youtrack | jira | github | gitlab",
+        "Default backend to use",
+    ),
     ("url", "string", "Tracker instance URL"),
     (
         "token",
@@ -613,6 +765,26 @@ const VALID_CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ),
     ("jira.email", "string", "Jira-specific email"),
     ("jira.token", "string", "Jira-specific token"),
+    ("github.token", "string", "GitHub personal access token"),
+    (
+        "github.owner",
+        "string",
+        "GitHub repository owner (user or organization)",
+    ),
+    ("github.repo", "string", "GitHub repository name"),
+    (
+        "github.api_url",
+        "string",
+        "GitHub API URL (defaults to https://api.github.com)",
+    ),
+    ("gitlab.token", "string", "GitLab personal access token"),
+    (
+        "gitlab.url",
+        "string",
+        "GitLab instance URL (e.g., https://gitlab.com)",
+    ),
+    ("gitlab.project_id", "string", "GitLab numeric project ID"),
+    ("gitlab.namespace", "string", "GitLab namespace/group path"),
 ];
 
 /// Handle config commands that don't need API connection
@@ -690,18 +862,21 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
             // Set the value based on the key
             match key.as_str() {
                 "backend" => {
-                    if value != "youtrack" && value != "jira" && value != "yt" && value != "j" {
+                    let valid_backends = [
+                        "youtrack", "yt", "jira", "j", "github", "gh", "gitlab", "gl",
+                    ];
+                    if !valid_backends.contains(&value.as_str()) {
                         return Err(anyhow::anyhow!(
-                            "Invalid backend value: '{}'. Use 'youtrack' or 'jira'.",
+                            "Invalid backend value: '{}'. Use 'youtrack', 'jira', 'github', or 'gitlab'.",
                             value
                         ));
                     }
-                    let normalized = if value == "yt" {
-                        "youtrack"
-                    } else if value == "j" {
-                        "jira"
-                    } else {
-                        value
+                    let normalized = match value.as_str() {
+                        "yt" => "youtrack",
+                        "j" => "jira",
+                        "gh" => "github",
+                        "gl" => "gitlab",
+                        other => other,
                     };
                     cfg.backend = Some(normalized.to_string());
                 }
@@ -714,6 +889,14 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                 "jira.url" => cfg.jira.url = Some(value.clone()),
                 "jira.email" => cfg.jira.email = Some(value.clone()),
                 "jira.token" => cfg.jira.token = Some(value.clone()),
+                "github.token" => cfg.github.token = Some(value.clone()),
+                "github.owner" => cfg.github.owner = Some(value.clone()),
+                "github.repo" => cfg.github.repo = Some(value.clone()),
+                "github.api_url" => cfg.github.api_url = Some(value.clone()),
+                "gitlab.token" => cfg.gitlab.token = Some(value.clone()),
+                "gitlab.url" => cfg.gitlab.url = Some(value.clone()),
+                "gitlab.project_id" => cfg.gitlab.project_id = Some(value.clone()),
+                "gitlab.namespace" => cfg.gitlab.namespace = Some(value.clone()),
                 _ => unreachable!("Key validated above"),
             }
 
@@ -756,6 +939,14 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                 "jira.url" => cfg.jira.url.as_deref(),
                 "jira.email" => cfg.jira.email.as_deref(),
                 "jira.token" => cfg.jira.token.as_deref(),
+                "github.token" => cfg.github.token.as_deref(),
+                "github.owner" => cfg.github.owner.as_deref(),
+                "github.repo" => cfg.github.repo.as_deref(),
+                "github.api_url" => cfg.github.api_url.as_deref(),
+                "gitlab.token" => cfg.gitlab.token.as_deref(),
+                "gitlab.url" => cfg.gitlab.url.as_deref(),
+                "gitlab.project_id" => cfg.gitlab.project_id.as_deref(),
+                "gitlab.namespace" => cfg.gitlab.namespace.as_deref(),
                 _ => unreachable!("Key validated above"),
             };
 
@@ -804,6 +995,18 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                                 "url": cfg.jira.url,
                                 "email": cfg.jira.email,
                                 "has_token": cfg.jira.token.is_some()
+                            },
+                            "github": {
+                                "owner": cfg.github.owner,
+                                "repo": cfg.github.repo,
+                                "api_url": cfg.github.api_url,
+                                "has_token": cfg.github.token.is_some()
+                            },
+                            "gitlab": {
+                                "url": cfg.gitlab.url,
+                                "project_id": cfg.gitlab.project_id,
+                                "namespace": cfg.gitlab.namespace,
+                                "has_token": cfg.gitlab.token.is_some()
                             }
                         });
                         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -858,6 +1061,40 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                                 println!("    {}: {}", "email".dimmed(), email.cyan());
                             }
                             if cfg.jira.token.is_some() {
+                                println!("    {}: {}", "token".dimmed(), "(set)".green());
+                            }
+                        }
+
+                        if !cfg.github.is_empty() {
+                            println!();
+                            println!("  {}:", "[github]".white().bold());
+                            if let Some(owner) = &cfg.github.owner {
+                                println!("    {}: {}", "owner".dimmed(), owner.cyan());
+                            }
+                            if let Some(repo) = &cfg.github.repo {
+                                println!("    {}: {}", "repo".dimmed(), repo.cyan());
+                            }
+                            if let Some(api_url) = &cfg.github.api_url {
+                                println!("    {}: {}", "api_url".dimmed(), api_url.cyan());
+                            }
+                            if cfg.github.token.is_some() {
+                                println!("    {}: {}", "token".dimmed(), "(set)".green());
+                            }
+                        }
+
+                        if !cfg.gitlab.is_empty() {
+                            println!();
+                            println!("  {}:", "[gitlab]".white().bold());
+                            if let Some(url) = &cfg.gitlab.url {
+                                println!("    {}: {}", "url".dimmed(), url.cyan());
+                            }
+                            if let Some(project_id) = &cfg.gitlab.project_id {
+                                println!("    {}: {}", "project_id".dimmed(), project_id.cyan());
+                            }
+                            if let Some(namespace) = &cfg.gitlab.namespace {
+                                println!("    {}: {}", "namespace".dimmed(), namespace.cyan());
+                            }
+                            if cfg.gitlab.token.is_some() {
                                 println!("    {}: {}", "token".dimmed(), "(set)".green());
                             }
                         }
@@ -1031,7 +1268,7 @@ fn handle_init(
                     })?,
             )
         }
-        Backend::YouTrack => email.map(|e| e.to_string()),
+        Backend::YouTrack | Backend::GitHub | Backend::GitLab => email.map(|e| e.to_string()),
     };
 
     // If project is specified, validate it against the server
@@ -1058,6 +1295,27 @@ fn handle_init(
                     )
                 })?
             }
+            Backend::GitHub => {
+                let client = GitHubClient::new("", "", token);
+                // For GitHub, we try to list repos to validate the token
+                let tracker: &dyn IssueTracker = &client;
+                tracker.list_projects().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to connect to GitHub or list repositories: {}\nCheck your token.",
+                        e
+                    )
+                })?
+            }
+            Backend::GitLab => {
+                let client = GitLabClient::new(url, token, None);
+                let tracker: &dyn IssueTracker = &client;
+                tracker.list_projects().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to connect to GitLab or list projects: {}\nCheck your URL and token.",
+                        e
+                    )
+                })?
+            }
         };
 
         let matched = projects
@@ -1078,6 +1336,8 @@ fn handle_init(
     let backend_str = match backend {
         Backend::YouTrack => "youtrack",
         Backend::Jira => "jira",
+        Backend::GitHub => "github",
+        Backend::GitLab => "gitlab",
     };
 
     // Create config with backend and optional default project
@@ -1089,6 +1349,8 @@ fn handle_init(
         default_project: validated_project.as_ref().map(|(_, name)| name.clone()),
         youtrack: Default::default(),
         jira: Default::default(),
+        github: Default::default(),
+        gitlab: Default::default(),
     };
 
     config.save(&config_path)?;

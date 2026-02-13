@@ -7,7 +7,7 @@
 | Aspect | Details |
 |--------|---------|
 | **Binary** | `track` (or `target/release/track` if not installed) |
-| **Backends** | YouTrack (default), Jira (`-b jira` or `-b j`) |
+| **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`) |
 | **Output** | Text (default) or JSON (`-o json`) |
 | **Config** | `.track.toml` in project dir, env vars, or CLI flags |
 | **Cache** | `.tracker-cache.json` - run `track cache refresh` for context |
@@ -15,13 +15,16 @@
 
 ## Backend Comparison
 
-| Feature | YouTrack | Jira |
-|---------|----------|------|
-| **Flag** | `-b youtrack` or `-b yt` (default) | `-b jira` or `-b j` |
-| **Auth** | Bearer token | Basic Auth (email + API token) |
-| **Query** | `project: PROJ #Unresolved` | `project = PROJ AND resolution IS EMPTY` (JQL) |
-| **Knowledge Base** | Yes (`article` commands) | Yes via Confluence (`article` commands) |
-| **Project Creation** | Yes | No (admin only) |
+| Feature | YouTrack | Jira | GitHub | GitLab |
+|---------|----------|------|--------|--------|
+| **Flag** | `-b youtrack` / `-b yt` (default) | `-b jira` / `-b j` | `-b github` / `-b gh` | `-b gitlab` / `-b gl` |
+| **Auth** | Bearer token | Basic Auth (email + API token) | Bearer token (PAT) | Private token |
+| **Query** | `project: PROJ #Unresolved` | `project = PROJ AND resolution IS EMPTY` (JQL) | `is:open label:bug` (GitHub search) | `state=opened&labels=bug` (filter params) |
+| **Knowledge Base** | Yes (`article` commands) | Yes via Confluence (`article` commands) | No | No |
+| **Project Creation** | Yes | No (admin only) | No | No |
+| **Issue Delete** | Yes | Yes | No (close instead) | Yes |
+| **Issue Links** | Yes | Yes | No (use `#number` references) | Yes |
+| **Subtasks** | Yes | Yes | No (use task lists) | No (use issue links) |
 
 ## Configuration
 
@@ -60,15 +63,67 @@ email = "you@example.com"
 token = "your-api-token"
 ```
 
+### GitHub
+
+```bash
+# Initialize with persistent config
+track init --url https://api.github.com --token ghp_YOUR_TOKEN --backend github
+
+# Or environment variables
+export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+export GITHUB_OWNER=your-org
+export GITHUB_REPO=your-repo
+# Optional: export GITHUB_API_URL=https://github.example.com/api/v3  # GitHub Enterprise
+
+# Or config file (.track.toml)
+backend = "github"
+
+[github]
+token = "ghp_xxxxxxxxxxxx"
+owner = "your-org"
+repo = "your-repo"
+# api_url = "https://api.github.com"  # default, omit unless using GHE
+```
+
+**Note**: GitHub requires both `owner` and `repo` to be configured. The API URL defaults to `https://api.github.com`. Set `github.api_url` for GitHub Enterprise instances.
+
+### GitLab
+
+```bash
+# Initialize with persistent config
+track init --url https://gitlab.com/api/v4 --token glpat-YOUR_TOKEN --backend gitlab
+
+# Or environment variables
+export GITLAB_TOKEN=glpat-xxxxxxxxxxxx
+export GITLAB_URL=https://gitlab.com/api/v4
+export GITLAB_PROJECT_ID=12345
+# Optional: export GITLAB_NAMESPACE=your-group
+
+# Or config file (.track.toml)
+backend = "gitlab"
+
+[gitlab]
+token = "glpat-xxxxxxxxxxxx"
+url = "https://gitlab.com/api/v4"
+project_id = "12345"
+# namespace = "your-group"
+```
+
+**Note**: GitLab URL should include the `/api/v4` path. The `project_id` can be a numeric ID or a URL-encoded path (e.g., `group%2Fproject`). Issue operations require `project_id` to be set.
+
 ### Switching Backends
 
 ```bash
 # Set default backend persistently
-track config backend jira      # Switch to Jira
 track config backend youtrack  # Switch to YouTrack
+track config backend jira      # Switch to Jira
+track config backend github    # Switch to GitHub
+track config backend gitlab    # Switch to GitLab
 
 # Override per-command
 track -b jira PROJ-123         # Use Jira for this command only
+track -b gh 42                 # Use GitHub for this command only
+track -b gl 42                 # Use GitLab for this command only
 ```
 
 ### Test Connection
@@ -76,6 +131,8 @@ track -b jira PROJ-123         # Use Jira for this command only
 ```bash
 track config test              # Uses configured backend
 track -b jira config test      # Override to test Jira
+track -b gh config test        # Override to test GitHub
+track -b gl config test        # Override to test GitLab
 ```
 
 ### Config Management
@@ -88,12 +145,14 @@ track config get <key>         # Get a specific value
 track config set <key> <value> # Set a specific value
 
 # Examples
-track config set backend jira
-track config set jira.email "user@example.com"
+track config set backend github
+track config set github.owner "myorg"
+track config set github.repo "myrepo"
+track config set gitlab.project_id "12345"
 track config get default_project
 ```
 
-**Available config keys**: `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `jira.url`, `jira.email`, `jira.token`
+**Available config keys**: `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `jira.url`, `jira.email`, `jira.token`, `github.token`, `github.owner`, `github.repo`, `github.api_url`, `gitlab.token`, `gitlab.url`, `gitlab.project_id`, `gitlab.namespace`
 
 ---
 
@@ -101,30 +160,33 @@ track config get default_project
 
 ### Issue Operations
 
-| Operation | YouTrack | Jira |
-|-----------|----------|------|
-| Get issue | `track PROJ-123` | `track -b j PROJ-123` |
-| Get (JSON) | `track -o json PROJ-123` | `track -b j -o json PROJ-123` |
-| Get (full) | `track PROJ-123 --full` | `track -b j PROJ-123 --full` |
-| Create | `track i new -p PROJ -s "Summary"` | `track -b j i new -p PROJ -s "Summary"` |
-| Create (validate) | `track i new -p PROJ -s "Summary" --validate` | Same with `-b j` |
-| Update | `track i u PROJ-123 --summary "New"` | `track -b j i u PROJ-123 --summary "New"` |
-| Update (validate) | `track i u PROJ-123 --field "State=Done" --validate` | Same with `-b j` |
-| Delete | `track i del PROJ-123` | `track -b j i del PROJ-123` |
-| Search | `track i s "project: PROJ #Unresolved"` | `track -b j i s "project = PROJ"` |
-| Search (template) | `track i s -T unresolved -p PROJ` | Same with `-b j` |
-| Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` |
-| Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` |
+| Operation | YouTrack | Jira | GitHub | GitLab |
+|-----------|----------|------|--------|--------|
+| Get issue | `track PROJ-123` | `track -b j PROJ-123` | `track -b gh PROJ-42` | `track -b gl PROJ-42` |
+| Get (JSON) | `track -o json PROJ-123` | `track -b j -o json PROJ-123` | `track -b gh -o json PROJ-42` | `track -b gl -o json PROJ-42` |
+| Get (full) | `track PROJ-123 --full` | `track -b j PROJ-123 --full` | `track -b gh PROJ-42 --full` | `track -b gl PROJ-42 --full` |
+| Create | `track i new -p PROJ -s "Summary"` | `track -b j i new -p PROJ -s "Summary"` | `track -b gh i new -s "Summary"` | `track -b gl i new -s "Summary"` |
+| Update | `track i u PROJ-123 --summary "New"` | `track -b j i u PROJ-123 --summary "New"` | `track -b gh i u PROJ-42 --summary "New"` | `track -b gl i u PROJ-42 --summary "New"` |
+| Delete | `track i del PROJ-123` | `track -b j i del PROJ-123` | Not supported | `track -b gl i del PROJ-42` |
+| Search | `track i s "project: PROJ #Unresolved"` | `track -b j i s "project = PROJ"` | `track -b gh i s "is:open label:bug"` | `track -b gl i s "state=opened"` |
+| Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` | `track -b gh i cmt PROJ-42 -m "Text"` | `track -b gl i cmt PROJ-42 -m "Text"` |
+| Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Not supported | `track -b gl i link PROJ-1 PROJ-2` |
+
+**GitHub/GitLab notes**:
+- GitHub and GitLab use numeric issue IDs (e.g., `42`), not project-prefixed keys
+- GitHub does not support deleting issues -- close them with `track -b gh i u PROJ-42 --state closed`
+- GitHub does not support issue links -- reference issues via `#42` in comments
+- GitHub project (`-p`) is implicit from the configured `owner/repo`
 
 ### Project Operations
 
-| Operation | YouTrack | Jira |
-|-----------|----------|------|
-| List | `track p ls` | `track -b j p ls` |
-| Get | `track p g PROJ` | `track -b j p g PROJ` |
-| Fields | `track p f PROJ` | `track -b j p f PROJ` |
-| Create | `track p new -n "Name" -s "KEY"` | Not supported |
-| Attach field | `track p attach-field PROJ -f <field-id> --bundle <bundle-id>` | Not supported |
+| Operation | YouTrack | Jira | GitHub | GitLab |
+|-----------|----------|------|--------|--------|
+| List | `track p ls` | `track -b j p ls` | `track -b gh p ls` | `track -b gl p ls` |
+| Get | `track p g PROJ` | `track -b j p g PROJ` | `track -b gh p g owner/repo` | `track -b gl p g 12345` |
+| Fields | `track p f PROJ` | `track -b j p f PROJ` | `track -b gh p f owner/repo` | `track -b gl p f 12345` |
+| Create | `track p new -n "Name" -s "KEY"` | Not supported | Not supported | Not supported |
+| Attach field | `track p attach-field PROJ -f <field-id> --bundle <bundle-id>` | Not supported | Not supported | Not supported |
 
 ### Custom Field Admin (YouTrack only)
 
@@ -160,7 +222,7 @@ track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fix
 | Comments | `track a comments KB-A-1` | `track -b j a comments 123456` |
 | Add comment | `track a cmt KB-A-1 -m "Text"` | `track -b j a cmt 123456 -m "Text"` |
 
-**Note**: Confluence uses numeric IDs for both pages and spaces. YouTrack uses readable IDs (e.g., `KB-A-1`).
+**Note**: Knowledge base is only available for YouTrack and Jira/Confluence. GitHub and GitLab do not support articles. Confluence uses numeric IDs for both pages and spaces. YouTrack uses readable IDs (e.g., `KB-A-1`).
 
 ### Command Aliases
 
@@ -231,18 +293,18 @@ track i del PROJ-1,PROJ-2,PROJ-3
 
 Text output shows success/failure summary:
 ```
-✓ 3 issues updated
-  ✓ PROJ-1
-  ✓ PROJ-2
-  ✓ PROJ-3
+ 3 issues updated
+   PROJ-1
+   PROJ-2
+   PROJ-3
 ```
 
 Partial failures show both:
 ```
-⚠ 2/3 issues updated (1 failed)
-  ✓ PROJ-1
-  ✗ PROJ-2 - Invalid value for field 'State'
-  ✓ PROJ-3
+ 2/3 issues updated (1 failed)
+   PROJ-1
+   PROJ-2 - Invalid value for field 'State'
+   PROJ-3
 ```
 
 JSON output provides structured results:
@@ -295,20 +357,59 @@ track -b j i s "assignee = currentUser()"
 track -b j i s "project = PROJ AND resolution IS EMPTY AND priority = Major"
 ```
 
+### GitHub Search Examples
+
+```bash
+# Open issues (repo is implicit from config)
+track -b gh i s "is:open" --limit 20
+
+# By label
+track -b gh i s "is:open label:bug"
+
+# By assignee
+track -b gh i s "is:open assignee:username"
+
+# Text search
+track -b gh i s "is:open memory leak"
+
+# Combined
+track -b gh i s "is:open label:bug label:critical assignee:username"
+```
+
+### GitLab Filter Examples
+
+```bash
+# Open issues (project is implicit from config)
+track -b gl i s "state=opened" --limit 20
+
+# By label
+track -b gl i s "labels=bug"
+
+# By assignee
+track -b gl i s "assignee_username=username"
+
+# Text search
+track -b gl i s "search=memory leak"
+
+# Combined (multiple filters)
+track -b gl i s "state=opened&labels=bug,critical"
+```
+
 ### Query Syntax Comparison
 
-| Concept | YouTrack | Jira JQL |
-|---------|----------|----------|
-| Project filter | `project: PROJ` | `project = PROJ` |
-| Unresolved | `#Unresolved` | `resolution IS EMPTY` |
-| Resolved | `#Resolved` | `resolution IS NOT EMPTY` |
-| Open status | `State: Open` | `status = Open` |
-| In progress | `State: {In Progress}` | `status = "In Progress"` |
-| Current user | `Assignee: me` | `assignee = currentUser()` |
-| Priority | `Priority: Major` | `priority = Major` |
-| Text search | `summary:~'keyword'` | `summary ~ "keyword"` |
-| AND | implicit or `AND` | `AND` |
-| OR | `OR` | `OR` |
+| Concept | YouTrack | Jira JQL | GitHub Search | GitLab Filters |
+|---------|----------|----------|---------------|----------------|
+| Project filter | `project: PROJ` | `project = PROJ` | implicit (owner/repo) | implicit (project_id) |
+| Unresolved | `#Unresolved` | `resolution IS EMPTY` | `is:open` | `state=opened` |
+| Resolved | `#Resolved` | `resolution IS NOT EMPTY` | `is:closed` | `state=closed` |
+| Open status | `State: Open` | `status = Open` | `is:open` | `state=opened` |
+| In progress | `State: {In Progress}` | `status = "In Progress"` | `label:in-progress` | `labels=in-progress` |
+| Current user | `Assignee: me` | `assignee = currentUser()` | `assignee:@me` | `assignee_username=<user>` |
+| Priority | `Priority: Major` | `priority = Major` | `label:priority-major` | `labels=priority::major` |
+| Text search | `summary:~'keyword'` | `summary ~ "keyword"` | `keyword` (in query) | `search=keyword` |
+| By label | `tag: {bug}` | `labels = bug` | `label:bug` | `labels=bug` |
+| AND | implicit or `AND` | `AND` | space-separated | `&`-separated params |
+| OR | `OR` | `OR` | N/A | N/A |
 
 ---
 
@@ -326,6 +427,16 @@ track -o json PROJ-123            # JSON for parsing
 track -b j PROJ-123
 track -b j PROJ-123 --full
 track -b j -o json PROJ-123
+
+# GitHub
+track -b gh PROJ-42
+track -b gh PROJ-42 --full
+track -b gh -o json PROJ-42
+
+# GitLab
+track -b gl PROJ-42
+track -b gl PROJ-42 --full
+track -b gl -o json PROJ-42
 ```
 
 ### Create Issue
@@ -338,6 +449,12 @@ track i new -s "Subtask" --parent PROJ-100   # Subtask
 # Jira
 track -b j i new -p PROJ -s "Bug title" -d "Description"
 track -b j i new -s "Subtask" --parent PROJ-100
+
+# GitHub (project implicit from owner/repo config)
+track -b gh i new -s "Bug title" -d "Description"
+
+# GitLab (project implicit from project_id config)
+track -b gl i new -s "Bug title" -d "Description"
 ```
 
 ### Update Issue
@@ -351,6 +468,14 @@ track i u PROJ-123 --field "Stage=Done"
 # Jira
 track -b j i u PROJ-123 --summary "New title"
 track -b j i u PROJ-123 --description "Updated description"
+
+# GitHub
+track -b gh i u PROJ-42 --summary "New title"
+track -b gh i u PROJ-42 --state closed        # Close issue (no delete)
+
+# GitLab
+track -b gl i u PROJ-42 --summary "New title"
+track -b gl i u PROJ-42 --description "Updated description"
 ```
 
 ### State Transitions
@@ -365,18 +490,28 @@ track i u PROJ-123 --field "Stage=In Progress"
 
 # Jira - Manual update (no quick commands)
 track -b j i u PROJ-123 --field "status=In Progress"
+
+# GitHub - Use state field (open/closed only)
+track -b gh i u PROJ-42 --state closed
+
+# GitLab - Use state field
+track -b gl i u PROJ-42 --state close
 ```
 
 ### Comments
 
 ```bash
-# Add comment
+# Add comment (works with all backends)
 track i cmt PROJ-123 -m "Started implementation"
 track -b j i cmt PROJ-123 -m "Started implementation"
+track -b gh i cmt PROJ-42 -m "Started implementation"
+track -b gl i cmt PROJ-42 -m "Started implementation"
 
 # List comments
 track i comments PROJ-123
 track -b j i comments PROJ-123
+track -b gh i comments PROJ-42
+track -b gl i comments PROJ-42
 ```
 
 ### Link Issues
@@ -390,6 +525,12 @@ track i link PROJ-1 PROJ-2 -t subtask    # Subtask link
 # Jira
 track -b j i link PROJ-1 PROJ-2
 track -b j i link PROJ-1 PROJ-2 -t Blocks
+
+# GitLab
+track -b gl i link PROJ-1 PROJ-2         # relates_to (default)
+
+# GitHub - No native issue links; reference via comments:
+track -b gh i cmt PROJ-42 -m "Related to #43"
 ```
 
 **Link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
@@ -400,8 +541,10 @@ track -b j i link PROJ-1 PROJ-2 -t Blocks
 
 ```bash
 # 1. Verify connection
-track config test                  # YouTrack
+track config test                  # YouTrack (default)
 track -b jira config test          # Jira
+track -b gh config test            # GitHub
+track -b gl config test            # GitLab
 
 # 2. Get aggregated context (recommended - single command for all AI context)
 track context                      # Full context from cache
@@ -417,8 +560,10 @@ track cache show                   # Text output
 track -o json cache show           # JSON for parsing
 
 # 4. Get unresolved issues
-track -o json i s "project: PROJ #Unresolved" --limit 20     # YouTrack
-track -b j -o json i s "project = PROJ AND resolution IS EMPTY" --limit 20  # Jira
+track -o json i s "project: PROJ #Unresolved" --limit 20                          # YouTrack
+track -b j -o json i s "project = PROJ AND resolution IS EMPTY" --limit 20        # Jira
+track -b gh -o json i s "is:open" --limit 20                                      # GitHub
+track -b gl -o json i s "state=opened" --limit 20                                 # GitLab
 ```
 
 **Tip**: Use `track context -o json` for a single-command context dump optimized for AI sessions.
@@ -460,7 +605,7 @@ track context --issue-limit 25       # Limit included issues (default: 10)
 track -o json context                # JSON output for parsing
 ```
 
-**Output includes**: Backend info, projects, custom fields with enum values, tags, link types, query templates, assignable users, workflow hints (state transitions), recent issues.
+**Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, query templates, assignable users, workflow hints (state transitions), recent issues.
 
 ### Template-Based Search
 
@@ -508,7 +653,7 @@ track context -p PROJ
 # Output includes:
 # Workflow Hints:
 #   PROJ (Stage):
-#     States: Backlog → Develop → Review → Test → Done*
+#     States: Backlog -> Develop -> Review -> Test -> Done*
 #     Transitions: 10 forward, 4 backward (* = resolved)
 ```
 
@@ -567,12 +712,12 @@ track cache path          # Show cache file location
 | **Default project** | From config, for context |
 | **Projects** | IDs, short names, descriptions |
 | **Custom fields** | Per project: name, type, required flag, **enum values** |
-| **Tags** | Available tags with IDs |
+| **Tags/Labels** | Available tags (YouTrack/Jira) or labels (GitHub/GitLab) with IDs and colors |
 | **Link types** | Issue link types (Relates, Blocks, Depends, etc.) |
 | **Query templates** | Pre-built queries per backend (see below) |
 | **Project users** | Assignable users per project |
 | **Recent issues** | LRU cache of last 50 accessed issues |
-| **Articles** | Knowledge base articles with hierarchy |
+| **Articles** | Knowledge base articles with hierarchy (YouTrack/Jira only) |
 
 ### Query Templates
 
@@ -595,6 +740,7 @@ Replace `{PROJECT}` with the actual project key (e.g., `PROJ`)
 
 - **YouTrack**: Built-in Knowledge Base with readable IDs (`KB-A-1`)
 - **Jira**: Uses Confluence at same domain (`/wiki` path auto-appended)
+- **GitHub/GitLab**: No knowledge base support -- article commands return errors
 - **Confluence IDs**: Numeric for both pages (`123456`) and spaces (`65957`)
 - **Discover space IDs**: Run `track -b j a ls` to see existing pages with their space IDs
 - **Content**: Supports `--content "text"` or `--content-file ./doc.md`
@@ -626,6 +772,10 @@ Common errors and solutions:
 | `Not found` | Issue/project doesn't exist | Verify ID, check project access |
 | `Project not found` | Invalid project key | Use `track p ls` to list valid projects |
 | `Connection refused` | Wrong URL or network issue | Verify URL, check network |
+| `Rate limited` | Too many API requests (GitHub) | Wait and retry; check `x-ratelimit-reset` header |
+| `owner not configured` | GitHub missing owner | `track config set github.owner <OWNER>` |
+| `repo not configured` | GitHub missing repo | `track config set github.repo <REPO>` |
+| `No project ID configured` | GitLab missing project_id | `track config set gitlab.project_id <ID>` |
 
 ---
 
@@ -640,6 +790,8 @@ track cache show                   # View cached context (projects, fields, user
 # === BACKEND CONFIGURATION ===
 track config backend youtrack      # Set default to YouTrack
 track config backend jira          # Set default to Jira
+track config backend github        # Set default to GitHub
+track config backend gitlab        # Set default to GitLab
 track config show                  # Show current config (including backend)
 track config keys                  # List all config keys
 
@@ -652,7 +804,6 @@ track i u PROJ-123 --field "Stage=Done"
 track i cmt PROJ-123 -m "Comment"
 track i link PROJ-1 PROJ-2 -t depends
 track p ls                         # List projects
-track config test                  # Test connection
 
 # === CUSTOM FIELD ADMIN (YouTrack only) ===
 track field list                   # List field definitions
@@ -669,15 +820,93 @@ track -b j i u PROJ-123 --summary "New title"
 track -b j i cmt PROJ-123 -m "Comment"
 track -b j i link PROJ-1 PROJ-2
 track -b j p ls                    # List projects
-track -b j config test             # Test connection
+
+# === GITHUB (when default or with -b gh) ===
+track -b gh PROJ-42                # Get issue by number
+track -b gh -o json PROJ-42        # Get as JSON
+track -b gh i s "is:open" --limit 20
+track -b gh i new -s "Summary"     # Create issue (project from config)
+track -b gh i u PROJ-42 --summary "New title"
+track -b gh i u PROJ-42 --state closed  # Close issue
+track -b gh i cmt PROJ-42 -m "Comment"
+track -b gh p ls                   # List repos
+
+# === GITLAB (when default or with -b gl) ===
+track -b gl PROJ-42                # Get issue by IID
+track -b gl -o json PROJ-42        # Get as JSON
+track -b gl i s "state=opened" --limit 20
+track -b gl i new -s "Summary"     # Create issue (project from config)
+track -b gl i u PROJ-42 --summary "New title"
+track -b gl i del PROJ-42          # Delete issue
+track -b gl i cmt PROJ-42 -m "Comment"
+track -b gl i link PROJ-1 PROJ-2   # Link issues
+track -b gl p ls                   # List projects
+```
+
+---
+
+## Example .track.toml Configurations
+
+### Multi-Backend Setup
+
+```toml
+# Default backend
+backend = "youtrack"
+default_project = "PROJ"
+
+# YouTrack settings
+[youtrack]
+url = "https://youtrack.example.com"
+token = "perm:xxx"
+
+# Jira settings (use with -b jira)
+[jira]
+url = "https://company.atlassian.net"
+email = "user@company.com"
+token = "api-token"
+
+# GitHub settings (use with -b github)
+[github]
+token = "ghp_xxxxxxxxxxxx"
+owner = "myorg"
+repo = "myrepo"
+
+# GitLab settings (use with -b gitlab)
+[gitlab]
+token = "glpat-xxxxxxxxxxxx"
+url = "https://gitlab.com/api/v4"
+project_id = "12345"
+```
+
+### GitHub-Only Setup
+
+```toml
+backend = "github"
+
+[github]
+token = "ghp_xxxxxxxxxxxx"
+owner = "myorg"
+repo = "myrepo"
+```
+
+### GitLab-Only Setup
+
+```toml
+backend = "gitlab"
+
+[gitlab]
+token = "glpat-xxxxxxxxxxxx"
+url = "https://gitlab.com/api/v4"
+project_id = "12345"
+namespace = "mygroup"
 ```
 
 ---
 
 ## Important Notes
 
-1. **Persistent backend**: `track config backend jira` sets default permanently
-2. **Backend override**: `-b jira` or `-b j` overrides per-command
+1. **Persistent backend**: `track config backend github` sets default permanently
+2. **Backend override**: `-b github`/`-b gh` or `-b gitlab`/`-b gl` overrides per-command
 3. **JSON output**: Always use `-o json` for programmatic parsing
 4. **Issue shortcut**: `track PROJ-123` = `track issue get PROJ-123`
 5. **Default project**: `track config project PROJ` to skip `-p` flag
@@ -685,6 +914,10 @@ track -b j config test             # Test connection
 7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, and articles
 8. **Query templates**: Cache includes pre-built queries - check `track cache show` for available templates
 9. **Jira limitations**: No project creation, no subtask conversion, no custom field admin
-10. **Query syntax**: YouTrack `project: PROJ` vs Jira `project = PROJ`
-11. **Confluence IDs**: Numeric page IDs (`123456`) and space IDs (`65957`), not project keys
-12. **Custom field admin**: YouTrack only - use `track field new` for convenience command that creates field with values and attaches to project
+10. **GitHub limitations**: No issue delete (close instead), no issue links (use `#N` references), no knowledge base
+11. **GitLab limitations**: No project creation, no subtask links, no knowledge base
+12. **Query syntax**: YouTrack `project: PROJ` vs Jira `project = PROJ` vs GitHub `is:open` vs GitLab `state=opened`
+13. **Confluence IDs**: Numeric page IDs (`123456`) and space IDs (`65957`), not project keys
+14. **Custom field admin**: YouTrack only - use `track field new` for convenience command that creates field with values and attaches to project
+15. **GitHub issue IDs**: Use numeric IDs (e.g., `42`), not project-prefixed keys
+16. **GitLab IIDs**: Project-scoped issue numbers; the client strips `#` prefix automatically

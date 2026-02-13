@@ -142,6 +142,12 @@ pub struct CachedField {
 pub struct CachedTag {
     pub id: String,
     pub name: String,
+    /// Background color hex (e.g., "#ff0000"), populated for GitHub/GitLab labels
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Description of the tag/label
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Workflow hints for a project's state fields
@@ -291,6 +297,8 @@ impl TrackerCache {
                 .map(|t| CachedTag {
                     id: t.id.clone(),
                     name: t.name.clone(),
+                    color: t.color.as_ref().and_then(|c| c.background.clone()),
+                    description: None,
                 })
                 .collect();
         }
@@ -429,6 +437,82 @@ impl TrackerCache {
                     description: "Bug issues".to_string(),
                     query: "project = {PROJECT} AND issuetype = Bug AND resolution IS EMPTY".to_string(),
                     backend: "jira".to_string(),
+                },
+            ],
+            "github" => vec![
+                CachedQueryTemplate {
+                    name: "unresolved".to_string(),
+                    description: "All open issues in repo".to_string(),
+                    query: "repo:{PROJECT} is:issue state:open".to_string(),
+                    backend: "github".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "my_issues".to_string(),
+                    description: "Issues assigned to current user".to_string(),
+                    query: "repo:{PROJECT} is:issue state:open assignee:@me".to_string(),
+                    backend: "github".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "recent".to_string(),
+                    description: "Recently updated issues".to_string(),
+                    query: "repo:{PROJECT} is:issue sort:updated-desc".to_string(),
+                    backend: "github".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "bugs".to_string(),
+                    description: "Bug issues".to_string(),
+                    query: "repo:{PROJECT} is:issue state:open label:bug".to_string(),
+                    backend: "github".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "enhancements".to_string(),
+                    description: "Enhancement/feature request issues".to_string(),
+                    query: "repo:{PROJECT} is:issue state:open label:enhancement".to_string(),
+                    backend: "github".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "no_assignee".to_string(),
+                    description: "Unassigned open issues".to_string(),
+                    query: "repo:{PROJECT} is:issue state:open no:assignee".to_string(),
+                    backend: "github".to_string(),
+                },
+            ],
+            "gitlab" => vec![
+                CachedQueryTemplate {
+                    name: "unresolved".to_string(),
+                    description: "All open issues in project".to_string(),
+                    query: "state=opened".to_string(),
+                    backend: "gitlab".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "my_issues".to_string(),
+                    description: "Issues assigned to current user".to_string(),
+                    query: "state=opened&assignee_username=@me".to_string(),
+                    backend: "gitlab".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "recent".to_string(),
+                    description: "Recently updated issues".to_string(),
+                    query: "state=opened&order_by=updated_at&sort=desc".to_string(),
+                    backend: "gitlab".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "bugs".to_string(),
+                    description: "Bug issues".to_string(),
+                    query: "state=opened&labels=bug".to_string(),
+                    backend: "gitlab".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "high_priority".to_string(),
+                    description: "High priority open issues".to_string(),
+                    query: "state=opened&labels=priority::high".to_string(),
+                    backend: "gitlab".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "no_assignee".to_string(),
+                    description: "Unassigned open issues".to_string(),
+                    query: "state=opened&assignee_id=None".to_string(),
+                    backend: "gitlab".to_string(),
                 },
             ],
             _ => Vec::new(),

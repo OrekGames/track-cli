@@ -1,10 +1,30 @@
-# Example configuration file for YouTrack CLI
-# Copy this file to your config path (e.g. ~/.config/yt/config.toml on Linux,
-# ~/Library/Application Support/yt/config.toml on macOS) or use --config PATH.
+# Example configuration file for track CLI
+# Copy this file to ~/.config/track/config.toml or use --config PATH.
+# You can also create a local .track.toml in your project directory via `track init`.
+#
+# Only configure the backend(s) you use. Set the active backend with:
+#   track --backend youtrack ...
+#   or set `backend = "youtrack"` at the top level.
 
-# YouTrack instance URL (without trailing slash)
+# backend = "youtrack"
+
+[youtrack]
 url = "https://youtrack.example.com"
-
-# Your YouTrack API token
-# Format: perm:<base64-username>.<base64-tokenname>.<token-value>
 token = "perm:..."
+
+[jira]
+url = "https://your-org.atlassian.net"
+email = "you@example.com"
+token = "your-jira-api-token"
+
+[github]
+token = "ghp_xxxxxxxxxxxx"
+owner = "your-org"
+repo = "your-repo"
+# api_url = "https://api.github.com"  # default; override for GitHub Enterprise
+
+[gitlab]
+token = "glpat-xxxxxxxxxxxx"
+url = "https://gitlab.com/api/v4"
+project_id = "12345678"
+# namespace = "your-group"

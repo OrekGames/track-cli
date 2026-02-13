@@ -19,10 +19,16 @@ Cargo.lock
 .tracker-cache.json
 .yt-config.json
 .track.toml
+
 **/.track-config.json
 **/.tracker-cache.json
 **/.yt-config.json
 **/.track.toml
+
+# Backend-specific config files (contain credentials)
+jira-config.toml
+gitlab-config.toml
+*-config.toml
 
 # AI coding agents
 .claude/
@@ -32,3 +38,4 @@ Cargo.lock
 .continue/
 .windsurf/
 CLAUDE.md
+GEMINI.md

@@ -175,6 +175,8 @@ pub fn handle_context(
             // Build query based on backend type
             let query = match backend_type {
                 "jira" => format!("project = {} AND resolution IS EMPTY", proj),
+                "github" => format!("repo:{} is:issue state:open", proj),
+                "gitlab" => "state=opened".to_string(),
                 _ => format!("project: {} #Unresolved", proj), // YouTrack default
             };
 

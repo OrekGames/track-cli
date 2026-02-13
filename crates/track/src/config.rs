@@ -33,7 +33,12 @@ pub struct Config {
     /// Jira-specific configuration
     #[serde(default, skip_serializing_if = "JiraConfig::is_empty")]
     pub jira: JiraConfig,
-    // Future: linear, github, etc.
+    /// GitHub-specific configuration
+    #[serde(default, skip_serializing_if = "GitHubConfig::is_empty")]
+    pub github: GitHubConfig,
+    /// GitLab-specific configuration
+    #[serde(default, skip_serializing_if = "GitLabConfig::is_empty")]
+    pub gitlab: GitLabConfig,
 }
 
 /// Backend-specific configuration
@@ -65,6 +70,51 @@ pub struct JiraConfig {
 impl JiraConfig {
     pub fn is_empty(&self) -> bool {
         self.url.is_none() && self.email.is_none() && self.token.is_none()
+    }
+}
+
+/// GitHub-specific configuration
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+pub struct GitHubConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// API URL (defaults to https://api.github.com)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
+}
+
+impl GitHubConfig {
+    pub fn is_empty(&self) -> bool {
+        self.token.is_none()
+            && self.owner.is_none()
+            && self.repo.is_none()
+            && self.api_url.is_none()
+    }
+}
+
+/// GitLab-specific configuration
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+pub struct GitLabConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
+impl GitLabConfig {
+    pub fn is_empty(&self) -> bool {
+        self.token.is_none()
+            && self.url.is_none()
+            && self.project_id.is_none()
+            && self.namespace.is_none()
     }
 }
 
@@ -104,6 +154,20 @@ impl Config {
                     "token" => "jira.token".into(),
                     _ => key.into(),
                 }
+            }))
+            .merge(Env::prefixed("GITHUB_").map(|key| match key.as_str() {
+                "token" => "github.token".into(),
+                "owner" => "github.owner".into(),
+                "repo" => "github.repo".into(),
+                "api_url" => "github.api_url".into(),
+                _ => key.into(),
+            }))
+            .merge(Env::prefixed("GITLAB_").map(|key| match key.as_str() {
+                "token" => "gitlab.token".into(),
+                "url" => "gitlab.url".into(),
+                "project_id" => "gitlab.project_id".into(),
+                "namespace" => "gitlab.namespace".into(),
+                _ => key.into(),
             }));
 
         let mut config: Config = figment
@@ -141,6 +205,28 @@ impl Config {
                     self.token = self.jira.token.take();
                 }
             }
+            Backend::GitHub => {
+                // GitHub needs token; url defaults to api.github.com
+                if self.url.is_none() {
+                    self.url = self
+                        .github
+                        .api_url
+                        .take()
+                        .or_else(|| Some("https://api.github.com".to_string()));
+                }
+                if self.token.is_none() {
+                    self.token = self.github.token.take();
+                }
+            }
+            Backend::GitLab => {
+                // GitLab needs token and url
+                if self.url.is_none() {
+                    self.url = self.gitlab.url.take();
+                }
+                if self.token.is_none() {
+                    self.token = self.gitlab.token.take();
+                }
+            }
         }
     }
 
@@ -157,6 +243,8 @@ impl Config {
         let backend_name = match backend {
             Backend::YouTrack => "YouTrack",
             Backend::Jira => "Jira",
+            Backend::GitHub => "GitHub",
+            Backend::GitLab => "GitLab",
         };
 
         if self.url.is_none() {
@@ -222,6 +310,8 @@ impl Config {
             let backend_str = match backend {
                 Backend::YouTrack => "youtrack",
                 Backend::Jira => "jira",
+                Backend::GitHub => "github",
+                Backend::GitLab => "gitlab",
             };
             config.backend = Some(backend_str.to_string());
             config.save(&path)?;
@@ -237,6 +327,8 @@ impl Config {
     pub fn get_backend(&self) -> Backend {
         match self.backend.as_deref() {
             Some("jira") | Some("j") => Backend::Jira,
+            Some("github") | Some("gh") => Backend::GitHub,
+            Some("gitlab") | Some("gl") => Backend::GitLab,
             _ => Backend::YouTrack, // Default
         }
     }
@@ -303,11 +395,7 @@ fn get_local_config_path() -> Option<PathBuf> {
 
 /// Returns the path to the global install directory config (~/.tracker-cli/.track.toml)
 fn get_install_dir_config_path() -> Option<PathBuf> {
-    BaseDirs::new().map(|dirs| {
-        dirs.home_dir()
-            .join(".tracker-cli")
-            .join(".track.toml")
-    })
+    BaseDirs::new().map(|dirs| dirs.home_dir().join(".tracker-cli").join(".track.toml"))
 }
 
 /// Returns the path to the local .track.toml file in the current directory

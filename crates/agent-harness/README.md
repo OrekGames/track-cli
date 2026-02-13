@@ -22,7 +22,7 @@ cargo build --release --package agent-harness
 
 ## Providers
 
-The harness supports two providers for running agents:
+The harness supports three providers for running agents:
 
 ### Anthropic API (default)
 
@@ -48,6 +48,23 @@ Key differences:
 - Tool restrictions via `--allowedTools` flag
 - Token counts not available (only turn counts)
 
+### GitHub Copilot CLI
+
+Uses the GitHub Copilot CLI (`gh copilot`) as a subprocess. This evaluates how GitHub Copilot CLI performs on scenarios using its bash tool integration.
+
+```bash
+# Requires GitHub CLI (gh) and Copilot CLI extension to be installed
+# gh extension install github/gh-copilot
+track-agent run ./fixtures/scenarios/basic-workflow --provider copilot-cli -v
+```
+
+Key differences:
+- No API key needed (GitHub CLI handles authentication via `gh auth login`)
+- Uses GitHub Copilot's system prompt and behaviors
+- Tool restrictions via `--available-tools` flag
+- Token counts not available (only turn counts)
+- Commands tracked via mock backend's call log
+
 ## Usage
 
 ### Running a Single Scenario
@@ -58,6 +75,9 @@ track-agent run ./fixtures/scenarios/basic-workflow -v
 
 # Use Claude Code CLI instead of direct API
 track-agent run ./fixtures/scenarios/basic-workflow --provider claude-code -v
+
+# Use GitHub Copilot CLI
+track-agent run ./fixtures/scenarios/basic-workflow --provider copilot-cli -v
 
 # Use a specific model (Anthropic provider only)
 track-agent run ./fixtures/scenarios/basic-workflow --model claude-sonnet-4-20250514
@@ -77,6 +97,9 @@ track-agent run-all --path ./fixtures/scenarios
 
 # Run all scenarios with Claude Code
 track-agent run-all --path ./fixtures/scenarios --provider claude-code
+
+# Run all scenarios with GitHub Copilot CLI
+track-agent run-all --path ./fixtures/scenarios --provider copilot-cli
 
 # Stop on first failure
 track-agent run-all --path ./fixtures/scenarios --fail-fast
@@ -144,6 +167,25 @@ claude -p \
   --system-prompt ./scenario-system-prompt.md \
   --dangerously-skip-permissions \
   --max-turns 20
+```
+
+### GitHub Copilot CLI Provider
+
+1. **System Prompt**: Written to `AGENTS.md` in temp directory, automatically loaded by Copilot CLI
+2. **Task Prompt**: Passed via `-p` flag in non-interactive mode
+3. **Tool Restriction**: Copilot CLI limited to `bash` tool only via `--available-tools`
+4. **Mock Mode**: `TRACK_MOCK_DIR` environment variable routes all track commands through the mock system
+5. **Output Parsing**: Stdout and stderr captured for analysis
+6. **Command Tracking**: Commands extracted from mock backend's call log
+7. **Completion**: Copilot CLI finishes naturally (no explicit max turns control)
+
+Copilot CLI invocation:
+```bash
+gh copilot -- -p "task prompt" \
+  --allow-all-tools \
+  --allow-all-paths \
+  --silent \
+  --available-tools bash
 ```
 
 ### Evaluation Metrics
@@ -270,6 +312,23 @@ Use exit codes to integrate with CI:
 ```
 
 Note: Claude Code must be installed and authenticated on the CI runner.
+
+### GitHub Copilot CLI Provider
+
+```yaml
+- name: Run agent evaluation with GitHub Copilot CLI
+  run: |
+    # Authenticate with GitHub CLI first
+    echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+    
+    # Run evaluation
+    ./target/release/track-agent run ./fixtures/scenarios/basic-workflow \
+      --provider copilot-cli \
+      --min-score 80 \
+      -o json
+```
+
+Note: GitHub CLI and Copilot extension must be installed on the CI runner.
 
 Exit codes:
 - `0`: All evaluations passed

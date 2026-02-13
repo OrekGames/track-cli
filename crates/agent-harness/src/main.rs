@@ -5,6 +5,8 @@
 
 mod anthropic;
 mod claude_code;
+mod copilot_cli;
+mod gemini_runner;
 mod runner;
 mod tools;
 
@@ -114,6 +116,10 @@ enum Provider {
     Anthropic,
     /// Use Claude Code CLI as the agent
     ClaudeCode,
+    /// Use GitHub Copilot CLI as the agent
+    CopilotCli,
+    /// Use Gemini CLI as the agent
+    Gemini,
 }
 
 #[derive(ValueEnum, Clone, Debug, Copy, Default)]
@@ -207,6 +213,27 @@ fn run_scenario(
             };
 
             let result = claude_code::run_claude_code(&config)?;
+            runner::SessionResult::from(result)
+        }
+        Provider::CopilotCli => {
+            let config = copilot_cli::CopilotCliConfig {
+                scenario_path: scenario_path.clone(),
+                scenario: scenario.clone(),
+                max_turns,
+                verbose,
+            };
+
+            let result = copilot_cli::run_copilot_cli(&config)?;
+            runner::SessionResult::from(result)
+        }
+        Provider::Gemini => {
+            let config = gemini_runner::GeminiRunnerConfig {
+                scenario_path: scenario_path.clone(),
+                scenario: scenario.clone(),
+                verbose,
+            };
+
+            let result = gemini_runner::run_gemini(&config)?;
             runner::SessionResult::from(result)
         }
     };
@@ -402,6 +429,45 @@ fn run_all_scenarios(
                 };
 
                 match claude_code::run_claude_code(&config) {
+                    Ok(r) => runner::SessionResult::from(r),
+                    Err(e) => {
+                        eprintln!("  {} {}", "Error:".red(), e);
+                        all_passed = false;
+                        if fail_fast {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
+            Provider::CopilotCli => {
+                let config = copilot_cli::CopilotCliConfig {
+                    scenario_path: scenario_path.clone(),
+                    scenario: scenario.clone(),
+                    max_turns,
+                    verbose: false, // not verbose in batch mode
+                };
+
+                match copilot_cli::run_copilot_cli(&config) {
+                    Ok(r) => runner::SessionResult::from(r),
+                    Err(e) => {
+                        eprintln!("  {} {}", "Error:".red(), e);
+                        all_passed = false;
+                        if fail_fast {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
+            Provider::Gemini => {
+                let config = gemini_runner::GeminiRunnerConfig {
+                    scenario_path: scenario_path.clone(),
+                    scenario: scenario.clone(),
+                    verbose: false, // not verbose in batch mode
+                };
+
+                match gemini_runner::run_gemini(&config) {
                     Ok(r) => runner::SessionResult::from(r),
                     Err(e) => {
                         eprintln!("  {} {}", "Error:".red(), e);

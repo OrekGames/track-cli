@@ -42,9 +42,12 @@ pub enum Backend {
     /// Jira issue tracker
     #[value(name = "jira", alias = "j")]
     Jira,
-    // Future backends:
-    // Linear,
-    // GitHub,
+    /// GitHub issue tracker
+    #[value(name = "github", alias = "gh")]
+    GitHub,
+    /// GitLab issue tracker
+    #[value(name = "gitlab", alias = "gl")]
+    GitLab,
 }
 
 #[derive(ValueEnum, Clone, Debug, Copy)]
