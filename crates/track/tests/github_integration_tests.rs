@@ -62,7 +62,14 @@ fn has_write_access() -> bool {
     static WRITE_ACCESS: OnceLock<bool> = OnceLock::new();
     *WRITE_ACCESS.get_or_init(|| {
         let output = track_github_json()
-            .args(["issue", "create", "-p", GITHUB_PROJECT, "-s", "__write_access_probe__"])
+            .args([
+                "issue",
+                "create",
+                "-p",
+                GITHUB_PROJECT,
+                "-s",
+                "__write_access_probe__",
+            ])
             .assert()
             .get_output()
             .clone();
@@ -289,9 +296,7 @@ fn test_github_issue_search_pagination() {
 
     // Test pagination with skip
     track_github_json()
-        .args([
-            "issue", "search", "is:open", "--limit", "2", "--skip", "0",
-        ])
+        .args(["issue", "search", "is:open", "--limit", "2", "--skip", "0"])
         .assert()
         .success();
 }
@@ -362,9 +367,7 @@ fn test_github_issue_create_get_and_close() {
 
     // Close the issue (GitHub doesn't support delete)
     track_github()
-        .args([
-            "issue", "update", issue_number, "--state", "closed",
-        ])
+        .args(["issue", "update", issue_number, "--state", "closed"])
         .assert()
         .success();
 
@@ -517,7 +520,14 @@ fn test_github_issue_get_shortcut() {
 
     // Create an issue to have something to get
     let create_output = track_github_json()
-        .args(["issue", "create", "-p", GITHUB_PROJECT, "-s", "Test Shortcut Access"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Test Shortcut Access",
+        ])
         .assert()
         .success()
         .get_output()
@@ -576,7 +586,14 @@ fn test_github_issue_get_with_full_flag() {
 
     // Create an issue
     let create_output = track_github_json()
-        .args(["issue", "create", "-p", GITHUB_PROJECT, "-s", "Test Full Flag"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Test Full Flag",
+        ])
         .assert()
         .success()
         .get_output()
@@ -747,8 +764,7 @@ fn test_github_tags_create_and_delete() {
         .stdout
         .clone();
 
-    let tags: Vec<Value> =
-        serde_json::from_str(&String::from_utf8(list_output).unwrap()).unwrap();
+    let tags: Vec<Value> = serde_json::from_str(&String::from_utf8(list_output).unwrap()).unwrap();
     assert!(
         tags.iter().any(|t| t["name"].as_str() == Some(&tag_name)),
         "Created tag should appear in list"
@@ -861,10 +877,7 @@ fn test_github_tags_list_text_output() {
         return;
     }
 
-    track_github()
-        .args(["tags", "list"])
-        .assert()
-        .success();
+    track_github().args(["tags", "list"]).assert().success();
 }
 
 // ============================================================================
@@ -880,7 +893,14 @@ fn test_github_issue_links_returns_empty() {
 
     // Create an issue
     let create_output = track_github_json()
-        .args(["issue", "create", "-p", GITHUB_PROJECT, "-s", "Test Links Empty"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Test Links Empty",
+        ])
         .assert()
         .success()
         .get_output()
@@ -929,8 +949,7 @@ fn test_github_link_issues_not_supported() {
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("not support")
-                .or(predicate::str::contains("not supported")),
+            predicate::str::contains("not support").or(predicate::str::contains("not supported")),
         );
 }
 
@@ -950,10 +969,7 @@ fn test_github_delete_issue_not_supported() {
         .args(["issue", "delete", "999999"])
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("not support")
-                .or(predicate::str::contains("close")),
-        );
+        .stderr(predicate::str::contains("not support").or(predicate::str::contains("close")));
 }
 
 // ============================================================================
@@ -975,12 +991,18 @@ fn test_github_article_commands_not_supported() {
 
     // article create should fail since GitHub has no knowledge base
     track_github()
-        .args(["article", "create", "-p", GITHUB_PROJECT, "-s", "Test Article"])
+        .args([
+            "article",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Test Article",
+        ])
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("not support")
-                .or(predicate::str::contains("knowledge base")),
+            predicate::str::contains("not support").or(predicate::str::contains("knowledge base")),
         );
 }
 

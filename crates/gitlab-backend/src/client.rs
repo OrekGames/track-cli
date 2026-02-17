@@ -35,7 +35,9 @@ impl GitLabClient {
     /// Get the project ID string (or "unknown" if not configured).
     /// Used by trait_impl for building core models.
     pub(crate) fn project_id_str(&self) -> String {
-        self.project_id.clone().unwrap_or_else(|| "unknown".to_string())
+        self.project_id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string())
     }
 
     /// Build a project-scoped URL. Returns an error if project_id is not configured.
@@ -131,10 +133,7 @@ impl GitLabClient {
         per_page: usize,
         page: usize,
     ) -> Result<Vec<GitLabIssue>> {
-        let mut url = self.project_url(&format!(
-            "/issues?per_page={}&page={}",
-            per_page, page
-        ))?;
+        let mut url = self.project_url(&format!("/issues?per_page={}&page={}", per_page, page))?;
         if let Some(s) = state {
             url.push_str(&format!("&state={}", urlencoding::encode(s)));
         }
@@ -262,11 +261,7 @@ impl GitLabClient {
 
     /// Get a project by ID or URL-encoded path
     pub fn get_project(&self, id: &str) -> Result<GitLabProject> {
-        let url = format!(
-            "{}/projects/{}",
-            self.base_url,
-            urlencoding::encode(id)
-        );
+        let url = format!("{}/projects/{}", self.base_url, urlencoding::encode(id));
 
         let response = self
             .agent

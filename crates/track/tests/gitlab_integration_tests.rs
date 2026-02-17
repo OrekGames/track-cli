@@ -215,9 +215,7 @@ fn test_gitlab_issue_search_pagination() {
     }
 
     track_gitlab_json()
-        .args([
-            "issue", "search", "test", "--limit", "2", "--skip", "0",
-        ])
+        .args(["issue", "search", "test", "--limit", "2", "--skip", "0"])
         .assert()
         .success();
 }
@@ -435,9 +433,7 @@ fn test_gitlab_issue_close_and_reopen() {
 
     // Close the issue via state update
     track_gitlab()
-        .args([
-            "issue", "update", &issue_iid, "--state", "closed",
-        ])
+        .args(["issue", "update", &issue_iid, "--state", "closed"])
         .assert()
         .success();
 
@@ -465,9 +461,7 @@ fn test_gitlab_issue_close_and_reopen() {
 
     // Reopen the issue
     track_gitlab()
-        .args([
-            "issue", "update", &issue_iid, "--state", "reopened",
-        ])
+        .args(["issue", "update", &issue_iid, "--state", "reopened"])
         .assert()
         .success();
 
@@ -513,7 +507,14 @@ fn test_gitlab_issue_get_shortcut() {
 
     // Create an issue
     let create_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Test Shortcut Access"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Test Shortcut Access",
+        ])
         .assert()
         .success()
         .get_output()
@@ -551,7 +552,14 @@ fn test_gitlab_issue_get_with_hash_prefix() {
 
     // Create an issue
     let create_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Test Hash Prefix"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Test Hash Prefix",
+        ])
         .assert()
         .success()
         .get_output()
@@ -604,7 +612,14 @@ fn test_gitlab_issue_get_with_full_flag() {
 
     // Create an issue
     let create_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Test Full Flag"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Test Full Flag",
+        ])
         .assert()
         .success()
         .get_output()
@@ -771,8 +786,7 @@ fn test_gitlab_tags_create_and_delete() {
         .stdout
         .clone();
 
-    let tags: Vec<Value> =
-        serde_json::from_str(&String::from_utf8(list_output).unwrap()).unwrap();
+    let tags: Vec<Value> = serde_json::from_str(&String::from_utf8(list_output).unwrap()).unwrap();
     assert!(
         tags.iter().any(|t| t["name"].as_str() == Some(&tag_name)),
         "Created tag should appear in list"
@@ -885,10 +899,7 @@ fn test_gitlab_tags_list_text_output() {
         return;
     }
 
-    track_gitlab()
-        .args(["tags", "list"])
-        .assert()
-        .success();
+    track_gitlab().args(["tags", "list"]).assert().success();
 }
 
 // ============================================================================
@@ -904,7 +915,14 @@ fn test_gitlab_issue_link() {
 
     // Create two issues
     let create1_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Link Test Issue 1"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Link Test Issue 1",
+        ])
         .assert()
         .success()
         .get_output()
@@ -912,17 +930,22 @@ fn test_gitlab_issue_link() {
         .clone();
 
     let create2_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Link Test Issue 2"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Link Test Issue 2",
+        ])
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
 
-    let issue1: Value =
-        serde_json::from_str(&String::from_utf8(create1_output).unwrap()).unwrap();
-    let issue2: Value =
-        serde_json::from_str(&String::from_utf8(create2_output).unwrap()).unwrap();
+    let issue1: Value = serde_json::from_str(&String::from_utf8(create1_output).unwrap()).unwrap();
+    let issue2: Value = serde_json::from_str(&String::from_utf8(create2_output).unwrap()).unwrap();
     let iid1 = issue1["id_readable"]
         .as_str()
         .unwrap()
@@ -969,7 +992,14 @@ fn test_gitlab_issue_link_depends() {
 
     // Create two issues
     let create1_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Depends Issue 1"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Depends Issue 1",
+        ])
         .assert()
         .success()
         .get_output()
@@ -977,17 +1007,22 @@ fn test_gitlab_issue_link_depends() {
         .clone();
 
     let create2_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Depends Issue 2"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Depends Issue 2",
+        ])
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
 
-    let issue1: Value =
-        serde_json::from_str(&String::from_utf8(create1_output).unwrap()).unwrap();
-    let issue2: Value =
-        serde_json::from_str(&String::from_utf8(create2_output).unwrap()).unwrap();
+    let issue1: Value = serde_json::from_str(&String::from_utf8(create1_output).unwrap()).unwrap();
+    let issue2: Value = serde_json::from_str(&String::from_utf8(create2_output).unwrap()).unwrap();
     let iid1 = issue1["id_readable"]
         .as_str()
         .unwrap()
@@ -1044,12 +1079,18 @@ fn test_gitlab_article_commands_not_supported() {
 
     // article create should fail since GitLab has no knowledge base
     track_gitlab()
-        .args(["article", "create", "-p", GITLAB_PROJECT, "-s", "Test Article"])
+        .args([
+            "article",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Test Article",
+        ])
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("not support")
-                .or(predicate::str::contains("knowledge base")),
+            predicate::str::contains("not support").or(predicate::str::contains("knowledge base")),
         );
 }
 
@@ -1077,7 +1118,14 @@ fn test_gitlab_subtask_link_falls_back_to_relates() {
 
     // Create two issues for the link attempt
     let create1_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Subtask Test Parent"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Subtask Test Parent",
+        ])
         .assert()
         .success()
         .get_output()
@@ -1085,17 +1133,22 @@ fn test_gitlab_subtask_link_falls_back_to_relates() {
         .clone();
 
     let create2_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Subtask Test Child"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Subtask Test Child",
+        ])
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
 
-    let issue1: Value =
-        serde_json::from_str(&String::from_utf8(create1_output).unwrap()).unwrap();
-    let issue2: Value =
-        serde_json::from_str(&String::from_utf8(create2_output).unwrap()).unwrap();
+    let issue1: Value = serde_json::from_str(&String::from_utf8(create1_output).unwrap()).unwrap();
+    let issue2: Value = serde_json::from_str(&String::from_utf8(create2_output).unwrap()).unwrap();
     let iid1 = issue1["id_readable"]
         .as_str()
         .unwrap()
@@ -1198,7 +1251,14 @@ fn test_gitlab_comment_structure() {
 
     // Create an issue and add a comment
     let create_output = track_gitlab_json()
-        .args(["issue", "create", "-p", GITLAB_PROJECT, "-s", "Comment Parity Test"])
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Comment Parity Test",
+        ])
         .assert()
         .success()
         .get_output()

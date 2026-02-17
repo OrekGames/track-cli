@@ -75,12 +75,10 @@ impl IssueTracker for GitHubClient {
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
         let github_issue = create_issue_from_core(issue);
-        let created = self.create_issue(&github_issue).map_err(TrackerError::from)?;
-        Ok(github_issue_to_core(
-            created,
-            self.owner(),
-            self.repo(),
-        ))
+        let created = self
+            .create_issue(&github_issue)
+            .map_err(TrackerError::from)?;
+        Ok(github_issue_to_core(created, self.owner(), self.repo()))
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
@@ -89,11 +87,7 @@ impl IssueTracker for GitHubClient {
         let updated = self
             .update_issue(number, &github_update)
             .map_err(TrackerError::from)?;
-        Ok(github_issue_to_core(
-            updated,
-            self.owner(),
-            self.repo(),
-        ))
+        Ok(github_issue_to_core(updated, self.owner(), self.repo()))
     }
 
     fn delete_issue(&self, _id: &str) -> Result<()> {

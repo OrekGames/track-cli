@@ -64,8 +64,7 @@ mod tests {
             .and(path("/projects/123/issues/42"))
             .and(header("PRIVATE-TOKEN", "test-token"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(mock_gitlab_issue(42, "Found a bug")),
+                ResponseTemplate::new(200).set_body_json(mock_gitlab_issue(42, "Found a bug")),
             )
             .mount(&mock_server)
             .await;
@@ -114,9 +113,7 @@ mod tests {
             .and(header("PRIVATE-TOKEN", "test-token"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!([
-                        mock_gitlab_issue(5, "Bug in login")
-                    ])),
+                    .set_body_json(serde_json::json!([mock_gitlab_issue(5, "Bug in login")])),
             )
             .mount(&mock_server)
             .await;
@@ -138,8 +135,7 @@ mod tests {
             .and(path("/projects/123/issues"))
             .and(header("PRIVATE-TOKEN", "test-token"))
             .respond_with(
-                ResponseTemplate::new(201)
-                    .set_body_json(mock_gitlab_issue(99, "New issue")),
+                ResponseTemplate::new(201).set_body_json(mock_gitlab_issue(99, "New issue")),
             )
             .mount(&mock_server)
             .await;
@@ -167,8 +163,7 @@ mod tests {
             .and(path("/projects/123/issues/42"))
             .and(header("PRIVATE-TOKEN", "test-token"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(mock_gitlab_issue(42, "Updated title")),
+                ResponseTemplate::new(200).set_body_json(mock_gitlab_issue(42, "Updated title")),
             )
             .mount(&mock_server)
             .await;

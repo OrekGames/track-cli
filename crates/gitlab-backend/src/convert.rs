@@ -11,10 +11,7 @@ use crate::models::*;
 /// Convert a GitLab issue to a tracker-core Issue.
 ///
 /// `project_id` is the configured project ID string for the ProjectRef.
-pub fn gitlab_issue_to_core(
-    issue: GitLabIssue,
-    project_id: &str,
-) -> tracker_core::Issue {
+pub fn gitlab_issue_to_core(issue: GitLabIssue, project_id: &str) -> tracker_core::Issue {
     let mut custom_fields = Vec::new();
 
     // Map state as a State custom field

@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use tracker_core::{
-    Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueTag,
-    Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag, TagColor, UpdateIssue,
+    Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueTag, Project,
+    ProjectCustomField, ProjectRef, StateValueInfo, Tag, TagColor, UpdateIssue,
 };
 
 use crate::models::*;

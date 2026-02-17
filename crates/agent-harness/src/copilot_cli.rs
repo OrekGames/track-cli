@@ -23,9 +23,7 @@ pub struct CopilotCliResult {
 
 /// Run Copilot CLI against a scenario
 pub fn run_copilot_cli(_config: &CopilotCliConfig) -> Result<CopilotCliResult> {
-    Err(anyhow::anyhow!(
-        "Copilot CLI runner is not yet implemented"
-    ))
+    Err(anyhow::anyhow!("Copilot CLI runner is not yet implemented"))
 }
 
 impl From<CopilotCliResult> for SessionResult {
