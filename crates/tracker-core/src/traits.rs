@@ -110,6 +110,30 @@ pub trait IssueTracker: Send + Sync {
     /// List all available tags
     fn list_tags(&self) -> Result<Vec<IssueTag>>;
 
+    /// Create a new tag/label
+    fn create_tag(&self, tag: &CreateTag) -> Result<IssueTag> {
+        let _ = tag;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Tag creation not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Delete a tag/label by name
+    fn delete_tag(&self, name: &str) -> Result<()> {
+        let _ = name;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Tag deletion not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Update a tag/label (name, color, description)
+    fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
+        let _ = (current_name, tag);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Tag update not supported by this backend".to_string(),
+        ))
+    }
+
     // ========== Link Operations ==========
 
     /// List all available issue link types

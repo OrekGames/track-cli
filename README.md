@@ -1,15 +1,17 @@
 # Track CLI
 
-A command-line interface for issue tracking systems, built with Rust. Supports **YouTrack**, **Jira**, **GitHub**, and **GitLab** with a unified command interface.
+A command-line interface for issue tracking systems, built with Rust. Currently supports **YouTrack** and **Jira** with a unified command interface.
+
+> **Note**: GitHub and GitLab backend support is planned but not yet implemented.
 
 ## Features
 
-- **Multi-Backend**: YouTrack, Jira, GitHub, and GitLab with the same commands
+- **Multi-Backend**: YouTrack and Jira with the same commands (GitHub and GitLab planned)
 - **Issue Management**: Get, create, update, delete, search issues
 - **Batch Operations**: Update, delete, or complete multiple issues at once
 - **Custom Fields**: Set priority, state, assignee, and any field with validation
 - **Field Admin**: Create custom fields and bundles, attach to projects (YouTrack)
-- **Comments & Links**: Add comments and link issues together (YouTrack/Jira)
+- **Comments & Links**: Add comments and link issues together
 - **Knowledge Base**: Manage articles (YouTrack and Jira/Confluence)
 - **AI-Optimized**: Context aggregation, query templates, workflow hints
 - **Output Formats**: Text (human-readable) and JSON (machine-readable)
@@ -42,12 +44,6 @@ track init --url https://youtrack.example.com --token YOUR_TOKEN
 
 # Or initialize with Jira
 track init --url https://your-domain.atlassian.net --token YOUR_TOKEN --backend jira --email you@example.com
-
-# Or initialize with GitHub
-track init --backend github --token YOUR_TOKEN --owner USERNAME --repo REPONAME
-
-# Or initialize with GitLab
-track init --url https://gitlab.com --token YOUR_TOKEN --backend gitlab --project-id PROJECT_ID
 ```
 
 ### 2. Set Default Project (Optional)
@@ -110,35 +106,9 @@ email = "you@example.com"
 token = "your-api-token"
 ```
 
-#### GitHub Configuration
-
-```toml
-# .track.toml
-backend = "github"
-
-[github]
-token = "ghp_your_token"
-owner = "username"
-repo = "repository"
-api_url = "https://api.github.com"  # Optional, defaults to public GitHub
-```
-
-#### GitLab Configuration
-
-```toml
-# .track.toml
-backend = "gitlab"
-
-[gitlab]
-token = "glpat-your-token"
-url = "https://gitlab.com/api/v4"  # Or self-hosted GitLab
-project_id = "12345"  # Or "group%2Fproject"
-namespace = "group"   # Optional
-```
-
 #### Multi-Backend Configuration
 
-You can configure multiple backends in a single config file and switch between them:
+You can configure both backends in a single config file and switch between them:
 
 ```toml
 # .track.toml
@@ -155,31 +125,17 @@ default_project = "PROJ"
 url = "https://your-domain.atlassian.net"
 email = "you@example.com"
 token = "your-api-token"
-
-# GitHub configuration
-[github]
-token = "ghp_your_token"
-owner = "username"
-repo = "repository"
-
-# GitLab configuration
-[gitlab]
-token = "glpat-your-token"
-url = "https://gitlab.com/api/v4"
-project_id = "12345"
 ```
 
-With this setup, you can use the default backend (YouTrack) or switch to others:
+With this setup, you can use the default backend (YouTrack) or switch to Jira:
 
 ```bash
 track PROJ-123                  # Uses YouTrack (default)
 track -b jira PROJ-123          # Uses Jira
-track -b github 42              # Uses GitHub issue #42
-track -b gitlab 15              # Uses GitLab issue #15
 
 # Or switch the default backend
-track config backend github     # Set GitHub as default
-track 42                        # Now uses GitHub by default
+track config backend jira       # Set Jira as default
+track PROJ-123                  # Now uses Jira by default
 ```
 
 ### Environment Variables
@@ -200,18 +156,6 @@ export YOUTRACK_TOKEN=YOUR_TOKEN
 export JIRA_URL=https://your-domain.atlassian.net
 export JIRA_EMAIL=you@example.com
 export JIRA_TOKEN=your-api-token
-
-# GitHub-specific
-export GITHUB_TOKEN=ghp_your_token
-export GITHUB_OWNER=username
-export GITHUB_REPO=repository
-export GITHUB_API_URL=https://api.github.com  # Optional
-
-# GitLab-specific
-export GITLAB_TOKEN=glpat-your-token
-export GITLAB_URL=https://gitlab.com/api/v4
-export GITLAB_PROJECT_ID=12345
-export GITLAB_NAMESPACE=group  # Optional
 ```
 
 ## Backend Selection
@@ -222,7 +166,7 @@ Default backend is YouTrack. You can specify which backend to use in three ways:
 
 ```toml
 # .track.toml
-backend = "youtrack"  # or "jira", "github", "gitlab"
+backend = "youtrack"  # or "jira"
 ```
 
 Or use the CLI to set it:
@@ -230,8 +174,6 @@ Or use the CLI to set it:
 ```bash
 track config backend youtrack
 track config backend jira
-track config backend github
-track config backend gitlab
 ```
 
 ### 2. Environment Variable
@@ -245,14 +187,10 @@ track PROJ-123              # Uses Jira
 
 ```bash
 track -b jira PROJ-123      # Use Jira for this command
-track -b github PROJ-123    # Use GitHub
-track -b gitlab PROJ-123    # Use GitLab
 track -b youtrack PROJ-123  # Use YouTrack
 
 # Short aliases
 track -b j PROJ-123         # Jira
-track -b gh PROJ-123        # GitHub
-track -b gl PROJ-123        # GitLab
 track -b yt PROJ-123        # YouTrack
 ```
 
@@ -308,7 +246,6 @@ track issue comment PROJ-123 -m "Comment text"
 track issue comments PROJ-123 --limit 10
 ```
 
-**Note**: Comments are supported on YouTrack, Jira, and GitLab. GitHub does not have a separate comment API (use GitHub web interface).
 
 ### Links
 
@@ -318,21 +255,15 @@ track issue link PROJ-1 PROJ-2 -t depends   # Depends on
 track issue link PROJ-1 PROJ-2 -t subtask   # Subtask
 ```
 
-**Note**: Issue linking is supported on YouTrack, Jira, and GitLab. GitHub does not have formal issue links (reference issues via `#number` in issue descriptions/comments).
 
 ### Projects
 
 ```bash
 track project list
 track project get PROJ
-track project fields PROJ       # Custom fields (YouTrack/Jira)
+track project fields PROJ       # Custom fields
 track project create -n "Name" -s "KEY"  # YouTrack only
 ```
-
-**Note**:
-- For GitHub, use `owner/repo` format (e.g., `track project get username/repo`)
-- For GitLab, use project ID or URL-encoded path (e.g., `track project get 12345` or `group%2Fproject`)
-- Project creation is only supported on YouTrack
 
 ### Tags
 

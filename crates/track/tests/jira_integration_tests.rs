@@ -5,7 +5,7 @@
 //!   cargo test --package track --test jira_integration_tests -- --ignored
 //!
 //! Prerequisites:
-//!   - Create a jira-config.toml in the project root with:
+//!   - Ensure .track.toml in the project root contains a [jira] section with:
 //!     [jira]
 //!     url = "https://your-domain.atlassian.net"
 //!     email = "your-email@example.com"
@@ -19,14 +19,14 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Get the path to the jira-config.toml file
+/// Get the path to the .track.toml config file at project root
 fn jira_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("jira-config.toml")
+        .join(".track.toml")
 }
 
 /// Check if the config file exists (skip tests if not)
@@ -42,7 +42,7 @@ fn config_exists() -> bool {
 #[ignore]
 fn test_jira_config_test_command() {
     if !config_exists() {
-        eprintln!("Skipping: jira-config.toml not found");
+        eprintln!("Skipping: .track.toml not found");
         return;
     }
 
