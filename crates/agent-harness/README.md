@@ -20,6 +20,36 @@ cargo build --release --package agent-harness
 # Binary is at ./target/release/track-agent
 ```
 
+## Quick Start with Convenience Script
+
+A wrapper script is provided for easier usage:
+
+```bash
+# List available scenarios
+./scripts/run-agent-eval.sh list
+
+# Run a scenario with default provider (Anthropic)
+./scripts/run-agent-eval.sh basic-workflow
+
+# Run with Claude Code
+./scripts/run-agent-eval.sh --provider claude-code basic-workflow
+
+# Run with GitHub Copilot CLI
+./scripts/run-agent-eval.sh --provider copilot-cli basic-workflow
+
+# Run all scenarios
+./scripts/run-agent-eval.sh --all
+
+# Show help
+./scripts/run-agent-eval.sh --help
+```
+
+The script automatically:
+- Builds the binary if needed
+- Validates provider requirements (API keys, CLI tools)
+- Provides helpful error messages
+- Simplifies common workflows
+
 ## Providers
 
 The harness supports three providers for running agents:
@@ -50,18 +80,19 @@ Key differences:
 
 ### GitHub Copilot CLI
 
-Uses the GitHub Copilot CLI (`gh copilot`) as a subprocess. This evaluates how GitHub Copilot CLI performs on scenarios using its bash tool integration.
+Uses the GitHub Copilot CLI (`gh copilot suggest`) as a subprocess. This evaluates how GitHub Copilot CLI performs on scenarios using its interactive command suggestion mode.
 
 ```bash
 # Requires GitHub CLI (gh) and Copilot CLI extension to be installed
-# gh extension install github/gh-copilot
+# Install with: gh extension install github/gh-copilot
 track-agent run ./fixtures/scenarios/basic-workflow --provider copilot-cli -v
 ```
 
 Key differences:
 - No API key needed (GitHub CLI handles authentication via `gh auth login`)
-- Uses GitHub Copilot's system prompt and behaviors
-- Tool restrictions via `--available-tools` flag
+- Uses interactive Q&A mode with automated responses
+- Commands detected via text parsing of suggestions
+- Only track CLI commands are auto-confirmed
 - Token counts not available (only turn counts)
 - Commands tracked via mock backend's call log
 
@@ -171,21 +202,21 @@ claude -p \
 
 ### GitHub Copilot CLI Provider
 
-1. **System Prompt**: Written to `AGENTS.md` in temp directory, automatically loaded by Copilot CLI
-2. **Task Prompt**: Passed via `-p` flag in non-interactive mode
-3. **Tool Restriction**: Copilot CLI limited to `bash` tool only via `--available-tools`
-4. **Mock Mode**: `TRACK_MOCK_DIR` environment variable routes all track commands through the mock system
-5. **Output Parsing**: Stdout and stderr captured for analysis
-6. **Command Tracking**: Commands extracted from mock backend's call log
-7. **Completion**: Copilot CLI finishes naturally (no explicit max turns control)
+1. **System Prompt**: Includes evaluation guidelines and agent guide
+2. **Task Prompt**: Written to stdin and piped to `gh copilot suggest`
+3. **Interactive Mode**: Uses automated responses to handle Q&A prompts
+4. **Command Detection**: Parses command suggestions from text output
+5. **Auto-Confirmation**: Only confirms track CLI commands; rejects others
+6. **Mock Mode**: `TRACK_MOCK_DIR` environment variable routes all track commands through the mock system
+7. **Output Parsing**: Text-based output parsed for commands and responses
+8. **Completion**: Hits max turns limit or receives no more prompts
 
 Copilot CLI invocation:
 ```bash
-gh copilot -- -p "task prompt" \
-  --allow-all-tools \
-  --allow-all-paths \
-  --silent \
-  --available-tools bash
+gh copilot suggest
+# System prompt sent to stdin
+# Interactive Q&A with automated responses
+# Commands auto-confirmed based on parsing
 ```
 
 ### Evaluation Metrics

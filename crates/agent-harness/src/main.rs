@@ -221,6 +221,7 @@ fn run_scenario(
                 scenario: scenario.clone(),
                 max_turns,
                 verbose,
+                copilot_mode: copilot_cli::CopilotMode::Suggest,
             };
 
             let result = copilot_cli::run_copilot_cli(&config)?;
@@ -446,6 +447,7 @@ fn run_all_scenarios(
                     scenario: scenario.clone(),
                     max_turns,
                     verbose: false, // not verbose in batch mode
+                    copilot_mode: copilot_cli::CopilotMode::Suggest,
                 };
 
                 match copilot_cli::run_copilot_cli(&config) {
