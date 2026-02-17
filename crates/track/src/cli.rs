@@ -617,6 +617,39 @@ pub enum TagCommands {
     /// List all available tags
     #[command(visible_alias = "ls")]
     List,
+    /// Create a new tag/label
+    #[command(visible_alias = "c")]
+    Create {
+        /// Tag name
+        name: String,
+        /// Color hex string (e.g., "#d73a4a" or "d73a4a")
+        #[arg(long = "tag-color")]
+        tag_color: Option<String>,
+        /// Description
+        #[arg(long, short = 'd')]
+        description: Option<String>,
+    },
+    /// Delete a tag/label
+    #[command(visible_alias = "rm")]
+    Delete {
+        /// Tag name to delete
+        name: String,
+    },
+    /// Update a tag/label
+    #[command(visible_alias = "u")]
+    Update {
+        /// Current tag name
+        name: String,
+        /// New name (rename)
+        #[arg(long)]
+        new_name: Option<String>,
+        /// New color hex string
+        #[arg(long = "tag-color")]
+        tag_color: Option<String>,
+        /// New description
+        #[arg(long, short = 'd')]
+        description: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

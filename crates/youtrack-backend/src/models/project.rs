@@ -65,6 +65,25 @@ pub struct TagColor {
     pub foreground: Option<String>,
 }
 
+/// Request body for creating or updating a tag
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateIssueTagRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<TagColorRequest>,
+}
+
+/// Color for tag create/update requests
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagColorRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<String>,
+}
+
 /// Data for creating a new project via YouTrack API
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

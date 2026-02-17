@@ -336,6 +336,63 @@ impl YouTrackClient {
         Ok(tags)
     }
 
+    /// Create a new issue tag
+    pub fn create_tag(&self, tag: &CreateIssueTagRequest) -> Result<IssueTag> {
+        let url = format!(
+            "{}/api/issueTags?fields=id,name,color(id,background,foreground)",
+            self.base_url
+        );
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(tag)
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let created_tag: IssueTag = response.body_mut().read_json()?;
+        Ok(created_tag)
+    }
+
+    /// Delete an issue tag by ID
+    pub fn delete_tag(&self, tag_id: &str) -> Result<()> {
+        let url = format!("{}/api/issueTags/{}", self.base_url, tag_id);
+
+        let response = self
+            .agent
+            .delete(&url)
+            .header("Authorization", &self.auth_header())
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        self.check_response(response)?;
+        Ok(())
+    }
+
+    /// Update an existing issue tag by ID
+    pub fn update_tag(&self, tag_id: &str, tag: &CreateIssueTagRequest) -> Result<IssueTag> {
+        let url = format!(
+            "{}/api/issueTags/{}?fields=id,name,color(id,background,foreground)",
+            self.base_url, tag_id
+        );
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(tag)
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let updated_tag: IssueTag = response.body_mut().read_json()?;
+        Ok(updated_tag)
+    }
+
     /// List all available issue link types
     pub fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
         let url = format!(

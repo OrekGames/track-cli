@@ -1,8 +1,8 @@
 //! Implementation of tracker-core traits for JiraClient
 
 use tracker_core::{
-    Comment, CreateIssue, CreateProject, Issue, IssueLink, IssueLinkType, IssueTag, IssueTracker,
-    Project, ProjectCustomField, Result, TrackerError, UpdateIssue, User,
+    Comment, CreateIssue, CreateProject, CreateTag, Issue, IssueLink, IssueLinkType, IssueTag,
+    IssueTracker, Project, ProjectCustomField, Result, TrackerError, UpdateIssue, User,
 };
 
 use crate::client::JiraClient;
@@ -85,10 +85,37 @@ impl IssueTracker for JiraClient {
     }
 
     fn list_tags(&self) -> Result<Vec<IssueTag>> {
-        // Jira uses labels, not a separate tag system
-        // We'd need to search across issues to find all used labels
-        // For now, return empty list
-        Ok(Vec::new())
+        self.list_labels()
+            .map(|labels| {
+                labels
+                    .into_iter()
+                    .map(|name| IssueTag {
+                        id: name.clone(),
+                        name,
+                        color: None,
+                        issues_count: None,
+                    })
+                    .collect()
+            })
+            .map_err(TrackerError::from)
+    }
+
+    fn create_tag(&self, _tag: &CreateTag) -> Result<IssueTag> {
+        Err(TrackerError::InvalidInput(
+            "Jira labels cannot be created directly. They are created automatically when assigned to an issue. Use 'track issue update <ID> -t <label>' to create a label by assigning it.".to_string(),
+        ))
+    }
+
+    fn delete_tag(&self, _name: &str) -> Result<()> {
+        Err(TrackerError::InvalidInput(
+            "Jira labels cannot be deleted via the REST API. Remove the label from all issues to effectively delete it, or use the Jira web interface.".to_string(),
+        ))
+    }
+
+    fn update_tag(&self, _current_name: &str, _tag: &CreateTag) -> Result<IssueTag> {
+        Err(TrackerError::InvalidInput(
+            "Jira labels cannot be renamed via the REST API. Create a new label by assigning it to issues, then remove the old one.".to_string(),
+        ))
     }
 
     fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {

@@ -4,14 +4,14 @@ use crate::client::YouTrackClient;
 use crate::convert;
 use crate::models::{
     AttachFieldRequest, BundleRef, CreateBundleRequest, CreateBundleValueRequest,
-    CreateCustomFieldRequest, CustomFieldRef, FieldTypeRef,
+    CreateCustomFieldRequest, CreateIssueTagRequest, CustomFieldRef, FieldTypeRef, TagColorRequest,
 };
 use tracker_core::{
     Article, ArticleAttachment, AttachFieldToProject, BundleDefinition, BundleType,
     BundleValueDefinition, Comment, CreateArticle, CreateBundle, CreateBundleValue,
-    CreateCustomField, CreateIssue, CreateProject, CustomFieldDefinition, Issue, IssueLink,
-    IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result,
-    TrackerError, UpdateArticle, UpdateIssue, User,
+    CreateCustomField, CreateIssue, CreateProject, CreateTag, CustomFieldDefinition, Issue,
+    IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
+    Result, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 impl IssueTracker for YouTrackClient {
@@ -84,6 +84,46 @@ impl IssueTracker for YouTrackClient {
     fn list_tags(&self) -> Result<Vec<IssueTag>> {
         self.list_tags()
             .map(|tags| tags.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn create_tag(&self, tag: &CreateTag) -> Result<IssueTag> {
+        let request = CreateIssueTagRequest {
+            name: tag.name.clone(),
+            color: tag.color.as_ref().map(|hex| TagColorRequest {
+                background: Some(hex.clone()),
+                foreground: None,
+            }),
+        };
+        self.create_tag(&request)
+            .map(Into::into)
+            .map_err(TrackerError::from)
+    }
+
+    fn delete_tag(&self, name: &str) -> Result<()> {
+        let tags = self.list_tags().map_err(TrackerError::from)?;
+        let tag = tags
+            .into_iter()
+            .find(|t| t.name == name)
+            .ok_or_else(|| TrackerError::NotFound(format!("Tag '{}' not found", name)))?;
+        self.delete_tag(&tag.id).map_err(TrackerError::from)
+    }
+
+    fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
+        let tags = self.list_tags().map_err(TrackerError::from)?;
+        let existing = tags
+            .into_iter()
+            .find(|t| t.name == current_name)
+            .ok_or_else(|| TrackerError::NotFound(format!("Tag '{}' not found", current_name)))?;
+        let request = CreateIssueTagRequest {
+            name: tag.name.clone(),
+            color: tag.color.as_ref().map(|hex| TagColorRequest {
+                background: Some(hex.clone()),
+                foreground: None,
+            }),
+        };
+        self.update_tag(&existing.id, &request)
+            .map(Into::into)
             .map_err(TrackerError::from)
     }
 

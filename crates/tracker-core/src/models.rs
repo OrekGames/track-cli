@@ -138,6 +138,17 @@ pub struct TagColor {
     pub foreground: Option<String>,
 }
 
+/// Data for creating a new tag/label
+#[derive(Debug, Clone)]
+pub struct CreateTag {
+    /// Tag name
+    pub name: String,
+    /// Color hex string (e.g., "#d73a4a")
+    pub color: Option<String>,
+    /// Optional description
+    pub description: Option<String>,
+}
+
 /// Issue link type definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueLinkType {
