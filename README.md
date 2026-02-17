@@ -1,15 +1,15 @@
 # Track CLI
 
-A command-line interface for issue tracking systems, built with Rust. Supports **YouTrack** and **Jira** with a unified command interface.
+A command-line interface for issue tracking systems, built with Rust. Supports **YouTrack**, **Jira**, **GitHub**, and **GitLab** with a unified command interface.
 
 ## Features
 
-- **Multi-Backend**: YouTrack and Jira with the same commands
+- **Multi-Backend**: YouTrack, Jira, GitHub, and GitLab with the same commands
 - **Issue Management**: Get, create, update, delete, search issues
 - **Batch Operations**: Update, delete, or complete multiple issues at once
 - **Custom Fields**: Set priority, state, assignee, and any field with validation
 - **Field Admin**: Create custom fields and bundles, attach to projects (YouTrack)
-- **Comments & Links**: Add comments and link issues together
+- **Comments & Links**: Add comments and link issues together (YouTrack/Jira)
 - **Knowledge Base**: Manage articles (YouTrack and Jira/Confluence)
 - **AI-Optimized**: Context aggregation, query templates, workflow hints
 - **Output Formats**: Text (human-readable) and JSON (machine-readable)
@@ -30,65 +30,165 @@ cargo build --release
 # Binary: target/release/track
 ```
 
-### Homebrew (macOS/Linux)
-
-```bash
-brew tap your-group/track https://gitlab.com/your-group/youtrack-cli.git
-brew install track
-```
-
 ## Quick Start
 
-### YouTrack
+### 1. Initialize Configuration
+
+Create a `.track.toml` file in your project directory or `~/.config/track/config.toml` for global configuration:
 
 ```bash
-# Initialize (creates .track.toml)
+# Initialize with YouTrack (default)
 track init --url https://youtrack.example.com --token YOUR_TOKEN
 
-# Set default project
+# Or initialize with Jira
+track init --url https://your-domain.atlassian.net --token YOUR_TOKEN --backend jira --email you@example.com
+
+# Or initialize with GitHub
+track init --backend github --token YOUR_TOKEN --owner USERNAME --repo REPONAME
+
+# Or initialize with GitLab
+track init --url https://gitlab.com --token YOUR_TOKEN --backend gitlab --project-id PROJECT_ID
+```
+
+### 2. Set Default Project (Optional)
+
+```bash
 track config project PROJ
+```
 
-# Test connection
+### 3. Test Connection
+
+```bash
 track config test
+```
 
+### 4. Basic Usage
+
+```bash
 # Get an issue
 track PROJ-123
 
 # Search issues
 track issue search "project: PROJ #Unresolved" --limit 10
+
+# Create an issue
+track issue create -p PROJ -s "Fix bug" -d "Description"
 ```
 
-### Jira
+## Configuration
 
-```bash
-# Configure via environment
-export JIRA_URL=https://your-domain.atlassian.net
-export JIRA_EMAIL=you@example.com
-export JIRA_TOKEN=your-api-token
+Configuration priority order (highest to lowest):
 
-# Or via config file (.track.toml)
+1. **CLI flags**: `--url`, `--token`, `--backend`, etc.
+2. **Environment variables**: Backend-specific (see below)
+3. **Project config**: `.track.toml` in current directory
+4. **Global config**: `~/.config/track/config.toml`
+
+### Config File Format
+
+Create `.track.toml` in your project directory or `~/.config/track/config.toml`:
+
+#### YouTrack Configuration
+
+```toml
+# .track.toml
+backend = "youtrack"
+url = "https://youtrack.example.com"
+token = "perm:base64user.base64name.token"
+default_project = "PROJ"
+```
+
+#### Jira Configuration
+
+```toml
+# .track.toml
+backend = "jira"
+
+[jira]
+url = "https://your-domain.atlassian.net"
+email = "you@example.com"
+token = "your-api-token"
+```
+
+#### GitHub Configuration
+
+```toml
+# .track.toml
+backend = "github"
+
+[github]
+token = "ghp_your_token"
+owner = "username"
+repo = "repository"
+api_url = "https://api.github.com"  # Optional, defaults to public GitHub
+```
+
+#### GitLab Configuration
+
+```toml
+# .track.toml
+backend = "gitlab"
+
+[gitlab]
+token = "glpat-your-token"
+url = "https://gitlab.com/api/v4"  # Or self-hosted GitLab
+project_id = "12345"  # Or "group%2Fproject"
+namespace = "group"   # Optional
+```
+
+#### Multi-Backend Configuration
+
+You can configure multiple backends in a single config file and switch between them:
+
+```toml
+# .track.toml
+# Set your default backend
+backend = "youtrack"
+
+# YouTrack configuration
+url = "https://youtrack.example.com"
+token = "perm:base64user.base64name.token"
+default_project = "PROJ"
+
+# Jira configuration
 [jira]
 url = "https://your-domain.atlassian.net"
 email = "you@example.com"
 token = "your-api-token"
 
-# Use with -b jira flag
-track -b jira PROJ-123
-track -b jira issue search "project = PROJ" --limit 10
+# GitHub configuration
+[github]
+token = "ghp_your_token"
+owner = "username"
+repo = "repository"
+
+# GitLab configuration
+[gitlab]
+token = "glpat-your-token"
+url = "https://gitlab.com/api/v4"
+project_id = "12345"
 ```
 
-## Configuration
+With this setup, you can use the default backend (YouTrack) or switch to others:
 
-Priority order (highest to lowest):
+```bash
+track PROJ-123                  # Uses YouTrack (default)
+track -b jira PROJ-123          # Uses Jira
+track -b github 42              # Uses GitHub issue #42
+track -b gitlab 15              # Uses GitLab issue #15
 
-1. **CLI flags**: `--url`, `--token`, `--backend`
-2. **Environment variables**: `TRACKER_URL`, `TRACKER_TOKEN` (or backend-specific)
-3. **Config file**: `.track.toml` in project dir, or `~/.config/track/config.toml`
+# Or switch the default backend
+track config backend github     # Set GitHub as default
+track 42                        # Now uses GitHub by default
+```
 
 ### Environment Variables
 
+Environment variables override config file settings:
+
 ```bash
 # Generic (any backend)
+export TRACKER_BACKEND=youtrack
 export TRACKER_URL=https://youtrack.example.com
 export TRACKER_TOKEN=YOUR_TOKEN
 
@@ -100,53 +200,60 @@ export YOUTRACK_TOKEN=YOUR_TOKEN
 export JIRA_URL=https://your-domain.atlassian.net
 export JIRA_EMAIL=you@example.com
 export JIRA_TOKEN=your-api-token
-```
 
-### Config File
+# GitHub-specific
+export GITHUB_TOKEN=ghp_your_token
+export GITHUB_OWNER=username
+export GITHUB_REPO=repository
+export GITHUB_API_URL=https://api.github.com  # Optional
 
-```toml
-# .track.toml
-
-# YouTrack (default)
-url = "https://youtrack.example.com"
-token = "perm:base64user.base64name.token"
-default_project = "PROJ"
-
-# Jira configuration
-[jira]
-url = "https://your-domain.atlassian.net"
-email = "you@example.com"
-token = "your-api-token"
+# GitLab-specific
+export GITLAB_TOKEN=glpat-your-token
+export GITLAB_URL=https://gitlab.com/api/v4
+export GITLAB_PROJECT_ID=12345
+export GITLAB_NAMESPACE=group  # Optional
 ```
 
 ## Backend Selection
 
-Default is YouTrack. You can set the backend in three ways:
+Default backend is YouTrack. You can specify which backend to use in three ways:
 
-### 1. Persistent Configuration (Recommended)
+### 1. Config File (Recommended)
 
-```bash
-# Set default backend in config
-track config backend jira     # Set to Jira
-track config backend youtrack # Set to YouTrack
-
-# Or during init
-track init --url https://example.atlassian.net --token XXX --backend jira --email you@example.com
+```toml
+# .track.toml
+backend = "youtrack"  # or "jira", "github", "gitlab"
 ```
 
-### 2. Per-Command Flag
+Or use the CLI to set it:
 
 ```bash
-track -b jira PROJ-123      # Use Jira for this command
-track -b j PROJ-123         # Jira (short alias)
-track -b yt PROJ-123        # YouTrack (explicit)
+track config backend youtrack
+track config backend jira
+track config backend github
+track config backend gitlab
 ```
 
-### 3. Environment Variable
+### 2. Environment Variable
 
 ```bash
 export TRACKER_BACKEND=jira
 track PROJ-123              # Uses Jira
+```
+
+### 3. Per-Command Flag
+
+```bash
+track -b jira PROJ-123      # Use Jira for this command
+track -b github PROJ-123    # Use GitHub
+track -b gitlab PROJ-123    # Use GitLab
+track -b youtrack PROJ-123  # Use YouTrack
+
+# Short aliases
+track -b j PROJ-123         # Jira
+track -b gh PROJ-123        # GitHub
+track -b gl PROJ-123        # GitLab
+track -b yt PROJ-123        # YouTrack
 ```
 
 **Priority**: CLI flag > Environment variable > Config file > Default (YouTrack)
@@ -201,6 +308,8 @@ track issue comment PROJ-123 -m "Comment text"
 track issue comments PROJ-123 --limit 10
 ```
 
+**Note**: Comments are supported on YouTrack, Jira, and GitLab. GitHub does not have a separate comment API (use GitHub web interface).
+
 ### Links
 
 ```bash
@@ -209,20 +318,29 @@ track issue link PROJ-1 PROJ-2 -t depends   # Depends on
 track issue link PROJ-1 PROJ-2 -t subtask   # Subtask
 ```
 
+**Note**: Issue linking is supported on YouTrack, Jira, and GitLab. GitHub does not have formal issue links (reference issues via `#number` in issue descriptions/comments).
+
 ### Projects
 
 ```bash
 track project list
 track project get PROJ
-track project fields PROJ       # Custom fields
-track project create -n "Name" -s "KEY"
+track project fields PROJ       # Custom fields (YouTrack/Jira)
+track project create -n "Name" -s "KEY"  # YouTrack only
 ```
+
+**Note**:
+- For GitHub, use `owner/repo` format (e.g., `track project get username/repo`)
+- For GitLab, use project ID or URL-encoded path (e.g., `track project get 12345` or `group%2Fproject`)
+- Project creation is only supported on YouTrack
 
 ### Tags
 
 ```bash
-track tags list
+track tags list  # Lists tags/labels for the configured backend
 ```
+
+**Note**: GitHub and GitLab use labels instead of tags. The CLI maps labels to the common `IssueTag` model.
 
 ### Custom Fields Admin (YouTrack only)
 
@@ -344,7 +462,7 @@ Single command to get all relevant data: projects, fields, users, query template
 | `track bundle list` | `track bundle ls` |
 | `track bundle create` | `track bundle c` |
 
-## Query Syntax
+## Query Syntax by Backend
 
 ### YouTrack
 
@@ -357,10 +475,29 @@ track i s "project: PROJ Assignee: me Priority: Major"
 ### Jira (JQL)
 
 ```bash
-track -b j i s "project = PROJ AND resolution IS EMPTY"
-track -b j i s "project = PROJ AND status = 'In Progress'"
-track -b j i s "assignee = currentUser() AND priority = Major"
+track -b jira i s "project = PROJ AND resolution IS EMPTY"
+track -b jira i s "project = PROJ AND status = 'In Progress'"
+track -b jira i s "assignee = currentUser() AND priority = Major"
 ```
+
+### GitHub
+
+```bash
+track -b github i s "is:open label:bug"
+track -b github i s "is:closed assignee:username"
+track -b github i s "is:issue is:open"
+```
+
+GitHub uses GitHub's search query syntax (not traditional issue queries).
+
+### GitLab
+
+```bash
+track -b gitlab i s "bug fix" --state opened
+track -b gitlab i s "performance" --labels "priority::high"
+```
+
+GitLab uses project-scoped search with filter parameters.
 
 ## Output Formats
 
@@ -370,11 +507,36 @@ track -o json PROJ-123      # JSON
 track --format json p ls    # JSON
 ```
 
-## Jira Notes
+## Backend-Specific Notes
 
+### YouTrack
+- Full feature support including custom fields, field admin, and knowledge base
+- Uses Bearer token authentication
+- Rich query language for issue search
+
+### Jira
 - **Knowledge Base**: Uses Confluence API (automatically at same domain with `/wiki` path)
+- **Authentication**: Basic Auth with email and API token
+- **Rich Text**: Uses Atlassian Document Format (ADF) for descriptions
 - **Project Creation**: Requires admin permissions (use web interface)
 - **Subtask Conversion**: Create as subtask from start with `--parent`
+
+### GitHub
+- **Scope**: Repository-scoped (requires owner and repo configuration)
+- **Issue IDs**: Uses numeric issue numbers (e.g., `42`), not project-prefixed keys
+- **Labels**: Map to tags with color support
+- **No Issue Deletion**: GitHub does not support deleting issues (close them instead)
+- **No Issue Links**: GitHub has no formal issue link system (reference issues via `#number` in comments)
+- **Pull Requests**: Automatically filtered out from issue lists
+- **Rate Limiting**: May encounter rate limits on public API; use authenticated requests
+
+### GitLab
+- **Scope**: Project-scoped via `project_id` configuration
+- **Issue IDs**: Uses IID (project-scoped, e.g., `#42`), not global IDs
+- **Labels**: Map to tags with color support (includes `#` prefix)
+- **Comments**: Called "notes" in GitLab API; system notes are filtered out
+- **API Version**: Uses GitLab REST API v4
+- **No Subtasks**: Use issue links instead of native subtask relationships
 
 ## Architecture
 
@@ -383,12 +545,20 @@ crates/
 ├── tracker-core/       # Core traits and models
 ├── youtrack-backend/   # YouTrack API client
 ├── jira-backend/       # Jira API client
+├── github-backend/     # GitHub API client
+├── gitlab-backend/     # GitLab API client
+├── tracker-mock/       # Mock system for testing
+├── agent-harness/      # AI agent evaluation harness
 └── track/              # CLI binary
 ```
 
 - **tracker-core**: `IssueTracker` trait, common models, errors
 - **youtrack-backend**: YouTrack REST API with Bearer auth
 - **jira-backend**: Jira Cloud REST API v3 with Basic Auth
+- **github-backend**: GitHub REST API with token auth
+- **gitlab-backend**: GitLab REST API v4 with Private-Token auth
+- **tracker-mock**: Mock backend for testing and evaluation
+- **agent-harness**: AI agent testing and evaluation tool
 - **track**: CLI with clap, figment config, text/JSON output
 
 ## Development
@@ -401,7 +571,10 @@ cargo build
 cargo test
 
 # Test specific crate
+cargo test --package youtrack-backend
 cargo test --package jira-backend
+cargo test --package github-backend
+cargo test --package gitlab-backend
 
 # Run without installing
 cargo run -- PROJ-123
@@ -410,13 +583,14 @@ cargo run -- PROJ-123
 ## Adding a Backend
 
 1. Create `crates/<backend>-backend/`
-2. Implement `IssueTracker` trait
-3. Add model conversions
-4. Register in `crates/track/src/main.rs`
-5. Add config support
-6. Add tests with wiremock
+2. Implement `IssueTracker` trait from `tracker-core`
+3. Add model conversions to/from common `tracker-core` types
+4. Register in `crates/track/src/main.rs` backend selection
+5. Add config support in `crates/track/src/config.rs`
+6. Add unit tests with `wiremock` for HTTP mocking
+7. Update documentation
 
-See `crates/jira-backend/` for reference.
+See existing backend crates (`jira-backend/`, `github-backend/`, `gitlab-backend/`) for reference implementations.
 
 ## For AI Agents
 

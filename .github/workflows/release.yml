@@ -1,0 +1,268 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests
+        run: |
+          cargo test --workspace --all-features --exclude track --exclude agent-harness --lib
+          cargo test --workspace --all-features --exclude track --exclude agent-harness --doc
+          cargo test -p track --all-features --bins
+          cargo test -p agent-harness --all-features --bins
+
+  lint:
+    name: Clippy & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust components
+        run: rustup component add clippy rustfmt
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-features -- -D warnings
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [test, lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+
+          # macOS
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+
+          # Windows
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Install cross-compilation tools (Linux ARM)
+        if: matrix.cross && matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }} --package track
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Generate shell completions (Unix)
+        if: matrix.os != 'windows-latest' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          mkdir -p completions
+          ./target/${{ matrix.target }}/release/track completions bash > completions/track.bash
+          ./target/${{ matrix.target }}/release/track completions zsh > completions/_track
+          ./target/${{ matrix.target }}/release/track completions fish > completions/track.fish
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Package binary (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          PKG_NAME="track-${VERSION}-${{ matrix.target }}"
+          mkdir -p "${PKG_NAME}"
+          cp "target/${{ matrix.target }}/release/track" "${PKG_NAME}/"
+
+          # Copy completions if they exist
+          if [ -d "completions" ]; then
+            cp completions/* "${PKG_NAME}/" 2>/dev/null || true
+          fi
+
+          # Copy README and LICENSE
+          cp README.md "${PKG_NAME}/" 2>/dev/null || true
+          cp LICENSE "${PKG_NAME}/" 2>/dev/null || true
+
+          tar -czvf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
+          echo "ASSET=${PKG_NAME}.tar.gz" >> $GITHUB_ENV
+
+      - name: Package binary (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $VERSION = "${{ steps.version.outputs.version }}"
+          $PKG_NAME = "track-${VERSION}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $PKG_NAME -Force
+          Copy-Item "target/${{ matrix.target }}/release/track.exe" "$PKG_NAME/"
+
+          # Copy README and LICENSE if they exist
+          if (Test-Path "README.md") { Copy-Item "README.md" "$PKG_NAME/" }
+          if (Test-Path "LICENSE") { Copy-Item "LICENSE" "$PKG_NAME/" }
+
+          Compress-Archive -Path $PKG_NAME -DestinationPath "${PKG_NAME}.zip"
+          echo "ASSET=${PKG_NAME}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          retention-days: 7
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts directory
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} dist/ \;
+          ls -lah dist/
+
+      - name: Generate checksums
+        working-directory: dist
+        run: |
+          sha256sum *.tar.gz *.zip > checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums-sha256.txt
+          body: |
+            ## Installation
+
+            ### Download Binary
+
+            Download the appropriate archive for your platform from the assets below:
+
+            - **Linux x86_64**: `track-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz`
+            - **Linux ARM64**: `track-${{ steps.version.outputs.version }}-aarch64-unknown-linux-gnu.tar.gz`
+            - **macOS Intel**: `track-${{ steps.version.outputs.version }}-x86_64-apple-darwin.tar.gz`
+            - **macOS Apple Silicon**: `track-${{ steps.version.outputs.version }}-aarch64-apple-darwin.tar.gz`
+            - **Windows x86_64**: `track-${{ steps.version.outputs.version }}-x86_64-pc-windows-msvc.zip`
+            - **Windows ARM64**: `track-${{ steps.version.outputs.version }}-aarch64-pc-windows-msvc.zip`
+
+            Extract the archive and move the binary to a directory in your PATH.
+
+            ### Install from Source
+
+            ```bash
+            cargo install --git https://github.com/${{ github.repository }} --tag ${{ github.ref_name }} track
+            ```
+
+            ### Shell Completions
+
+            Shell completions (bash, zsh, fish) are included in the Linux x86_64 archive.
+
+            ## Verification
+
+            Verify the integrity of your download using the SHA256 checksums in `checksums-sha256.txt`:
+
+            ```bash
+            sha256sum -c checksums-sha256.txt
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
