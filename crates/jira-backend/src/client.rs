@@ -351,6 +351,29 @@ impl JiraClient {
         Ok(())
     }
 
+    // ==================== Label Operations ====================
+
+    /// List all labels in the Jira instance
+    pub fn list_labels(&self) -> Result<Vec<String>> {
+        let url = self.api_url("/label");
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+        let mut response = self.check_response(response)?;
+
+        // Jira returns: {"total": N, "maxResults": N, "values": ["label1", "label2"]}
+        #[derive(serde::Deserialize)]
+        struct LabelResponse {
+            values: Vec<String>,
+        }
+        let result: LabelResponse = response.body_mut().read_json()?;
+        Ok(result.values)
+    }
+
     /// List all issue link types
     pub fn list_link_types(&self) -> Result<Vec<JiraIssueLinkType>> {
         let url = self.api_url("/issueLinkType");

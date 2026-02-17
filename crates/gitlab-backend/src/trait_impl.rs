@@ -1,9 +1,9 @@
 //! Implementation of tracker-core traits for GitLabClient
 
 use tracker_core::{
-    Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, Issue,
-    IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
-    Result, TrackerError, UpdateArticle, UpdateIssue, User,
+    Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, CreateTag,
+    Issue, IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project,
+    ProjectCustomField, Result, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 use crate::client::GitLabClient;
@@ -11,7 +11,10 @@ use crate::convert::{
     convert_query_to_gitlab_params, get_gitlab_link_types, get_standard_custom_fields,
     gitlab_issue_to_core, gitlab_link_to_core, map_link_type,
 };
-use crate::models::{CreateGitLabIssue, CreateGitLabIssueLink, UpdateGitLabIssue};
+use crate::models::{
+    CreateGitLabIssue, CreateGitLabIssueLink, CreateGitLabLabel, UpdateGitLabIssue,
+    UpdateGitLabLabel,
+};
 
 /// Parse an issue IID from a string, stripping an optional leading `#`.
 fn parse_issue_iid(id: &str) -> std::result::Result<u64, TrackerError> {
@@ -146,6 +149,47 @@ impl IssueTracker for GitLabClient {
     fn list_tags(&self) -> Result<Vec<IssueTag>> {
         self.list_labels()
             .map(|labels| labels.into_iter().map(Into::into).collect())
+            .map_err(TrackerError::from)
+    }
+
+    fn create_tag(&self, tag: &CreateTag) -> Result<IssueTag> {
+        let color = tag
+            .color
+            .clone()
+            .unwrap_or_else(|| "#ededed".to_string());
+        let label = CreateGitLabLabel {
+            name: tag.name.clone(),
+            color,
+            description: tag.description.clone(),
+        };
+        self.create_label(&label)
+            .map(Into::into)
+            .map_err(TrackerError::from)
+    }
+
+    fn delete_tag(&self, name: &str) -> Result<()> {
+        let labels = self.list_labels().map_err(TrackerError::from)?;
+        let label = labels.into_iter().find(|l| l.name == name).ok_or_else(|| {
+            TrackerError::InvalidInput(format!("Tag '{}' not found", name))
+        })?;
+        self.delete_label(label.id).map_err(TrackerError::from)
+    }
+
+    fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
+        let labels = self.list_labels().map_err(TrackerError::from)?;
+        let label = labels
+            .into_iter()
+            .find(|l| l.name == current_name)
+            .ok_or_else(|| {
+                TrackerError::InvalidInput(format!("Tag '{}' not found", current_name))
+            })?;
+        let update = UpdateGitLabLabel {
+            new_name: Some(tag.name.clone()),
+            color: tag.color.clone(),
+            description: tag.description.clone(),
+        };
+        self.update_label(label.id, &update)
+            .map(Into::into)
             .map_err(TrackerError::from)
     }
 

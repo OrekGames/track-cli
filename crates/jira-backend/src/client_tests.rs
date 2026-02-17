@@ -603,6 +603,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_labels() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/label"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "total": 2,
+                "maxResults": 1000,
+                "values": ["bug", "enhancement"]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let labels = client.list_labels().unwrap();
+
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0], "bug");
+        assert_eq!(labels[1], "enhancement");
+    }
+
+    #[tokio::test]
+    async fn test_list_labels_empty() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/label"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "total": 0,
+                "maxResults": 1000,
+                "values": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let labels = client.list_labels().unwrap();
+
+        assert_eq!(labels.len(), 0);
+    }
+
+    #[tokio::test]
     async fn test_issue_with_links() {
         let mock_server = MockServer::start().await;
 

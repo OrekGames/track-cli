@@ -300,6 +300,51 @@ impl GitLabClient {
         Ok(labels)
     }
 
+    /// Create a new label
+    pub fn create_label(&self, label: &CreateGitLabLabel) -> Result<GitLabLabel> {
+        let url = self.project_url("/labels")?;
+        let response = self
+            .agent
+            .post(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(label)
+            .map_err(|e| self.handle_error(e))?;
+        let mut response = self.check_response(response)?;
+        let created: GitLabLabel = response.body_mut().read_json()?;
+        Ok(created)
+    }
+
+    /// Delete a label by ID
+    pub fn delete_label(&self, label_id: u64) -> Result<()> {
+        let url = self.project_url(&format!("/labels/{}", label_id))?;
+        let response = self
+            .agent
+            .delete(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+        self.check_response(response)?;
+        Ok(())
+    }
+
+    /// Update a label by ID
+    pub fn update_label(&self, label_id: u64, update: &UpdateGitLabLabel) -> Result<GitLabLabel> {
+        let url = self.project_url(&format!("/labels/{}", label_id))?;
+        let response = self
+            .agent
+            .put(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(update)
+            .map_err(|e| self.handle_error(e))?;
+        let mut response = self.check_response(response)?;
+        let label: GitLabLabel = response.body_mut().read_json()?;
+        Ok(label)
+    }
+
     // ==================== Note (Comment) Operations ====================
 
     /// Add a note to an issue

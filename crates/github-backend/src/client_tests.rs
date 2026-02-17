@@ -317,6 +317,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_label() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/repos/test-owner/test-repo/labels"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 100,
+                "name": "type: bug",
+                "color": "d73a4a",
+                "description": "Something broken"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(
+            &mock_server.uri(),
+            "test-owner",
+            "test-repo",
+            "test-token",
+        );
+        let label = crate::models::CreateGitHubLabel {
+            name: "type: bug".to_string(),
+            color: "d73a4a".to_string(),
+            description: Some("Something broken".to_string()),
+        };
+        let result = client.create_label(&label).unwrap();
+        assert_eq!(result.name, "type: bug");
+        assert_eq!(result.color, "d73a4a");
+    }
+
+    #[tokio::test]
+    async fn test_delete_label() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/repos/test-owner/test-repo/labels/type%3A%20bug"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(
+            &mock_server.uri(),
+            "test-owner",
+            "test-repo",
+            "test-token",
+        );
+        let result = client.delete_label("type: bug");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_update_label() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("PATCH"))
+            .and(path("/repos/test-owner/test-repo/labels/old-name"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 100,
+                "name": "new-name",
+                "color": "0075ca",
+                "description": "Updated description"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(
+            &mock_server.uri(),
+            "test-owner",
+            "test-repo",
+            "test-token",
+        );
+        let update = crate::models::UpdateGitHubLabel {
+            new_name: Some("new-name".to_string()),
+            color: Some("0075ca".to_string()),
+            description: Some("Updated description".to_string()),
+        };
+        let result = client.update_label("old-name", &update).unwrap();
+        assert_eq!(result.name, "new-name");
+        assert_eq!(result.color, "0075ca");
+    }
+
+    #[tokio::test]
     async fn test_add_comment() {
         let mock_server = MockServer::start().await;
 

@@ -360,6 +360,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_label() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/projects/123/labels"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 42,
+                "name": "new-label",
+                "color": "#ededed",
+                "description": "A new label"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let create = crate::models::CreateGitLabLabel {
+            name: "new-label".to_string(),
+            color: "#ededed".to_string(),
+            description: Some("A new label".to_string()),
+        };
+
+        let label = client.create_label(&create).unwrap();
+        assert_eq!(label.id, 42);
+        assert_eq!(label.name, "new-label");
+        assert_eq!(label.color, "#ededed");
+        assert_eq!(label.description, Some("A new label".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_delete_label() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/projects/123/labels/42"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = client.delete_label(42);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_update_label() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/projects/123/labels/42"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 42,
+                "name": "renamed-label",
+                "color": "#ff0000",
+                "description": "Updated description"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let update = crate::models::UpdateGitLabLabel {
+            new_name: Some("renamed-label".to_string()),
+            color: Some("#ff0000".to_string()),
+            description: Some("Updated description".to_string()),
+        };
+
+        let label = client.update_label(42, &update).unwrap();
+        assert_eq!(label.id, 42);
+        assert_eq!(label.name, "renamed-label");
+        assert_eq!(label.color, "#ff0000");
+        assert_eq!(label.description, Some("Updated description".to_string()));
+    }
+
+    #[tokio::test]
     async fn test_unauthorized_error() {
         let mock_server = MockServer::start().await;
 

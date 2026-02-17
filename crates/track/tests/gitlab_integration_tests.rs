@@ -728,6 +728,130 @@ fn test_gitlab_issue_comments() {
 
 #[test]
 #[ignore]
+fn test_gitlab_tags_create_and_delete() {
+    if !config_exists() {
+        return;
+    }
+
+    let tag_name = format!(
+        "test-tag-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            % 100000
+    );
+
+    // Create a tag
+    let output = track_gitlab_json()
+        .args([
+            "tags",
+            "create",
+            &tag_name,
+            "--tag-color",
+            "#ff0000",
+            "-d",
+            "Test tag for cleanup",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let created: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(created["name"].as_str().unwrap(), tag_name);
+
+    // Verify it shows in list
+    let list_output = track_gitlab_json()
+        .args(["tags", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let tags: Vec<Value> =
+        serde_json::from_str(&String::from_utf8(list_output).unwrap()).unwrap();
+    assert!(
+        tags.iter().any(|t| t["name"].as_str() == Some(&tag_name)),
+        "Created tag should appear in list"
+    );
+
+    // Delete the tag
+    track_gitlab()
+        .args(["tags", "delete", &tag_name])
+        .assert()
+        .success();
+
+    // Verify it's gone
+    let list_output2 = track_gitlab_json()
+        .args(["tags", "list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let tags2: Vec<Value> =
+        serde_json::from_str(&String::from_utf8(list_output2).unwrap()).unwrap();
+    assert!(
+        !tags2.iter().any(|t| t["name"].as_str() == Some(&tag_name)),
+        "Deleted tag should not appear in list"
+    );
+}
+
+#[test]
+#[ignore]
+fn test_gitlab_tags_update() {
+    if !config_exists() {
+        return;
+    }
+
+    let tag_name = format!(
+        "test-upd-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            % 100000
+    );
+
+    // Create a tag
+    track_gitlab_json()
+        .args(["tags", "create", &tag_name, "--tag-color", "#ff0000"])
+        .assert()
+        .success();
+
+    // Update its color
+    let output = track_gitlab_json()
+        .args([
+            "tags",
+            "update",
+            &tag_name,
+            "--tag-color",
+            "#00ff00",
+            "-d",
+            "Updated",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let updated: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(updated["color"]["background"].as_str().unwrap(), "#00ff00");
+
+    // Clean up
+    track_gitlab()
+        .args(["tags", "delete", &tag_name])
+        .assert()
+        .success();
+}
+
+#[test]
+#[ignore]
 fn test_gitlab_tags_list() {
     if !config_exists() {
         return;

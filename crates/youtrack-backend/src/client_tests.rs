@@ -1178,4 +1178,93 @@ mod tests {
         assert_eq!(attached.id, "128-2");
         assert!(!attached.can_be_empty);
     }
+
+    // ========== Tag CRUD Tests ==========
+
+    #[tokio::test]
+    async fn test_create_tag() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issueTags"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "6-1",
+                "name": "test-tag",
+                "color": {
+                    "id": "0",
+                    "background": "#d73a4a",
+                    "foreground": "#ffffff"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let request = project::CreateIssueTagRequest {
+            name: "test-tag".to_string(),
+            color: Some(project::TagColorRequest {
+                background: Some("#d73a4a".to_string()),
+                foreground: None,
+            }),
+        };
+
+        let tag = client.create_tag(&request).unwrap();
+        assert_eq!(tag.id, "6-1");
+        assert_eq!(tag.name, "test-tag");
+        assert!(tag.color.is_some());
+        let color = tag.color.unwrap();
+        assert_eq!(color.background, Some("#d73a4a".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_delete_tag() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/api/issueTags/6-1"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = client.delete_tag("6-1");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_update_tag() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issueTags/6-1"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "6-1",
+                "name": "renamed-tag",
+                "color": {
+                    "id": "0",
+                    "background": "#0075ca",
+                    "foreground": "#ffffff"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let request = project::CreateIssueTagRequest {
+            name: "renamed-tag".to_string(),
+            color: Some(project::TagColorRequest {
+                background: Some("#0075ca".to_string()),
+                foreground: None,
+            }),
+        };
+
+        let tag = client.update_tag("6-1", &request).unwrap();
+        assert_eq!(tag.id, "6-1");
+        assert_eq!(tag.name, "renamed-tag");
+        let color = tag.color.unwrap();
+        assert_eq!(color.background, Some("#0075ca".to_string()));
+    }
 }
