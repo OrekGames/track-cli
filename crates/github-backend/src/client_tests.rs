@@ -71,14 +71,12 @@ mod tests {
             .and(header("Authorization", "Bearer test-token"))
             .and(header("Accept", "application/vnd.github+json"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(mock_github_issue(42, "Found a bug")),
+                ResponseTemplate::new(200).set_body_json(mock_github_issue(42, "Found a bug")),
             )
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let issue = client.get_issue(42).unwrap();
 
         assert_eq!(issue.number, 42);
@@ -108,8 +106,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let issues = client.list_issues("open", 30, 1).unwrap();
 
         // Should filter out the PR
@@ -138,8 +135,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let result = client.search_issues("is:open label:bug", 30, 1).unwrap();
 
         assert_eq!(result.total_count, 2);
@@ -166,8 +162,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let result = client.search_issues("is:open", 30, 1).unwrap();
 
         // Search result itself contains all items including PRs
@@ -188,14 +183,12 @@ mod tests {
             .and(header("Authorization", "Bearer test-token"))
             .and(header("Content-Type", "application/json"))
             .respond_with(
-                ResponseTemplate::new(201)
-                    .set_body_json(mock_github_issue(50, "New issue")),
+                ResponseTemplate::new(201).set_body_json(mock_github_issue(50, "New issue")),
             )
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
 
         let create = crate::models::CreateGitHubIssue {
             title: "New issue".to_string(),
@@ -224,8 +217,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
 
         let update = crate::models::UpdateGitHubIssue {
             title: Some("Updated title".to_string()),
@@ -257,8 +249,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let repos = client.list_repos().unwrap();
 
         assert_eq!(repos.len(), 2);
@@ -281,8 +272,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let repo = client.get_repo("owner", "my-repo").unwrap();
 
         assert_eq!(repo.name, "my-repo");
@@ -305,8 +295,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let labels = client.list_labels().unwrap();
 
         assert_eq!(labels.len(), 3);
@@ -416,8 +405,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let comment = client.add_comment(42, "This is my comment").unwrap();
 
         assert_eq!(comment.id, 100);
@@ -452,8 +440,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let comments = client.get_comments(42).unwrap();
 
         assert_eq!(comments.len(), 2);
@@ -481,8 +468,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let result = client.get_issue(1);
 
         assert!(result.is_err());
@@ -505,8 +491,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "bad-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "bad-token");
         let result = client.get_issue(1);
 
         assert!(result.is_err());
@@ -533,8 +518,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let result = client.get_issue(1);
 
         assert!(result.is_err());
@@ -560,8 +544,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let result = client.get_issue(99999);
 
         assert!(result.is_err());

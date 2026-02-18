@@ -45,8 +45,14 @@ impl IssueTracker for GitLabClient {
             self.list_issues(state.as_deref(), limit, page)
                 .map_err(TrackerError::from)?
         } else {
-            self.search_issues(&search_text, state.as_deref(), labels.as_deref(), limit, page)
-                .map_err(TrackerError::from)?
+            self.search_issues(
+                &search_text,
+                state.as_deref(),
+                labels.as_deref(),
+                limit,
+                page,
+            )
+            .map_err(TrackerError::from)?
         };
 
         Ok(issues
@@ -153,10 +159,7 @@ impl IssueTracker for GitLabClient {
     }
 
     fn create_tag(&self, tag: &CreateTag) -> Result<IssueTag> {
-        let color = tag
-            .color
-            .clone()
-            .unwrap_or_else(|| "#ededed".to_string());
+        let color = tag.color.clone().unwrap_or_else(|| "#ededed".to_string());
         let label = CreateGitLabLabel {
             name: tag.name.clone(),
             color,
@@ -169,9 +172,10 @@ impl IssueTracker for GitLabClient {
 
     fn delete_tag(&self, name: &str) -> Result<()> {
         let labels = self.list_labels().map_err(TrackerError::from)?;
-        let label = labels.into_iter().find(|l| l.name == name).ok_or_else(|| {
-            TrackerError::InvalidInput(format!("Tag '{}' not found", name))
-        })?;
+        let label = labels
+            .into_iter()
+            .find(|l| l.name == name)
+            .ok_or_else(|| TrackerError::InvalidInput(format!("Tag '{}' not found", name)))?;
         self.delete_label(label.id).map_err(TrackerError::from)
     }
 
@@ -280,12 +284,7 @@ impl KnowledgeBase for GitLabClient {
         Ok(Vec::new())
     }
 
-    fn search_articles(
-        &self,
-        _query: &str,
-        _limit: usize,
-        _skip: usize,
-    ) -> Result<Vec<Article>> {
+    fn search_articles(&self, _query: &str, _limit: usize, _skip: usize) -> Result<Vec<Article>> {
         Ok(Vec::new())
     }
 

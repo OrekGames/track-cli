@@ -14,7 +14,13 @@ pub fn handle_tags(
             name,
             tag_color,
             description,
-        } => handle_create(client, name, tag_color.as_deref(), description.as_deref(), format),
+        } => handle_create(
+            client,
+            name,
+            tag_color.as_deref(),
+            description.as_deref(),
+            format,
+        ),
         TagCommands::Delete { name } => handle_delete(client, name),
         TagCommands::Update {
             name,
@@ -58,18 +64,14 @@ fn handle_create(
         description: description.map(|d| d.to_string()),
     };
 
-    let created = client
-        .create_tag(&tag)
-        .context("Failed to create tag")?;
+    let created = client.create_tag(&tag).context("Failed to create tag")?;
 
     output_result(&created, format);
     Ok(())
 }
 
 fn handle_delete(client: &dyn IssueTracker, name: &str) -> Result<()> {
-    client
-        .delete_tag(name)
-        .context("Failed to delete tag")?;
+    client.delete_tag(name).context("Failed to delete tag")?;
 
     eprintln!("Deleted tag: {}", name);
     Ok(())

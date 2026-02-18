@@ -86,8 +86,7 @@ impl GitHubClient {
             .unwrap_or_else(|_| String::new());
 
         // Try to parse as GitHub error response
-        let message = if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&body)
-        {
+        let message = if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&body) {
             error_response
                 .get("message")
                 .and_then(|m| m.as_str())
@@ -101,8 +100,6 @@ impl GitHubClient {
 
         if status == 401 {
             Err(GitHubError::Unauthorized)
-        } else if status == 404 {
-            Err(GitHubError::Api { status, message })
         } else {
             Err(GitHubError::Api { status, message })
         }
@@ -158,7 +155,10 @@ impl GitHubClient {
         let issues: Vec<GitHubIssue> = response.body_mut().read_json()?;
 
         // Filter out pull requests
-        Ok(issues.into_iter().filter(|i| !i.is_pull_request()).collect())
+        Ok(issues
+            .into_iter()
+            .filter(|i| !i.is_pull_request())
+            .collect())
     }
 
     /// Search issues using GitHub search syntax

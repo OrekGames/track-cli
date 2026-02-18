@@ -3,7 +3,7 @@
 # run-agent-eval.sh - Evaluate AI agent performance using track-agent harness
 #
 # This script wraps the track-agent binary for convenient evaluation of
-# AI agents (Anthropic API or Claude Code CLI) against mock scenarios.
+# AI agents (Anthropic API, Claude Code CLI, Copilot CLI, or Gemini CLI) against mock scenarios.
 #
 # Usage:
 #   ./scripts/run-agent-eval.sh [options] [scenario]
@@ -13,6 +13,8 @@
 #   ./scripts/run-agent-eval.sh basic-workflow          # Run single scenario
 #   ./scripts/run-agent-eval.sh --all                   # Run all scenarios
 #   ./scripts/run-agent-eval.sh --provider claude-code basic-workflow
+#   ./scripts/run-agent-eval.sh --provider copilot-cli basic-workflow
+#   ./scripts/run-agent-eval.sh --provider gemini basic-workflow
 #   ./scripts/run-agent-eval.sh --verbose --json cache-efficiency
 
 set -euo pipefail
@@ -53,7 +55,7 @@ Commands:
 
 Options:
   -a, --all              Run all scenarios
-  -p, --provider <name>  Provider: anthropic (default) or claude-code
+  -p, --provider <name>  Provider: anthropic (default), claude-code, copilot-cli, or gemini
   -m, --model <model>    Model to use (default: claude-sonnet-4-20250514)
   -t, --turns <n>        Maximum turns (default: 20)
   -s, --min-score <n>    Minimum passing score (default: 70)
@@ -66,6 +68,12 @@ Options:
 Environment Variables:
   ANTHROPIC_API_KEY      Required for anthropic provider
 
+Requirements:
+  anthropic provider     ANTHROPIC_API_KEY environment variable
+  claude-code provider   claude CLI installed (from claude.ai/code)
+  copilot-cli provider   gh copilot CLI installed (gh extension install github/gh-copilot)
+  gemini provider        gemini CLI installed (npm install -g @google/generative-ai-cli)
+
 Examples:
   # List scenarios
   $(basename "$0") list
@@ -76,6 +84,12 @@ Examples:
   # Run with Claude Code CLI
   $(basename "$0") --provider claude-code basic-workflow
 
+  # Run with GitHub Copilot CLI
+  $(basename "$0") --provider copilot-cli basic-workflow
+
+  # Run with Gemini CLI
+  $(basename "$0") --provider gemini basic-workflow
+
   # Run all scenarios with JSON output
   $(basename "$0") --all --json
 
@@ -84,6 +98,12 @@ Examples:
 
   # Run all and stop on first failure
   $(basename "$0") --all --fail-fast
+
+  # Compare providers on same scenario
+  $(basename "$0") --provider anthropic basic-workflow
+  $(basename "$0") --provider claude-code basic-workflow
+  $(basename "$0") --provider copilot-cli basic-workflow
+  $(basename "$0") --provider gemini basic-workflow
 
 EOF
 }
@@ -117,18 +137,79 @@ ensure_binary() {
     fi
 }
 
-# Validate API key for anthropic provider
-check_api_key() {
-    if [[ "$PROVIDER" == "anthropic" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
-        log_error "ANTHROPIC_API_KEY environment variable is required for anthropic provider"
-        echo ""
-        echo "Set it with:"
-        echo "  export ANTHROPIC_API_KEY=your-api-key"
-        echo ""
-        echo "Or use Claude Code CLI instead:"
-        echo "  $(basename "$0") --provider claude-code $*"
-        exit 1
-    fi
+# Validate provider requirements
+check_provider_requirements() {
+    case "$PROVIDER" in
+        anthropic)
+            if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+                log_error "ANTHROPIC_API_KEY environment variable is required for anthropic provider"
+                echo ""
+                echo "Set it with:"
+                echo "  export ANTHROPIC_API_KEY=your-api-key"
+                echo ""
+                echo "Or use a CLI-based provider instead:"
+                echo "  $(basename "$0") --provider claude-code $*"
+                echo "  $(basename "$0") --provider copilot-cli $*"
+                echo "  $(basename "$0") --provider gemini $*"
+                exit 1
+            fi
+            ;;
+        claude-code)
+            if ! command -v claude &> /dev/null; then
+                log_error "claude CLI not found in PATH"
+                echo ""
+                echo "Install Claude Code from: https://claude.ai/code"
+                echo ""
+                echo "Or use a different provider:"
+                echo "  $(basename "$0") --provider anthropic $*"
+                echo "  $(basename "$0") --provider copilot-cli $*"
+                echo "  $(basename "$0") --provider gemini $*"
+                exit 1
+            fi
+            ;;
+        copilot-cli)
+            if ! command -v gh &> /dev/null; then
+                log_error "gh CLI not found in PATH"
+                echo ""
+                echo "Install GitHub CLI: https://cli.github.com/"
+                echo "Then install Copilot extension:"
+                echo "  gh extension install github/gh-copilot"
+                exit 1
+            fi
+            if ! gh copilot --help &> /dev/null; then
+                log_error "gh copilot extension not installed"
+                echo ""
+                echo "Install with:"
+                echo "  gh extension install github/gh-copilot"
+                echo ""
+                echo "Or use a different provider:"
+                echo "  $(basename "$0") --provider anthropic $*"
+                echo "  $(basename "$0") --provider claude-code $*"
+                echo "  $(basename "$0") --provider gemini $*"
+                exit 1
+            fi
+            ;;
+        gemini)
+            if ! command -v gemini &> /dev/null; then
+                log_error "gemini CLI not found in PATH"
+                echo ""
+                echo "Install Gemini CLI with:"
+                echo "  npm install -g @google/generative-ai-cli"
+                echo ""
+                echo "Or use a different provider:"
+                echo "  $(basename "$0") --provider anthropic $*"
+                echo "  $(basename "$0") --provider claude-code $*"
+                echo "  $(basename "$0") --provider copilot-cli $*"
+                exit 1
+            fi
+            ;;
+        *)
+            log_error "Unknown provider: $PROVIDER"
+            echo ""
+            echo "Valid providers: anthropic, claude-code, copilot-cli, gemini"
+            exit 1
+            ;;
+    esac
 }
 
 # Resolve scenario path from name
@@ -272,8 +353,8 @@ case "$COMMAND" in
         CMD_ARGS+=("--format" "$FORMAT")
         [[ -n "$MODEL" ]] && CMD_ARGS+=("--model" "$MODEL")
 
-        # Check API key for anthropic
-        check_api_key
+        # Check provider requirements
+        check_provider_requirements
 
         # Run the command
         if [[ "$FORMAT" == "text" ]]; then

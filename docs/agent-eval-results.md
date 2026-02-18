@@ -7,7 +7,7 @@ This document tracks the performance of different AI providers when using the `t
 - **Evaluation Date**: 2025-01-27
 - **Max Turns**: 20
 - **Min Passing Score**: 70%
-- **Total Scenarios**: 20
+- **Total Scenarios**: 21
 
 ## Results by Provider
 
@@ -66,6 +66,76 @@ This document tracks the performance of different AI providers when using the `t
 
 ---
 
+### GitHub Copilot CLI
+
+**Provider**: `copilot-cli`
+**Evaluation Date**: 2026-02-17
+**Pass Rate**: 0/21 (0%)
+
+| Scenario | Score | API Calls | Status |
+|----------|-------|-----------|--------|
+| article-workflow | 0% | 0 | FAIL |
+| basic-workflow | 45% | 0 | FAIL |
+| cache-efficiency | 45% | 0 | FAIL |
+| cache-operations | 65% | 0 | FAIL |
+| config-management | 60% | 0 | FAIL |
+| context-aggregation | 30% | 0 | FAIL |
+| error-recovery | 0% | 0 | FAIL |
+| github-basic-workflow | 20% | 0 | FAIL |
+| issue-batch-operations | 20% | 0 | FAIL |
+| issue-comments-listing | 0% | 0 | FAIL |
+| issue-create-advanced | 0% | 0 | FAIL |
+| issue-delete | 40% | 0 | FAIL |
+| issue-get-full | 40% | 0 | FAIL |
+| issue-linking | 20% | 0 | FAIL |
+| issue-search-templates | 0% | 0 | FAIL |
+| issue-start-complete | 20% | 0 | FAIL |
+| jira-basic-workflow | 20% | 0 | FAIL |
+| json-output | 40% | 0 | FAIL |
+| project-operations | 20% | 0 | FAIL |
+| tags-operations | 20% | 0 | FAIL |
+| validation-dry-run | 60% | 0 | FAIL |
+
+**Average Score**: 27%
+**Average API Calls**: 0
+
+---
+
+### Gemini CLI
+
+**Provider**: `gemini`
+**Evaluation Date**: 2026-02-17
+**Pass Rate**: 12/21 (57%)
+
+| Scenario | Score | API Calls | Status |
+|----------|-------|-----------|--------|
+| article-workflow | 90% | 11 | PASS |
+| basic-workflow | 90% | 5 | PASS |
+| cache-efficiency | 20% | 23 | FAIL |
+| cache-operations | 85% | 8 | PASS |
+| config-management | 100% | 3 | PASS |
+| context-aggregation | 90% | 5 | PASS |
+| error-recovery | 95% | 4 | PASS |
+| github-basic-workflow | 75% | 4 | FAIL |
+| issue-batch-operations | 85% | 15 | PASS |
+| issue-comments-listing | 65% | 9 | FAIL |
+| issue-create-advanced | 60% | 18 | FAIL |
+| issue-delete | 0% | 32 | FAIL |
+| issue-get-full | 0% | 30 | FAIL |
+| issue-linking | 85% | 11 | PASS |
+| issue-search-templates | 80% | 12 | PASS |
+| issue-start-complete | 45% | 11 | FAIL |
+| jira-basic-workflow | 100% | 4 | PASS |
+| json-output | 100% | 4 | PASS |
+| project-operations | 100% | 6 | PASS |
+| tags-operations | 40% | 15 | FAIL |
+| validation-dry-run | 0% | 26 | FAIL |
+
+**Average Score**: 67%
+**Average API Calls**: 12.2
+
+---
+
 ### Other Providers
 
 Additional providers can be added as they are tested.
@@ -82,6 +152,7 @@ Additional providers can be added as they are tested.
 | config-management | Configuration verification via API | Easy |
 | context-aggregation | Context command for AI session aggregation | Easy |
 | error-recovery | Handling 404 errors and recovering gracefully | Medium |
+| github-basic-workflow | Basic operations with GitHub backend | Easy |
 | issue-batch-operations | Batch update and delete operations | Medium |
 | issue-comments-listing | Adding and listing issue comments | Easy |
 | issue-create-advanced | Advanced issue creation with fields, tags, subtasks | Medium |
