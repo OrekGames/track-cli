@@ -3,7 +3,7 @@
 # run-agent-eval.sh - Evaluate AI agent performance using track-agent harness
 #
 # This script wraps the track-agent binary for convenient evaluation of
-# AI agents (Anthropic API, Claude Code CLI, or Copilot CLI) against mock scenarios.
+# AI agents (Anthropic API, Claude Code CLI, Copilot CLI, or Gemini CLI) against mock scenarios.
 #
 # Usage:
 #   ./scripts/run-agent-eval.sh [options] [scenario]
@@ -14,6 +14,7 @@
 #   ./scripts/run-agent-eval.sh --all                   # Run all scenarios
 #   ./scripts/run-agent-eval.sh --provider claude-code basic-workflow
 #   ./scripts/run-agent-eval.sh --provider copilot-cli basic-workflow
+#   ./scripts/run-agent-eval.sh --provider gemini basic-workflow
 #   ./scripts/run-agent-eval.sh --verbose --json cache-efficiency
 
 set -euo pipefail
@@ -54,7 +55,7 @@ Commands:
 
 Options:
   -a, --all              Run all scenarios
-  -p, --provider <name>  Provider: anthropic (default), claude-code, or copilot-cli
+  -p, --provider <name>  Provider: anthropic (default), claude-code, copilot-cli, or gemini
   -m, --model <model>    Model to use (default: claude-sonnet-4-20250514)
   -t, --turns <n>        Maximum turns (default: 20)
   -s, --min-score <n>    Minimum passing score (default: 70)
@@ -71,6 +72,7 @@ Requirements:
   anthropic provider     ANTHROPIC_API_KEY environment variable
   claude-code provider   claude CLI installed (from claude.ai/code)
   copilot-cli provider   gh copilot CLI installed (gh extension install github/gh-copilot)
+  gemini provider        gemini CLI installed (npm install -g @google/generative-ai-cli)
 
 Examples:
   # List scenarios
@@ -85,6 +87,9 @@ Examples:
   # Run with GitHub Copilot CLI
   $(basename "$0") --provider copilot-cli basic-workflow
 
+  # Run with Gemini CLI
+  $(basename "$0") --provider gemini basic-workflow
+
   # Run all scenarios with JSON output
   $(basename "$0") --all --json
 
@@ -98,6 +103,7 @@ Examples:
   $(basename "$0") --provider anthropic basic-workflow
   $(basename "$0") --provider claude-code basic-workflow
   $(basename "$0") --provider copilot-cli basic-workflow
+  $(basename "$0") --provider gemini basic-workflow
 
 EOF
 }
@@ -144,6 +150,7 @@ check_provider_requirements() {
                 echo "Or use a CLI-based provider instead:"
                 echo "  $(basename "$0") --provider claude-code $*"
                 echo "  $(basename "$0") --provider copilot-cli $*"
+                echo "  $(basename "$0") --provider gemini $*"
                 exit 1
             fi
             ;;
@@ -156,6 +163,7 @@ check_provider_requirements() {
                 echo "Or use a different provider:"
                 echo "  $(basename "$0") --provider anthropic $*"
                 echo "  $(basename "$0") --provider copilot-cli $*"
+                echo "  $(basename "$0") --provider gemini $*"
                 exit 1
             fi
             ;;
@@ -177,13 +185,28 @@ check_provider_requirements() {
                 echo "Or use a different provider:"
                 echo "  $(basename "$0") --provider anthropic $*"
                 echo "  $(basename "$0") --provider claude-code $*"
+                echo "  $(basename "$0") --provider gemini $*"
+                exit 1
+            fi
+            ;;
+        gemini)
+            if ! command -v gemini &> /dev/null; then
+                log_error "gemini CLI not found in PATH"
+                echo ""
+                echo "Install Gemini CLI with:"
+                echo "  npm install -g @google/generative-ai-cli"
+                echo ""
+                echo "Or use a different provider:"
+                echo "  $(basename "$0") --provider anthropic $*"
+                echo "  $(basename "$0") --provider claude-code $*"
+                echo "  $(basename "$0") --provider copilot-cli $*"
                 exit 1
             fi
             ;;
         *)
             log_error "Unknown provider: $PROVIDER"
             echo ""
-            echo "Valid providers: anthropic, claude-code, copilot-cli"
+            echo "Valid providers: anthropic, claude-code, copilot-cli, gemini"
             exit 1
             ;;
     esac

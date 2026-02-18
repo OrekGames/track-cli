@@ -79,7 +79,7 @@ fn has_write_access() -> bool {
             if let Ok(s) = String::from_utf8(output.stdout) {
                 if let Ok(v) = serde_json::from_str::<Value>(&s) {
                     if let Some(id) = v["id_readable"].as_str() {
-                        let number = id.split('#').last().unwrap_or("");
+                        let number = id.split('#').next_back().unwrap_or("");
                         let _ = track_github()
                             .args(["issue", "update", number, "--state", "closed"])
                             .assert();
@@ -341,7 +341,7 @@ fn test_github_issue_create_get_and_close() {
     );
 
     // Extract the number for subsequent operations
-    let issue_number = issue_id.split('#').last().unwrap();
+    let issue_number = issue_id.split('#').next_back().unwrap();
 
     // Get the issue we just created
     let get_output = track_github_json()
@@ -420,7 +420,7 @@ fn test_github_issue_update() {
         .as_str()
         .unwrap()
         .split('#')
-        .last()
+        .next_back()
         .unwrap()
         .to_string();
 
@@ -489,7 +489,7 @@ fn test_github_issue_create_with_labels() {
         .as_str()
         .unwrap()
         .split('#')
-        .last()
+        .next_back()
         .unwrap()
         .to_string();
 
@@ -540,7 +540,7 @@ fn test_github_issue_get_shortcut() {
         .as_str()
         .unwrap()
         .split('#')
-        .last()
+        .next_back()
         .unwrap()
         .to_string();
 
@@ -606,7 +606,7 @@ fn test_github_issue_get_with_full_flag() {
         .as_str()
         .unwrap()
         .split('#')
-        .last()
+        .next_back()
         .unwrap()
         .to_string();
 
@@ -656,7 +656,7 @@ fn test_github_issue_comments() {
         .as_str()
         .unwrap()
         .split('#')
-        .last()
+        .next_back()
         .unwrap()
         .to_string();
 
@@ -913,7 +913,7 @@ fn test_github_issue_links_returns_empty() {
         .as_str()
         .unwrap()
         .split('#')
-        .last()
+        .next_back()
         .unwrap()
         .to_string();
 
@@ -1080,7 +1080,7 @@ fn test_github_issue_structure() {
         .as_str()
         .unwrap()
         .split('#')
-        .last()
+        .next_back()
         .unwrap()
         .to_string();
 

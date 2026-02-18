@@ -227,9 +227,8 @@ fn build_copilot_command(config: &CopilotCliConfig) -> Command {
         }
         CopilotMode::Agent => {
             // New: standalone copilot CLI
-            let mut cmd = Command::new("copilot");
             // Add any agent-specific flags
-            cmd
+            Command::new("copilot")
         }
     }
 }
@@ -277,7 +276,7 @@ fn run_interactive_session(
 
     let mut current_output = String::new();
     let mut turn_count = 0;
-    let waiting_for_response = true;
+    let _waiting_for_response = true;
 
     loop {
         let mut line = String::new();
@@ -396,13 +395,13 @@ fn extract_command_suggestion(output: &str) -> Option<String> {
         let trimmed = line.trim();
 
         // Pattern: $ command
-        if trimmed.starts_with("$ ") {
-            return Some(trimmed[2..].trim().to_string());
+        if let Some(stripped) = trimmed.strip_prefix("$ ") {
+            return Some(stripped.trim().to_string());
         }
 
         // Pattern: Suggestion: command
-        if trimmed.starts_with("Suggestion:") {
-            return Some(trimmed[11..].trim().to_string());
+        if let Some(stripped) = trimmed.strip_prefix("Suggestion:") {
+            return Some(stripped.trim().to_string());
         }
 
         // Pattern: track command (direct)

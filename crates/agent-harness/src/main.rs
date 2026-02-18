@@ -231,6 +231,7 @@ fn run_scenario(
             let config = gemini_runner::GeminiRunnerConfig {
                 scenario_path: scenario_path.clone(),
                 scenario: scenario.clone(),
+                max_turns,
                 verbose,
             };
 
@@ -466,6 +467,7 @@ fn run_all_scenarios(
                 let config = gemini_runner::GeminiRunnerConfig {
                     scenario_path: scenario_path.clone(),
                     scenario: scenario.clone(),
+                    max_turns,
                     verbose: false, // not verbose in batch mode
                 };
 

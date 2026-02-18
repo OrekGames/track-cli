@@ -6,7 +6,7 @@ Evaluate AI agents on their ability to use the `track` CLI efficiently and corre
 
 The agent harness:
 1. Loads a scenario (task prompt + expected outcomes + mock responses)
-2. Presents the task to an LLM via the Anthropic API or Claude Code CLI
+2. Presents the task to an LLM via the Anthropic API, Claude Code CLI, Copilot CLI, or Gemini CLI
 3. Provides a `track` tool that executes CLI commands in mock mode
 4. Logs all commands the agent executes
 5. Evaluates performance based on correctness and efficiency
@@ -37,6 +37,9 @@ A wrapper script is provided for easier usage:
 # Run with GitHub Copilot CLI
 ./scripts/run-agent-eval.sh --provider copilot-cli basic-workflow
 
+# Run with Gemini CLI
+./scripts/run-agent-eval.sh --provider gemini basic-workflow
+
 # Run all scenarios
 ./scripts/run-agent-eval.sh --all
 
@@ -52,7 +55,7 @@ The script automatically:
 
 ## Providers
 
-The harness supports three providers for running agents:
+The harness supports four providers for running agents:
 
 ### Anthropic API (default)
 
@@ -96,6 +99,24 @@ Key differences:
 - Token counts not available (only turn counts)
 - Commands tracked via mock backend's call log
 
+### Gemini CLI
+
+Uses the Gemini CLI (`gemini`) as a subprocess with stream-json output. This evaluates how Gemini performs on scenarios using its agentic capabilities.
+
+```bash
+# Requires Gemini CLI to be installed
+# Install with: npm install -g @google/generative-ai-cli
+track-agent run ./fixtures/scenarios/basic-workflow --provider gemini -v
+```
+
+Key differences:
+- No API key needed (Gemini CLI handles authentication)
+- Uses `stream-json` output format (similar to Claude Code)
+- Auto-approves tools with `--yolo` flag
+- Restricts to track CLI only via `--allowed-tools`
+- Token counts not available (only turn counts)
+- Commands tracked via mock backend's call log
+
 ## Usage
 
 ### Running a Single Scenario
@@ -109,6 +130,9 @@ track-agent run ./fixtures/scenarios/basic-workflow --provider claude-code -v
 
 # Use GitHub Copilot CLI
 track-agent run ./fixtures/scenarios/basic-workflow --provider copilot-cli -v
+
+# Use Gemini CLI
+track-agent run ./fixtures/scenarios/basic-workflow --provider gemini -v
 
 # Use a specific model (Anthropic provider only)
 track-agent run ./fixtures/scenarios/basic-workflow --model claude-sonnet-4-20250514
@@ -131,6 +155,9 @@ track-agent run-all --path ./fixtures/scenarios --provider claude-code
 
 # Run all scenarios with GitHub Copilot CLI
 track-agent run-all --path ./fixtures/scenarios --provider copilot-cli
+
+# Run all scenarios with Gemini CLI
+track-agent run-all --path ./fixtures/scenarios --provider gemini
 
 # Stop on first failure
 track-agent run-all --path ./fixtures/scenarios --fail-fast
@@ -217,6 +244,24 @@ gh copilot suggest
 # System prompt sent to stdin
 # Interactive Q&A with automated responses
 # Commands auto-confirmed based on parsing
+```
+
+### Gemini CLI Provider
+
+1. **System Prompt**: Includes evaluation guidelines and agent guide
+2. **Task Prompt**: Combined with system prompt and passed via `-p` flag
+3. **Tool Restriction**: Limited to `Bash(/path/to/track *)` via `--allowed-tools`
+4. **Auto-Approval**: `--yolo` flag auto-approves all tool executions
+5. **Mock Mode**: `TRACK_MOCK_DIR` environment variable routes all track commands through the mock system
+6. **Event Parsing**: Stream JSON output parsed for tool use and results
+7. **Completion**: Gemini finishes naturally or hits max turns
+
+Gemini CLI invocation:
+```bash
+gemini -p "$full_prompt" \
+  -o stream-json \
+  --yolo \
+  --allowed-tools "Bash(/path/to/track *)"
 ```
 
 ### Evaluation Metrics
@@ -351,7 +396,7 @@ Note: Claude Code must be installed and authenticated on the CI runner.
   run: |
     # Authenticate with GitHub CLI first
     echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-    
+
     # Run evaluation
     ./target/release/track-agent run ./fixtures/scenarios/basic-workflow \
       --provider copilot-cli \
@@ -360,6 +405,23 @@ Note: Claude Code must be installed and authenticated on the CI runner.
 ```
 
 Note: GitHub CLI and Copilot extension must be installed on the CI runner.
+
+### Gemini CLI Provider
+
+```yaml
+- name: Run agent evaluation with Gemini CLI
+  run: |
+    # Install Gemini CLI
+    npm install -g @google/generative-ai-cli
+
+    # Run evaluation
+    ./target/release/track-agent run ./fixtures/scenarios/basic-workflow \
+      --provider gemini \
+      --min-score 80 \
+      -o json
+```
+
+Note: Gemini CLI must be installed and authenticated on the CI runner.
 
 Exit codes:
 - `0`: All evaluations passed

@@ -95,8 +95,6 @@ impl GitLabClient {
 
         if status == 401 {
             Err(GitLabError::Unauthorized)
-        } else if status == 404 {
-            Err(GitLabError::Api { status, message })
         } else {
             Err(GitLabError::Api { status, message })
         }

@@ -100,8 +100,6 @@ impl GitHubClient {
 
         if status == 401 {
             Err(GitHubError::Unauthorized)
-        } else if status == 404 {
-            Err(GitHubError::Api { status, message })
         } else {
             Err(GitHubError::Api { status, message })
         }
