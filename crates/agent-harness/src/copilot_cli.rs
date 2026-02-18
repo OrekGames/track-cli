@@ -363,22 +363,22 @@ fn detect_input_prompt(line: &str) -> bool {
 
     // Check for question marks with common question words
     if lower.contains("?") {
-        return lower.contains("what") ||
-               lower.contains("how") ||
-               lower.contains("would you") ||
-               lower.contains("do you") ||
-               lower.contains("select") ||
-               lower.contains("choose");
+        return lower.contains("what")
+            || lower.contains("how")
+            || lower.contains("would you")
+            || lower.contains("do you")
+            || lower.contains("select")
+            || lower.contains("choose");
     }
 
     // Check for prompts that end with : (like "Please describe your task:")
     if lower.ends_with(":") || lower.ends_with(":\n") {
-        return lower.contains("please") ||
-               lower.contains("describe") ||
-               lower.contains("enter") ||
-               lower.contains("type") ||
-               lower.contains("select") ||
-               lower.contains("choose");
+        return lower.contains("please")
+            || lower.contains("describe")
+            || lower.contains("enter")
+            || lower.contains("type")
+            || lower.contains("select")
+            || lower.contains("choose");
     }
 
     false
@@ -492,7 +492,7 @@ impl From<CopilotCliResult> for SessionResult {
     fn from(result: CopilotCliResult) -> Self {
         SessionResult {
             turns_used: result.turns_used,
-            total_input_tokens: 0, // Not available from CLI
+            total_input_tokens: 0,  // Not available from CLI
             total_output_tokens: 0, // Not available from CLI
             commands_executed: result.commands_executed,
         }
@@ -528,10 +528,7 @@ mod tests {
             extract_command_suggestion("  track issue get DEMO-1  "),
             Some("track issue get DEMO-1".to_string())
         );
-        assert_eq!(
-            extract_command_suggestion("No command here"),
-            None
-        );
+        assert_eq!(extract_command_suggestion("No command here"), None);
     }
 
     #[test]
