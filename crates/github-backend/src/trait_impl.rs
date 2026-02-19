@@ -1,8 +1,10 @@
 //! Implementation of tracker-core traits for GitHubClient
 
 use tracker_core::{
-    Comment, CreateIssue, CreateProject, CreateTag, Issue, IssueLink, IssueTag, IssueTracker,
-    Project, ProjectCustomField, Result, SearchResult, TrackerError, UpdateIssue,
+    Article, ArticleAttachment, ArticleRef, Comment, CommentAuthor, CreateArticle, CreateIssue,
+    CreateProject, CreateTag, Issue, IssueLink, IssueTag, IssueTracker, KnowledgeBase, Project,
+    ProjectCustomField, ProjectRef, Result, SearchResult, Tag, TrackerError, UpdateArticle,
+    UpdateIssue,
 };
 
 use crate::client::GitHubClient;
@@ -10,6 +12,7 @@ use crate::convert::{
     convert_query_to_github, create_issue_from_core, get_standard_custom_fields,
     github_issue_to_core, update_issue_from_core,
 };
+use crate::wiki::WikiPage;
 
 /// Parse an issue number from a string identifier.
 ///
@@ -245,5 +248,228 @@ impl IssueTracker for GitHubClient {
         self.get_comments(number)
             .map(|cs| cs.into_iter().map(Into::into).collect())
             .map_err(TrackerError::from)
+    }
+}
+
+// ============================================================================
+// KnowledgeBase Implementation
+// ============================================================================
+
+/// Convert a WikiPage to an Article
+fn wiki_page_to_article(page: WikiPage, owner: &str, repo: &str) -> Article {
+    Article {
+        id: page.slug.clone(),
+        id_readable: format!("{}/{}#{}", owner, repo, page.slug),
+        summary: page.title,
+        content: Some(page.content),
+        project: ProjectRef {
+            id: format!("{}/{}", owner, repo),
+            name: Some(repo.to_string()),
+            short_name: Some(format!("{}/{}", owner, repo)),
+        },
+        parent_article: page.parent.map(|p| ArticleRef {
+            id: p.clone(),
+            id_readable: Some(format!("{}/{}#{}", owner, repo, p)),
+            summary: Some(p.replace('-', " ")),
+        }),
+        has_children: false, // Will be set by caller if needed
+        tags: page
+            .tags
+            .into_iter()
+            .map(|t| Tag {
+                id: t.clone(),
+                name: t,
+            })
+            .collect(),
+        created: page.created,
+        updated: page.updated,
+        reporter: page.author.map(|name| CommentAuthor {
+            login: name.clone(),
+            name: Some(name),
+        }),
+    }
+}
+
+impl KnowledgeBase for GitHubClient {
+    fn get_article(&self, id: &str) -> Result<Article> {
+        let wiki = self.wiki();
+        let page = wiki.get_page(id).map_err(TrackerError::from)?;
+        let mut article = wiki_page_to_article(page, self.owner(), self.repo());
+
+        // Check if this page has children
+        if let Ok(children) = wiki.get_child_pages(id) {
+            article.has_children = !children.is_empty();
+        }
+
+        Ok(article)
+    }
+
+    fn list_articles(
+        &self,
+        project_id: Option<&str>,
+        limit: usize,
+        skip: usize,
+    ) -> Result<Vec<Article>> {
+        // Filter by project if specified
+        if let Some(proj) = project_id {
+            let expected_project = format!("{}/{}", self.owner(), self.repo());
+            if proj != expected_project {
+                return Ok(Vec::new()); // Project doesn't match
+            }
+        }
+
+        let wiki = self.wiki();
+        let pages = wiki.list_pages().map_err(TrackerError::from)?;
+        
+        // Check children for each page
+        let mut articles: Vec<Article> = pages
+            .into_iter()
+            .map(|page| {
+                let slug = page.slug.clone();
+                let mut article = wiki_page_to_article(page, self.owner(), self.repo());
+                
+                if let Ok(children) = wiki.get_child_pages(&slug) {
+                    article.has_children = !children.is_empty();
+                }
+                
+                article
+            })
+            .collect();
+
+        // Apply pagination
+        let total = articles.len();
+        let start = skip.min(total);
+        let end = (skip + limit).min(total);
+        
+        Ok(articles.drain(start..end).collect())
+    }
+
+    fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
+        let wiki = self.wiki();
+        let pages = wiki.search_pages(query).map_err(TrackerError::from)?;
+        
+        let mut articles: Vec<Article> = pages
+            .into_iter()
+            .map(|page| {
+                let slug = page.slug.clone();
+                let mut article = wiki_page_to_article(page, self.owner(), self.repo());
+                
+                if let Ok(children) = wiki.get_child_pages(&slug) {
+                    article.has_children = !children.is_empty();
+                }
+                
+                article
+            })
+            .collect();
+
+        // Apply pagination
+        let total = articles.len();
+        let start = skip.min(total);
+        let end = (skip + limit).min(total);
+        
+        Ok(articles.drain(start..end).collect())
+    }
+
+    fn create_article(&self, article: &CreateArticle) -> Result<Article> {
+        // Verify project matches
+        let expected_project = format!("{}/{}", self.owner(), self.repo());
+        if article.project_id != expected_project
+            && article.project_id != self.repo()
+            && article.project_id != self.owner()
+        {
+            return Err(TrackerError::InvalidInput(format!(
+                "Project '{}' does not match current repository '{}'",
+                article.project_id, expected_project
+            )));
+        }
+
+        let wiki = self.wiki();
+
+        // Generate slug from title
+        let slug = if let Some(parent) = &article.parent_article_id {
+            format!(
+                "{}/{}",
+                parent,
+                article.summary.to_lowercase().replace(' ', "-")
+            )
+        } else {
+            article.summary.to_lowercase().replace(' ', "-")
+        };
+
+        let content = article.content.as_deref().unwrap_or("");
+        
+        let page = wiki
+            .create_page(&slug, &article.summary, content, article.tags.clone())
+            .map_err(TrackerError::from)?;
+
+        Ok(wiki_page_to_article(page, self.owner(), self.repo()))
+    }
+
+    fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
+        let wiki = self.wiki();
+
+        let page = wiki
+            .update_page(
+                id,
+                update.summary.as_deref(),
+                update.content.as_deref(),
+                if update.tags.is_empty() {
+                    None
+                } else {
+                    Some(update.tags.clone())
+                },
+            )
+            .map_err(TrackerError::from)?;
+
+        Ok(wiki_page_to_article(page, self.owner(), self.repo()))
+    }
+
+    fn delete_article(&self, id: &str) -> Result<()> {
+        let wiki = self.wiki();
+
+        wiki.delete_page(id).map_err(TrackerError::from)
+    }
+
+    fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
+        let wiki = self.wiki();
+
+        let pages = wiki
+            .get_child_pages(parent_id)
+            .map_err(TrackerError::from)?;
+
+        let articles = pages
+            .into_iter()
+            .map(|page| wiki_page_to_article(page, self.owner(), self.repo()))
+            .collect();
+
+        Ok(articles)
+    }
+
+    fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article> {
+        let wiki = self.wiki();
+
+        let page = wiki
+            .move_page(article_id, new_parent_id)
+            .map_err(TrackerError::from)?;
+
+        Ok(wiki_page_to_article(page, self.owner(), self.repo()))
+    }
+
+    fn list_article_attachments(&self, _article_id: &str) -> Result<Vec<ArticleAttachment>> {
+        // GitHub wikis don't have native attachment support
+        // Could potentially scan for images in the markdown, but for now return empty
+        Ok(Vec::new())
+    }
+
+    fn get_article_comments(&self, _article_id: &str) -> Result<Vec<Comment>> {
+        // GitHub wikis don't support comments
+        Ok(Vec::new())
+    }
+
+    fn add_article_comment(&self, _article_id: &str, _text: &str) -> Result<Comment> {
+        // GitHub wikis don't support comments
+        Err(TrackerError::InvalidInput(
+            "GitHub wikis do not support comments".to_string(),
+        ))
     }
 }

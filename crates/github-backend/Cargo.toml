@@ -12,7 +12,11 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 urlencoding = "2.1"
+git2 = "0.18"
+walkdir = "2"
+serde_yaml = "0.9"
 
 [dev-dependencies]
 wiremock = { workspace = true }
 tokio = { workspace = true }
+tempfile = "3"
