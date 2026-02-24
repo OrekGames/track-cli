@@ -47,7 +47,10 @@ impl From<GitHubError> for TrackerError {
                 message: "GitHub API rate limit exceeded".to_string(),
             },
             GitHubError::Api { status, message } => TrackerError::Api { status, message },
-            GitHubError::Wiki(msg) => TrackerError::InvalidInput(format!("Wiki error: {}", msg)),
+            GitHubError::Wiki(msg) => TrackerError::Api {
+                status: 500,
+                message: format!("Wiki error: {}", msg),
+            },
         }
     }
 }

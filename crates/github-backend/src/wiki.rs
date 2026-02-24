@@ -4,7 +4,7 @@ use git2::{Cred, RemoteCallbacks, Repository, Signature};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use walkdir::WalkDir;
 
 /// YAML front matter for wiki pages
@@ -37,57 +37,85 @@ pub struct WikiPage {
     pub author: Option<String>,
 }
 
+/// Validate a slug to prevent path traversal attacks
+pub(crate) fn validate_slug(slug: &str) -> Result<()> {
+    if slug.is_empty()
+        || slug.contains("..")
+        || slug.starts_with('/')
+        || slug.starts_with('\\')
+        || slug.contains('\0')
+    {
+        return Err(GitHubError::Wiki(format!("Invalid slug: '{}'", slug)));
+    }
+    Ok(())
+}
+
 /// Manages a GitHub wiki as a Git repository
 pub struct WikiManager {
     owner: String,
     repo: String,
     token: String,
     cache_dir: PathBuf,
-    initialized: AtomicBool,
+    initialized: Mutex<bool>,
 }
 
 impl WikiManager {
-    /// Create a new WikiManager
-    pub fn new(owner: &str, repo: &str, token: &str) -> Result<Self> {
-        let cache_dir = Self::get_cache_dir(owner, repo)?;
-        
-        Ok(Self {
+    /// Create a new WikiManager (lightweight, no I/O)
+    pub fn new(owner: &str, repo: &str, token: &str) -> Self {
+        let cache_dir = Self::get_cache_dir(owner, repo);
+
+        Self {
             owner: owner.to_string(),
             repo: repo.to_string(),
             token: token.to_string(),
             cache_dir,
-            initialized: AtomicBool::new(false),
-        })
+            initialized: Mutex::new(false),
+        }
+    }
+
+    /// Create a WikiManager with a specific cache directory, pre-initialized.
+    /// For testing only — skips clone/fetch on first use.
+    #[cfg(test)]
+    pub(crate) fn new_with_cache_dir(owner: &str, repo: &str, token: &str, cache_dir: PathBuf) -> Self {
+        Self {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            token: token.to_string(),
+            cache_dir,
+            initialized: Mutex::new(true),
+        }
     }
 
     /// Get cache directory for this wiki
-    fn get_cache_dir(owner: &str, repo: &str) -> Result<PathBuf> {
+    fn get_cache_dir(owner: &str, repo: &str) -> PathBuf {
         let base_dir = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir());
 
-        let cache_dir = base_dir
+        base_dir
             .join(".cache")
             .join("track")
             .join("wikis")
             .join(owner)
-            .join(repo);
-
-        Ok(cache_dir)
+            .join(repo)
     }
 
-    /// Get wiki repository URL with authentication
+    /// Get wiki repository URL (auth is handled via credentials callback)
     fn wiki_url(&self) -> String {
         format!(
-            "https://{}@github.com/{}/{}.wiki.git",
-            self.token, self.owner, self.repo
+            "https://github.com/{}/{}.wiki.git",
+            self.owner, self.repo
         )
     }
 
     /// Initialize wiki repository (clone or fetch)
     pub fn ensure_initialized(&self) -> Result<()> {
-        if self.initialized.load(Ordering::SeqCst) {
+        let mut initialized = self.initialized.lock().map_err(|_| {
+            GitHubError::Wiki("Failed to acquire initialization lock".to_string())
+        })?;
+
+        if *initialized {
             return Ok(());
         }
 
@@ -99,7 +127,7 @@ impl WikiManager {
             self.clone_wiki()?;
         }
 
-        self.initialized.store(true, Ordering::SeqCst);
+        *initialized = true;
         Ok(())
     }
 
@@ -153,8 +181,9 @@ impl WikiManager {
         let mut fetch_opts = git2::FetchOptions::new();
         fetch_opts.remote_callbacks(callbacks);
 
+        // GitHub wikis only use the `master` branch
         remote
-            .fetch(&["master", "main"], Some(&mut fetch_opts), None)
+            .fetch(&["master"], Some(&mut fetch_opts), None)
             .map_err(|e| GitHubError::Wiki(format!("Failed to fetch: {}", e)))?;
 
         // Merge FETCH_HEAD into current branch
@@ -177,7 +206,7 @@ impl WikiManager {
                 .name()
                 .ok_or_else(|| GitHubError::Wiki("Invalid reference name".to_string()))?
                 .to_string();
-            let msg = format!("Fast-forward merge");
+            let msg = "Fast-forward merge".to_string();
             reference
                 .set_target(fetch_commit.id(), &msg)
                 .map_err(|e| GitHubError::Wiki(format!("Failed to fast-forward: {}", e)))?;
@@ -185,6 +214,14 @@ impl WikiManager {
                 .map_err(|e| GitHubError::Wiki(format!("Failed to set HEAD: {}", e)))?;
             repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
                 .map_err(|e| GitHubError::Wiki(format!("Failed to checkout: {}", e)))?;
+        } else if analysis.0.is_up_to_date() {
+            // Nothing to do
+        } else {
+            return Err(GitHubError::Wiki(
+                "Wiki has diverged; non-fast-forward merge required. \
+                 Delete the cache at ~/.cache/track/wikis/ and retry."
+                    .to_string(),
+            ));
         }
 
         Ok(())
@@ -307,7 +344,8 @@ impl WikiManager {
                 let yaml_str = yaml_lines.join("\n");
                 
                 if let Ok(front_matter) = serde_yaml::from_str::<FrontMatter>(&yaml_str) {
-                    let content_lines = &lines[end_idx + 2..];
+                    let content_start = (end_idx + 2).min(lines.len());
+                    let content_lines = &lines[content_start..];
                     let content = content_lines.join("\n");
                     return (front_matter, content);
                 }
@@ -336,27 +374,26 @@ impl WikiManager {
         let mut last_commit_time = None;
         let mut last_author = None;
 
-        for oid in revwalk {
-            if let Ok(oid) = oid {
-                if let Ok(commit) = repo.find_commit(oid) {
-                    if let Ok(tree) = commit.tree() {
-                        if tree.get_path(relative_path).is_ok() {
-                            let time = commit.time();
-                            let timestamp = DateTime::from_timestamp(time.seconds(), 0)
-                                .unwrap_or_else(|| Utc::now());
-                            
-                            if last_commit_time.is_none() {
-                                last_commit_time = Some(timestamp);
-                                last_author = Some(commit.author().name().unwrap_or("Unknown").to_string());
-                            }
-                            first_commit_time = Some(timestamp);
+        for oid in revwalk.flatten() {
+            if let Ok(commit) = repo.find_commit(oid) {
+                if let Ok(tree) = commit.tree() {
+                    if tree.get_path(relative_path).is_ok() {
+                        let time = commit.time();
+                        let timestamp = DateTime::from_timestamp(time.seconds(), 0)
+                            .unwrap_or_else(Utc::now);
+
+                        if last_commit_time.is_none() {
+                            last_commit_time = Some(timestamp);
+                            last_author =
+                                Some(commit.author().name().unwrap_or("Unknown").to_string());
                         }
+                        first_commit_time = Some(timestamp);
                     }
                 }
             }
         }
 
-        let created = first_commit_time.unwrap_or_else(|| Utc::now());
+        let created = first_commit_time.unwrap_or_else(Utc::now);
         let updated = last_commit_time.unwrap_or(created);
 
         Ok((created, updated, last_author))
@@ -364,6 +401,7 @@ impl WikiManager {
 
     /// Get a specific page by slug
     pub fn get_page(&self, slug: &str) -> Result<WikiPage> {
+        validate_slug(slug)?;
         self.ensure_initialized()?;
 
         let page_path = self.cache_dir.join(format!("{}.md", slug));
@@ -377,6 +415,7 @@ impl WikiManager {
 
     /// Create a new wiki page
     pub fn create_page(&self, slug: &str, title: &str, content: &str, tags: Vec<String>) -> Result<WikiPage> {
+        validate_slug(slug)?;
         self.ensure_initialized()?;
 
         let page_path = self.cache_dir.join(format!("{}.md", slug));
@@ -407,6 +446,7 @@ impl WikiManager {
 
     /// Update an existing wiki page
     pub fn update_page(&self, slug: &str, title: Option<&str>, content: Option<&str>, tags: Option<Vec<String>>) -> Result<WikiPage> {
+        validate_slug(slug)?;
         self.ensure_initialized()?;
 
         let page_path = self.cache_dir.join(format!("{}.md", slug));
@@ -437,6 +477,7 @@ impl WikiManager {
 
     /// Delete a wiki page
     pub fn delete_page(&self, slug: &str) -> Result<()> {
+        validate_slug(slug)?;
         self.ensure_initialized()?;
 
         let page_path = self.cache_dir.join(format!("{}.md", slug));
@@ -457,6 +498,10 @@ impl WikiManager {
 
     /// Move a page to a new location
     pub fn move_page(&self, slug: &str, new_parent: Option<&str>) -> Result<WikiPage> {
+        validate_slug(slug)?;
+        if let Some(parent) = new_parent {
+            validate_slug(parent)?;
+        }
         self.ensure_initialized()?;
 
         let old_path = self.cache_dir.join(format!("{}.md", slug));
@@ -491,7 +536,7 @@ impl WikiManager {
 
         // Commit and push
         self.commit_and_push(
-            &format!("Move {} to {:?}", slug, new_parent),
+            &format!("Move {} to {}", slug, new_parent.unwrap_or("root")),
             &[&old_path, &new_path],
         )?;
 
@@ -505,8 +550,10 @@ impl WikiManager {
             tags: tags.to_vec(),
         };
 
-        let yaml = serde_yaml::to_string(&front_matter).unwrap_or_default();
-        let yaml = yaml.trim_start_matches("---\n").trim();
+        let yaml = match serde_yaml::to_string(&front_matter) {
+            Ok(y) => y.trim_start_matches("---\n").trim().to_string(),
+            Err(_) => return format!("{}\n", content),
+        };
 
         format!("---\n{}\n---\n\n{}", yaml, content)
     }
@@ -583,16 +630,18 @@ impl WikiManager {
         let mut push_opts = git2::PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
-        // Try both master and main branches
-        let refspecs = ["refs/heads/master:refs/heads/master", "refs/heads/main:refs/heads/main"];
-        
-        for refspec in &refspecs {
-            if remote.push(&[*refspec], Some(&mut push_opts)).is_ok() {
-                return Ok(());
-            }
-        }
+        // GitHub wikis only support the `master` branch — the web UI
+        // ignores all other branches, so always push to master.
+        remote
+            .push(
+                &["refs/heads/master:refs/heads/master"],
+                Some(&mut push_opts),
+            )
+            .map_err(|e| {
+                GitHubError::Wiki(format!("Failed to push to master: {}", e))
+            })?;
 
-        Err(GitHubError::Wiki("Failed to push changes".to_string()))
+        Ok(())
     }
 
     /// Search pages by content

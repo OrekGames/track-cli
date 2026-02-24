@@ -980,32 +980,68 @@ fn test_github_delete_issue_not_supported() {
 
 #[test]
 #[ignore]
-fn test_github_article_commands_not_supported() {
+fn test_github_wiki_article_commands() {
     if !config_exists() {
         return;
     }
 
-    // article list returns empty (NoopKnowledgeBase) which is fine
-    track_github_json()
+    // Use a timestamp-based title so the derived slug is unique per run
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        % 100000;
+    let title = format!("Integration Test Wiki Page {}", ts);
+    // slugify: lowercase, non-alphanumeric → '-', collapse hyphens
+    let slug = format!("integration-test-wiki-page-{}", ts);
+
+    // article list should succeed (GitHub Wiki is now supported)
+    let list_output = track_github_json()
         .args(["article", "list"])
         .assert()
-        .success();
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list_output).expect("article list should return valid JSON");
+    assert!(list_json.is_array(), "article list should return an array");
 
-    // article create should fail since GitHub has no knowledge base
-    track_github()
+    // article create should succeed via GitHub Wiki backend
+    let create_output = track_github_json()
         .args([
             "article",
             "create",
             "-p",
             GITHUB_PROJECT,
             "-s",
-            "Test Article",
+            &title,
+            "--content",
+            "This page was created by the integration test suite.",
         ])
         .assert()
-        .failure()
-        .stderr(
-            predicate::str::contains("not support").or(predicate::str::contains("knowledge base")),
-        );
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let created: serde_json::Value =
+        serde_json::from_slice(&create_output).expect("article create should return valid JSON");
+    assert!(
+        created.get("id").is_some(),
+        "created article should have 'id'"
+    );
+
+    // article get should return the page we just created
+    track_github_json()
+        .args(["article", "get", &slug])
+        .assert()
+        .success();
+
+    // Clean up: delete the page
+    track_github()
+        .args(["article", "delete", &slug])
+        .assert()
+        .success();
 }
 
 #[test]

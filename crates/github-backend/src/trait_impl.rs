@@ -255,6 +255,32 @@ impl IssueTracker for GitHubClient {
 // KnowledgeBase Implementation
 // ============================================================================
 
+use std::collections::HashSet;
+
+/// Generate a URL-safe slug from text
+fn slugify(text: &str) -> String {
+    let slug: String = text
+        .chars()
+        .flat_map(|c| c.to_lowercase())
+        .map(|c| if c.is_ascii_alphanumeric() || c == '/' { c } else { '-' })
+        .collect();
+    // Collapse consecutive hyphens and trim
+    let mut result = String::new();
+    let mut prev_hyphen = false;
+    for c in slug.chars() {
+        if c == '-' {
+            if !prev_hyphen {
+                result.push('-');
+            }
+            prev_hyphen = true;
+        } else {
+            result.push(c);
+            prev_hyphen = false;
+        }
+    }
+    result.trim_matches('-').to_string()
+}
+
 /// Convert a WikiPage to an Article
 fn wiki_page_to_article(page: WikiPage, owner: &str, repo: &str) -> Article {
     Article {
@@ -320,63 +346,51 @@ impl KnowledgeBase for GitHubClient {
 
         let wiki = self.wiki();
         let pages = wiki.list_pages().map_err(TrackerError::from)?;
-        
-        // Check children for each page
-        let mut articles: Vec<Article> = pages
+
+        // Single-pass parent set for has_children
+        let parent_slugs: HashSet<String> =
+            pages.iter().filter_map(|p| p.parent.clone()).collect();
+
+        let articles: Vec<Article> = pages
             .into_iter()
+            .skip(skip)
+            .take(limit)
             .map(|page| {
-                let slug = page.slug.clone();
                 let mut article = wiki_page_to_article(page, self.owner(), self.repo());
-                
-                if let Ok(children) = wiki.get_child_pages(&slug) {
-                    article.has_children = !children.is_empty();
-                }
-                
+                article.has_children = parent_slugs.contains(&article.id);
                 article
             })
             .collect();
 
-        // Apply pagination
-        let total = articles.len();
-        let start = skip.min(total);
-        let end = (skip + limit).min(total);
-        
-        Ok(articles.drain(start..end).collect())
+        Ok(articles)
     }
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
         let wiki = self.wiki();
         let pages = wiki.search_pages(query).map_err(TrackerError::from)?;
-        
-        let mut articles: Vec<Article> = pages
+
+        // Single-pass parent set for has_children
+        let parent_slugs: HashSet<String> =
+            pages.iter().filter_map(|p| p.parent.clone()).collect();
+
+        let articles: Vec<Article> = pages
             .into_iter()
+            .skip(skip)
+            .take(limit)
             .map(|page| {
-                let slug = page.slug.clone();
                 let mut article = wiki_page_to_article(page, self.owner(), self.repo());
-                
-                if let Ok(children) = wiki.get_child_pages(&slug) {
-                    article.has_children = !children.is_empty();
-                }
-                
+                article.has_children = parent_slugs.contains(&article.id);
                 article
             })
             .collect();
 
-        // Apply pagination
-        let total = articles.len();
-        let start = skip.min(total);
-        let end = (skip + limit).min(total);
-        
-        Ok(articles.drain(start..end).collect())
+        Ok(articles)
     }
 
     fn create_article(&self, article: &CreateArticle) -> Result<Article> {
-        // Verify project matches
+        // Only accept the canonical owner/repo format
         let expected_project = format!("{}/{}", self.owner(), self.repo());
-        if article.project_id != expected_project
-            && article.project_id != self.repo()
-            && article.project_id != self.owner()
-        {
+        if article.project_id != expected_project {
             return Err(TrackerError::InvalidInput(format!(
                 "Project '{}' does not match current repository '{}'",
                 article.project_id, expected_project
@@ -387,17 +401,13 @@ impl KnowledgeBase for GitHubClient {
 
         // Generate slug from title
         let slug = if let Some(parent) = &article.parent_article_id {
-            format!(
-                "{}/{}",
-                parent,
-                article.summary.to_lowercase().replace(' ', "-")
-            )
+            format!("{}/{}", parent, slugify(&article.summary))
         } else {
-            article.summary.to_lowercase().replace(' ', "-")
+            slugify(&article.summary)
         };
 
         let content = article.content.as_deref().unwrap_or("");
-        
+
         let page = wiki
             .create_page(&slug, &article.summary, content, article.tags.clone())
             .map_err(TrackerError::from)?;

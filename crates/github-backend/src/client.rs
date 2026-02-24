@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 use ureq::Agent;
 
@@ -13,7 +14,7 @@ pub struct GitHubClient {
     owner: String,
     repo: String,
     token: String,
-    wiki_manager: WikiManager,
+    wiki_manager: OnceLock<WikiManager>,
 }
 
 impl GitHubClient {
@@ -22,14 +23,10 @@ impl GitHubClient {
         Self::with_base_url("https://api.github.com", owner, repo, token)
     }
 
-    /// Get or initialize the wiki manager
-    pub fn get_or_init_wiki(&mut self) -> Result<&mut WikiManager> {
-        Ok(&mut self.wiki_manager)
-    }
-
-    /// Get wiki manager (read-only)
+    /// Get wiki manager, lazily initializing on first access
     pub fn wiki(&self) -> &WikiManager {
-        &self.wiki_manager
+        self.wiki_manager
+            .get_or_init(|| WikiManager::new(&self.owner, &self.repo, &self.token))
     }
 
     /// Create a new GitHub client with a custom base URL (for GitHub Enterprise or testing)
@@ -40,16 +37,13 @@ impl GitHubClient {
             .build()
             .into();
 
-        let wiki_manager = WikiManager::new(owner, repo, token)
-            .unwrap_or_else(|_| panic!("Failed to initialize WikiManager"));
-
         Self {
             agent,
             base_url: base_url.trim_end_matches('/').to_string(),
             owner: owner.to_string(),
             repo: repo.to_string(),
             token: token.to_string(),
-            wiki_manager,
+            wiki_manager: OnceLock::new(),
         }
     }
 

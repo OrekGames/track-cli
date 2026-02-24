@@ -18,101 +18,6 @@ use tracker_core::{IssueTracker, KnowledgeBase};
 use tracker_mock::MockClient;
 use youtrack_backend::YouTrackClient;
 
-/// A no-op KnowledgeBase for backends that don't support articles (GitHub).
-struct NoopKnowledgeBase;
-
-impl KnowledgeBase for NoopKnowledgeBase {
-    fn get_article(&self, _id: &str) -> tracker_core::Result<tracker_core::Article> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "This backend does not support articles/knowledge base".to_string(),
-        ))
-    }
-
-    fn list_articles(
-        &self,
-        _project_id: Option<&str>,
-        _limit: usize,
-        _skip: usize,
-    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
-        Ok(Vec::new())
-    }
-
-    fn search_articles(
-        &self,
-        _query: &str,
-        _limit: usize,
-        _skip: usize,
-    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
-        Ok(Vec::new())
-    }
-
-    fn create_article(
-        &self,
-        _article: &tracker_core::CreateArticle,
-    ) -> tracker_core::Result<tracker_core::Article> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "This backend does not support articles/knowledge base".to_string(),
-        ))
-    }
-
-    fn update_article(
-        &self,
-        _id: &str,
-        _update: &tracker_core::UpdateArticle,
-    ) -> tracker_core::Result<tracker_core::Article> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "This backend does not support articles/knowledge base".to_string(),
-        ))
-    }
-
-    fn delete_article(&self, _id: &str) -> tracker_core::Result<()> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "This backend does not support articles/knowledge base".to_string(),
-        ))
-    }
-
-    fn get_child_articles(
-        &self,
-        _parent_id: &str,
-    ) -> tracker_core::Result<Vec<tracker_core::Article>> {
-        Ok(Vec::new())
-    }
-
-    fn move_article(
-        &self,
-        _article_id: &str,
-        _new_parent_id: Option<&str>,
-    ) -> tracker_core::Result<tracker_core::Article> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "This backend does not support articles/knowledge base".to_string(),
-        ))
-    }
-
-    fn list_article_attachments(
-        &self,
-        _article_id: &str,
-    ) -> tracker_core::Result<Vec<tracker_core::ArticleAttachment>> {
-        Ok(Vec::new())
-    }
-
-    fn get_article_comments(
-        &self,
-        _article_id: &str,
-    ) -> tracker_core::Result<Vec<tracker_core::Comment>> {
-        Ok(Vec::new())
-    }
-
-    fn add_article_comment(
-        &self,
-        _article_id: &str,
-        _text: &str,
-    ) -> tracker_core::Result<tracker_core::Comment> {
-        Err(tracker_core::TrackerError::InvalidInput(
-            "This backend does not support articles/knowledge base".to_string(),
-        ))
-    }
-}
-
 /// Embedded agent guide content - written to project directory during `track init`
 const AGENT_GUIDE: &str = include_str!("../../../docs/agent_guide.md");
 
@@ -263,8 +168,7 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 GitHubClient::new(owner, repo, token)
             };
-            let kb = NoopKnowledgeBase;
-            run_with_client(&client, &kb, &cli, &config)
+            run_with_client(&client, &client, &cli, &config)
         }
         Backend::GitLab => {
             let base_url = config.url.as_ref().unwrap();
