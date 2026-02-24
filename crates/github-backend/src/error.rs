@@ -26,6 +26,9 @@ pub enum GitHubError {
 
     #[error("API error ({status}): {message}")]
     Api { status: u16, message: String },
+
+    #[error("Wiki error: {0}")]
+    Wiki(String),
 }
 
 pub type Result<T> = std::result::Result<T, GitHubError>;
@@ -44,6 +47,10 @@ impl From<GitHubError> for TrackerError {
                 message: "GitHub API rate limit exceeded".to_string(),
             },
             GitHubError::Api { status, message } => TrackerError::Api { status, message },
+            GitHubError::Wiki(msg) => TrackerError::Api {
+                status: 500,
+                message: format!("Wiki error: {}", msg),
+            },
         }
     }
 }

@@ -8,7 +8,7 @@ description = "Mock client for tracker-cli evaluation and testing"
 tracker-core = { path = "../tracker-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "1.0.2+spec-1.1.0"
+toml = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2.0"
 glob = "0.3"

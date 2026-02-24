@@ -1,9 +1,11 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 use ureq::Agent;
 
 use crate::convert::convert_query_to_github;
 use crate::error::{GitHubError, Result};
 use crate::models::*;
+use crate::wiki::WikiManager;
 
 /// GitHub REST API client
 pub struct GitHubClient {
@@ -12,12 +14,19 @@ pub struct GitHubClient {
     owner: String,
     repo: String,
     token: String,
+    wiki_manager: OnceLock<WikiManager>,
 }
 
 impl GitHubClient {
     /// Create a new GitHub client targeting api.github.com
     pub fn new(owner: &str, repo: &str, token: &str) -> Self {
         Self::with_base_url("https://api.github.com", owner, repo, token)
+    }
+
+    /// Get wiki manager, lazily initializing on first access
+    pub fn wiki(&self) -> &WikiManager {
+        self.wiki_manager
+            .get_or_init(|| WikiManager::new(&self.owner, &self.repo, &self.token))
     }
 
     /// Create a new GitHub client with a custom base URL (for GitHub Enterprise or testing)
@@ -34,6 +43,7 @@ impl GitHubClient {
             owner: owner.to_string(),
             repo: repo.to_string(),
             token: token.to_string(),
+            wiki_manager: OnceLock::new(),
         }
     }
 
