@@ -50,7 +50,7 @@ pub enum Backend {
     GitLab,
 }
 
-#[derive(ValueEnum, Clone, Debug, Copy)]
+#[derive(ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     Text,
     Json,
@@ -419,11 +419,14 @@ pub enum IssueCommands {
         project: Option<String>,
 
         /// Maximum number of results
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, conflicts_with = "all")]
         limit: usize,
         /// Number of results to skip
-        #[arg(long, default_value_t = 0)]
+        #[arg(long, default_value_t = 0, conflicts_with = "all")]
         skip: usize,
+        /// Fetch all results (paginate automatically)
+        #[arg(long)]
+        all: bool,
     },
     /// Delete issue(s) by ID - supports comma-separated IDs for batch deletion
     #[command(visible_alias = "rm", visible_alias = "del")]
@@ -446,8 +449,11 @@ pub enum IssueCommands {
         /// Issue ID (e.g., PROJ-123)
         id: String,
         /// Maximum number of comments to show
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, conflicts_with = "all")]
         limit: usize,
+        /// Fetch all comments (paginate automatically)
+        #[arg(long)]
+        all: bool,
     },
     /// Link two issues together
     Link {
@@ -667,11 +673,14 @@ pub enum ArticleCommands {
         #[arg(long, short = 'p')]
         project: Option<String>,
         /// Maximum number of results
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, conflicts_with = "all")]
         limit: usize,
         /// Number of results to skip
-        #[arg(long, default_value_t = 0)]
+        #[arg(long, default_value_t = 0, conflicts_with = "all")]
         skip: usize,
+        /// Fetch all articles (paginate automatically)
+        #[arg(long)]
+        all: bool,
     },
     /// Search articles
     #[command(visible_alias = "s", visible_alias = "find")]
@@ -679,11 +688,14 @@ pub enum ArticleCommands {
         /// Search query
         query: String,
         /// Maximum number of results
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, conflicts_with = "all")]
         limit: usize,
         /// Number of results to skip
-        #[arg(long, default_value_t = 0)]
+        #[arg(long, default_value_t = 0, conflicts_with = "all")]
         skip: usize,
+        /// Fetch all results (paginate automatically)
+        #[arg(long)]
+        all: bool,
     },
     /// Create new article
     #[command(visible_alias = "new", visible_alias = "c")]
@@ -763,8 +775,11 @@ pub enum ArticleCommands {
         /// Article ID
         id: String,
         /// Maximum number of comments to show
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, conflicts_with = "all")]
         limit: usize,
+        /// Fetch all comments (paginate automatically)
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -1045,9 +1060,10 @@ mod tests {
 
         match cli.command {
             Commands::Issue { action } => match action {
-                IssueCommands::Comments { id, limit } => {
+                IssueCommands::Comments { id, limit, all } => {
                     assert_eq!(id, "PROJ-123");
                     assert_eq!(limit, 5);
+                    assert!(!all);
                 }
                 _ => panic!("expected issue comments"),
             },
@@ -1459,12 +1475,14 @@ mod tests {
                     project,
                     limit,
                     skip,
+                    all,
                 } => {
                     assert_eq!(query.as_deref(), Some("project: PROJ #Unresolved"));
                     assert!(template.is_none());
                     assert!(project.is_none());
                     assert_eq!(limit, 20);
                     assert_eq!(skip, 0);
+                    assert!(!all);
                 }
                 _ => panic!("expected issue search"),
             },

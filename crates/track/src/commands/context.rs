@@ -1,6 +1,7 @@
 use crate::cache::{
-    CachedBackendMetadata, CachedLinkType, CachedProject, CachedQueryTemplate, CachedRecentIssue,
-    CachedTag, ProjectFieldsCache, ProjectUsersCache, ProjectWorkflowHints, TrackerCache,
+    CachedBackendMetadata, CachedIssueCount, CachedLinkType, CachedProject, CachedQueryTemplate,
+    CachedRecentIssue, CachedTag, ProjectFieldsCache, ProjectUsersCache, ProjectWorkflowHints,
+    TrackerCache,
 };
 use crate::cli::OutputFormat;
 use anyhow::{Context, Result};
@@ -33,6 +34,9 @@ pub struct AggregatedContext {
     pub workflow_hints: Vec<ProjectWorkflowHints>,
     /// Recently accessed issues (from cache LRU)
     pub recent_issues: Vec<CachedRecentIssue>,
+    /// Issue counts per project and template (from cached counts)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub issue_counts: Vec<CachedIssueCount>,
     /// Unresolved issues (if --include-issues was specified)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issues: Option<Vec<IssueSummary>>,
@@ -146,6 +150,7 @@ pub fn handle_context(
         assignable_users: cache.project_users.clone(),
         workflow_hints: cache.workflow_hints.clone(),
         recent_issues: cache.recent_issues.clone(),
+        issue_counts: cache.issue_counts.clone(),
         issues: None,
     };
 
@@ -166,6 +171,9 @@ pub fn handle_context(
         context
             .recent_issues
             .retain(|ri| ri.project_short_name.eq_ignore_ascii_case(proj));
+        context
+            .issue_counts
+            .retain(|ic| ic.project_short_name.eq_ignore_ascii_case(proj));
     }
 
     // Fetch unresolved issues if requested
@@ -181,8 +189,8 @@ pub fn handle_context(
             };
 
             match client.search_issues(&query, issue_limit, 0) {
-                Ok(issues) => {
-                    context.issues = Some(issues.iter().map(IssueSummary::from).collect());
+                Ok(result) => {
+                    context.issues = Some(result.items.iter().map(IssueSummary::from).collect());
                 }
                 Err(e) => {
                     // Don't fail the whole command, just skip issues
@@ -219,6 +227,29 @@ pub fn handle_context(
             println!("{}:", "Projects".white().bold());
             for p in &context.projects {
                 println!("  {} - {}", p.short_name.cyan().bold(), p.name);
+            }
+
+            if !context.issue_counts.is_empty() {
+                println!();
+                println!("{}:", "Issue Counts".white().bold());
+                // Group by project
+                let mut projects_seen: Vec<String> = Vec::new();
+                for ic in &context.issue_counts {
+                    if !projects_seen.contains(&ic.project_short_name) {
+                        projects_seen.push(ic.project_short_name.clone());
+                        let counts: Vec<String> = context
+                            .issue_counts
+                            .iter()
+                            .filter(|c| c.project_short_name == ic.project_short_name)
+                            .map(|c| format!("{}: {}", c.template_name, c.count.to_string().cyan()))
+                            .collect();
+                        println!(
+                            "  {}: {}",
+                            ic.project_short_name.cyan(),
+                            counts.join("  \u{00b7}  ")
+                        );
+                    }
+                }
             }
 
             if !context.project_fields.is_empty() {

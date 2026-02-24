@@ -1,8 +1,8 @@
 use crate::cli::{ArticleCommands, OutputFormat};
-use crate::output::{output_list, output_result};
+use crate::output::{output_list, output_page_hint, output_progress, output_result};
 use anyhow::{Context, Result};
 use std::fs;
-use tracker_core::{CreateArticle, IssueTracker, KnowledgeBase, UpdateArticle};
+use tracker_core::{fetch_all_pages, CreateArticle, IssueTracker, KnowledgeBase, UpdateArticle};
 
 pub fn handle_article(
     issue_client: &dyn IssueTracker,
@@ -16,10 +16,14 @@ pub fn handle_article(
             project,
             limit,
             skip,
-        } => handle_list(kb_client, project.as_deref(), *limit, *skip, format),
-        ArticleCommands::Search { query, limit, skip } => {
-            handle_search(kb_client, query, *limit, *skip, format)
-        }
+            all,
+        } => handle_list(kb_client, project.as_deref(), *limit, *skip, *all, format),
+        ArticleCommands::Search {
+            query,
+            limit,
+            skip,
+            all,
+        } => handle_search(kb_client, query, *limit, *skip, *all, format),
         ArticleCommands::Create {
             project,
             summary,
@@ -60,7 +64,9 @@ pub fn handle_article(
         }
         ArticleCommands::Attachments { id } => handle_attachments(kb_client, id, format),
         ArticleCommands::Comment { id, text } => handle_comment(kb_client, id, text, format),
-        ArticleCommands::Comments { id, limit } => handle_comments(kb_client, id, *limit, format),
+        ArticleCommands::Comments { id, limit, all } => {
+            handle_comments(kb_client, id, *limit, *all, format)
+        }
     }
 }
 
@@ -78,13 +84,28 @@ fn handle_list(
     project: Option<&str>,
     limit: usize,
     skip: usize,
+    all: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    let articles = client
-        .list_articles(project, limit, skip)
-        .context("Failed to list articles")?;
+    let articles = if all {
+        let page_size = 100usize;
+        let res = fetch_all_pages(
+            |offset, page_limit| client.list_articles(project, page_limit, offset),
+            page_size,
+        )
+        .context("Failed to list articles (pagination)")?;
+        output_progress(&format!("Fetched {} articles", res.len()), format);
+        res
+    } else {
+        client
+            .list_articles(project, limit, skip)
+            .context("Failed to list articles")?
+    };
 
     output_list(&articles, format);
+    if !all {
+        output_page_hint(articles.len(), limit, skip, None, format);
+    }
     Ok(())
 }
 
@@ -93,13 +114,33 @@ fn handle_search(
     query: &str,
     limit: usize,
     skip: usize,
+    all: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    let articles = client
-        .search_articles(query, limit, skip)
-        .with_context(|| format!("Failed to search articles with query '{}'", query))?;
+    let articles = if all {
+        let page_size = 100usize;
+        let res = fetch_all_pages(
+            |offset, page_limit| client.search_articles(query, page_limit, offset),
+            page_size,
+        )
+        .with_context(|| {
+            format!(
+                "Failed to search articles with query '{}' (pagination)",
+                query
+            )
+        })?;
+        output_progress(&format!("Fetched {} articles", res.len()), format);
+        res
+    } else {
+        client
+            .search_articles(query, limit, skip)
+            .with_context(|| format!("Failed to search articles with query '{}'", query))?
+    };
 
     output_list(&articles, format);
+    if !all {
+        output_page_hint(articles.len(), limit, skip, None, format);
+    }
     Ok(())
 }
 
@@ -302,14 +343,18 @@ fn handle_comments(
     client: &dyn KnowledgeBase,
     id: &str,
     limit: usize,
+    all: bool,
     format: OutputFormat,
 ) -> Result<()> {
     let comments = client
         .get_article_comments(id)
         .with_context(|| format!("Failed to fetch comments for article '{}'", id))?;
 
-    // Apply limit
-    let comments: Vec<_> = comments.into_iter().take(limit).collect();
+    let comments: Vec<_> = if all {
+        comments
+    } else {
+        comments.into_iter().take(limit).collect()
+    };
 
     output_list(&comments, format);
     Ok(())

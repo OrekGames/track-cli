@@ -2,7 +2,8 @@
 
 use tracker_core::{
     Comment, CreateIssue, CreateProject, CreateTag, Issue, IssueLink, IssueLinkType, IssueTag,
-    IssueTracker, Project, ProjectCustomField, Result, TrackerError, UpdateIssue, User,
+    IssueTracker, Project, ProjectCustomField, Result, SearchResult, TrackerError, UpdateIssue,
+    User,
 };
 
 use crate::client::JiraClient;
@@ -18,7 +19,7 @@ impl IssueTracker for JiraClient {
             .map_err(TrackerError::from)
     }
 
-    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Issue>> {
+    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
         // If query looks like JQL, use it directly; otherwise, try simple conversion
         let jql = if query.contains('=') || query.contains(" AND ") || query.contains(" OR ") {
             query.to_string()
@@ -28,7 +29,22 @@ impl IssueTracker for JiraClient {
         };
 
         self.search_issues(&jql, limit, skip)
-            .map(|r| r.issues.into_iter().map(Into::into).collect())
+            .map(|r| {
+                let total = r.total as u64;
+                let items = r.issues.into_iter().map(Into::into).collect();
+                SearchResult::with_total(items, total)
+            })
+            .map_err(TrackerError::from)
+    }
+
+    fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
+        let jql = if query.contains('=') || query.contains(" AND ") || query.contains(" OR ") {
+            query.to_string()
+        } else {
+            convert_simple_query_to_jql(query)
+        };
+        self.count_issues(&jql)
+            .map(|n| Some(n as u64))
             .map_err(TrackerError::from)
     }
 

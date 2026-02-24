@@ -164,6 +164,13 @@ impl JiraClient {
         Ok(issue)
     }
 
+    /// Count issues matching a JQL query without fetching issue data.
+    /// Uses maxResults=0 to get only the total count.
+    pub fn count_issues(&self, jql: &str) -> Result<usize> {
+        let result = self.search_issues(jql, 0, 0)?;
+        Ok(result.total)
+    }
+
     /// Search issues using JQL
     pub fn search_issues(
         &self,

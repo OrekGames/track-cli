@@ -12,7 +12,15 @@ pub trait IssueTracker: Send + Sync {
     fn get_issue(&self, id: &str) -> Result<Issue>;
 
     /// Search for issues using the backend's query language
-    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Issue>>;
+    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>>;
+
+    /// Get the count of issues matching a query, without fetching the issues themselves.
+    /// Returns None if the backend does not support count queries.
+    /// Default implementation returns None (opt-in per backend).
+    fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
+        let _ = query;
+        Ok(None)
+    }
 
     /// Create a new issue
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue>;

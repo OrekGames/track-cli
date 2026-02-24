@@ -114,6 +114,14 @@ pub struct TextValue {
     pub text: String,
 }
 
+/// Response from POST /api/issuesGetter/count
+#[derive(Debug, Deserialize)]
+pub struct IssueCountResponse {
+    /// Number of matching issues.
+    /// Returns -1 if YouTrack has not finished counting yet -- caller must retry.
+    pub count: i64,
+}
+
 /// Custom field update types for write operations
 #[derive(Debug, Serialize, Clone)]
 #[serde(tag = "$type")]

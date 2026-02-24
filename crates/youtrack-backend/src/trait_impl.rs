@@ -11,7 +11,7 @@ use tracker_core::{
     BundleValueDefinition, Comment, CreateArticle, CreateBundle, CreateBundleValue,
     CreateCustomField, CreateIssue, CreateProject, CreateTag, CustomFieldDefinition, Issue,
     IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
-    Result, TrackerError, UpdateArticle, UpdateIssue, User,
+    Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 impl IssueTracker for YouTrackClient {
@@ -21,10 +21,23 @@ impl IssueTracker for YouTrackClient {
             .map_err(TrackerError::from)
     }
 
-    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Issue>> {
-        self.search_issues(query, limit, skip)
-            .map(|issues| issues.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
+        // Best-effort count — don't fail the search if counting fails
+        let total = self.count_issues(query).ok().flatten();
+
+        let issues = self
+            .search_issues(query, limit, skip)
+            .map_err(TrackerError::from)?;
+        let items: Vec<Issue> = issues.into_iter().map(Into::into).collect();
+
+        match total {
+            Some(count) => Ok(SearchResult::with_total(items, count)),
+            None => Ok(SearchResult::from_items(items)),
+        }
+    }
+
+    fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
+        self.count_issues(query).map_err(TrackerError::from)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {

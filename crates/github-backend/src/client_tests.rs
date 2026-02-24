@@ -175,6 +175,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_count_issues() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/search/issues"))
+            .and(query_param("per_page", "1"))
+            .and(query_param("page", "1"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "total_count": 750,
+                "incomplete_results": false,
+                "items": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let count = client
+            .count_issues("project: owner/repo #Unresolved")
+            .unwrap();
+
+        assert_eq!(count, 750);
+    }
+
+    #[tokio::test]
     async fn test_create_issue() {
         let mock_server = MockServer::start().await;
 

@@ -126,6 +126,44 @@ impl YouTrackClient {
         Ok(issues)
     }
 
+    /// Count issues matching a query via POST /api/issuesGetter/count.
+    ///
+    /// YouTrack counts asynchronously -- if count == -1 the server is still
+    /// processing. Retries up to MAX_RETRIES times with a short sleep between
+    /// attempts. Returns None if counting never completed.
+    pub fn count_issues(&self, query: &str) -> Result<Option<u64>> {
+        const MAX_RETRIES: u32 = 4;
+        const RETRY_DELAY_MS: u64 = 400;
+
+        let url = format!("{}/api/issuesGetter/count?fields=count", self.base_url);
+        let body = serde_json::json!({ "query": query });
+
+        for attempt in 0..MAX_RETRIES {
+            let response = self
+                .agent
+                .post(&url)
+                .header("Authorization", &self.auth_header())
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .send_json(&body)
+                .map_err(|e| self.handle_error(e))?;
+
+            let mut response = self.check_response(response)?;
+            let count_resp: IssueCountResponse = response.body_mut().read_json()?;
+
+            if count_resp.count >= 0 {
+                return Ok(Some(count_resp.count as u64));
+            }
+
+            // -1 means still counting; wait and retry (except on last attempt)
+            if attempt < MAX_RETRIES - 1 {
+                std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+            }
+        }
+
+        Ok(None) // counting never completed within retry budget
+    }
+
     pub fn create_issue(&self, create: &CreateIssue) -> Result<Issue> {
         let url = format!(
             "{}/api/issues?fields={}",

@@ -1,10 +1,11 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
-use crate::output::{output_list, output_result};
+use crate::output::{output_list, output_page_hint, output_progress, output_result};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use tracker_core::{
-    CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
+    fetch_all_pages, CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField,
+    UpdateIssue,
 };
 
 pub fn handle_issue(
@@ -78,6 +79,7 @@ pub fn handle_issue(
             project,
             limit,
             skip,
+            all,
         } => handle_search(
             client,
             query.as_deref(),
@@ -85,12 +87,15 @@ pub fn handle_issue(
             project.as_deref(),
             *limit,
             *skip,
+            *all,
             format,
             default_project,
         ),
         IssueCommands::Delete { ids } => handle_delete_batch(client, ids, format),
         IssueCommands::Comment { id, text } => handle_comment(client, id, text, format),
-        IssueCommands::Comments { id, limit } => handle_comments(client, id, *limit, format),
+        IssueCommands::Comments { id, limit, all } => {
+            handle_comments(client, id, *limit, *all, format)
+        }
         IssueCommands::Link {
             source,
             target,
@@ -720,15 +725,33 @@ fn handle_search(
     project: Option<&str>,
     limit: usize,
     skip: usize,
+    all: bool,
     format: OutputFormat,
     default_project: Option<&str>,
 ) -> Result<()> {
     // Resolve query from template if needed
     let actual_query = resolve_search_query(query, template, project, default_project)?;
 
-    let issues = client
-        .search_issues(&actual_query, limit, skip)
-        .context("Failed to search issues")?;
+    let (issues, inline_total) = if all {
+        // Auto-paginate using the helper; default page size 100
+        let page_size = 100usize;
+        let res = fetch_all_pages(
+            |offset, page_limit| {
+                client
+                    .search_issues(&actual_query, page_limit, offset)
+                    .map(|r| r.items)
+            },
+            page_size,
+        )
+        .context("Failed to search issues (pagination)")?;
+        output_progress(&format!("Fetched {} issues", res.len()), format);
+        (res, None)
+    } else {
+        let result = client
+            .search_issues(&actual_query, limit, skip)
+            .context("Failed to search issues")?;
+        (result.items, result.total)
+    };
 
     // Record first result for quick access tracking (if any)
     if let Some(first) = issues.first() {
@@ -736,7 +759,46 @@ fn handle_search(
     }
 
     output_list(&issues, format);
+
+    // Pagination hint — priority cascade: inline total > cached total > heuristic
+    if !all {
+        let total_info = inline_total
+            .map(|t| (t, "live".to_string()))
+            .or_else(|| try_cached_count(&actual_query, skip));
+        output_page_hint(
+            issues.len(),
+            limit,
+            skip,
+            total_info.as_ref().map(|(n, s)| (*n, s.as_str())),
+            format,
+        );
+    }
+
     Ok(())
+}
+
+/// Try to match a search query against cached template counts.
+/// Returns (count, age_string) if the query matches a known template for a known project.
+fn try_cached_count(query: &str, skip: usize) -> Option<(u64, String)> {
+    // Only useful on first page — cached counts represent totals
+    if skip > 0 {
+        return None;
+    }
+    let cache = TrackerCache::load(None).ok()?;
+    let age = cache.age_string();
+
+    // Check if the query matches any expanded template
+    for project in &cache.projects {
+        for template in &cache.query_templates {
+            let expanded = template.query.replace("{PROJECT}", &project.short_name);
+            if expanded.eq_ignore_ascii_case(query) {
+                if let Some(count) = cache.get_issue_count(&project.short_name, &template.name) {
+                    return Some((count, age));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Resolve search query from either direct query or template
@@ -840,13 +902,18 @@ fn handle_comments(
     client: &dyn IssueTracker,
     id: &str,
     limit: usize,
+    all: bool,
     format: OutputFormat,
 ) -> Result<()> {
     let comments = client
         .get_comments(id)
         .with_context(|| format!("Failed to get comments for issue '{}'", id))?;
 
-    let comments: Vec<_> = comments.into_iter().take(limit).collect();
+    let comments: Vec<_> = if all {
+        comments
+    } else {
+        comments.into_iter().take(limit).collect()
+    };
 
     match format {
         OutputFormat::Json => {

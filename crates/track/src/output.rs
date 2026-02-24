@@ -58,6 +58,60 @@ pub fn output_error(err: &anyhow::Error, format: OutputFormat) {
     eprintln!("{}", message);
 }
 
+/// Output a progress message to stderr if stdout is a TTY and format is text
+pub fn output_progress(message: &str, format: OutputFormat) {
+    if format == OutputFormat::Text && atty::is(atty::Stream::Stdout) {
+        use colored::Colorize;
+        eprintln!("{} {}", "→".cyan().bold(), message);
+    }
+}
+
+/// Print a pagination hint to stderr when results fill the page limit.
+/// Only prints in text mode; no TTY gate (goes to stderr, won't pollute piped output).
+pub fn output_page_hint(
+    result_count: usize,
+    limit: usize,
+    skip: usize,
+    cached_total: Option<(u64, &str)>,
+    format: OutputFormat,
+) {
+    if format != OutputFormat::Text {
+        return;
+    }
+    if result_count == 0 || result_count < limit {
+        return; // partial page or empty — we have all results
+    }
+    // Full page — there may be more
+    let next_skip = skip + result_count;
+
+    let total_part = match cached_total {
+        Some((total, "live")) => format!(" ({} of {} total)", result_count, total),
+        Some((total, age)) => format!(" (~{} total, {})", total, age),
+        None => String::new(),
+    };
+
+    if skip == 0 {
+        // First page: suggest both --all and --skip
+        eprintln!(
+            "  {} {} results shown{}  ·  use {} or {} for next page",
+            "┄┄".dimmed(),
+            result_count,
+            total_part.dimmed(),
+            "--all".cyan(),
+            format!("--skip {}", next_skip).cyan(),
+        );
+    } else {
+        // Already paginating with --skip: only suggest --skip (--all conflicts with --skip in clap)
+        eprintln!(
+            "  {} {} results shown{}  ·  use {} for next page",
+            "┄┄".dimmed(),
+            result_count,
+            total_part.dimmed(),
+            format!("--skip {}", next_skip).cyan(),
+        );
+    }
+}
+
 pub trait Displayable {
     fn display(&self) -> String;
 }
@@ -329,5 +383,46 @@ impl Displayable for BundleDefinition {
             "Values".dimmed(),
             values_str
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_hint_suppressed_on_partial_page() {
+        // limit=20, got 7 — no hint expected (just verify it returns without panic)
+        output_page_hint(7, 20, 0, None, OutputFormat::Text);
+    }
+
+    #[test]
+    fn page_hint_suppressed_in_json_mode() {
+        output_page_hint(20, 20, 0, None, OutputFormat::Json);
+    }
+
+    #[test]
+    fn page_hint_suppressed_on_zero_results() {
+        // Edge case: 0 results with limit=0 should not fire
+        output_page_hint(0, 0, 0, None, OutputFormat::Text);
+    }
+
+    #[test]
+    fn page_hint_fires_on_full_page() {
+        // limit=20, got 20 — hint should fire (we can't capture stderr easily in unit test,
+        // so just verify it doesn't panic)
+        output_page_hint(20, 20, 0, None, OutputFormat::Text);
+    }
+
+    #[test]
+    fn page_hint_with_skip() {
+        // When skip > 0, should still work but only suggest --skip
+        output_page_hint(20, 20, 40, None, OutputFormat::Text);
+    }
+
+    #[test]
+    fn page_hint_with_cached_total() {
+        // Verify it doesn't panic with a cached total
+        output_page_hint(20, 20, 0, Some((847, "2h ago")), OutputFormat::Text);
     }
 }

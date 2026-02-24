@@ -1,14 +1,13 @@
 # Track CLI
 
-A command-line interface for issue tracking systems, built with Rust. Currently supports **YouTrack** and **Jira** with a unified command interface.
-
-> **Note**: GitHub and GitLab backend support is planned but not yet implemented.
+A command-line interface for issue tracking systems, built with Rust. Supports **YouTrack**, **Jira**, **GitHub**, and **GitLab** with a unified command interface.
 
 ## Features
 
-- **Multi-Backend**: YouTrack and Jira with the same commands (GitHub and GitLab planned)
+- **Multi-Backend**: YouTrack, Jira, GitHub, and GitLab with the same commands
 - **Issue Management**: Get, create, update, delete, search issues
 - **Batch Operations**: Update, delete, or complete multiple issues at once
+- **Transparent Pagination**: `--all` flag auto-paginates to fetch every result
 - **Custom Fields**: Set priority, state, assignee, and any field with validation
 - **Field Admin**: Create custom fields and bundles, attach to projects (YouTrack)
 - **Comments & Links**: Add comments and link issues together
@@ -233,6 +232,7 @@ track i done PROJ-1,PROJ-2 --state Done # Batch complete
 track issue search "project: PROJ #Unresolved" --limit 20
 track i s "project: PROJ State: Open"
 track i s --template unresolved --project PROJ  # Use query template
+track i s "project: PROJ #Unresolved" --all     # Fetch all pages
 
 # Delete (single or batch)
 track issue delete PROJ-123
@@ -340,7 +340,7 @@ track config path           # Show config file path
 ### Cache
 
 ```bash
-track cache refresh              # Refresh local cache
+track cache refresh              # Refresh local cache (includes issue counts)
 track cache refresh --if-stale 1h  # Only refresh if older than 1 hour
 track cache status               # Check cache age and freshness
 track cache show                 # Show cached data
@@ -353,6 +353,7 @@ The cache stores comprehensive tracker context for fast lookups:
 - Assignable users per project
 - Knowledge base articles
 - Query templates for both backends
+- Issue counts per project and query template
 - Recently accessed issues (LRU, max 50)
 
 ### Context (AI-Optimized)
@@ -365,7 +366,7 @@ track context --include-issues   # Include unresolved issues
 track -o json context            # JSON output for parsing
 ```
 
-Single command to get all relevant data: projects, fields, users, query templates, workflow hints, and recent issues.
+Single command to get all relevant data: projects, fields, users, query templates, workflow hints, issue counts, and recent issues.
 
 ## Command Aliases
 
