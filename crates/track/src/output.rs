@@ -1,6 +1,7 @@
 use crate::cli::OutputFormat;
 use colored::Colorize;
 use serde::Serialize;
+use std::io::IsTerminal;
 use tracker_core::{
     Article, ArticleAttachment, BundleDefinition, Comment, CustomField, CustomFieldDefinition,
     Issue, IssueTag, Project, ProjectCustomField,
@@ -60,7 +61,7 @@ pub fn output_error(err: &anyhow::Error, format: OutputFormat) {
 
 /// Output a progress message to stderr if stdout is a TTY and format is text
 pub fn output_progress(message: &str, format: OutputFormat) {
-    if format == OutputFormat::Text && atty::is(atty::Stream::Stdout) {
+    if format == OutputFormat::Text && std::io::stdout().is_terminal() {
         use colored::Colorize;
         eprintln!("{} {}", "→".cyan().bold(), message);
     }
@@ -85,7 +86,7 @@ pub fn output_page_hint(
     let next_skip = skip + result_count;
 
     let total_part = match cached_total {
-        Some((total, "live")) => format!(" ({} of {} total)", result_count, total),
+        Some((total, "live")) => format!(" ({} of {} total)", next_skip, total),
         Some((total, age)) => format!(" (~{} total, {})", total, age),
         None => String::new(),
     };

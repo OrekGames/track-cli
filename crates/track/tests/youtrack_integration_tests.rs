@@ -14,17 +14,11 @@ fn start_mock_server(response_body: String) -> (thread::JoinHandle<()>, u16) {
     let handle = thread::spawn(move || {
         use std::io::{Read, Write};
 
-        // Set a timeout so the server doesn't hang forever
-        listener
-            .set_nonblocking(false)
-            .expect("Failed to set blocking");
-
         // Accept multiple connections (some endpoints chain count + search)
         listener
             .set_nonblocking(false)
             .expect("Failed to set blocking");
         let timeout = Duration::from_secs(3);
-        let _ = listener.set_nonblocking(false);
         for stream in listener.incoming().flatten().take(3) {
             let mut stream = stream;
             let _ = stream.set_read_timeout(Some(timeout));
