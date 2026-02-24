@@ -191,7 +191,9 @@ mod tests {
         let (wiki, _) = setup_wiki(&temp);
 
         let results = wiki.search_pages("Getting Started").expect("search");
-        assert!(results.iter().any(|p| p.slug == "Tutorials/Getting-Started"));
+        assert!(results
+            .iter()
+            .any(|p| p.slug == "Tutorials/Getting-Started"));
     }
 
     #[test]
@@ -200,7 +202,9 @@ mod tests {
         let (wiki, _) = setup_wiki(&temp);
 
         let results = wiki.search_pages("intro").expect("search");
-        assert!(results.iter().any(|p| p.slug == "Tutorials/Getting-Started"));
+        assert!(results
+            .iter()
+            .any(|p| p.slug == "Tutorials/Getting-Started"));
     }
 
     // ====================================================================
@@ -214,7 +218,11 @@ mod tests {
 
         // Write a file with empty frontmatter directly to avoid push
         let page_path = cache_dir.join("EmptyFm.md");
-        fs::write(&page_path, "---\ntitle: Empty FM\ntags: []\n---\n\nSome content").expect("write");
+        fs::write(
+            &page_path,
+            "---\ntitle: Empty FM\ntags: []\n---\n\nSome content",
+        )
+        .expect("write");
 
         // Commit locally
         let repo = Repository::open(&cache_dir).expect("open repo");
@@ -224,10 +232,7 @@ mod tests {
         let tree_id = index.write_tree().expect("write tree");
         let tree = repo.find_tree(tree_id).expect("find tree");
         let sig = Signature::now("test", "test@example.com").expect("sig");
-        let parent = repo
-            .head()
-            .and_then(|h| h.peel_to_commit())
-            .expect("head");
+        let parent = repo.head().and_then(|h| h.peel_to_commit()).expect("head");
         repo.commit(Some("HEAD"), &sig, &sig, "add emptyfm", &tree, &[&parent])
             .expect("commit");
 
@@ -252,10 +257,7 @@ mod tests {
         let tree_id = index.write_tree().expect("write tree");
         let tree = repo.find_tree(tree_id).expect("find tree");
         let sig = Signature::now("test", "test@example.com").expect("sig");
-        let parent = repo
-            .head()
-            .and_then(|h| h.peel_to_commit())
-            .expect("head");
+        let parent = repo.head().and_then(|h| h.peel_to_commit()).expect("head");
         repo.commit(Some("HEAD"), &sig, &sig, "add fmonly", &tree, &[&parent])
             .expect("commit");
 
@@ -315,7 +317,9 @@ mod tests {
 
         let children = wiki.get_child_pages("Tutorials").expect("children");
         assert!(!children.is_empty());
-        assert!(children.iter().any(|p| p.slug == "Tutorials/Getting-Started"));
+        assert!(children
+            .iter()
+            .any(|p| p.slug == "Tutorials/Getting-Started"));
     }
 
     #[test]

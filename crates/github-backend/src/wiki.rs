@@ -76,7 +76,12 @@ impl WikiManager {
     /// Create a WikiManager with a specific cache directory, pre-initialized.
     /// For testing only — skips clone/fetch on first use.
     #[cfg(test)]
-    pub(crate) fn new_with_cache_dir(owner: &str, repo: &str, token: &str, cache_dir: PathBuf) -> Self {
+    pub(crate) fn new_with_cache_dir(
+        owner: &str,
+        repo: &str,
+        token: &str,
+        cache_dir: PathBuf,
+    ) -> Self {
         Self {
             owner: owner.to_string(),
             repo: repo.to_string(),
@@ -103,17 +108,15 @@ impl WikiManager {
 
     /// Get wiki repository URL (auth is handled via credentials callback)
     fn wiki_url(&self) -> String {
-        format!(
-            "https://github.com/{}/{}.wiki.git",
-            self.owner, self.repo
-        )
+        format!("https://github.com/{}/{}.wiki.git", self.owner, self.repo)
     }
 
     /// Initialize wiki repository (clone or fetch)
     pub fn ensure_initialized(&self) -> Result<()> {
-        let mut initialized = self.initialized.lock().map_err(|_| {
-            GitHubError::Wiki("Failed to acquire initialization lock".to_string())
-        })?;
+        let mut initialized = self
+            .initialized
+            .lock()
+            .map_err(|_| GitHubError::Wiki("Failed to acquire initialization lock".to_string()))?;
 
         if *initialized {
             return Ok(());
@@ -165,13 +168,12 @@ impl WikiManager {
 
     /// Fetch and merge latest changes
     fn fetch_and_merge(&self) -> Result<()> {
-        let repo = Repository::open(&self.cache_dir).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to open wiki repository: {}", e))
-        })?;
+        let repo = Repository::open(&self.cache_dir)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to open wiki repository: {}", e)))?;
 
-        let mut remote = repo.find_remote("origin").map_err(|e| {
-            GitHubError::Wiki(format!("Failed to find origin remote: {}", e))
-        })?;
+        let mut remote = repo
+            .find_remote("origin")
+            .map_err(|e| GitHubError::Wiki(format!("Failed to find origin remote: {}", e)))?;
 
         let mut callbacks = RemoteCallbacks::new();
         callbacks.credentials(|_url, _username, _allowed| {
@@ -187,21 +189,21 @@ impl WikiManager {
             .map_err(|e| GitHubError::Wiki(format!("Failed to fetch: {}", e)))?;
 
         // Merge FETCH_HEAD into current branch
-        let fetch_head = repo.find_reference("FETCH_HEAD").map_err(|e| {
-            GitHubError::Wiki(format!("Failed to find FETCH_HEAD: {}", e))
-        })?;
-        let fetch_commit = repo.reference_to_annotated_commit(&fetch_head).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to get fetch commit: {}", e))
-        })?;
+        let fetch_head = repo
+            .find_reference("FETCH_HEAD")
+            .map_err(|e| GitHubError::Wiki(format!("Failed to find FETCH_HEAD: {}", e)))?;
+        let fetch_commit = repo
+            .reference_to_annotated_commit(&fetch_head)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to get fetch commit: {}", e)))?;
 
-        let analysis = repo.merge_analysis(&[&fetch_commit]).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to analyze merge: {}", e))
-        })?;
+        let analysis = repo
+            .merge_analysis(&[&fetch_commit])
+            .map_err(|e| GitHubError::Wiki(format!("Failed to analyze merge: {}", e)))?;
 
         if analysis.0.is_fast_forward() {
-            let mut reference = repo.find_reference("HEAD").map_err(|e| {
-                GitHubError::Wiki(format!("Failed to find HEAD: {}", e))
-            })?;
+            let mut reference = repo
+                .find_reference("HEAD")
+                .map_err(|e| GitHubError::Wiki(format!("Failed to find HEAD: {}", e)))?;
             let name = reference
                 .name()
                 .ok_or_else(|| GitHubError::Wiki("Invalid reference name".to_string()))?
@@ -237,12 +239,11 @@ impl WikiManager {
             .follow_links(false)
             .min_depth(1)
         {
-            let entry = entry.map_err(|e| {
-                GitHubError::Wiki(format!("Failed to read directory: {}", e))
-            })?;
+            let entry =
+                entry.map_err(|e| GitHubError::Wiki(format!("Failed to read directory: {}", e)))?;
 
             let path = entry.path();
-            
+
             // Skip special pages, git directory, and non-markdown files
             if self.should_skip_path(path) {
                 continue;
@@ -261,7 +262,7 @@ impl WikiManager {
     /// Check if path should be skipped
     fn should_skip_path(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
-        
+
         // Skip .git directory
         if path_str.contains("/.git/") || path_str.ends_with("/.git") {
             return true;
@@ -280,9 +281,8 @@ impl WikiManager {
 
     /// Read a wiki page from disk
     fn read_page(&self, path: &Path) -> Result<WikiPage> {
-        let content = fs::read_to_string(path).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to read file: {}", e))
-        })?;
+        let content = fs::read_to_string(path)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to read file: {}", e)))?;
 
         // Parse front matter and content
         let (front_matter, content) = self.parse_markdown_with_frontmatter(&content);
@@ -298,15 +298,13 @@ impl WikiManager {
             .replace('\\', "/");
 
         // Extract parent from path
-        let parent = relative_path
-            .parent()
-            .and_then(|p| {
-                if p == Path::new("") {
-                    None
-                } else {
-                    Some(p.to_string_lossy().replace('\\', "/"))
-                }
-            });
+        let parent = relative_path.parent().and_then(|p| {
+            if p == Path::new("") {
+                None
+            } else {
+                Some(p.to_string_lossy().replace('\\', "/"))
+            }
+        });
 
         // Get title from front matter or filename
         let title = front_matter
@@ -336,13 +334,13 @@ impl WikiManager {
     /// Parse markdown with YAML front matter
     fn parse_markdown_with_frontmatter(&self, content: &str) -> (FrontMatter, String) {
         let lines: Vec<&str> = content.lines().collect();
-        
+
         if lines.first() == Some(&"---") {
             // Find closing ---
             if let Some(end_idx) = lines.iter().skip(1).position(|&line| line == "---") {
                 let yaml_lines = &lines[1..end_idx + 1];
                 let yaml_str = yaml_lines.join("\n");
-                
+
                 if let Ok(front_matter) = serde_yaml::from_str::<FrontMatter>(&yaml_str) {
                     let content_start = (end_idx + 2).min(lines.len());
                     let content_lines = &lines[content_start..];
@@ -356,18 +354,20 @@ impl WikiManager {
     }
 
     /// Get file timestamps from git history
-    fn get_file_timestamps(&self, path: &Path) -> Result<(DateTime<Utc>, DateTime<Utc>, Option<String>)> {
-        let repo = Repository::open(&self.cache_dir).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to open repository: {}", e))
-        })?;
+    fn get_file_timestamps(
+        &self,
+        path: &Path,
+    ) -> Result<(DateTime<Utc>, DateTime<Utc>, Option<String>)> {
+        let repo = Repository::open(&self.cache_dir)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to open repository: {}", e)))?;
 
         let relative_path = path
             .strip_prefix(&self.cache_dir)
             .map_err(|_| GitHubError::Wiki("Invalid path".to_string()))?;
 
-        let mut revwalk = repo.revwalk().map_err(|e| {
-            GitHubError::Wiki(format!("Failed to walk commits: {}", e))
-        })?;
+        let mut revwalk = repo
+            .revwalk()
+            .map_err(|e| GitHubError::Wiki(format!("Failed to walk commits: {}", e)))?;
         revwalk.push_head().ok();
 
         let mut first_commit_time = None;
@@ -379,8 +379,8 @@ impl WikiManager {
                 if let Ok(tree) = commit.tree() {
                     if tree.get_path(relative_path).is_ok() {
                         let time = commit.time();
-                        let timestamp = DateTime::from_timestamp(time.seconds(), 0)
-                            .unwrap_or_else(Utc::now);
+                        let timestamp =
+                            DateTime::from_timestamp(time.seconds(), 0).unwrap_or_else(Utc::now);
 
                         if last_commit_time.is_none() {
                             last_commit_time = Some(timestamp);
@@ -405,7 +405,7 @@ impl WikiManager {
         self.ensure_initialized()?;
 
         let page_path = self.cache_dir.join(format!("{}.md", slug));
-        
+
         if !page_path.exists() {
             return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
         }
@@ -414,29 +414,33 @@ impl WikiManager {
     }
 
     /// Create a new wiki page
-    pub fn create_page(&self, slug: &str, title: &str, content: &str, tags: Vec<String>) -> Result<WikiPage> {
+    pub fn create_page(
+        &self,
+        slug: &str,
+        title: &str,
+        content: &str,
+        tags: Vec<String>,
+    ) -> Result<WikiPage> {
         validate_slug(slug)?;
         self.ensure_initialized()?;
 
         let page_path = self.cache_dir.join(format!("{}.md", slug));
-        
+
         if page_path.exists() {
             return Err(GitHubError::Wiki(format!("Page '{}' already exists", slug)));
         }
 
         // Create parent directories if needed
         if let Some(parent) = page_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                GitHubError::Wiki(format!("Failed to create directory: {}", e))
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|e| GitHubError::Wiki(format!("Failed to create directory: {}", e)))?;
         }
 
         // Generate markdown with front matter
         let markdown = self.generate_markdown_with_frontmatter(title, content, &tags);
-        
-        fs::write(&page_path, markdown).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to write file: {}", e))
-        })?;
+
+        fs::write(&page_path, markdown)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to write file: {}", e)))?;
 
         // Commit and push
         self.commit_and_push(&format!("Create {}", slug), &[&page_path])?;
@@ -445,29 +449,34 @@ impl WikiManager {
     }
 
     /// Update an existing wiki page
-    pub fn update_page(&self, slug: &str, title: Option<&str>, content: Option<&str>, tags: Option<Vec<String>>) -> Result<WikiPage> {
+    pub fn update_page(
+        &self,
+        slug: &str,
+        title: Option<&str>,
+        content: Option<&str>,
+        tags: Option<Vec<String>>,
+    ) -> Result<WikiPage> {
         validate_slug(slug)?;
         self.ensure_initialized()?;
 
         let page_path = self.cache_dir.join(format!("{}.md", slug));
-        
+
         if !page_path.exists() {
             return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
         }
 
         // Read existing page
         let existing = self.read_page(&page_path)?;
-        
+
         let new_title = title.unwrap_or(&existing.title);
         let new_content = content.unwrap_or(&existing.content);
         let new_tags = tags.unwrap_or(existing.tags);
 
         // Generate updated markdown
         let markdown = self.generate_markdown_with_frontmatter(new_title, new_content, &new_tags);
-        
-        fs::write(&page_path, markdown).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to write file: {}", e))
-        })?;
+
+        fs::write(&page_path, markdown)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to write file: {}", e)))?;
 
         // Commit and push
         self.commit_and_push(&format!("Update {}", slug), &[&page_path])?;
@@ -481,14 +490,13 @@ impl WikiManager {
         self.ensure_initialized()?;
 
         let page_path = self.cache_dir.join(format!("{}.md", slug));
-        
+
         if !page_path.exists() {
             return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
         }
 
-        fs::remove_file(&page_path).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to delete file: {}", e))
-        })?;
+        fs::remove_file(&page_path)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to delete file: {}", e)))?;
 
         // Commit and push
         self.commit_and_push(&format!("Delete {}", slug), &[&page_path])?;
@@ -505,7 +513,7 @@ impl WikiManager {
         self.ensure_initialized()?;
 
         let old_path = self.cache_dir.join(format!("{}.md", slug));
-        
+
         if !old_path.exists() {
             return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
         }
@@ -517,22 +525,23 @@ impl WikiManager {
 
         // Build new path
         let new_path = if let Some(parent) = new_parent {
-            self.cache_dir.join(parent).join(filename).with_extension("md")
+            self.cache_dir
+                .join(parent)
+                .join(filename)
+                .with_extension("md")
         } else {
             self.cache_dir.join(filename).with_extension("md")
         };
 
         // Create parent directory if needed
         if let Some(parent) = new_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                GitHubError::Wiki(format!("Failed to create directory: {}", e))
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|e| GitHubError::Wiki(format!("Failed to create directory: {}", e)))?;
         }
 
         // Move file
-        fs::rename(&old_path, &new_path).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to move file: {}", e))
-        })?;
+        fs::rename(&old_path, &new_path)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to move file: {}", e)))?;
 
         // Commit and push
         self.commit_and_push(
@@ -544,7 +553,12 @@ impl WikiManager {
     }
 
     /// Generate markdown with YAML front matter
-    fn generate_markdown_with_frontmatter(&self, title: &str, content: &str, tags: &[String]) -> String {
+    fn generate_markdown_with_frontmatter(
+        &self,
+        title: &str,
+        content: &str,
+        tags: &[String],
+    ) -> String {
         let front_matter = FrontMatter {
             title: Some(title.to_string()),
             tags: tags.to_vec(),
@@ -560,13 +574,12 @@ impl WikiManager {
 
     /// Commit changes and push to remote
     fn commit_and_push(&self, message: &str, paths: &[&Path]) -> Result<()> {
-        let repo = Repository::open(&self.cache_dir).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to open repository: {}", e))
-        })?;
+        let repo = Repository::open(&self.cache_dir)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to open repository: {}", e)))?;
 
-        let mut index = repo.index().map_err(|e| {
-            GitHubError::Wiki(format!("Failed to get index: {}", e))
-        })?;
+        let mut index = repo
+            .index()
+            .map_err(|e| GitHubError::Wiki(format!("Failed to get index: {}", e)))?;
 
         // Add or remove files
         for path in paths {
@@ -585,25 +598,22 @@ impl WikiManager {
             }
         }
 
-        index.write().map_err(|e| {
-            GitHubError::Wiki(format!("Failed to write index: {}", e))
-        })?;
+        index
+            .write()
+            .map_err(|e| GitHubError::Wiki(format!("Failed to write index: {}", e)))?;
 
-        let tree_id = index.write_tree().map_err(|e| {
-            GitHubError::Wiki(format!("Failed to write tree: {}", e))
-        })?;
+        let tree_id = index
+            .write_tree()
+            .map_err(|e| GitHubError::Wiki(format!("Failed to write tree: {}", e)))?;
 
-        let tree = repo.find_tree(tree_id).map_err(|e| {
-            GitHubError::Wiki(format!("Failed to find tree: {}", e))
-        })?;
+        let tree = repo
+            .find_tree(tree_id)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to find tree: {}", e)))?;
 
-        let signature = Signature::now("track-cli", "track@example.com").map_err(|e| {
-            GitHubError::Wiki(format!("Failed to create signature: {}", e))
-        })?;
+        let signature = Signature::now("track-cli", "track@example.com")
+            .map_err(|e| GitHubError::Wiki(format!("Failed to create signature: {}", e)))?;
 
-        let parent_commit = repo.head()
-            .and_then(|head| head.peel_to_commit())
-            .ok();
+        let parent_commit = repo.head().and_then(|head| head.peel_to_commit()).ok();
 
         let parents: Vec<&git2::Commit> = parent_commit.iter().collect();
 
@@ -618,9 +628,9 @@ impl WikiManager {
         .map_err(|e| GitHubError::Wiki(format!("Failed to commit: {}", e)))?;
 
         // Push to remote
-        let mut remote = repo.find_remote("origin").map_err(|e| {
-            GitHubError::Wiki(format!("Failed to find remote: {}", e))
-        })?;
+        let mut remote = repo
+            .find_remote("origin")
+            .map_err(|e| GitHubError::Wiki(format!("Failed to find remote: {}", e)))?;
 
         let mut callbacks = RemoteCallbacks::new();
         callbacks.credentials(|_url, _username, _allowed| {
@@ -637,9 +647,7 @@ impl WikiManager {
                 &["refs/heads/master:refs/heads/master"],
                 Some(&mut push_opts),
             )
-            .map_err(|e| {
-                GitHubError::Wiki(format!("Failed to push to master: {}", e))
-            })?;
+            .map_err(|e| GitHubError::Wiki(format!("Failed to push to master: {}", e)))?;
 
         Ok(())
     }
@@ -654,7 +662,10 @@ impl WikiManager {
             .filter(|page| {
                 page.title.to_lowercase().contains(&query_lower)
                     || page.content.to_lowercase().contains(&query_lower)
-                    || page.tags.iter().any(|t| t.to_lowercase().contains(&query_lower))
+                    || page
+                        .tags
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&query_lower))
             })
             .collect();
 
@@ -667,9 +678,7 @@ impl WikiManager {
 
         let children: Vec<WikiPage> = pages
             .into_iter()
-            .filter(|page| {
-                page.parent.as_deref() == Some(parent_slug)
-            })
+            .filter(|page| page.parent.as_deref() == Some(parent_slug))
             .collect();
 
         Ok(children)

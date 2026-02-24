@@ -11,9 +11,9 @@ mod client_tests;
 mod wiki_tests;
 
 pub use client::GitHubClient;
-pub use wiki::WikiManager;
 pub use error::{GitHubError, Result};
 pub use models::*;
+pub use wiki::WikiManager;
 
 // Re-export tracker-core types for convenience
 pub use tracker_core::{IssueTracker, TrackerError};

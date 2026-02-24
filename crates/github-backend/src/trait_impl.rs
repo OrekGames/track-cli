@@ -262,7 +262,13 @@ fn slugify(text: &str) -> String {
     let slug: String = text
         .chars()
         .flat_map(|c| c.to_lowercase())
-        .map(|c| if c.is_ascii_alphanumeric() || c == '/' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '/' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     // Collapse consecutive hyphens and trim
     let mut result = String::new();
@@ -348,8 +354,7 @@ impl KnowledgeBase for GitHubClient {
         let pages = wiki.list_pages().map_err(TrackerError::from)?;
 
         // Single-pass parent set for has_children
-        let parent_slugs: HashSet<String> =
-            pages.iter().filter_map(|p| p.parent.clone()).collect();
+        let parent_slugs: HashSet<String> = pages.iter().filter_map(|p| p.parent.clone()).collect();
 
         let articles: Vec<Article> = pages
             .into_iter()
@@ -370,8 +375,7 @@ impl KnowledgeBase for GitHubClient {
         let pages = wiki.search_pages(query).map_err(TrackerError::from)?;
 
         // Single-pass parent set for has_children
-        let parent_slugs: HashSet<String> =
-            pages.iter().filter_map(|p| p.parent.clone()).collect();
+        let parent_slugs: HashSet<String> = pages.iter().filter_map(|p| p.parent.clone()).collect();
 
         let articles: Vec<Article> = pages
             .into_iter()
