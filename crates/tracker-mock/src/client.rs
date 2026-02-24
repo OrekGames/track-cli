@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use tracker_core::{
     Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, Issue,
     IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
-    Result, TrackerError, UpdateArticle, UpdateIssue, User,
+    Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 /// A mock client that reads responses from fixture files
@@ -248,7 +248,7 @@ impl IssueTracker for MockClient {
         self.get_response("get_issue", args, None)
     }
 
-    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Issue>> {
+    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
         let args = [
             ("query".to_string(), query.to_string()),
             ("limit".to_string(), limit.to_string()),
@@ -256,7 +256,8 @@ impl IssueTracker for MockClient {
         ]
         .into_iter()
         .collect();
-        self.get_response("search_issues", args, None)
+        let issues: Vec<Issue> = self.get_response("search_issues", args, None)?;
+        Ok(SearchResult::from_items(issues))
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {

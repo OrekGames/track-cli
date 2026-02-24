@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::client::GitLabClient;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Helper to create a mock GitLab issue response
@@ -462,5 +462,125 @@ mod tests {
         // Operations that need project_id should fail
         let result = client.get_issue(42);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_count_issues_by_query_reads_x_total_header() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "1"))
+            .and(query_param("page", "1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-total", "847")
+                    .set_body_json(serde_json::json!([])),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = client.count_issues_by_query("bug", Some("opened")).unwrap();
+
+        assert_eq!(result, Some(847));
+    }
+
+    #[tokio::test]
+    async fn test_search_issues_with_total_reads_header() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("search", "bug"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-total", "42")
+                    .set_body_json(serde_json::json!([
+                        mock_gitlab_issue(1, "Bug report"),
+                        mock_gitlab_issue(2, "Another bug")
+                    ])),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let (issues, total) = client
+            .search_issues_with_total("bug", None, None, 20, 1)
+            .unwrap();
+
+        assert_eq!(issues.len(), 2);
+        assert_eq!(total, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_search_issues_with_total_without_header() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("search", "bug"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([mock_gitlab_issue(1, "Bug report")])),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let (issues, total) = client
+            .search_issues_with_total("bug", None, None, 20, 1)
+            .unwrap();
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(total, None);
+    }
+
+    #[tokio::test]
+    async fn test_list_issues_with_total_reads_header() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-total", "100")
+                    .set_body_json(serde_json::json!([
+                        mock_gitlab_issue(1, "First issue"),
+                        mock_gitlab_issue(2, "Second issue")
+                    ])),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let (issues, total) = client
+            .list_issues_with_total(Some("opened"), 20, 1)
+            .unwrap();
+
+        assert_eq!(issues.len(), 2);
+        assert_eq!(total, Some(100));
+    }
+
+    #[tokio::test]
+    async fn test_count_issues_by_query_returns_none_when_header_absent() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = client.count_issues_by_query("", None).unwrap();
+
+        assert_eq!(result, None);
     }
 }

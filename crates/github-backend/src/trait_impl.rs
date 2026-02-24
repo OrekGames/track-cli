@@ -2,7 +2,7 @@
 
 use tracker_core::{
     Comment, CreateIssue, CreateProject, CreateTag, Issue, IssueLink, IssueTag, IssueTracker,
-    Project, ProjectCustomField, Result, TrackerError, UpdateIssue,
+    Project, ProjectCustomField, Result, SearchResult, TrackerError, UpdateIssue,
 };
 
 use crate::client::GitHubClient;
@@ -49,7 +49,7 @@ impl IssueTracker for GitHubClient {
         Ok(github_issue_to_core(issue, self.owner(), self.repo()))
     }
 
-    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Issue>> {
+    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
         let github_query = convert_query_to_github(query);
         let per_page = limit.min(100);
         let page = if per_page > 0 {
@@ -62,15 +62,24 @@ impl IssueTracker for GitHubClient {
             .search_issues(&github_query, per_page, page)
             .map_err(TrackerError::from)?;
 
+        let total = result.total_count;
         let owner = self.owner().to_string();
         let repo = self.repo().to_string();
 
-        Ok(result
+        let items = result
             .items
             .into_iter()
             .filter(|i| !i.is_pull_request())
             .map(|i| github_issue_to_core(i, &owner, &repo))
-            .collect())
+            .collect();
+
+        Ok(SearchResult::with_total(items, total))
+    }
+
+    fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
+        self.count_issues(query)
+            .map(Some)
+            .map_err(TrackerError::from)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {

@@ -137,6 +137,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_count_issues() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .and(wiremock::matchers::query_param("maxResults", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "startAt": 0,
+                "maxResults": 0,
+                "total": 847,
+                "issues": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let count = client.count_issues("project = TEST").unwrap();
+
+        assert_eq!(count, 847);
+    }
+
+    #[tokio::test]
     async fn test_create_issue() {
         let mock_server = MockServer::start().await;
 

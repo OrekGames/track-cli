@@ -14,12 +14,14 @@ fn start_mock_server(response_body: String) -> (thread::JoinHandle<()>, u16) {
     let handle = thread::spawn(move || {
         use std::io::{Read, Write};
 
-        // Set a timeout so the server doesn't hang forever
+        // Accept multiple connections (some endpoints chain count + search)
         listener
             .set_nonblocking(false)
             .expect("Failed to set blocking");
-
-        if let Some(mut stream) = listener.incoming().flatten().next() {
+        let timeout = Duration::from_secs(3);
+        for stream in listener.incoming().flatten().take(3) {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(timeout));
             let mut buffer = [0; 4096];
             if stream.read(&mut buffer).is_ok() {
                 let response = format!(
@@ -28,6 +30,37 @@ fn start_mock_server(response_body: String) -> (thread::JoinHandle<()>, u16) {
                     response_body
                 );
                 let _ = stream.write_all(response.as_bytes());
+            }
+        }
+    });
+
+    (handle, port)
+}
+
+/// Helper to create a mock server that handles multiple sequential requests.
+/// Each element in `responses` is served in order; extra connections are ignored.
+fn start_mock_server_multi(responses: Vec<String>) -> (thread::JoinHandle<()>, u16) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port");
+    let port = listener.local_addr().unwrap().port();
+
+    let handle = thread::spawn(move || {
+        use std::io::{Read, Write};
+
+        listener
+            .set_nonblocking(false)
+            .expect("Failed to set blocking");
+
+        for body in &responses {
+            if let Some(mut stream) = listener.incoming().flatten().next() {
+                let mut buffer = [0; 4096];
+                if stream.read(&mut buffer).is_ok() {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                }
             }
         }
     });
@@ -110,7 +143,11 @@ fn test_issue_get_with_text_output() {
 
 #[test]
 fn test_issue_search_with_results() {
-    let mock_response = serde_json::json!([
+    // First request: count endpoint response
+    let count_response = serde_json::json!({ "count": 2 }).to_string();
+
+    // Second request: search endpoint response
+    let search_response = serde_json::json!([
         {
             "id": "2-1",
             "idReadable": "PROJ-1",
@@ -131,9 +168,10 @@ fn test_issue_search_with_results() {
             "created": 1640000000000i64,
             "updated": 1640000000000i64
         }
-    ]);
+    ])
+    .to_string();
 
-    let (_server, port) = start_mock_server(mock_response.to_string());
+    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
     thread::sleep(Duration::from_millis(50));
 
     let output = cargo_bin_cmd!("track")
@@ -649,4 +687,191 @@ fn test_completions_no_config_required() {
         .env_remove("TRACKER_TOKEN")
         .assert()
         .success();
+}
+
+// ============================================================================
+// Pagination Hint Tests
+// ============================================================================
+
+#[test]
+fn test_pagination_hint_on_full_page() {
+    // YouTrack search: first request = count, second request = search results
+    let count_response = serde_json::json!({ "count": 10 }).to_string();
+    let search_response = serde_json::json!([
+        {
+            "id": "2-1", "idReadable": "PROJ-1", "summary": "Issue 1",
+            "project": {"id": "0-1", "shortName": "PROJ"},
+            "customFields": [], "tags": [],
+            "created": 1640000000000i64, "updated": 1640000000000i64
+        },
+        {
+            "id": "2-2", "idReadable": "PROJ-2", "summary": "Issue 2",
+            "project": {"id": "0-1", "shortName": "PROJ"},
+            "customFields": [], "tags": [],
+            "created": 1640000000000i64, "updated": 1640000000000i64
+        }
+    ])
+    .to_string();
+
+    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
+    thread::sleep(Duration::from_millis(50));
+
+    let output = cargo_bin_cmd!("track")
+        .args(["issue", "search", "project: PROJ", "--limit", "2"])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("results shown"),
+        "Should show pagination hint on full page, got stderr: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("--all"),
+        "Should suggest --all flag, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_no_pagination_hint_on_partial_page() {
+    // Return fewer items than limit — no hint expected
+    let count_response = serde_json::json!({ "count": 2 }).to_string();
+    let search_response = serde_json::json!([
+        {
+            "id": "2-1", "idReadable": "PROJ-1", "summary": "Issue 1",
+            "project": {"id": "0-1", "shortName": "PROJ"},
+            "customFields": [], "tags": [],
+            "created": 1640000000000i64, "updated": 1640000000000i64
+        },
+        {
+            "id": "2-2", "idReadable": "PROJ-2", "summary": "Issue 2",
+            "project": {"id": "0-1", "shortName": "PROJ"},
+            "customFields": [], "tags": [],
+            "created": 1640000000000i64, "updated": 1640000000000i64
+        }
+    ])
+    .to_string();
+
+    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
+    thread::sleep(Duration::from_millis(50));
+
+    let output = cargo_bin_cmd!("track")
+        .args(["issue", "search", "project: PROJ", "--limit", "10"])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !stderr.contains("results shown"),
+        "Should NOT show pagination hint on partial page, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_no_pagination_hint_in_json_mode() {
+    let count_response = serde_json::json!({ "count": 10 }).to_string();
+    let search_response = serde_json::json!([
+        {
+            "id": "2-1", "idReadable": "PROJ-1", "summary": "Issue 1",
+            "project": {"id": "0-1", "shortName": "PROJ"},
+            "customFields": [], "tags": [],
+            "created": 1640000000000i64, "updated": 1640000000000i64
+        },
+        {
+            "id": "2-2", "idReadable": "PROJ-2", "summary": "Issue 2",
+            "project": {"id": "0-1", "shortName": "PROJ"},
+            "customFields": [], "tags": [],
+            "created": 1640000000000i64, "updated": 1640000000000i64
+        }
+    ])
+    .to_string();
+
+    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
+    thread::sleep(Duration::from_millis(50));
+
+    let output = cargo_bin_cmd!("track")
+        .args([
+            "--format",
+            "json",
+            "issue",
+            "search",
+            "project: PROJ",
+            "--limit",
+            "2",
+        ])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !stderr.contains("results shown"),
+        "Should NOT show pagination hint in JSON mode, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_pagination_hint_shows_total() {
+    let count_response = serde_json::json!({ "count": 10 }).to_string();
+    let search_response = serde_json::json!([
+        {
+            "id": "2-1", "idReadable": "PROJ-1", "summary": "Issue 1",
+            "project": {"id": "0-1", "shortName": "PROJ"},
+            "customFields": [], "tags": [],
+            "created": 1640000000000i64, "updated": 1640000000000i64
+        },
+        {
+            "id": "2-2", "idReadable": "PROJ-2", "summary": "Issue 2",
+            "project": {"id": "0-1", "shortName": "PROJ"},
+            "customFields": [], "tags": [],
+            "created": 1640000000000i64, "updated": 1640000000000i64
+        }
+    ])
+    .to_string();
+
+    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
+    thread::sleep(Duration::from_millis(50));
+
+    let output = cargo_bin_cmd!("track")
+        .args(["issue", "search", "project: PROJ", "--limit", "2"])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("of 10 total"),
+        "Should show total count in hint, got stderr: {}",
+        stderr
+    );
 }

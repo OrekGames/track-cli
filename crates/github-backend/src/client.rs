@@ -1,6 +1,7 @@
 use std::time::Duration;
 use ureq::Agent;
 
+use crate::convert::convert_query_to_github;
 use crate::error::{GitHubError, Result};
 use crate::models::*;
 
@@ -191,6 +192,14 @@ impl GitHubClient {
         let mut response = self.check_response(response)?;
         let result: GitHubSearchResult = response.body_mut().read_json()?;
         Ok(result)
+    }
+
+    /// Count issues matching a query without fetching full issue data.
+    /// Converts the query to GitHub format internally, then searches with per_page=1.
+    pub fn count_issues(&self, query: &str) -> Result<u64> {
+        let github_query = convert_query_to_github(query);
+        let result = self.search_issues(&github_query, 1, 1)?;
+        Ok(result.total_count)
     }
 
     /// Create a new issue

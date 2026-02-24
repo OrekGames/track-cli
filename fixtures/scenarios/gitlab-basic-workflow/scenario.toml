@@ -1,0 +1,39 @@
+[scenario]
+name = "GitLab Basic Workflow"
+description = "Tests basic GitLab issue operations: get, comment, search, labels, links"
+backend = "gitlab"
+
+[config]
+url = "https://gitlab.example.com/api/v4"
+token = "glpat-test-token"
+project_id = "42"
+
+[[steps]]
+action = "get_issue"
+args = { issue_id = "#1" }
+expect = { id = "1", id_readable = "#1", summary = "Fix login bug" }
+
+[[steps]]
+action = "add_comment"
+args = { issue_id = "#1", text = "Investigating the issue now" }
+expect = { author_login = "testuser" }
+
+[[steps]]
+action = "get_comments"
+args = { issue_id = "#1" }
+expect = { count = 1 }
+
+[[steps]]
+action = "search_issues"
+args = { query = "bug" }
+expect = { min_count = 1 }
+
+[[steps]]
+action = "list_tags"
+args = {}
+expect = { min_count = 2 }
+
+[[steps]]
+action = "get_issue_links"
+args = { issue_id = "#1" }
+expect = { count = 1 }

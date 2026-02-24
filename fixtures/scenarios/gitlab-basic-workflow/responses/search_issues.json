@@ -1,0 +1,48 @@
+[
+  {
+    "id": "1",
+    "id_readable": "#1",
+    "summary": "Fix login bug",
+    "description": "Users are unable to log in with SSO credentials",
+    "resolved": false,
+    "project": {
+      "id": "42",
+      "name": "My Project",
+      "short_name": "myproject"
+    },
+    "created": "2024-01-15T09:00:00Z",
+    "updated": "2024-01-16T14:30:00Z",
+    "tags": [
+      {
+        "id": "bug",
+        "name": "bug",
+        "color": {"id": "red", "background": "#d9534f", "foreground": "#ffffff"}
+      }
+    ],
+    "custom_fields": [],
+    "comments_count": 1
+  },
+  {
+    "id": "2",
+    "id_readable": "#2",
+    "summary": "Fix database connection timeout",
+    "description": "Database connections drop after 30 seconds of idle",
+    "resolved": false,
+    "project": {
+      "id": "42",
+      "name": "My Project",
+      "short_name": "myproject"
+    },
+    "created": "2024-01-14T11:00:00Z",
+    "updated": "2024-01-15T16:00:00Z",
+    "tags": [
+      {
+        "id": "bug",
+        "name": "bug",
+        "color": {"id": "red", "background": "#d9534f", "foreground": "#ffffff"}
+      }
+    ],
+    "custom_fields": [],
+    "comments_count": 0
+  }
+]

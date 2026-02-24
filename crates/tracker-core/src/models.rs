@@ -539,3 +539,50 @@ pub struct BundleValueDefinition {
     /// Ordinal position in workflow
     pub ordinal: Option<i32>,
 }
+
+/// Wrapper for paginated search results that optionally includes a total count.
+///
+/// Backends that know the total (Jira, GitHub, GitLab) populate `total`.
+/// YouTrack chains a count call before the search to get it.
+/// `total` is `None` if the backend cannot report a count (e.g., count timed out).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResult<T> {
+    /// The items returned for this page
+    pub items: Vec<T>,
+    /// Total number of matching results across all pages, if known.
+    pub total: Option<u64>,
+}
+
+impl<T> SearchResult<T> {
+    /// Create a SearchResult with no total (unknown)
+    pub fn from_items(items: Vec<T>) -> Self {
+        Self { items, total: None }
+    }
+
+    /// Create a SearchResult with a known total
+    pub fn with_total(items: Vec<T>, total: u64) -> Self {
+        Self {
+            items,
+            total: Some(total),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_result_from_items() {
+        let result = SearchResult::from_items(vec![1, 2, 3]);
+        assert_eq!(result.items, vec![1, 2, 3]);
+        assert_eq!(result.total, None);
+    }
+
+    #[test]
+    fn search_result_with_total() {
+        let result = SearchResult::with_total(vec![1, 2, 3], 100);
+        assert_eq!(result.items, vec![1, 2, 3]);
+        assert_eq!(result.total, Some(100));
+    }
+}

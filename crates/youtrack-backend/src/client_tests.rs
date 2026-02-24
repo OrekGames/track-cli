@@ -1131,6 +1131,82 @@ mod tests {
         }
     }
 
+    // ========== count_issues Tests ==========
+
+    #[tokio::test]
+    async fn test_count_issues_immediate() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .and(query_param("fields", "count"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 42
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = client.count_issues("project: PROJ").unwrap();
+
+        assert_eq!(result, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_count_issues_retries_on_minus_one() {
+        let mock_server = MockServer::start().await;
+
+        // Mount the "success" mock first (lower priority -- fallback)
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .and(query_param("fields", "count"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 42
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Mount the "-1" mock last (higher priority), limited to 1 response
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .and(query_param("fields", "count"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": -1
+            })))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = client.count_issues("project: PROJ").unwrap();
+
+        assert_eq!(result, Some(42));
+    }
+
+    #[tokio::test]
+    #[ignore] // slow: ~1.6s due to 4 retries x 400ms delay
+    async fn test_count_issues_returns_none_after_all_retries() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .and(query_param("fields", "count"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": -1
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = client.count_issues("project: PROJ").unwrap();
+
+        assert_eq!(result, None);
+    }
+
     #[tokio::test]
     async fn test_attach_state_field_to_project() {
         let mock_server = MockServer::start().await;

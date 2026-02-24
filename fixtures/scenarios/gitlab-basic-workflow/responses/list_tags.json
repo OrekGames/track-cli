@@ -1,0 +1,20 @@
+[
+  {
+    "id": "bug",
+    "name": "bug",
+    "color": {"id": "red", "background": "#d9534f", "foreground": "#ffffff"},
+    "issues_count": 5
+  },
+  {
+    "id": "enhancement",
+    "name": "enhancement",
+    "color": {"id": "green", "background": "#5cb85c", "foreground": "#ffffff"},
+    "issues_count": 3
+  },
+  {
+    "id": "critical",
+    "name": "critical",
+    "color": {"id": "orange", "background": "#f0ad4e", "foreground": "#000000"},
+    "issues_count": 1
+  }
+]

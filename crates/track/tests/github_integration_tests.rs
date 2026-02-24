@@ -16,7 +16,9 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
+use std::net::TcpListener;
 use std::path::PathBuf;
+use std::thread;
 use std::time::Duration;
 
 /// Get the path to the .track.toml config file at project root
@@ -1223,4 +1225,143 @@ fn test_github_invalid_issue_id() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Invalid"));
+}
+
+// ============================================================================
+// Pagination Hint Tests (with mock server)
+// ============================================================================
+
+/// Helper to start a mock server that responds to any request with the given body.
+/// Returns the join handle and port.
+fn start_github_mock_server(response_body: String) -> (thread::JoinHandle<()>, u16) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port");
+    let port = listener.local_addr().unwrap().port();
+
+    let handle = thread::spawn(move || {
+        use std::io::{Read, Write};
+
+        let timeout = Duration::from_secs(3);
+        for stream in listener.incoming().flatten().take(3) {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(timeout));
+            let mut buffer = [0; 4096];
+            if stream.read(&mut buffer).is_ok() {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        }
+    });
+
+    (handle, port)
+}
+
+fn mock_github_issue_json(number: u64, title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": 1000 + number,
+        "number": number,
+        "title": title,
+        "body": "Test description",
+        "state": "open",
+        "labels": [],
+        "assignee": null,
+        "assignees": [],
+        "milestone": null,
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-02T00:00:00Z",
+        "closed_at": null,
+        "user": {
+            "login": "testuser",
+            "id": 1
+        }
+    })
+}
+
+/// Write a temporary GitHub config file and return its path.
+fn write_github_mock_config(port: u16) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("track-gh-test-{}", port));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join(".track.toml");
+    let content = format!(
+        r#"
+[github]
+token = "test-token"
+owner = "test"
+repo = "repo"
+api_url = "http://127.0.0.1:{}"
+"#,
+        port
+    );
+    std::fs::write(&config_path, content).unwrap();
+    config_path
+}
+
+#[test]
+fn test_github_pagination_hint_on_full_page() {
+    // GitHub search response includes total_count inline
+    let search_response = serde_json::json!({
+        "total_count": 10,
+        "incomplete_results": false,
+        "items": [
+            mock_github_issue_json(1, "Issue 1"),
+            mock_github_issue_json(2, "Issue 2")
+        ]
+    });
+
+    let (_server, port) = start_github_mock_server(search_response.to_string());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_github_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "github", "--config"])
+        .arg(&cfg)
+        .args(["issue", "search", "is:open", "--limit", "2"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("results shown"),
+        "Should show pagination hint on full page, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_github_no_hint_on_partial_page() {
+    let search_response = serde_json::json!({
+        "total_count": 2,
+        "incomplete_results": false,
+        "items": [
+            mock_github_issue_json(1, "Issue 1"),
+            mock_github_issue_json(2, "Issue 2")
+        ]
+    });
+
+    let (_server, port) = start_github_mock_server(search_response.to_string());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_github_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "github", "--config"])
+        .arg(&cfg)
+        .args(["issue", "search", "is:open", "--limit", "10"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !stderr.contains("results shown"),
+        "Should NOT show pagination hint on partial page, got stderr: {}",
+        stderr
+    );
 }

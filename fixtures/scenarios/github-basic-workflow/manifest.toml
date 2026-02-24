@@ -1,0 +1,90 @@
+# Request-to-Response Mapping for github-basic-workflow scenario
+# Uses core model format (same as other backends)
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project"
+file = "get_project.json"
+[responses.args]
+id = "*"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields.json"
+[responses.args]
+project_id = "*"
+
+# =============================================================================
+# Issue Operations
+# =============================================================================
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_1.json"
+[responses.args]
+id = "1"
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_1.json"
+[responses.args]
+id = "#1"
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_1.json"
+[responses.args]
+id = "octocat/hello-world#1"
+
+[[responses]]
+method = "search_issues"
+file = "search_issues.json"
+[responses.args]
+query = "*"
+
+[[responses]]
+method = "update_issue"
+file = "update_issue_1.json"
+[responses.args]
+id = "1"
+
+# =============================================================================
+# Comment Operations
+# =============================================================================
+
+[[responses]]
+method = "add_comment"
+file = "add_comment_1.json"
+[responses.args]
+issue_id = "1"
+
+[[responses]]
+method = "get_comments"
+file = "get_comments_1.json"
+[responses.args]
+issue_id = "1"
+
+# =============================================================================
+# Tag/Label Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"
+
+# =============================================================================
+# Link Operations (GitHub: always empty)
+# =============================================================================
+
+[[responses]]
+method = "get_issue_links"
+file = "empty_links.json"
+[responses.args]
+issue_id = "*"

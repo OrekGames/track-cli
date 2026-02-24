@@ -413,6 +413,57 @@ track -b gl i s "state=opened&labels=bug,critical"
 
 ---
 
+## Pagination
+
+By default, search and list commands return up to 20 results. Use `--limit` / `--skip` for manual paging, or `--all` to fetch every result automatically.
+
+### Flags
+
+| Flag | Applies to | Behavior |
+|------|-----------|----------|
+| `--limit N` | `issue search`, `article list`, `article search` | Return at most N results (default: 20) |
+| `--skip N` | Same as above | Skip the first N results |
+| `--all` | `issue search`, `issue comments`, `article list`, `article search`, `article comments` | Fetch all pages automatically (conflicts with `--limit` / `--skip`) |
+
+### Safety limit
+
+`--all` caps results at **1000** by default to prevent accidental massive fetches. Override with the `TRACK_MAX_RESULTS` environment variable:
+
+```bash
+TRACK_MAX_RESULTS=5000 track i s "project: PROJ" --all
+```
+
+### Pagination hints
+
+When a search fills its page limit, text output prints a hint to stderr with the total count (if known) and the next `--skip` value:
+
+```
+  ┄┄ 20 results shown (20 of 847 total)  ·  use --all or --skip 20 for next page
+```
+
+In JSON mode, the `SearchResult` wrapper includes `total` when the backend reports it (Jira, GitHub, GitLab natively; YouTrack via a count API call).
+
+### Examples
+
+```bash
+# Fetch first 20 (default)
+track i s "project: PROJ #Unresolved"
+
+# Fetch next page
+track i s "project: PROJ #Unresolved" --limit 20 --skip 20
+
+# Fetch ALL unresolved issues
+track i s "project: PROJ #Unresolved" --all
+
+# Fetch all issues as JSON (for scripting)
+track -o json i s "project: PROJ #Unresolved" --all
+
+# Fetch all articles in a project
+track article list -p PROJ --all
+```
+
+---
+
 ## Common Workflows
 
 ### Get Issue Details
@@ -605,7 +656,7 @@ track context --issue-limit 25       # Limit included issues (default: 10)
 track -o json context                # JSON output for parsing
 ```
 
-**Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, query templates, assignable users, workflow hints (state transitions), recent issues.
+**Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, query templates, assignable users, workflow hints (state transitions), issue counts per project/template, recent issues.
 
 ### Template-Based Search
 
@@ -715,6 +766,7 @@ track cache path          # Show cache file location
 | **Tags/Labels** | Available tags (YouTrack/Jira) or labels (GitHub/GitLab) with IDs and colors |
 | **Link types** | Issue link types (Relates, Blocks, Depends, etc.) |
 | **Query templates** | Pre-built queries per backend (see below) |
+| **Issue counts** | Per project, per template query (e.g., unresolved: 42, bugs: 7) |
 | **Project users** | Assignable users per project |
 | **Recent issues** | LRU cache of last 50 accessed issues |
 | **Articles** | Knowledge base articles with hierarchy (YouTrack/Jira only) |
@@ -785,7 +837,7 @@ Common errors and solutions:
 # === SETUP & CONTEXT ===
 track config test                  # Test connection
 track cache refresh                # Refresh cache (recommended first step)
-track cache show                   # View cached context (projects, fields, users, query templates)
+track cache show                   # View cached context (projects, fields, users, query templates, issue counts)
 
 # === BACKEND CONFIGURATION ===
 track config backend youtrack      # Set default to YouTrack
@@ -798,7 +850,7 @@ track config keys                  # List all config keys
 # === YOUTRACK (when default or with -b yt) ===
 track PROJ-123                     # Get issue
 track -o json PROJ-123             # Get as JSON
-track i s "project: PROJ #Unresolved" --limit 20
+track i s "project: PROJ #Unresolved" --limit 20  # or --all
 track i new -p PROJ -s "Summary" --priority "Normal"
 track i u PROJ-123 --field "Stage=Done"
 track i cmt PROJ-123 -m "Comment"
@@ -911,7 +963,7 @@ namespace = "mygroup"
 4. **Issue shortcut**: `track PROJ-123` = `track issue get PROJ-123`
 5. **Default project**: `track config project PROJ` to skip `-p` flag
 6. **Field discovery**: `track p f PROJ` or `track cache show` lists custom fields with valid values
-7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, and articles
+7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, issue counts, and articles
 8. **Query templates**: Cache includes pre-built queries - check `track cache show` for available templates
 9. **Jira limitations**: No project creation, no subtask conversion, no custom field admin
 10. **GitHub limitations**: No issue delete (close instead), no issue links (use `#N` references), no knowledge base
@@ -921,3 +973,5 @@ namespace = "mygroup"
 14. **Custom field admin**: YouTrack only - use `track field new` for convenience command that creates field with values and attaches to project
 15. **GitHub issue IDs**: Use numeric IDs (e.g., `42`), not project-prefixed keys
 16. **GitLab IIDs**: Project-scoped issue numbers; the client strips `#` prefix automatically
+17. **Pagination**: Use `--all` to fetch all results; `--limit`/`--skip` for manual paging. Safety cap at 1000 results (override with `TRACK_MAX_RESULTS`)
+18. **Issue counts**: `track context` and `track cache show` include per-project issue counts for each query template

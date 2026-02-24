@@ -3,7 +3,7 @@
 use tracker_core::{
     Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, CreateTag,
     Issue, IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project,
-    ProjectCustomField, Result, TrackerError, UpdateArticle, UpdateIssue, User,
+    ProjectCustomField, Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 use crate::client::GitLabClient;
@@ -36,16 +36,17 @@ impl IssueTracker for GitLabClient {
             .map_err(TrackerError::from)
     }
 
-    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Issue>> {
+    fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
         let (search_text, state, labels) = convert_query_to_gitlab_params(query);
         let page = if limit > 0 { skip / limit + 1 } else { 1 };
         let project_id = self.project_id_str();
 
-        let issues = if search_text.is_empty() {
-            self.list_issues(state.as_deref(), limit, page)
+        // Use combined methods that read X-Total from the search response itself
+        let (issues, total) = if search_text.is_empty() {
+            self.list_issues_with_total(state.as_deref(), limit, page)
                 .map_err(TrackerError::from)?
         } else {
-            self.search_issues(
+            self.search_issues_with_total(
                 &search_text,
                 state.as_deref(),
                 labels.as_deref(),
@@ -55,10 +56,21 @@ impl IssueTracker for GitLabClient {
             .map_err(TrackerError::from)?
         };
 
-        Ok(issues
+        let items: Vec<Issue> = issues
             .into_iter()
             .map(|i| gitlab_issue_to_core(i, &project_id))
-            .collect())
+            .collect();
+
+        match total {
+            Some(count) => Ok(SearchResult::with_total(items, count)),
+            None => Ok(SearchResult::from_items(items)),
+        }
+    }
+
+    fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
+        let (search_text, state, _labels) = convert_query_to_gitlab_params(query);
+        self.count_issues_by_query(&search_text, state.as_deref())
+            .map_err(TrackerError::from)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {

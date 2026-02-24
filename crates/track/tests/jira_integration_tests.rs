@@ -16,7 +16,9 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
+use std::net::TcpListener;
 use std::path::PathBuf;
+use std::thread;
 use std::time::Duration;
 
 /// Get the path to the .track.toml config file at project root
@@ -825,23 +827,19 @@ fn test_jira_invalid_jql() {
 
 #[test]
 #[ignore]
-fn test_jira_article_commands_not_supported() {
+fn test_jira_article_list_via_confluence() {
     if !config_exists() {
         return;
     }
 
-    // Article commands should fail gracefully for Jira
+    // Jira article commands are backed by Confluence
     cargo_bin_cmd!("track")
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["article", "list"])
         .timeout(Duration::from_secs(30))
         .assert()
-        .failure()
-        .stderr(
-            predicate::str::contains("not supported")
-                .or(predicate::str::contains("Knowledge Base")),
-        );
+        .success();
 }
 
 #[test]
@@ -941,4 +939,143 @@ fn test_jira_text_output_readable() {
         .success()
         .stdout(predicate::str::contains("(")) // Format: "Name (KEY) - Description"
         .stdout(predicate::str::contains(")"));
+}
+
+// ============================================================================
+// Pagination Hint Tests (with mock server)
+// ============================================================================
+
+/// Helper to start a mock server for Jira tests.
+fn start_jira_mock_server(response_body: String) -> (thread::JoinHandle<()>, u16) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port");
+    let port = listener.local_addr().unwrap().port();
+
+    let handle = thread::spawn(move || {
+        use std::io::{Read, Write};
+
+        let timeout = Duration::from_secs(3);
+        for stream in listener.incoming().flatten().take(3) {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(timeout));
+            let mut buffer = [0; 4096];
+            if stream.read(&mut buffer).is_ok() {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        }
+    });
+
+    (handle, port)
+}
+
+fn mock_jira_issue(key: &str, summary: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "10001",
+        "key": key,
+        "self": format!("https://test.atlassian.net/rest/api/3/issue/{}", key),
+        "fields": {
+            "summary": summary,
+            "description": null,
+            "issuetype": {"name": "Task", "id": "10001"},
+            "status": {"name": "Open", "statusCategory": {"key": "new"}},
+            "project": {"id": "10000", "key": "TEST", "name": "Test Project"},
+            "priority": {"name": "Medium", "id": "3"},
+            "assignee": null,
+            "created": "2024-01-01T00:00:00.000+0000",
+            "updated": "2024-01-02T00:00:00.000+0000",
+            "labels": [],
+            "comment": {"comments": [], "total": 0}
+        }
+    })
+}
+
+/// Write a temporary Jira config file and return its path.
+fn write_jira_mock_config(port: u16) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("track-jira-test-{}", port));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join(".track.toml");
+    let content = format!(
+        r#"
+[jira]
+url = "http://127.0.0.1:{}"
+email = "test@test.com"
+token = "test"
+"#,
+        port
+    );
+    std::fs::write(&config_path, content).unwrap();
+    config_path
+}
+
+#[test]
+fn test_jira_pagination_hint_on_full_page() {
+    // Jira search response includes total inline
+    let search_response = serde_json::json!({
+        "startAt": 0,
+        "maxResults": 2,
+        "total": 10,
+        "issues": [
+            mock_jira_issue("TEST-1", "Issue 1"),
+            mock_jira_issue("TEST-2", "Issue 2")
+        ]
+    });
+
+    let (_server, port) = start_jira_mock_server(search_response.to_string());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(&cfg)
+        .args(["issue", "search", "project = TEST", "--limit", "2"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("results shown"),
+        "Should show pagination hint on full page, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_jira_no_hint_on_partial_page() {
+    let search_response = serde_json::json!({
+        "startAt": 0,
+        "maxResults": 10,
+        "total": 2,
+        "issues": [
+            mock_jira_issue("TEST-1", "Issue 1"),
+            mock_jira_issue("TEST-2", "Issue 2")
+        ]
+    });
+
+    let (_server, port) = start_jira_mock_server(search_response.to_string());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(&cfg)
+        .args(["issue", "search", "project = TEST", "--limit", "10"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !stderr.contains("results shown"),
+        "Should NOT show pagination hint on partial page, got stderr: {}",
+        stderr
+    );
 }

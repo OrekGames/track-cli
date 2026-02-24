@@ -1,0 +1,34 @@
+[responses]
+
+[responses.get_issue]
+"#1" = "responses/get_issue_1.json"
+
+[responses.add_comment]
+"#1" = "responses/add_comment_1.json"
+
+[responses.get_comments]
+"#1" = "responses/get_comments_1.json"
+
+[responses.search_issues]
+"bug" = "responses/search_issues.json"
+
+[responses.list_tags]
+"*" = "responses/list_tags.json"
+
+[responses.list_projects]
+"*" = "responses/list_projects.json"
+
+[responses.get_project]
+"42" = "responses/get_project.json"
+
+[responses.get_project_custom_fields]
+"42" = "responses/project_custom_fields.json"
+
+[responses.update_issue]
+"#1" = "responses/update_issue_1.json"
+
+[responses.get_issue_links]
+"#1" = "responses/get_issue_links_1.json"
+
+[responses.list_link_types]
+"*" = "responses/list_link_types.json"

@@ -47,6 +47,9 @@ pub struct TrackerCache {
     /// Article hierarchy (parent_id -> child_ids)
     #[serde(default)]
     pub article_tree: HashMap<String, Vec<String>>,
+    /// Issue counts per project and template query (populated during refresh)
+    #[serde(default)]
+    pub issue_counts: Vec<CachedIssueCount>,
 }
 
 /// Backend metadata for context
@@ -100,6 +103,15 @@ pub struct CachedRecentIssue {
     pub project_short_name: String,
     pub state: Option<String>,
     pub last_accessed: String,
+}
+
+/// Cached issue count for a specific project + query template
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CachedIssueCount {
+    pub project_short_name: String,
+    /// Matches a `CachedQueryTemplate.name` (e.g., "unresolved", "in_progress")
+    pub template_name: String,
+    pub count: u64,
 }
 
 /// Cached article for knowledge base context
@@ -334,6 +346,30 @@ impl TrackerCache {
                     project_id: project.id.clone(),
                     users: cached_users,
                 });
+            }
+        }
+
+        // Fetch issue counts for query templates
+        let projects_to_count: Vec<&CachedProject> = if let Some(ref dp) = cache.default_project {
+            cache
+                .projects
+                .iter()
+                .filter(|p| p.short_name.eq_ignore_ascii_case(dp))
+                .collect()
+        } else {
+            cache.projects.iter().collect()
+        };
+
+        for project in &projects_to_count {
+            for template in &cache.query_templates {
+                let expanded_query = template.query.replace("{PROJECT}", &project.short_name);
+                if let Ok(Some(count)) = client.get_issue_count(&expanded_query) {
+                    cache.issue_counts.push(CachedIssueCount {
+                        project_short_name: project.short_name.clone(),
+                        template_name: template.name.clone(),
+                        count,
+                    });
+                }
             }
         }
 
@@ -711,6 +747,19 @@ impl TrackerCache {
         }
     }
 
+    /// Look up a cached issue count for a project + template name
+    #[allow(dead_code)]
+    pub fn get_issue_count(&self, project_short_name: &str, template_name: &str) -> Option<u64> {
+        self.issue_counts
+            .iter()
+            .find(|c| {
+                c.project_short_name
+                    .eq_ignore_ascii_case(project_short_name)
+                    && c.template_name.eq_ignore_ascii_case(template_name)
+            })
+            .map(|c| c.count)
+    }
+
     /// Get link type by name (from cache)
     #[allow(dead_code)]
     pub fn get_link_type(&self, name: &str) -> Option<&CachedLinkType> {
@@ -897,6 +946,40 @@ mod tests {
         assert!(parse_duration("abc").is_err());
         assert!(parse_duration("-1h").is_err());
         assert!(parse_duration("0h").is_err());
+    }
+
+    #[test]
+    fn get_issue_count_returns_correct_value() {
+        let cache = TrackerCache {
+            issue_counts: vec![CachedIssueCount {
+                project_short_name: "PROJ".to_string(),
+                template_name: "unresolved".to_string(),
+                count: 42,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(cache.get_issue_count("PROJ", "unresolved"), Some(42));
+        assert_eq!(cache.get_issue_count("proj", "Unresolved"), Some(42)); // case insensitive
+    }
+
+    #[test]
+    fn get_issue_count_returns_none_for_unknown() {
+        let cache = TrackerCache::default();
+        assert_eq!(cache.get_issue_count("PROJ", "unresolved"), None);
+    }
+
+    #[test]
+    fn issue_counts_serde_roundtrip() {
+        let mut cache = TrackerCache::default();
+        cache.issue_counts.push(CachedIssueCount {
+            project_short_name: "TEST".to_string(),
+            template_name: "bugs".to_string(),
+            count: 99,
+        });
+        let json = serde_json::to_string(&cache).unwrap();
+        let loaded: TrackerCache = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.issue_counts.len(), 1);
+        assert_eq!(loaded.issue_counts[0].count, 99);
     }
 
     #[test]

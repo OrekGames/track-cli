@@ -267,8 +267,62 @@ fn parse_gitlab_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
 
 /// Convert a simple tracker-core query to GitLab search params.
 ///
+/// Accepts two formats:
+/// - **URL-param**: `state=opened&labels=bug` (used by cache templates)
+/// - **Token-based**: `#open label:bug some text` (used by interactive queries)
+///
+/// URL-param format is detected when the query contains `=` with no whitespace
+/// before the first `=`.
+///
 /// Returns `(search_text, state, labels)`.
 pub fn convert_query_to_gitlab_params(query: &str) -> (String, Option<String>, Option<String>) {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return (String::new(), None, None);
+    }
+
+    // Detect URL-param format: contains '=' with no whitespace before the first '='
+    let first_eq = trimmed.find('=');
+    let first_ws = trimmed.find(char::is_whitespace);
+    let is_url_param = match (first_eq, first_ws) {
+        (Some(eq_pos), Some(ws_pos)) => eq_pos < ws_pos,
+        (Some(_), None) => true,
+        _ => false,
+    };
+
+    if is_url_param {
+        parse_url_params(trimmed)
+    } else {
+        parse_token_query(trimmed)
+    }
+}
+
+/// Parse URL-param format: `key=value&key=value`
+fn parse_url_params(query: &str) -> (String, Option<String>, Option<String>) {
+    let mut search_parts = Vec::new();
+    let mut state: Option<String> = None;
+    let mut labels: Option<String> = None;
+
+    for pair in query.split('&') {
+        if let Some((key, value)) = pair.split_once('=') {
+            match key {
+                "state" => state = Some(value.to_string()),
+                "labels" => labels = Some(value.to_string()),
+                "search" => {
+                    if !value.is_empty() {
+                        search_parts.push(value.to_string());
+                    }
+                }
+                _ => {} // ignore order_by, sort, assignee_username, etc.
+            }
+        }
+    }
+
+    (search_parts.join(" "), state, labels)
+}
+
+/// Parse token-based format: `#open label:bug some text`
+fn parse_token_query(query: &str) -> (String, Option<String>, Option<String>) {
     let mut search_parts = Vec::new();
     let mut state: Option<String> = None;
     let mut labels: Option<String> = None;
@@ -292,4 +346,86 @@ pub fn convert_query_to_gitlab_params(query: &str) -> (String, Option<String>, O
     }
 
     (search_parts.join(" "), state, labels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // URL-param format tests
+
+    #[test]
+    fn url_param_state_only() {
+        let (search, state, labels) = convert_query_to_gitlab_params("state=opened");
+        assert_eq!(search, "");
+        assert_eq!(state, Some("opened".to_string()));
+        assert_eq!(labels, None);
+    }
+
+    #[test]
+    fn url_param_state_and_labels() {
+        let (search, state, labels) = convert_query_to_gitlab_params("state=opened&labels=bug");
+        assert_eq!(search, "");
+        assert_eq!(state, Some("opened".to_string()));
+        assert_eq!(labels, Some("bug".to_string()));
+    }
+
+    #[test]
+    fn url_param_with_search() {
+        let (search, state, labels) = convert_query_to_gitlab_params("state=opened&search=foo");
+        assert_eq!(search, "foo");
+        assert_eq!(state, Some("opened".to_string()));
+        assert_eq!(labels, None);
+    }
+
+    #[test]
+    fn url_param_ignores_unknown_keys() {
+        let (search, state, labels) =
+            convert_query_to_gitlab_params("state=opened&order_by=updated_at");
+        assert_eq!(search, "");
+        assert_eq!(state, Some("opened".to_string()));
+        assert_eq!(labels, None);
+    }
+
+    // Token-based format tests
+
+    #[test]
+    fn token_hash_open() {
+        let (search, state, labels) = convert_query_to_gitlab_params("#open");
+        assert_eq!(search, "");
+        assert_eq!(state, Some("opened".to_string()));
+        assert_eq!(labels, None);
+    }
+
+    #[test]
+    fn token_hash_unresolved() {
+        let (search, state, labels) = convert_query_to_gitlab_params("#unresolved");
+        assert_eq!(search, "");
+        assert_eq!(state, Some("opened".to_string()));
+        assert_eq!(labels, None);
+    }
+
+    #[test]
+    fn token_label() {
+        let (search, state, labels) = convert_query_to_gitlab_params("label:bug");
+        assert_eq!(search, "");
+        assert_eq!(state, None);
+        assert_eq!(labels, Some("bug".to_string()));
+    }
+
+    #[test]
+    fn token_free_text() {
+        let (search, state, labels) = convert_query_to_gitlab_params("hello world");
+        assert_eq!(search, "hello world");
+        assert_eq!(state, None);
+        assert_eq!(labels, None);
+    }
+
+    #[test]
+    fn empty_string() {
+        let (search, state, labels) = convert_query_to_gitlab_params("");
+        assert_eq!(search, "");
+        assert_eq!(state, None);
+        assert_eq!(labels, None);
+    }
 }

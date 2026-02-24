@@ -1,0 +1,14 @@
+[
+  {
+    "id": "relates_to",
+    "name": "Relates To",
+    "source_to_target": "relates to",
+    "target_to_source": "relates to"
+  },
+  {
+    "id": "blocks",
+    "name": "Blocks",
+    "source_to_target": "blocks",
+    "target_to_source": "is blocked by"
+  }
+]

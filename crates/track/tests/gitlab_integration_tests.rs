@@ -16,7 +16,9 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
+use std::net::TcpListener;
 use std::path::PathBuf;
+use std::thread;
 use std::time::Duration;
 
 /// Get the path to the .track.toml config file at project root
@@ -1451,4 +1453,146 @@ fn test_gitlab_invalid_issue_id() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Invalid"));
+}
+
+// ============================================================================
+// Pagination Hint Tests (with mock server)
+// ============================================================================
+
+/// Helper to start a mock server that includes custom headers in the response.
+/// GitLab returns X-Total header alongside the JSON body.
+fn start_gitlab_mock_server_with_headers(
+    response_body: String,
+    extra_headers: Vec<(String, String)>,
+) -> (thread::JoinHandle<()>, u16) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port");
+    let port = listener.local_addr().unwrap().port();
+
+    let handle = thread::spawn(move || {
+        use std::io::{Read, Write};
+
+        let timeout = Duration::from_secs(3);
+        for stream in listener.incoming().flatten().take(3) {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(timeout));
+            let mut buffer = [0; 4096];
+            if stream.read(&mut buffer).is_ok() {
+                let mut headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}",
+                    response_body.len()
+                );
+                for (key, value) in &extra_headers {
+                    headers.push_str(&format!("\r\n{}: {}", key, value));
+                }
+                headers.push_str("\r\n\r\n");
+                let response = format!("{}{}", headers, response_body);
+                let _ = stream.write_all(response.as_bytes());
+            }
+        }
+    });
+
+    (handle, port)
+}
+
+fn mock_gitlab_issue_simple(iid: u64, title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": 1000 + iid,
+        "iid": iid,
+        "project_id": 1,
+        "title": title,
+        "description": "",
+        "state": "opened",
+        "labels": [],
+        "assignee": null,
+        "assignees": [],
+        "milestone": null,
+        "created_at": "2024-01-01T00:00:00.000Z",
+        "updated_at": "2024-01-02T00:00:00.000Z",
+        "closed_at": null,
+        "author": {"id": 1, "username": "user", "name": "User"},
+        "web_url": "https://gitlab.com/group/project/-/issues/1"
+    })
+}
+
+/// Write a temporary GitLab config file and return its path.
+fn write_gitlab_mock_config(port: u16) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("track-gl-test-{}", port));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join(".track.toml");
+    let content = format!(
+        r#"
+[gitlab]
+token = "test"
+url = "http://127.0.0.1:{}/api/v4"
+project_id = "1"
+"#,
+        port
+    );
+    std::fs::write(&config_path, content).unwrap();
+    config_path
+}
+
+#[test]
+fn test_gitlab_pagination_hint_on_full_page() {
+    // GitLab returns issues array + X-Total header
+    let search_response = serde_json::json!([
+        mock_gitlab_issue_simple(1, "Issue 1"),
+        mock_gitlab_issue_simple(2, "Issue 2")
+    ]);
+
+    let (_server, port) = start_gitlab_mock_server_with_headers(
+        search_response.to_string(),
+        vec![("x-total".to_string(), "10".to_string())],
+    );
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_gitlab_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "gitlab", "--config"])
+        .arg(&cfg)
+        .args(["issue", "search", "#open", "--limit", "2"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("results shown"),
+        "Should show pagination hint on full page, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_gitlab_no_hint_on_partial_page() {
+    let search_response = serde_json::json!([
+        mock_gitlab_issue_simple(1, "Issue 1"),
+        mock_gitlab_issue_simple(2, "Issue 2")
+    ]);
+
+    let (_server, port) = start_gitlab_mock_server_with_headers(
+        search_response.to_string(),
+        vec![("x-total".to_string(), "2".to_string())],
+    );
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_gitlab_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "gitlab", "--config"])
+        .arg(&cfg)
+        .args(["issue", "search", "#open", "--limit", "10"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !stderr.contains("results shown"),
+        "Should NOT show pagination hint on partial page, got stderr: {}",
+        stderr
+    );
 }
