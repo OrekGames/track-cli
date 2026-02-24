@@ -1,0 +1,26 @@
+[
+  {
+    "id": "bug",
+    "name": "bug",
+    "color": {"id": "fc2929", "background": "#fc2929", "foreground": "#ffffff"},
+    "issues_count": 3
+  },
+  {
+    "id": "enhancement",
+    "name": "enhancement",
+    "color": {"id": "a2eeef", "background": "#a2eeef", "foreground": "#000000"},
+    "issues_count": 5
+  },
+  {
+    "id": "good first issue",
+    "name": "good first issue",
+    "color": {"id": "7057ff", "background": "#7057ff", "foreground": "#ffffff"},
+    "issues_count": 2
+  },
+  {
+    "id": "documentation",
+    "name": "documentation",
+    "color": {"id": "0075ca", "background": "#0075ca", "foreground": "#ffffff"},
+    "issues_count": 1
+  }
+]

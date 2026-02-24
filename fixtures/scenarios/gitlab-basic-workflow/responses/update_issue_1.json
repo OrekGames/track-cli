@@ -1,0 +1,23 @@
+{
+  "id": "1",
+  "id_readable": "#1",
+  "summary": "Fix login bug (updated)",
+  "description": "Users are unable to log in with SSO credentials - investigating",
+  "resolved": false,
+  "project": {
+    "id": "42",
+    "name": "My Project",
+    "short_name": "myproject"
+  },
+  "created": "2024-01-15T09:00:00Z",
+  "updated": "2024-01-17T10:00:00Z",
+  "tags": [
+    {
+      "id": "bug",
+      "name": "bug",
+      "color": {"id": "red", "background": "#d9534f", "foreground": "#ffffff"}
+    }
+  ],
+  "custom_fields": [],
+  "comments_count": 1
+}

@@ -1,0 +1,36 @@
+[
+  {
+    "id": "1",
+    "id_readable": "octocat/hello-world#1",
+    "summary": "Found a bug in the greeting module",
+    "description": "The greeting module returns 'Hello World' instead of 'Hello, World!'",
+    "project": {
+      "id": "octocat/hello-world",
+      "name": "hello-world",
+      "short_name": "octocat/hello-world"
+    },
+    "custom_fields": [
+      {"State": {"name": "Status", "value": "Open", "is_resolved": false}}
+    ],
+    "tags": [{"id": "bug", "name": "bug"}],
+    "created": "2024-01-10T09:00:00Z",
+    "updated": "2024-01-15T14:30:00Z"
+  },
+  {
+    "id": "2",
+    "id_readable": "octocat/hello-world#2",
+    "summary": "Add multilingual support",
+    "description": "Support greetings in multiple languages",
+    "project": {
+      "id": "octocat/hello-world",
+      "name": "hello-world",
+      "short_name": "octocat/hello-world"
+    },
+    "custom_fields": [
+      {"State": {"name": "Status", "value": "Open", "is_resolved": false}}
+    ],
+    "tags": [{"id": "enhancement", "name": "enhancement"}],
+    "created": "2024-01-12T10:00:00Z",
+    "updated": "2024-01-14T11:00:00Z"
+  }
+]

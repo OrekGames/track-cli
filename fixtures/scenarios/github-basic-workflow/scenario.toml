@@ -1,0 +1,52 @@
+# GitHub Basic Workflow Scenario
+# Tests: basic operations using GitHub backend
+
+[scenario]
+name = "github-basic-workflow"
+description = "Test basic issue operations with GitHub backend"
+backend = "github"
+difficulty = "easy"
+tags = ["github", "issues", "comments", "labels"]
+
+[setup]
+prompt = """
+You have access to a GitHub repository octocat/hello-world.
+
+Task:
+1. Find issue #1 and review its current state
+2. Add a comment "Starting work on this issue"
+3. Search for open issues in the repository
+4. List all labels available in the repository
+
+Use the track CLI with the -b github flag (or --backend github).
+"""
+default_project = "octocat/hello-world"
+cache_available = true
+context = """
+The GitHub repository is octocat/hello-world.
+Issue #1 is currently in the open state.
+GitHub uses search syntax like "is:open", "is:closed", "label:bug".
+Issue IDs are numeric (e.g., 1, 42) or formatted as owner/repo#number.
+GitHub does not support deleting issues; close them instead.
+"""
+
+[expected_outcomes]
+issue_fetched = "1"
+comment_added = { method_called = "add_comment", issue = "1", contains = "Starting" }
+issues_searched = { method_called = "search_issues", contains = "octocat" }
+labels_listed = { method_called = "list_tags" }
+
+[scoring]
+min_commands = 4
+max_commands = 8
+optimal_commands = 4
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

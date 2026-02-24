@@ -1,0 +1,18 @@
+[
+  {
+    "direction": "OUTWARD",
+    "link_type": {
+      "id": "relates_to",
+      "name": "Relates To",
+      "source_to_target": "relates to",
+      "target_to_source": "relates to"
+    },
+    "issues": [
+      {
+        "id": "2",
+        "id_readable": "#2",
+        "summary": "Fix database connection timeout"
+      }
+    ]
+  }
+]
