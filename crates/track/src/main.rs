@@ -1151,19 +1151,14 @@ fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     let home = home.home_dir();
     let mut installed = Vec::new();
-    let mut skipped = Vec::new();
 
     for &(tool_name, tool_dir) in SKILL_TOOL_DIRS {
         let skill_dir = home.join(tool_dir).join("skills").join("track");
         let skill_path = skill_dir.join("SKILL.md");
 
-        if skill_path.exists() {
-            skipped.push((tool_name, skill_path));
-        } else {
-            std::fs::create_dir_all(&skill_dir)?;
-            std::fs::write(&skill_path, AGENT_SKILL)?;
-            installed.push((tool_name, skill_path));
-        }
+        std::fs::create_dir_all(&skill_dir)?;
+        std::fs::write(&skill_path, AGENT_SKILL)?;
+        installed.push((tool_name, skill_path));
     }
 
     match format {
@@ -1182,20 +1177,6 @@ fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
         cli::OutputFormat::Text => {
             for (tool, path) in &installed {
                 println!("{} {} skill: {}", "Installed".green(), tool, path.display());
-            }
-            for (tool, path) in &skipped {
-                println!(
-                    "{} {} skill: {} (already exists)",
-                    "Skipped:".yellow(),
-                    tool,
-                    path.display()
-                );
-            }
-            if installed.is_empty() && !skipped.is_empty() {
-                println!(
-                    "{}",
-                    "All skill files already exist. Delete and re-run to update.".dimmed()
-                );
             }
         }
     }
