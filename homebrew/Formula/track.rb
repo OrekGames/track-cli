@@ -45,18 +45,43 @@ class Track < Formula
     bash_completion.install "track.bash" => "track" if File.exist?("track.bash")
     zsh_completion.install "_track" if File.exist?("_track")
     fish_completion.install "track.fish" if File.exist?("track.fish")
+
+    # Install documentation
+    doc.install "README.md" if File.exist?("README.md")
+    doc.install "agent_guide.md" if File.exist?("agent_guide.md")
+
+    # Install agent skill file to share prefix (used by post_install)
+    if File.exist?("agent-skills/SKILL.md")
+      (share/"track").install "agent-skills/SKILL.md"
+    end
+  end
+
+  def post_install
+    skill_src = share/"track/SKILL.md"
+    return unless skill_src.exist?
+
+    # Install skill globally for all supported AI coding tools
+    %w[.claude .copilot .cursor .gemini].each do |tool_dir|
+      skill_dir = Pathname.new(Dir.home)/tool_dir/"skills"/"track"
+      skill_dir.mkpath
+      cp skill_src, skill_dir/"SKILL.md" unless (skill_dir/"SKILL.md").exist?
+    end
   end
 
   def caveats
     <<~EOS
-      To use track, configure your tracker credentials.
+      To use track, configure your tracker credentials:
 
-      Set environment variables:
+        track init --url https://your-instance.com --token YOUR_TOKEN
+
+      Or set environment variables:
         export TRACKER_URL="https://your-tracker-instance.com"
         export TRACKER_TOKEN="your-api-token"
 
-      Or create a config file:
-        track init --url https://your-instance.com --token YOUR_TOKEN
+      AI coding tool skills installed for:
+        Claude Code, Copilot, Cursor, and Gemini CLI
+        (~/.claude/skills/track/, ~/.copilot/skills/track/,
+         ~/.cursor/skills/track/, ~/.gemini/skills/track/)
 
       For more information, see:
         track --help
