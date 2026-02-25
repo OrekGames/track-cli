@@ -1286,10 +1286,7 @@ mod tests {
 
         match cli.command {
             Commands::Init {
-                url,
-                token,
-                skills,
-                ..
+                url, token, skills, ..
             } => {
                 assert!(url.is_none());
                 assert!(token.is_none());
