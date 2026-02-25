@@ -148,13 +148,15 @@ pub enum Commands {
     ///
     /// Creates a configuration file in the current directory. Use 'track config keys' to see
     /// all available configuration keys. You can later modify the file with 'track config set'.
+    ///
+    /// Use --skills to install agent skill files globally for Claude, Copilot, Cursor, and Gemini.
     Init {
         /// Tracker instance URL (e.g., https://youtrack.example.com or https://company.atlassian.net)
-        #[arg(long, required = true)]
-        url: String,
+        #[arg(long, required_unless_present = "skills")]
+        url: Option<String>,
         /// API token (YouTrack permanent token or Jira API token)
-        #[arg(long, required = true)]
-        token: String,
+        #[arg(long, required_unless_present = "skills")]
+        token: Option<String>,
         /// Default project ID or shortName (validates against server if provided)
         #[arg(long, short = 'p')]
         project: Option<String>,
@@ -164,6 +166,9 @@ pub enum Commands {
         /// Email for Jira authentication (required for Jira backend, ignored for YouTrack)
         #[arg(long, short = 'e')]
         email: Option<String>,
+        /// Install agent skill files globally for Claude, Copilot, Cursor, and Gemini
+        #[arg(long)]
+        skills: bool,
     },
     /// Open an issue or the tracker dashboard in your browser
     Open {
@@ -1200,12 +1205,14 @@ mod tests {
                 project,
                 backend,
                 email,
+                skills,
             } => {
-                assert_eq!(url, "https://youtrack.example.com");
-                assert_eq!(token, "perm:xxx");
+                assert_eq!(url.as_deref(), Some("https://youtrack.example.com"));
+                assert_eq!(token.as_deref(), Some("perm:xxx"));
                 assert!(project.is_none());
                 assert!(matches!(backend, Backend::YouTrack)); // Default
                 assert!(email.is_none());
+                assert!(!skills);
             }
             _ => panic!("expected init command"),
         }
@@ -1232,8 +1239,8 @@ mod tests {
                 backend,
                 ..
             } => {
-                assert_eq!(url, "https://youtrack.example.com");
-                assert_eq!(token, "perm:xxx");
+                assert_eq!(url.as_deref(), Some("https://youtrack.example.com"));
+                assert_eq!(token.as_deref(), Some("perm:xxx"));
                 assert_eq!(project.as_deref(), Some("PROJ"));
                 assert!(matches!(backend, Backend::YouTrack));
             }
@@ -1264,10 +1271,29 @@ mod tests {
                 email,
                 ..
             } => {
-                assert_eq!(url, "https://example.atlassian.net");
-                assert_eq!(token, "api-token");
+                assert_eq!(url.as_deref(), Some("https://example.atlassian.net"));
+                assert_eq!(token.as_deref(), Some("api-token"));
                 assert!(matches!(backend, Backend::Jira));
                 assert_eq!(email.as_deref(), Some("test@example.com"));
+            }
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn parses_init_skills_only() {
+        let cli = Cli::parse_from(["track", "init", "--skills"]);
+
+        match cli.command {
+            Commands::Init {
+                url,
+                token,
+                skills,
+                ..
+            } => {
+                assert!(url.is_none());
+                assert!(token.is_none());
+                assert!(skills);
             }
             _ => panic!("expected init command"),
         }

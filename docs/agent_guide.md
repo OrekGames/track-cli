@@ -28,54 +28,32 @@
 
 ## Configuration
 
-### YouTrack
+**Preferred**: Use a `.track.toml` config file. Avoid passing `--url`/`--token` as CLI flags — those are a last resort for one-off commands.
 
-```bash
-# Initialize with persistent config
-track init --url https://youtrack.example.com --token YOUR_TOKEN --project PROJ
+**Priority** (highest wins): CLI flags → env vars → local `.track.toml` → global `~/.tracker-cli/.track.toml`
 
-# Or environment variables
-export YOUTRACK_URL=https://youtrack.example.com
-export YOUTRACK_TOKEN=perm:xxx
+### Config File (`.track.toml`) — Recommended
 
-# Or config file (.track.toml)
+Place in your project directory for per-project config, or at `~/.tracker-cli/.track.toml` for global defaults. Created automatically by `track init`.
+
+**YouTrack**:
+```toml
 backend = "youtrack"
 url = "https://youtrack.example.com"
 token = "perm:xxx"
 default_project = "PROJ"
 ```
 
-### Jira
-
-```bash
-# Initialize with persistent config
-track init --url https://your-domain.atlassian.net --token API_TOKEN --backend jira --email you@example.com
-
-# Or environment variables
-export JIRA_URL=https://your-domain.atlassian.net
-export JIRA_EMAIL=you@example.com
-export JIRA_TOKEN=your-api-token
-
-# Or config file (.track.toml)
+**Jira**:
+```toml
 backend = "jira"
 url = "https://your-domain.atlassian.net"
 email = "you@example.com"
 token = "your-api-token"
 ```
 
-### GitHub
-
-```bash
-# Initialize with persistent config
-track init --url https://api.github.com --token ghp_YOUR_TOKEN --backend github
-
-# Or environment variables
-export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
-export GITHUB_OWNER=your-org
-export GITHUB_REPO=your-repo
-# Optional: export GITHUB_API_URL=https://github.example.com/api/v3  # GitHub Enterprise
-
-# Or config file (.track.toml)
+**GitHub**:
+```toml
 backend = "github"
 
 [github]
@@ -85,21 +63,10 @@ repo = "your-repo"
 # api_url = "https://api.github.com"  # default, omit unless using GHE
 ```
 
-**Note**: GitHub requires both `owner` and `repo` to be configured. The API URL defaults to `https://api.github.com`. Set `github.api_url` for GitHub Enterprise instances.
+**Note**: GitHub requires both `owner` and `repo`. The API URL defaults to `https://api.github.com`. Set `github.api_url` for GitHub Enterprise.
 
-### GitLab
-
-```bash
-# Initialize with persistent config
-track init --url https://gitlab.com/api/v4 --token glpat-YOUR_TOKEN --backend gitlab
-
-# Or environment variables
-export GITLAB_TOKEN=glpat-xxxxxxxxxxxx
-export GITLAB_URL=https://gitlab.com/api/v4
-export GITLAB_PROJECT_ID=12345
-# Optional: export GITLAB_NAMESPACE=your-group
-
-# Or config file (.track.toml)
+**GitLab**:
+```toml
 backend = "gitlab"
 
 [gitlab]
@@ -110,6 +77,56 @@ project_id = "12345"
 ```
 
 **Note**: GitLab URL should include the `/api/v4` path. The `project_id` can be a numeric ID or a URL-encoded path (e.g., `group%2Fproject`). Issue operations require `project_id` to be set.
+
+### Quick Setup with `track init`
+
+Creates a `.track.toml` in the current directory:
+
+```bash
+track init --url https://youtrack.example.com --token YOUR_TOKEN --project PROJ
+track init --url https://company.atlassian.net --token API_TOKEN --backend jira --email you@example.com
+track init --url https://api.github.com --token ghp_TOKEN --backend github
+track init --url https://gitlab.com/api/v4 --token glpat-TOKEN --backend gitlab
+```
+
+### Install Agent Skills
+
+```bash
+# Install skills only (no config required)
+track init --skills
+
+# Combine with config init
+track init --url https://youtrack.example.com --token YOUR_TOKEN --skills
+```
+
+This installs the `track` skill reference to `~/.claude/skills/track/`, `~/.copilot/skills/track/`, `~/.cursor/skills/track/`, and `~/.gemini/skills/track/`.
+
+### Environment Variables (alternative)
+
+Environment variables override config file values. Use for CI/CD or when you don't want credentials in a file.
+
+```bash
+# YouTrack
+export YOUTRACK_URL=https://youtrack.example.com
+export YOUTRACK_TOKEN=perm:xxx
+
+# Jira
+export JIRA_URL=https://your-domain.atlassian.net
+export JIRA_EMAIL=you@example.com
+export JIRA_TOKEN=your-api-token
+
+# GitHub
+export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+export GITHUB_OWNER=your-org
+export GITHUB_REPO=your-repo
+# export GITHUB_API_URL=https://github.example.com/api/v3  # GitHub Enterprise
+
+# GitLab
+export GITLAB_TOKEN=glpat-xxxxxxxxxxxx
+export GITLAB_URL=https://gitlab.com/api/v4
+export GITLAB_PROJECT_ID=12345
+# export GITLAB_NAMESPACE=your-group
+```
 
 ### Switching Backends
 

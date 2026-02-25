@@ -54,15 +54,17 @@ fn run(cli: Cli) -> Result<()> {
         project,
         backend,
         email,
+        skills,
     } = &cli.command
     {
         return handle_init(
-            url,
-            token,
+            url.as_deref(),
+            token.as_deref(),
             project.as_deref(),
             email.as_deref(),
             cli.format,
             *backend,
+            *skills,
         );
     }
 
@@ -1131,15 +1133,95 @@ fn handle_config(
     }
 }
 
+/// Embedded agent skill file (shared by all AI coding tools)
+const AGENT_SKILL: &str = include_str!("../../../agent-skills/SKILL.md");
+
+/// AI coding tool directories that support the Agent Skills standard (~/.{tool}/skills/{name}/SKILL.md)
+const SKILL_TOOL_DIRS: &[(&str, &str)] = &[
+    ("Claude Code", ".claude"),
+    ("Copilot", ".copilot"),
+    ("Cursor", ".cursor"),
+    ("Gemini CLI", ".gemini"),
+];
+
+fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
+    use colored::Colorize;
+
+    let home = directories::BaseDirs::new()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let home = home.home_dir();
+    let mut installed = Vec::new();
+    let mut skipped = Vec::new();
+
+    for &(tool_name, tool_dir) in SKILL_TOOL_DIRS {
+        let skill_dir = home.join(tool_dir).join("skills").join("track");
+        let skill_path = skill_dir.join("SKILL.md");
+
+        if skill_path.exists() {
+            skipped.push((tool_name, skill_path));
+        } else {
+            std::fs::create_dir_all(&skill_dir)?;
+            std::fs::write(&skill_path, AGENT_SKILL)?;
+            installed.push((tool_name, skill_path));
+        }
+    }
+
+    match format {
+        cli::OutputFormat::Json => {
+            let files: Vec<String> = installed
+                .iter()
+                .map(|(tool, path)| {
+                    format!(r#"{{"tool": "{}", "path": "{}"}}"#, tool, path.display())
+                })
+                .collect();
+            println!(
+                r#"{{"success": true, "skills_installed": [{}]}}"#,
+                files.join(", ")
+            );
+        }
+        cli::OutputFormat::Text => {
+            for (tool, path) in &installed {
+                println!("{} {} skill: {}", "Installed".green(), tool, path.display());
+            }
+            for (tool, path) in &skipped {
+                println!(
+                    "{} {} skill: {} (already exists)",
+                    "Skipped:".yellow(),
+                    tool,
+                    path.display()
+                );
+            }
+            if installed.is_empty() && !skipped.is_empty() {
+                println!(
+                    "{}",
+                    "All skill files already exist. Delete and re-run to update.".dimmed()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn handle_init(
-    url: &str,
-    token: &str,
+    url: Option<&str>,
+    token: Option<&str>,
     project: Option<&str>,
     email: Option<&str>,
     format: cli::OutputFormat,
     backend: Backend,
+    skills: bool,
 ) -> Result<()> {
     use colored::Colorize;
+
+    // If --skills only (no url/token), just install skill files and return
+    if skills && url.is_none() && token.is_none() {
+        return install_agent_skills(format);
+    }
+
+    // From here on, url and token are required (enforced by clap)
+    let url = url.expect("url required when not using --skills alone");
+    let token = token.expect("token required when not using --skills alone");
 
     // Validate URL format
     if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -1265,6 +1347,11 @@ fn handle_init(
         .map(|p| p.join("AGENT_GUIDE.md"))
         .unwrap_or_else(|| std::path::PathBuf::from("AGENT_GUIDE.md"));
     std::fs::write(&guide_path, AGENT_GUIDE)?;
+
+    // If --skills was also passed, install skill files too
+    if skills {
+        install_agent_skills(format)?;
+    }
 
     match format {
         cli::OutputFormat::Json => {

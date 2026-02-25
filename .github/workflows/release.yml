@@ -157,9 +157,13 @@ jobs:
             cp completions/* "${PKG_NAME}/" 2>/dev/null || true
           fi
 
-          # Copy README and LICENSE
+          # Copy README, LICENSE, and docs
           cp README.md "${PKG_NAME}/" 2>/dev/null || true
           cp LICENSE "${PKG_NAME}/" 2>/dev/null || true
+          cp docs/agent_guide.md "${PKG_NAME}/" 2>/dev/null || true
+
+          # Copy agent skill files
+          cp -r agent-skills "${PKG_NAME}/" 2>/dev/null || true
 
           tar -czvf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
           echo "ASSET=${PKG_NAME}.tar.gz" >> $GITHUB_ENV
@@ -173,9 +177,13 @@ jobs:
           New-Item -ItemType Directory -Path $PKG_NAME -Force
           Copy-Item "target/${{ matrix.target }}/release/track.exe" "$PKG_NAME/"
 
-          # Copy README and LICENSE if they exist
+          # Copy README, LICENSE, and docs
           if (Test-Path "README.md") { Copy-Item "README.md" "$PKG_NAME/" }
           if (Test-Path "LICENSE") { Copy-Item "LICENSE" "$PKG_NAME/" }
+          if (Test-Path "docs/agent_guide.md") { Copy-Item "docs/agent_guide.md" "$PKG_NAME/" }
+
+          # Copy agent skill files
+          if (Test-Path "agent-skills") { Copy-Item -Recurse "agent-skills" "$PKG_NAME/" }
 
           Compress-Archive -Path $PKG_NAME -DestinationPath "${PKG_NAME}.zip"
           echo "ASSET=${PKG_NAME}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
