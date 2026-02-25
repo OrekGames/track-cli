@@ -64,7 +64,7 @@ class Track < Formula
     %w[.claude .copilot .cursor .gemini].each do |tool_dir|
       skill_dir = Pathname.new(Dir.home)/tool_dir/"skills"/"track"
       skill_dir.mkpath
-      cp skill_src, skill_dir/"SKILL.md" unless (skill_dir/"SKILL.md").exist?
+      cp skill_src, skill_dir/"SKILL.md"
     end
   end
 
