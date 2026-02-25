@@ -1,40 +1,11 @@
-# Homebrew Tap for Track CLI
+# Homebrew Formula for Track CLI
 
-This directory contains the Homebrew formula for installing Track CLI.
+This directory contains the Homebrew formula template for Track CLI. The formula is automatically published to [OrekGames/homebrew-tap](https://github.com/OrekGames/homebrew-tap) by CI on each release.
 
-## Setup (Private GitLab Repository)
-
-Since this is a private GitLab repository, you need to configure authentication before installing.
-
-### 1. Create a GitLab Personal Access Token
-
-1. Go to GitLab → Settings → Access Tokens
-2. Create a token with `read_api` scope
-3. Save the token securely
-
-### 2. Set Environment Variable
-
-Add to your `~/.zshrc` or `~/.bashrc`:
+## Installation
 
 ```bash
-export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxxxxxx"
-```
-
-Reload your shell:
-```bash
-source ~/.zshrc  # or ~/.bashrc
-```
-
-### 3. Add the Tap
-
-```bash
-# Clone the tap (or use the homebrew-track repo if separate)
-brew tap your-group/track https://gitlab.com/your-group/youtrack-cli.git --force-auto-update
-```
-
-### 4. Install Track
-
-```bash
+brew tap OrekGames/tap
 brew install track
 ```
 
@@ -49,48 +20,45 @@ brew upgrade track
 
 ```bash
 brew uninstall track
-brew untap your-group/track
+brew untap OrekGames/tap
 ```
 
-## Troubleshooting
+## How It Works
 
-### "401 Unauthorized" Error
-
-Make sure your `GITLAB_TOKEN` is set and has `read_api` scope:
-
-```bash
-echo $GITLAB_TOKEN  # Should print your token
-```
-
-### "404 Not Found" Error
-
-The release may not exist yet. Check the GitLab releases page to verify the version exists.
-
-### Formula Not Found
-
-Ensure the tap was added correctly:
-
-```bash
-brew tap  # List all taps
-brew tap-info your-group/track  # Show tap details
-```
+1. A tagged release (`v*.*.*`) triggers the [release workflow](../.github/workflows/release.yml)
+2. CI builds binaries for macOS (arm64 + x86_64) and Linux (x86_64 + arm64)
+3. CI generates SHA256 checksums and creates a GitHub Release
+4. CI renders the formula template with real version and checksums
+5. CI pushes the updated formula to `OrekGames/homebrew-tap`
 
 ## For Maintainers
 
-### Updating the Formula
+### Manual Formula Update
 
-After creating a new release:
+If you need to update the formula manually (outside of CI):
 
-1. Download the checksums file from the release
+1. Download the checksums file from the [latest release](https://github.com/OrekGames/track-cli/releases)
 2. Run the update script:
    ```bash
    ./scripts/update-homebrew-formula.sh 0.2.0 dist/checksums-sha256.txt
    ```
-3. Commit and push the updated formula
+3. Copy the updated formula to the tap repo:
+   ```bash
+   cp homebrew/Formula/track.rb /path/to/homebrew-tap/Formula/track.rb
+   ```
+4. Commit and push the tap repo
 
-### Manual Checksum Update
+### Troubleshooting
 
-If needed, update `homebrew/Formula/track.rb` manually:
+**Formula not found after `brew tap`:**
+```bash
+brew tap                         # List all taps
+brew tap-info OrekGames/tap      # Show tap details
+brew update                      # Refresh tap index
+```
 
-1. Update the `version` line
-2. Update each `sha256` line with the correct checksum from `checksums-sha256.txt`
+**Version mismatch:**
+```bash
+brew info track                  # Show installed version info
+brew upgrade track               # Upgrade to latest
+```

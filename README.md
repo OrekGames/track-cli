@@ -18,18 +18,24 @@ A command-line interface for issue tracking systems, built with Rust. Supports *
 
 ## Installation
 
+### Homebrew (macOS and Linux)
+
+```bash
+brew tap OrekGames/tap
+brew install track
+```
+
+Shell completions for bash, zsh, and fish are installed automatically.
+
 ### From Source
 
 ```bash
 cargo install --path crates/track
 ```
 
-### Build Release
+### Download Binary
 
-```bash
-cargo build --release
-# Binary: target/release/track
-```
+Download prebuilt binaries from the [latest release](https://github.com/OrekGames/track-cli/releases). Archives are available for macOS (arm64, x86_64), Linux (x86_64, arm64), and Windows (x86_64, arm64).
 
 ## Quick Start
 

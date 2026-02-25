@@ -128,7 +128,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       - name: Generate shell completions (Unix)
-        if: matrix.os != 'windows-latest' && matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.archive == 'tar.gz' && !matrix.cross
         run: |
           mkdir -p completions
           ./target/${{ matrix.target }}/release/track completions bash > completions/track.bash
@@ -253,9 +253,16 @@ jobs:
             cargo install --git https://github.com/${{ github.repository }} --tag ${{ github.ref_name }} track
             ```
 
+            ### Homebrew (macOS and Linux)
+
+            ```bash
+            brew tap OrekGames/tap
+            brew install track
+            ```
+
             ### Shell Completions
 
-            Shell completions (bash, zsh, fish) are included in the Linux x86_64 archive.
+            Shell completions (bash, zsh, fish) are included in the macOS and Linux x86_64 archives, and installed automatically via Homebrew.
 
             ## Verification
 
@@ -266,3 +273,44 @@ jobs:
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download checksums from release
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          gh release download "v${VERSION}" --pattern "checksums-sha256.txt" --dir dist/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update formula with version and checksums
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          ./scripts/update-homebrew-formula.sh "$VERSION" dist/checksums-sha256.txt
+
+      - name: Push formula to tap repo
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          git clone https://x-access-token:${TAP_TOKEN}@github.com/OrekGames/homebrew-tap.git tap-repo
+          mkdir -p tap-repo/Formula
+          cp homebrew/Formula/track.rb tap-repo/Formula/track.rb
+          cd tap-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/track.rb
+          git diff --cached --quiet || git commit -m "track ${VERSION}"
+          git push
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
