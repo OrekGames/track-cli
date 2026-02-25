@@ -1,5 +1,10 @@
 # Track CLI
 
+[![CI](https://github.com/OrekGames/track-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/OrekGames/track-cli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/OrekGames/track-cli)](https://github.com/OrekGames/track-cli/releases/latest)
+[![Homebrew](https://img.shields.io/badge/homebrew-OrekGames%2Ftap-orange)](https://github.com/OrekGames/homebrew-tap)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A command-line interface for issue tracking systems, built with Rust. Supports **YouTrack**, **Jira**, **GitHub**, and **GitLab** with a unified command interface.
 
 ## Features
