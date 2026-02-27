@@ -2,11 +2,13 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use tracker_core::{IssueTracker, KnowledgeBase};
 
-const CACHE_FILE_NAME: &str = ".tracker-cache.json";
+const CACHE_DIR_NAME: &str = ".tracker-cache";
+const CACHE_VERSION: u32 = 2;
 const MAX_RECENT_ISSUES: usize = 50;
 
 /// Cached tracker context for AI assistants
@@ -50,6 +52,44 @@ pub struct TrackerCache {
     /// Issue counts per project and template query (populated during refresh)
     #[serde(default)]
     pub issue_counts: Vec<CachedIssueCount>,
+
+    /// Cache directory path (for lazy loading)
+    #[serde(skip)]
+    pub cache_dir: Option<PathBuf>,
+    /// Set of project keys that have been fully loaded
+    #[serde(skip)]
+    pub loaded_projects: std::collections::HashSet<String>,
+    /// Tracks which shard groups have been loaded from disk
+    #[serde(skip)]
+    loaded_shards: LoadedShards,
+}
+
+/// Tracks which shard groups have been loaded to avoid redundant disk reads
+#[derive(Debug, Default)]
+struct LoadedShards {
+    projects: bool,
+    backend: bool,
+    kb: bool,
+    runtime: bool,
+}
+
+/// Cache Index for v2 (sharded) cache
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CacheIndexV2 {
+    pub version: u32,
+    pub updated_at: String,
+    pub backend_metadata: CachedBackendMetadata,
+    pub default_project: Option<String>,
+}
+
+/// Project shard metadata for v2 cache
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectShardMeta {
+    pub id: String,
+    pub short_name: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub updated_at: String,
 }
 
 /// Backend metadata for context
@@ -205,43 +245,408 @@ pub struct StateTransition {
 }
 
 impl TrackerCache {
-    /// Load cache from file
+    /// Load cache from the sharded directory layout
     pub fn load(cache_dir: Option<PathBuf>) -> Result<Self> {
-        let path = Self::cache_path(cache_dir)?;
-        if !path.exists() {
-            return Ok(Self::default());
+        let root = Self::cache_dir_path(cache_dir.clone())?;
+        let index_path = root.join("index.json");
+        if !index_path.exists() {
+            return Ok(Self {
+                cache_dir,
+                ..Self::default()
+            });
         }
 
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read cache file: {}", path.display()))?;
+        let index_content = fs::read_to_string(&index_path)
+            .with_context(|| format!("Failed to read cache index: {}", index_path.display()))?;
+        let index: CacheIndexV2 =
+            serde_json::from_str(&index_content).context("Failed to parse cache index")?;
 
-        serde_json::from_str(&content).context("Failed to parse cache file")
+        Ok(TrackerCache {
+            updated_at: Some(index.updated_at),
+            backend_metadata: Some(index.backend_metadata),
+            default_project: index.default_project,
+            cache_dir,
+            ..Self::default()
+        })
     }
 
-    /// Save cache to file
+    /// Save cache in sharded directory layout
     pub fn save(&self, cache_dir: Option<PathBuf>) -> Result<()> {
-        let path = Self::cache_path(cache_dir)?;
+        let root = Self::cache_dir_path(cache_dir.clone())?;
+        fs::create_dir_all(&root)?;
+
+        // 1. Save index.json
+        let index = CacheIndexV2 {
+            version: CACHE_VERSION,
+            updated_at: self
+                .updated_at
+                .clone()
+                .unwrap_or_else(|| Utc::now().to_rfc3339()),
+            backend_metadata: self
+                .backend_metadata
+                .clone()
+                .ok_or_else(|| anyhow!("Missing backend metadata"))?,
+            default_project: self.default_project.clone(),
+        };
+        let index_content = serde_json::to_string_pretty(&index)?;
+        Self::atomic_write(&root.join("index.json"), index_content.as_bytes())?;
+
+        // 2. Save backend shards
+        let backend_dir = root.join("backend");
+        fs::create_dir_all(&backend_dir)?;
+
+        Self::atomic_write(
+            &backend_dir.join("tags.json"),
+            serde_json::to_string_pretty(&self.tags)?.as_bytes(),
+        )?;
+        Self::atomic_write(
+            &backend_dir.join("query_templates.json"),
+            serde_json::to_string_pretty(&self.query_templates)?.as_bytes(),
+        )?;
+        Self::atomic_write(
+            &backend_dir.join("link_types.json"),
+            serde_json::to_string_pretty(&self.link_types)?.as_bytes(),
+        )?;
+
+        // 3. Save project shards
+        let projects_dir = root.join("projects");
+        fs::create_dir_all(&projects_dir)?;
+
+        for project in &self.projects {
+            let project_key = &project.short_name;
+            let project_dir = projects_dir.join(project_key);
+            fs::create_dir_all(&project_dir)?;
+
+            let meta = ProjectShardMeta {
+                id: project.id.clone(),
+                short_name: project.short_name.clone(),
+                name: project.name.clone(),
+                description: project.description.clone(),
+                updated_at: self
+                    .updated_at
+                    .clone()
+                    .unwrap_or_else(|| Utc::now().to_rfc3339()),
+            };
+            Self::atomic_write(
+                &project_dir.join("meta.json"),
+                serde_json::to_string_pretty(&meta)?.as_bytes(),
+            )?;
+
+            // Fields for this project
+            if let Some(fields) = self.get_project_fields(&project.short_name) {
+                Self::atomic_write(
+                    &project_dir.join("fields.json"),
+                    serde_json::to_string_pretty(&fields)?.as_bytes(),
+                )?;
+            }
+
+            // Users for this project
+            if let Some(users) = self.get_project_users(&project.short_name) {
+                Self::atomic_write(
+                    &project_dir.join("users.json"),
+                    serde_json::to_string_pretty(&users)?.as_bytes(),
+                )?;
+            }
+
+            // Workflow hints for this project
+            if let Some(hints) = self
+                .workflow_hints
+                .iter()
+                .find(|h| h.project_short_name == project.short_name)
+            {
+                Self::atomic_write(
+                    &project_dir.join("workflow.json"),
+                    serde_json::to_string_pretty(hints)?.as_bytes(),
+                )?;
+            }
+
+            // Issue counts for this project
+            let project_issue_counts: Vec<_> = self
+                .issue_counts
+                .iter()
+                .filter(|ic| ic.project_short_name == project.short_name)
+                .collect();
+            if !project_issue_counts.is_empty() {
+                Self::atomic_write(
+                    &project_dir.join("issue_counts.json"),
+                    serde_json::to_string_pretty(&project_issue_counts)?.as_bytes(),
+                )?;
+            }
+        }
+
+        // 4. Save kb shards
+        let kb_dir = root.join("kb");
+        fs::create_dir_all(&kb_dir)?;
+        Self::atomic_write(
+            &kb_dir.join("articles.json"),
+            serde_json::to_string_pretty(&self.articles)?.as_bytes(),
+        )?;
+        Self::atomic_write(
+            &kb_dir.join("tree.json"),
+            serde_json::to_string_pretty(&self.article_tree)?.as_bytes(),
+        )?;
+
+        // 5. Save runtime shards
+        let runtime_dir = root.join("runtime");
+        fs::create_dir_all(&runtime_dir)?;
+        Self::atomic_write(
+            &runtime_dir.join("recent_issues.json"),
+            serde_json::to_string_pretty(&self.recent_issues)?.as_bytes(),
+        )?;
+
+        Ok(())
+    }
+
+    /// Save only the runtime shard (recent_issues). Used for lightweight
+    /// updates like recording issue access without touching other shards.
+    pub fn save_runtime(&self, cache_dir: Option<PathBuf>) -> Result<()> {
+        let root = Self::cache_dir_path(cache_dir)?;
+        let runtime_dir = root.join("runtime");
+        fs::create_dir_all(&runtime_dir)?;
+        Self::atomic_write(
+            &runtime_dir.join("recent_issues.json"),
+            serde_json::to_string_pretty(&self.recent_issues)?.as_bytes(),
+        )?;
+        Ok(())
+    }
+
+    /// Load all shards eagerly
+    pub fn load_all(cache_dir: Option<PathBuf>) -> Result<Self> {
+        let mut cache = Self::load(cache_dir)?;
+        cache.ensure_all_loaded()?;
+        Ok(cache)
+    }
+
+    /// Ensure all shards are loaded
+    pub fn ensure_all_loaded(&mut self) -> Result<()> {
+        self.ensure_projects()?;
+        self.ensure_backend_shards()?;
+        self.ensure_kb_shards()?;
+        self.ensure_runtime_shards()?;
+
+        let project_keys: Vec<String> =
+            self.projects.iter().map(|p| p.short_name.clone()).collect();
+        for key in project_keys {
+            self.ensure_project_shard(&key)?;
+        }
+        Ok(())
+    }
+
+    /// Ensure projects are loaded from project shards
+    pub fn ensure_projects(&mut self) -> Result<()> {
+        if self.loaded_shards.projects {
+            return Ok(());
+        }
+        self.loaded_shards.projects = true;
+
+        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let projects_dir = root.join("projects");
+        if projects_dir.exists() {
+            for entry in fs::read_dir(projects_dir)? {
+                let entry = entry?;
+                let project_dir = entry.path();
+                if project_dir.is_dir() {
+                    if let Ok(content) = fs::read_to_string(project_dir.join("meta.json")) {
+                        if let Ok(meta) = serde_json::from_str::<ProjectShardMeta>(&content) {
+                            self.projects.push(CachedProject {
+                                id: meta.id.clone(),
+                                short_name: meta.short_name.clone(),
+                                name: meta.name.clone(),
+                                description: meta.description.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ensure backend shards are loaded (tags, templates, link types)
+    pub fn ensure_backend_shards(&mut self) -> Result<()> {
+        if self.loaded_shards.backend {
+            return Ok(());
+        }
+        self.loaded_shards.backend = true;
+
+        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let backend_dir = root.join("backend");
+        if backend_dir.exists() {
+            if let Ok(content) = fs::read_to_string(backend_dir.join("tags.json")) {
+                if let Ok(tags) = serde_json::from_str(&content) {
+                    self.tags = tags;
+                }
+            }
+            if let Ok(content) = fs::read_to_string(backend_dir.join("query_templates.json")) {
+                if let Ok(templates) = serde_json::from_str(&content) {
+                    self.query_templates = templates;
+                }
+            }
+            if let Ok(content) = fs::read_to_string(backend_dir.join("link_types.json")) {
+                if let Ok(link_types) = serde_json::from_str(&content) {
+                    self.link_types = link_types;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ensure knowledge base shards are loaded
+    pub fn ensure_kb_shards(&mut self) -> Result<()> {
+        if self.loaded_shards.kb {
+            return Ok(());
+        }
+        self.loaded_shards.kb = true;
+
+        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let kb_dir = root.join("kb");
+        if kb_dir.exists() {
+            if let Ok(content) = fs::read_to_string(kb_dir.join("articles.json")) {
+                if let Ok(articles) = serde_json::from_str(&content) {
+                    self.articles = articles;
+                }
+            }
+            if let Ok(content) = fs::read_to_string(kb_dir.join("tree.json")) {
+                if let Ok(tree) = serde_json::from_str(&content) {
+                    self.article_tree = tree;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ensure runtime shards are loaded (recent issues)
+    pub fn ensure_runtime_shards(&mut self) -> Result<()> {
+        if self.loaded_shards.runtime {
+            return Ok(());
+        }
+        self.loaded_shards.runtime = true;
+
+        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let runtime_dir = root.join("runtime");
+        if runtime_dir.exists() {
+            if let Ok(content) = fs::read_to_string(runtime_dir.join("recent_issues.json")) {
+                if let Ok(recent) = serde_json::from_str(&content) {
+                    self.recent_issues = recent;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ensure a specific project shard is loaded
+    pub fn ensure_project_shard(&mut self, project_key: &str) -> Result<()> {
+        if self.loaded_projects.contains(project_key) {
+            return Ok(());
+        }
+
+        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let project_dir = root.join("projects").join(project_key);
+        if !project_dir.exists() {
+            return Ok(());
+        }
+
+        // Resolve project_id from in-memory projects or fall back to meta.json
+        let project_id = self
+            .projects
+            .iter()
+            .find(|p| p.short_name == project_key)
+            .map(|p| p.id.clone())
+            .unwrap_or_else(|| {
+                if let Ok(content) = fs::read_to_string(project_dir.join("meta.json")) {
+                    if let Ok(meta) = serde_json::from_str::<ProjectShardMeta>(&content) {
+                        return meta.id;
+                    }
+                }
+                "unknown".to_string()
+            });
+
+        // Load fields
+        if let Ok(content) = fs::read_to_string(project_dir.join("fields.json")) {
+            if let Ok(fields) = serde_json::from_str::<Vec<CachedField>>(&content) {
+                self.project_fields
+                    .retain(|pf| pf.project_short_name != project_key);
+                self.project_fields.push(ProjectFieldsCache {
+                    project_short_name: project_key.to_string(),
+                    project_id: project_id.clone(),
+                    fields,
+                });
+            }
+        }
+
+        // Load users
+        if let Ok(content) = fs::read_to_string(project_dir.join("users.json")) {
+            if let Ok(users) = serde_json::from_str(&content) {
+                self.project_users
+                    .retain(|pu| pu.project_short_name != project_key);
+                self.project_users.push(ProjectUsersCache {
+                    project_short_name: project_key.to_string(),
+                    project_id: project_id.clone(),
+                    users,
+                });
+            }
+        }
+
+        // Load workflow
+        if let Ok(content) = fs::read_to_string(project_dir.join("workflow.json")) {
+            if let Ok(hints) = serde_json::from_str(&content) {
+                self.workflow_hints
+                    .retain(|wh| wh.project_short_name != project_key);
+                self.workflow_hints.push(hints);
+            }
+        }
+
+        // Load issue counts
+        if let Ok(content) = fs::read_to_string(project_dir.join("issue_counts.json")) {
+            if let Ok(counts) = serde_json::from_str::<Vec<CachedIssueCount>>(&content) {
+                self.issue_counts
+                    .retain(|ic| ic.project_short_name != project_key);
+                self.issue_counts.extend(counts);
+            }
+        }
+
+        self.loaded_projects.insert(project_key.to_string());
+        Ok(())
+    }
+
+    /// Get cache directory path
+    fn cache_dir_path(cache_dir: Option<PathBuf>) -> Result<PathBuf> {
+        if let Some(dir) = cache_dir {
+            return Ok(dir.join(CACHE_DIR_NAME));
+        }
+
+        // Default to current directory
+        Ok(PathBuf::from(CACHE_DIR_NAME))
+    }
+
+    /// Atomic write helper: write temp -> fsync -> rename
+    fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
+        let temp_path = path.with_extension("tmp");
 
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        let content = serde_json::to_string_pretty(self)?;
-        fs::write(&path, content)
-            .with_context(|| format!("Failed to write cache file: {}", path.display()))?;
-
-        Ok(())
-    }
-
-    /// Get cache file path
-    fn cache_path(cache_dir: Option<PathBuf>) -> Result<PathBuf> {
-        if let Some(dir) = cache_dir {
-            return Ok(dir.join(CACHE_FILE_NAME));
+        {
+            let mut file = File::create(&temp_path)
+                .with_context(|| format!("Failed to create temp file: {}", temp_path.display()))?;
+            file.write_all(content).with_context(|| {
+                format!("Failed to write to temp file: {}", temp_path.display())
+            })?;
+            file.sync_all()
+                .with_context(|| format!("Failed to sync temp file: {}", temp_path.display()))?;
         }
 
-        // Default to current directory
-        Ok(PathBuf::from(CACHE_FILE_NAME))
+        fs::rename(&temp_path, path).with_context(|| {
+            format!(
+                "Failed to rename {} to {}",
+                temp_path.display(),
+                path.display()
+            )
+        })?;
+
+        Ok(())
     }
 
     /// Refresh cache from tracker API
@@ -1039,5 +1444,130 @@ mod tests {
         // No timestamp = stale
         let cache = TrackerCache::default();
         assert!(cache.is_stale(Duration::hours(1)));
+    }
+
+    #[test]
+    fn test_cache_v2_roundtrip() {
+        use std::env;
+        let temp_name = format!("test_cache_v2_dir_{}", Utc::now().timestamp());
+        let cache_dir = env::current_dir().unwrap().join(temp_name);
+        if cache_dir.exists() {
+            fs::remove_dir_all(&cache_dir).unwrap();
+        }
+
+        let mut cache = TrackerCache {
+            updated_at: Some(Utc::now().to_rfc3339()),
+            backend_metadata: Some(CachedBackendMetadata {
+                backend_type: "youtrack".to_string(),
+                base_url: "https://example.com".to_string(),
+            }),
+            projects: vec![CachedProject {
+                id: "p1".to_string(),
+                short_name: "P1".to_string(),
+                name: "Project 1".to_string(),
+                description: Some("Description".to_string()),
+            }],
+            tags: vec![CachedTag {
+                id: "t1".to_string(),
+                name: "Tag 1".to_string(),
+                color: None,
+                description: None,
+            }],
+            ..Default::default()
+        };
+        cache.project_fields.push(ProjectFieldsCache {
+            project_short_name: "P1".to_string(),
+            project_id: "p1".to_string(),
+            fields: vec![CachedField {
+                name: "Field 1".to_string(),
+                field_type: "string".to_string(),
+                required: false,
+                values: vec![],
+            }],
+        });
+
+        // Save sharded cache
+        cache
+            .save(Some(cache_dir.clone()))
+            .expect("Failed to save cache");
+
+        // Verify layout
+        let v2_root = cache_dir.join(".tracker-cache");
+        assert!(v2_root.exists());
+        assert!(v2_root.join("index.json").exists());
+        assert!(v2_root.join("backend").join("tags.json").exists());
+        assert!(v2_root
+            .join("projects")
+            .join("P1")
+            .join("meta.json")
+            .exists());
+        assert!(v2_root
+            .join("projects")
+            .join("P1")
+            .join("fields.json")
+            .exists());
+
+        // Load sharded cache
+        let loaded = TrackerCache::load_all(Some(cache_dir.clone())).expect("Failed to load cache");
+
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.projects[0].short_name, "P1");
+        assert_eq!(loaded.tags.len(), 1);
+        assert_eq!(loaded.project_fields.len(), 1);
+        assert_eq!(loaded.project_fields[0].fields.len(), 1);
+        assert_eq!(loaded.backend_metadata.unwrap().backend_type, "youtrack");
+
+        // Clean up
+        fs::remove_dir_all(&cache_dir).unwrap();
+    }
+
+    #[test]
+    fn test_cache_v2_robustness() {
+        use std::env;
+        let temp_name = format!("test_cache_v2_robustness_{}", Utc::now().timestamp());
+        let cache_dir = env::current_dir().unwrap().join(temp_name);
+        if cache_dir.exists() {
+            fs::remove_dir_all(&cache_dir).unwrap();
+        }
+
+        let cache = TrackerCache {
+            updated_at: Some(Utc::now().to_rfc3339()),
+            backend_metadata: Some(CachedBackendMetadata {
+                backend_type: "youtrack".to_string(),
+                base_url: "https://example.com".to_string(),
+            }),
+            projects: vec![
+                CachedProject {
+                    id: "p1".to_string(),
+                    short_name: "P1".to_string(),
+                    name: "Project 1".to_string(),
+                    description: None,
+                },
+                CachedProject {
+                    id: "p2".to_string(),
+                    short_name: "P2".to_string(),
+                    name: "Project 2".to_string(),
+                    description: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        cache.save(Some(cache_dir.clone())).unwrap();
+
+        // Corrupt P1 meta.json
+        let p1_meta = cache_dir
+            .join(".tracker-cache")
+            .join("projects")
+            .join("P1")
+            .join("meta.json");
+        fs::write(p1_meta, "invalid json").unwrap();
+
+        // Load sharded cache - should still load P2 despite P1 corruption
+        let loaded = TrackerCache::load_all(Some(cache_dir.clone())).unwrap();
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.projects[0].short_name, "P2");
+
+        fs::remove_dir_all(&cache_dir).unwrap();
     }
 }

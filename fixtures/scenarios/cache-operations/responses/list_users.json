@@ -1,4 +1,4 @@
 [
-  { "id": "user-1", "login": "john.doe", "name": "John Doe" },
-  { "id": "user-2", "login": "jane.smith", "name": "Jane Smith" }
+  { "id": "user-1", "login": "john.doe", "display_name": "John Doe" },
+  { "id": "user-2", "login": "jane.smith", "display_name": "Jane Smith" }
 ]

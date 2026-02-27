@@ -17,7 +17,7 @@ disable-model-invocation: false
 | **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`) |
 | **Output** | Text (default) or JSON (`-o json`) |
 | **Config** | `.track.toml` (local), `~/.tracker-cli/.track.toml` (global), env vars, or CLI flags |
-| **Cache** | `.tracker-cache.json` - run `track cache refresh` for context |
+| **Cache** | `.tracker-cache/` - run `track cache refresh` for context |
 | **AI Context** | `track context` - aggregated context in single command |
 
 ## Backend Comparison

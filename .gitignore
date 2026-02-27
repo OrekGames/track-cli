@@ -16,12 +16,12 @@ Cargo.lock
 
 # CLI output files (config/cache)
 .track-config.json
-.tracker-cache.json
+.tracker-cache/
 .yt-config.json
 .track.toml
 
 **/.track-config.json
-**/.tracker-cache.json
+**/.tracker-cache/
 **/.yt-config.json
 **/.track.toml
 
