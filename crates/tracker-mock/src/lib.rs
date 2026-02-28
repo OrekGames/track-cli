@@ -33,7 +33,7 @@ mod evaluator;
 mod manifest;
 mod scenario;
 
-pub use client::MockClient;
+pub use client::{log_cli_command, CallLogEntry, MockClient};
 pub use evaluator::{EvaluationResult, Evaluator};
 pub use manifest::{Manifest, ResponseMapping};
 pub use scenario::{ExpectedOutcome, Scenario, ScoringConfig};

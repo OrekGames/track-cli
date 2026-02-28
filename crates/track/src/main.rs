@@ -227,6 +227,18 @@ fn run_with_client(
             include_issues,
             issue_limit,
         } => {
+            // Log context command for eval scoring when in mock mode
+            if let Some(mock_dir) = tracker_mock::get_mock_dir() {
+                let mut args: Vec<(&str, &str)> = Vec::new();
+                if let Some(p) = project.as_deref() {
+                    args.push(("project", p));
+                }
+                if *refresh {
+                    args.push(("refresh", "true"));
+                }
+                tracker_mock::log_cli_command(&mock_dir, "context", &args);
+            }
+
             let backend = cli.backend.unwrap_or_else(|| config.get_backend());
             let backend_type = match backend {
                 Backend::YouTrack => "youtrack",
@@ -276,6 +288,17 @@ fn handle_cache(
     config: &Config,
 ) -> Result<()> {
     use cli::CacheCommands;
+
+    // Log cache commands for eval scoring when in mock mode
+    if let Some(mock_dir) = tracker_mock::get_mock_dir() {
+        let method = match action {
+            CacheCommands::Refresh { .. } => "cache_refresh",
+            CacheCommands::Status => "cache_status",
+            CacheCommands::Show => "cache_show",
+            CacheCommands::Path => "cache_path",
+        };
+        tracker_mock::log_cli_command(&mock_dir, method, &[]);
+    }
 
     match action {
         CacheCommands::Refresh { if_stale } => {
