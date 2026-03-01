@@ -474,10 +474,7 @@ impl Evaluator {
             .collect();
         if !cache_commands.is_empty() && scoring.bonuses.cache_use > 0 {
             breakdown.bonuses.push(ScoreAdjustment {
-                reason: format!(
-                    "Effective cache usage ({})",
-                    cache_commands.join(", ")
-                ),
+                reason: format!("Effective cache usage ({})", cache_commands.join(", ")),
                 points: scoring.bonuses.cache_use,
                 count: cache_commands.len(),
             });
@@ -760,7 +757,10 @@ mod tests {
             .bonuses
             .iter()
             .find(|b| b.reason.contains("cache usage"));
-        assert!(cache_bonus.is_some(), "context command should trigger bonus");
+        assert!(
+            cache_bonus.is_some(),
+            "context command should trigger bonus"
+        );
     }
 
     #[test]

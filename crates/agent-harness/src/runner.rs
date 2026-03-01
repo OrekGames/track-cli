@@ -33,9 +33,9 @@ const SKILL_FILE_PATH: &str = "agent-skills/SKILL.md";
 
 /// Strip YAML frontmatter (--- ... ---) from skill file content
 fn strip_frontmatter(content: &str) -> &str {
-    if content.starts_with("---\n") {
-        if let Some(close) = content[4..].find("\n---\n") {
-            return content[4 + close + 5..].trim_start();
+    if let Some(stripped) = content.strip_prefix("---\n") {
+        if let Some(close) = stripped.find("\n---\n") {
+            return stripped[close + 5..].trim_start();
         }
     }
     content
