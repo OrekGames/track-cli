@@ -51,8 +51,8 @@ json_create = { method_called = "create_issue", contains = "JSON" }
 
 [scoring]
 min_commands = 5
-max_commands = 10
-optimal_commands = 5
+max_commands = 14
+optimal_commands = 11
 base_score = 100
 
 [scoring.penalties]
