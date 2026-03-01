@@ -48,5 +48,3 @@ project_id = "*"
 [[responses]]
 method = "list_articles"
 file = "list_articles.json"
-[responses.args]
-project_id = "*"

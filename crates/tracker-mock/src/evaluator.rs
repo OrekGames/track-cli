@@ -466,13 +466,17 @@ impl Evaluator {
             }
         }
 
-        // Bonus: Cache usage (if cache refresh was called)
-        let cache_used = calls.iter().any(|c| c.method.contains("cache"));
-        if cache_used && scoring.bonuses.cache_use > 0 {
+        // Bonus: Cache usage (cache_refresh, cache_show, cache_status, or context commands)
+        let cache_commands: Vec<&str> = calls
+            .iter()
+            .filter(|c| c.method.starts_with("cache_") || c.method == "context")
+            .map(|c| c.method.as_str())
+            .collect();
+        if !cache_commands.is_empty() && scoring.bonuses.cache_use > 0 {
             breakdown.bonuses.push(ScoreAdjustment {
-                reason: "Effective cache usage".to_string(),
+                reason: format!("Effective cache usage ({})", cache_commands.join(", ")),
                 points: scoring.bonuses.cache_use,
-                count: 1,
+                count: cache_commands.len(),
             });
             breakdown.total_bonuses += scoring.bonuses.cache_use;
         }
@@ -653,5 +657,144 @@ mod tests {
 
         let redundant = evaluator.count_redundant_fetches(&calls);
         assert_eq!(redundant, 1);
+    }
+
+    #[test]
+    fn test_cache_use_bonus_with_cache_refresh() {
+        use crate::scenario::{BonusConfig, PenaltyConfig};
+
+        let scenario = Scenario {
+            scoring: ScoringConfig {
+                base_score: 100,
+                optimal_commands: Some(4),
+                max_commands: Some(7),
+                bonuses: BonusConfig {
+                    cache_use: 15,
+                    ..Default::default()
+                },
+                penalties: PenaltyConfig {
+                    redundant_fetch: -10,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..make_test_scenario()
+        };
+        let evaluator = Evaluator::new(scenario);
+
+        let calls = vec![
+            make_call("cache_refresh", vec![]),
+            make_call("get_issue", vec![("id", "DEMO-1")]),
+        ];
+
+        let result = evaluator.evaluate(&calls);
+        let cache_bonus = result
+            .score_breakdown
+            .bonuses
+            .iter()
+            .find(|b| b.reason.contains("cache usage"));
+        assert!(cache_bonus.is_some(), "cache_use bonus should be awarded");
+        assert_eq!(cache_bonus.unwrap().points, 15);
+    }
+
+    #[test]
+    fn test_cache_use_bonus_with_cache_show() {
+        use crate::scenario::BonusConfig;
+
+        let scenario = Scenario {
+            scoring: ScoringConfig {
+                base_score: 100,
+                bonuses: BonusConfig {
+                    cache_use: 10,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..make_test_scenario()
+        };
+        let evaluator = Evaluator::new(scenario);
+
+        let calls = vec![
+            make_call("cache_show", vec![]),
+            make_call("get_issue", vec![("id", "DEMO-1")]),
+        ];
+
+        let result = evaluator.evaluate(&calls);
+        let cache_bonus = result
+            .score_breakdown
+            .bonuses
+            .iter()
+            .find(|b| b.reason.contains("cache usage"));
+        assert!(cache_bonus.is_some(), "cache_show should trigger bonus");
+        assert_eq!(cache_bonus.unwrap().points, 10);
+    }
+
+    #[test]
+    fn test_cache_use_bonus_with_context_command() {
+        use crate::scenario::BonusConfig;
+
+        let scenario = Scenario {
+            scoring: ScoringConfig {
+                base_score: 100,
+                bonuses: BonusConfig {
+                    cache_use: 10,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..make_test_scenario()
+        };
+        let evaluator = Evaluator::new(scenario);
+
+        let calls = vec![
+            make_call("context", vec![("project", "DEMO")]),
+            make_call("get_issue", vec![("id", "DEMO-1")]),
+        ];
+
+        let result = evaluator.evaluate(&calls);
+        let cache_bonus = result
+            .score_breakdown
+            .bonuses
+            .iter()
+            .find(|b| b.reason.contains("cache usage"));
+        assert!(
+            cache_bonus.is_some(),
+            "context command should trigger bonus"
+        );
+    }
+
+    #[test]
+    fn test_no_cache_bonus_without_cache_commands() {
+        use crate::scenario::BonusConfig;
+
+        let scenario = Scenario {
+            scoring: ScoringConfig {
+                base_score: 100,
+                bonuses: BonusConfig {
+                    cache_use: 10,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..make_test_scenario()
+        };
+        let evaluator = Evaluator::new(scenario);
+
+        // Only trait-level calls, no cache/context commands
+        let calls = vec![
+            make_call("get_issue", vec![("id", "DEMO-1")]),
+            make_call("list_projects", vec![]),
+        ];
+
+        let result = evaluator.evaluate(&calls);
+        let cache_bonus = result
+            .score_breakdown
+            .bonuses
+            .iter()
+            .find(|b| b.reason.contains("cache usage"));
+        assert!(
+            cache_bonus.is_none(),
+            "no cache bonus without cache/context commands"
+        );
     }
 }

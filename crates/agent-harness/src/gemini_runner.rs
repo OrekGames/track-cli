@@ -204,22 +204,32 @@ pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<GeminiRunnerResult> {
     })
 }
 
-/// Path to the agent guide relative to the project root
-const AGENT_GUIDE_PATH: &str = "docs/agent_guide.md";
+/// Path to the skill file relative to the project root
+const SKILL_FILE_PATH: &str = "agent-skills/SKILL.md";
 
-/// Load the agent guide content from the docs directory
-fn load_agent_guide() -> Option<String> {
-    // Try to find the agent guide relative to the current working directory
+/// Strip YAML frontmatter (--- ... ---) from skill file content
+fn strip_frontmatter(content: &str) -> &str {
+    if let Some(stripped) = content.strip_prefix("---\n") {
+        if let Some(close) = stripped.find("\n---\n") {
+            return stripped[close + 5..].trim_start();
+        }
+    }
+    content
+}
+
+/// Load the skill file content, stripping frontmatter
+fn load_skill_file() -> Option<String> {
+    // Try to find the skill file relative to the current working directory
     let paths_to_try = [
-        AGENT_GUIDE_PATH.to_string(),
-        format!("./{}", AGENT_GUIDE_PATH),
-        format!("../{}", AGENT_GUIDE_PATH),
-        format!("../../{}", AGENT_GUIDE_PATH),
+        SKILL_FILE_PATH.to_string(),
+        format!("./{}", SKILL_FILE_PATH),
+        format!("../{}", SKILL_FILE_PATH),
+        format!("../../{}", SKILL_FILE_PATH),
     ];
 
     for path in &paths_to_try {
         if let Ok(content) = std::fs::read_to_string(path) {
-            return Some(content);
+            return Some(strip_frontmatter(&content).to_string());
         }
     }
 
@@ -228,11 +238,11 @@ fn load_agent_guide() -> Option<String> {
         let path = std::path::Path::new(&manifest_dir)
             .parent() // crates/
             .and_then(|p| p.parent()) // project root
-            .map(|p| p.join(AGENT_GUIDE_PATH));
+            .map(|p| p.join(SKILL_FILE_PATH));
 
         if let Some(path) = path {
             if let Ok(content) = std::fs::read_to_string(&path) {
-                return Some(content);
+                return Some(strip_frontmatter(&content).to_string());
             }
         }
     }
@@ -240,7 +250,7 @@ fn load_agent_guide() -> Option<String> {
     None
 }
 
-/// Build system prompt for Gemini using the agent guide
+/// Build system prompt for Gemini using the track skill file
 fn build_system_prompt(scenario: &Scenario) -> String {
     let mut prompt = String::new();
 
@@ -255,15 +265,15 @@ fn build_system_prompt(scenario: &Scenario) -> String {
     prompt.push_str("- Minimize the number of commands you execute\n");
     prompt.push_str("- Use `-o json` when you need to parse output programmatically\n\n");
 
-    // Load and include the agent guide
-    if let Some(agent_guide) = load_agent_guide() {
+    // Load and include the skill file (same context a real user would have installed)
+    if let Some(skill_content) = load_skill_file() {
         prompt.push_str("---\n\n");
-        prompt.push_str(&agent_guide);
+        prompt.push_str(&skill_content);
         prompt.push_str("\n---\n\n");
     } else {
-        // Fallback to minimal reference if agent guide not found
+        // Fallback to minimal reference if skill file not found
         prompt.push_str("## Track CLI Quick Reference\n\n");
-        prompt.push_str("Note: Full agent guide not found. Using minimal reference.\n\n");
+        prompt.push_str("Note: Skill file not found. Using minimal reference.\n\n");
         prompt.push_str("```bash\n");
         prompt.push_str("track PROJ-123                     # Get issue\n");
         prompt.push_str("track i s \"project: PROJ #Unresolved\"  # Search issues\n");

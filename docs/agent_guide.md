@@ -10,7 +10,7 @@
 | **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`) |
 | **Output** | Text (default) or JSON (`-o json`) |
 | **Config** | `.track.toml` in project dir, env vars, or CLI flags |
-| **Cache** | `.tracker-cache.json` - run `track cache refresh` for context |
+| **Cache** | `.tracker-cache/` - run `track cache refresh` for context |
 | **AI Context** | `track context` - aggregated context in single command |
 
 ## Backend Comparison
@@ -772,7 +772,7 @@ track -o json cache show  # JSON format (for programmatic use)
 track cache path          # Show cache file location
 ```
 
-**Cache file** (`.tracker-cache.json`) contains:
+**Cache file** (`.tracker-cache/`) contains:
 
 | Data | Description |
 |------|-------------|

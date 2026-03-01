@@ -112,10 +112,11 @@ pub fn handle_issue(
 
 /// Record issue access in the cache for LRU tracking
 fn record_issue_access(issue: &Issue) {
-    // Try to load, update, and save cache; ignore errors since this is optional
+    // Load only the runtime shard, update, and save just that shard
     if let Ok(mut cache) = TrackerCache::load(None) {
+        let _ = cache.ensure_runtime_shards();
         cache.record_issue_access(issue);
-        let _ = cache.save(None);
+        let _ = cache.save_runtime(None);
     }
 }
 
@@ -784,7 +785,7 @@ fn try_cached_count(query: &str, skip: usize) -> Option<(u64, String)> {
     if skip > 0 {
         return None;
     }
-    let cache = TrackerCache::load(None).ok()?;
+    let cache = TrackerCache::load_all(None).ok()?;
     let age = cache.age_string();
 
     // Check if the query matches any expanded template
@@ -814,9 +815,7 @@ fn resolve_search_query(
 
         // Template provided - resolve from cache
         (None, Some(tmpl)) => {
-            let cache = TrackerCache::load(None).context(
-                "Cache not found. Run 'track cache refresh' first to use query templates.",
-            )?;
+            let cache = TrackerCache::load_all(None)?;
 
             // Find the template
             let template_def = cache

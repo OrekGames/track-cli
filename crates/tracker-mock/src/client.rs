@@ -508,3 +508,32 @@ impl KnowledgeBase for MockClient {
 // MockClient is Send + Sync because all mutable state is behind Mutex
 unsafe impl Send for MockClient {}
 unsafe impl Sync for MockClient {}
+
+/// Log a CLI-level command (cache, context) to the call log.
+///
+/// This allows the evaluator to detect when an agent uses commands like
+/// `track cache refresh` or `track context` that operate at the CLI level
+/// rather than through the IssueTracker trait.
+pub fn log_cli_command(scenario_dir: &Path, method: &str, args: &[(&str, &str)]) {
+    let entry = CallLogEntry {
+        timestamp: Utc::now(),
+        method: method.to_string(),
+        args: args
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+            .collect(),
+        response_file: None,
+        error: None,
+        status: 200,
+        duration_ms: 0,
+    };
+
+    let log_path = scenario_dir.join("call_log.jsonl");
+    if let Ok(file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+        let mut writer = BufWriter::new(file);
+        if let Ok(json) = serde_json::to_string(&entry) {
+            let _ = writeln!(writer, "{}", json);
+            let _ = writer.flush();
+        }
+    }
+}

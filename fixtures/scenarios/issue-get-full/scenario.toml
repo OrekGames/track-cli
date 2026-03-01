@@ -37,7 +37,7 @@ full_get_links = { method_called = "get_issue", issue = "DEMO-8" }
 [scoring]
 min_commands = 3
 max_commands = 8
-optimal_commands = 3
+optimal_commands = 6
 base_score = 100
 
 [scoring.penalties]

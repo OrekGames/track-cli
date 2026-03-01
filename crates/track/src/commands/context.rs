@@ -118,7 +118,7 @@ pub fn handle_context(
     default_project: Option<&str>,
 ) -> Result<()> {
     // Load or refresh cache
-    let cache = if refresh {
+    let mut cache = if refresh {
         // Force refresh from API
         let cache = TrackerCache::refresh(client, backend_type, base_url, default_project)
             .context("Failed to refresh cache from API")?;
@@ -126,7 +126,9 @@ pub fn handle_context(
         cache
     } else {
         // Try to load existing cache, refresh if empty
-        let loaded = TrackerCache::load(None).unwrap_or_default();
+        let mut loaded = TrackerCache::load(None).unwrap_or_default();
+        // Ensure we can assess emptiness correctly
+        let _ = loaded.ensure_projects();
         if loaded.projects.is_empty() {
             let cache = TrackerCache::refresh(client, backend_type, base_url, default_project)
                 .context("Failed to refresh cache from API")?;
@@ -136,6 +138,9 @@ pub fn handle_context(
             loaded
         }
     };
+
+    // Ensure full data for context output
+    cache.ensure_all_loaded()?;
 
     // Build aggregated context
     let mut context = AggregatedContext {

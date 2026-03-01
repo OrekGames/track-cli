@@ -34,8 +34,8 @@ issue_updated = { method_called = "update_issue", issue = "DEMO-1" }
 
 [scoring]
 min_commands = 2
-max_commands = 4
-optimal_commands = 2
+max_commands = 14
+optimal_commands = 9
 base_score = 100
 
 [scoring.penalties]

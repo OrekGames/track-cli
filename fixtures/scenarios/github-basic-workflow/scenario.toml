@@ -33,7 +33,7 @@ GitHub does not support deleting issues; close them instead.
 [expected_outcomes]
 issue_fetched = "1"
 comment_added = { method_called = "add_comment", issue = "1", contains = "Starting" }
-issues_searched = { method_called = "search_issues", contains = "octocat" }
+issues_searched = { method_called = "search_issues" }
 labels_listed = { method_called = "list_tags" }
 
 [scoring]

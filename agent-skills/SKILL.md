@@ -17,7 +17,7 @@ disable-model-invocation: false
 | **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`) |
 | **Output** | Text (default) or JSON (`-o json`) |
 | **Config** | `.track.toml` (local), `~/.tracker-cli/.track.toml` (global), env vars, or CLI flags |
-| **Cache** | `.tracker-cache.json` - run `track cache refresh` for context |
+| **Cache** | `.tracker-cache/` - run `track cache refresh` for context |
 | **AI Context** | `track context` - aggregated context in single command |
 
 ## Backend Comparison
@@ -364,11 +364,21 @@ track -o json context                # JSON for parsing
 
 ### Field Validation
 
+`--validate` checks field values against the project schema before submitting. The CLI fetches the schema automatically — **no need to run `project fields` first**.
+
 ```bash
-track i new -p PROJ -s "Title" --field "Priority=Major" --validate
+# Validate and create (CLI checks schema, then creates)
+track i new -p PROJ -s "Title" --field "Priority=High" --field "Type=Bug" --validate
+
+# Validate and update
+track i u PROJ-123 --field "Priority=Critical" --validate
+
+# Dry run: validate only, do not submit (shows what would be sent)
 track i new -p PROJ -s "Title" --field "Priority=Invalid" --validate --dry-run
 # Error: Invalid value 'Invalid' for field 'Priority'. Valid values: Critical, Major, Normal, Minor
 ```
+
+**Key point**: `--validate` alone still creates/updates if valid. Add `--dry-run` to check without making changes.
 
 ### Workflow Hints
 

@@ -227,6 +227,18 @@ fn run_with_client(
             include_issues,
             issue_limit,
         } => {
+            // Log context command for eval scoring when in mock mode
+            if let Some(mock_dir) = tracker_mock::get_mock_dir() {
+                let mut args: Vec<(&str, &str)> = Vec::new();
+                if let Some(p) = project.as_deref() {
+                    args.push(("project", p));
+                }
+                if *refresh {
+                    args.push(("refresh", "true"));
+                }
+                tracker_mock::log_cli_command(&mock_dir, "context", &args);
+            }
+
             let backend = cli.backend.unwrap_or_else(|| config.get_backend());
             let backend_type = match backend {
                 Backend::YouTrack => "youtrack",
@@ -276,6 +288,17 @@ fn handle_cache(
     config: &Config,
 ) -> Result<()> {
     use cli::CacheCommands;
+
+    // Log cache commands for eval scoring when in mock mode
+    if let Some(mock_dir) = tracker_mock::get_mock_dir() {
+        let method = match action {
+            CacheCommands::Refresh { .. } => "cache_refresh",
+            CacheCommands::Status => "cache_status",
+            CacheCommands::Show => "cache_show",
+            CacheCommands::Path => "cache_path",
+        };
+        tracker_mock::log_cli_command(&mock_dir, method, &[]);
+    }
 
     match action {
         CacheCommands::Refresh { if_stale } => {
@@ -356,7 +379,11 @@ fn handle_cache(
             Ok(())
         }
         CacheCommands::Status => {
-            let cache = cache::TrackerCache::load(None).unwrap_or_default();
+            let mut cache = cache::TrackerCache::load(None).unwrap_or_default();
+            // Load only what we need for status
+            let _ = cache.ensure_backend_shards();
+            let _ = cache.ensure_projects();
+            let _ = cache.ensure_runtime_shards();
 
             match format {
                 cli::OutputFormat::Json => {
@@ -432,7 +459,8 @@ fn handle_cache(
             Ok(())
         }
         CacheCommands::Show => {
-            let cache = cache::TrackerCache::load(None)?;
+            let mut cache = cache::TrackerCache::load(None)?;
+            cache.ensure_all_loaded()?;
             match format {
                 cli::OutputFormat::Json => {
                     let json = serde_json::to_string_pretty(&cache)?;
@@ -606,7 +634,7 @@ fn handle_cache(
             Ok(())
         }
         CacheCommands::Path => {
-            let path = std::env::current_dir()?.join(".tracker-cache.json");
+            let path = std::env::current_dir()?.join(".tracker-cache");
             println!("{}", path.display());
             Ok(())
         }
@@ -2004,8 +2032,9 @@ fn handle_issue_shortcut(
 
     // Record access for LRU tracking (same as issue get command)
     if let Ok(mut c) = cache::TrackerCache::load(None) {
+        let _ = c.ensure_runtime_shards();
         c.record_issue_access(&issue);
-        let _ = c.save(None);
+        let _ = c.save_runtime(None);
     }
 
     if !full {
