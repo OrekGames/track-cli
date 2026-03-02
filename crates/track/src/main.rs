@@ -6,7 +6,7 @@ mod config;
 mod output;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use cli::{Backend, Cli, Commands};
 use config::Config;
 use github_backend::GitHubClient;
@@ -240,12 +240,7 @@ fn run_with_client(
             }
 
             let backend = cli.backend.unwrap_or_else(|| config.get_backend());
-            let backend_type = match backend {
-                Backend::YouTrack => "youtrack",
-                Backend::Jira => "jira",
-                Backend::GitHub => "github",
-                Backend::GitLab => "gitlab",
-            };
+            let backend_type = backend.to_string();
             commands::context::handle_context(
                 issue_client,
                 Some(kb_client),
@@ -254,7 +249,7 @@ fn run_with_client(
                 *include_issues,
                 *issue_limit,
                 cli.format,
-                backend_type,
+                &backend_type,
                 config.url.as_deref().unwrap_or("unknown"),
                 config.default_project.as_deref(),
             )
@@ -332,19 +327,14 @@ fn handle_cache(
             }
 
             // Cache works with any backend that implements IssueTracker
-            let backend_type = match backend {
-                Backend::YouTrack => "youtrack",
-                Backend::Jira => "jira",
-                Backend::GitHub => "github",
-                Backend::GitLab => "gitlab",
-            };
+            let backend_type = backend.to_string();
             let base_url = config.url.as_deref().unwrap_or("unknown");
             let default_project = config.default_project.as_deref();
 
             let cache = cache::TrackerCache::refresh_with_articles(
                 client,
                 kb_client,
-                backend_type,
+                &backend_type,
                 base_url,
                 default_project,
             )?;
@@ -644,12 +634,7 @@ fn handle_cache(
 /// Handle config backend command
 fn handle_config_backend(backend: Backend, format: cli::OutputFormat) -> Result<()> {
     Config::update_backend(backend)?;
-    let backend_name = match backend {
-        Backend::YouTrack => "youtrack",
-        Backend::Jira => "jira",
-        Backend::GitHub => "github",
-        Backend::GitLab => "gitlab",
-    };
+    let backend_name = backend.to_string();
 
     match format {
         cli::OutputFormat::Json => {
@@ -796,23 +781,13 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
             // Set the value based on the key
             match key.as_str() {
                 "backend" => {
-                    let valid_backends = [
-                        "youtrack", "yt", "jira", "j", "github", "gh", "gitlab", "gl",
-                    ];
-                    if !valid_backends.contains(&value.as_str()) {
-                        return Err(anyhow::anyhow!(
-                            "Invalid backend value: '{}'. Use 'youtrack', 'jira', 'github', or 'gitlab'.",
+                    // Parse and normalize using clap's ValueEnum
+                    let backend = Backend::from_str(value, true)
+                        .map_err(|_| anyhow::anyhow!(
+                            "Invalid backend '{}'. Valid: youtrack (yt), jira (j), github (gh), gitlab (gl)",
                             value
-                        ));
-                    }
-                    let normalized = match value.as_str() {
-                        "yt" => "youtrack",
-                        "j" => "jira",
-                        "gh" => "github",
-                        "gl" => "gitlab",
-                        other => other,
-                    };
-                    cfg.backend = Some(normalized.to_string());
+                        ))?;
+                    cfg.backend = Some(backend);
                 }
                 "url" => cfg.url = Some(value.clone()),
                 "token" => cfg.token = Some(value.clone()),
@@ -862,40 +837,41 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
 
             let cfg = Config::load_local_track_toml()?.unwrap_or_default();
 
-            let value: Option<&str> = match key.as_str() {
-                "backend" => cfg.backend.as_deref(),
-                "url" => cfg.url.as_deref(),
-                "token" => cfg.token.as_deref(),
-                "email" => cfg.email.as_deref(),
-                "default_project" => cfg.default_project.as_deref(),
-                "youtrack.url" => cfg.youtrack.url.as_deref(),
-                "youtrack.token" => cfg.youtrack.token.as_deref(),
-                "jira.url" => cfg.jira.url.as_deref(),
-                "jira.email" => cfg.jira.email.as_deref(),
-                "jira.token" => cfg.jira.token.as_deref(),
-                "github.token" => cfg.github.token.as_deref(),
-                "github.owner" => cfg.github.owner.as_deref(),
-                "github.repo" => cfg.github.repo.as_deref(),
-                "github.api_url" => cfg.github.api_url.as_deref(),
-                "gitlab.token" => cfg.gitlab.token.as_deref(),
-                "gitlab.url" => cfg.gitlab.url.as_deref(),
-                "gitlab.project_id" => cfg.gitlab.project_id.as_deref(),
-                "gitlab.namespace" => cfg.gitlab.namespace.as_deref(),
+            let value: Option<String> = match key.as_str() {
+                "backend" => cfg.backend.map(|b| b.to_string()),
+                "url" => cfg.url.clone(),
+                "token" => cfg.token.clone(),
+                "email" => cfg.email.clone(),
+                "default_project" => cfg.default_project.clone(),
+                "youtrack.url" => cfg.youtrack.url.clone(),
+                "youtrack.token" => cfg.youtrack.token.clone(),
+                "jira.url" => cfg.jira.url.clone(),
+                "jira.email" => cfg.jira.email.clone(),
+                "jira.token" => cfg.jira.token.clone(),
+                "github.token" => cfg.github.token.clone(),
+                "github.owner" => cfg.github.owner.clone(),
+                "github.repo" => cfg.github.repo.clone(),
+                "github.api_url" => cfg.github.api_url.clone(),
+                "gitlab.token" => cfg.gitlab.token.clone(),
+                "gitlab.url" => cfg.gitlab.url.clone(),
+                "gitlab.project_id" => cfg.gitlab.project_id.clone(),
+                "gitlab.namespace" => cfg.gitlab.namespace.clone(),
                 _ => unreachable!("Key validated above"),
             };
 
             match format {
                 cli::OutputFormat::Json => {
+                    let is_set = value.is_some();
                     let output = serde_json::json!({
                         "key": key,
                         "value": value,
-                        "is_set": value.is_some()
+                        "is_set": is_set
                     });
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 }
                 cli::OutputFormat::Text => {
                     use colored::Colorize;
-                    if let Some(v) = value {
+                    if let Some(v) = &value {
                         // Mask tokens/secrets
                         let display_value = if key.contains("token") {
                             "(set - hidden)".to_string()
@@ -954,7 +930,7 @@ fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) 
                         let config_path = config::local_track_config_path()?;
                         println!("{}:", "Configuration".white().bold());
                         println!("  {}: {}", "File".dimmed(), config_path.display());
-                        let backend_name = cfg.backend.as_deref().unwrap_or("youtrack");
+                        let backend_name = cfg.backend.unwrap_or_default().to_string();
                         println!("  {}: {}", "Backend".dimmed(), backend_name.cyan().bold());
                         if let Some(url) = &cfg.url {
                             println!("  {}: {}", "URL".dimmed(), url.cyan());
@@ -1327,17 +1303,9 @@ fn handle_init(
         None
     };
 
-    // Create backend name string for config
-    let backend_str = match backend {
-        Backend::YouTrack => "youtrack",
-        Backend::Jira => "jira",
-        Backend::GitHub => "github",
-        Backend::GitLab => "gitlab",
-    };
-
     // Create config with backend and optional default project
     let config = Config {
-        backend: Some(backend_str.to_string()),
+        backend: Some(backend),
         url: Some(url.to_string()),
         token: Some(token.to_string()),
         email: effective_email,
@@ -1371,7 +1339,7 @@ fn handle_init(
             };
             println!(
                 r#"{{"success": true, "backend": "{}", "config_path": "{}", "guide_path": "{}"{}}}"#,
-                backend_str,
+                backend,
                 config_path.display(),
                 guide_path.display(),
                 project_json
@@ -1388,7 +1356,7 @@ fn handle_init(
                 "Created agent guide:".green(),
                 guide_path.display()
             );
-            println!("  {}: {}", "Backend".dimmed(), backend_str.cyan().bold());
+            println!("  {}: {}", "Backend".dimmed(), backend.to_string().cyan().bold());
             if let Some((_, name)) = &validated_project {
                 println!("  {}: {}", "Default project".dimmed(), name.cyan().bold());
             }
@@ -2038,7 +2006,7 @@ fn handle_issue_shortcut(
     }
 
     if !full {
-        output::output_result(&issue, format);
+        output::output_result(&issue, format)?;
         return Ok(());
     }
 
@@ -2057,7 +2025,7 @@ fn handle_issue_shortcut(
         }
         cli::OutputFormat::Text => {
             use colored::Colorize;
-            output::output_result(&issue, format);
+            output::output_result(&issue, format)?;
 
             if !links.is_empty() {
                 println!("\n  {}:", "Links".dimmed());

@@ -75,7 +75,7 @@ fn handle_create(
         .create_custom_field(&create)
         .context("Failed to create custom field")?;
 
-    output_result(&field, format);
+    output_result(&field, format)?;
     Ok(())
 }
 

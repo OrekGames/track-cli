@@ -38,7 +38,7 @@ pub fn handle_project(
 fn handle_list(client: &dyn IssueTracker, format: OutputFormat) -> Result<()> {
     let projects = client.list_projects().context("Failed to list projects")?;
 
-    output_list(&projects, format);
+    output_list(&projects, format)?;
     Ok(())
 }
 
@@ -59,7 +59,7 @@ fn handle_create(
         .create_project(&create)
         .context("Failed to create project")?;
 
-    output_result(&project, format);
+    output_result(&project, format)?;
     Ok(())
 }
 
@@ -73,7 +73,7 @@ fn handle_get(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> Resu
         .get_project(&project_id)
         .with_context(|| format!("Failed to fetch project '{}'", id))?;
 
-    output_result(&project, format);
+    output_result(&project, format)?;
     Ok(())
 }
 
@@ -87,7 +87,7 @@ fn handle_fields(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> R
         .get_project_custom_fields(&project_id)
         .with_context(|| format!("Failed to fetch custom fields for project '{}'", id))?;
 
-    output_list(&fields, format);
+    output_list(&fields, format)?;
     Ok(())
 }
 
@@ -123,6 +123,6 @@ fn handle_attach_field(
             )
         })?;
 
-    output_result(&attached, format);
+    output_result(&attached, format)?;
     Ok(())
 }

@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/tracker-core", "crates/youtrack-backend", "crates/jira-backend", "crates/github-backend", "crates/gitlab-backend", "crates/track", "crates/tracker-mock", "crates/agent-harness"]
+default-members = ["crates/track"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -37,3 +38,4 @@ tokio = { version = "1", features = ["rt", "macros"] }
 wiremock = "0.6"
 assert_cmd = "2.0"
 predicates = "3.1"
+glob = "0.3"

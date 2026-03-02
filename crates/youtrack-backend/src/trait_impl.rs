@@ -25,9 +25,7 @@ impl IssueTracker for YouTrackClient {
         // Best-effort count — don't fail the search if counting fails
         let total = self.count_issues(query).ok().flatten();
 
-        let issues = self
-            .search_issues(query, limit, skip)
-            .map_err(TrackerError::from)?;
+        let issues = self.search_issues(query, limit, skip)?;
         let items: Vec<Issue> = issues.into_iter().map(Into::into).collect();
 
         match total {
@@ -37,7 +35,7 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
-        self.count_issues(query).map_err(TrackerError::from)
+        Ok(self.count_issues(query)?)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
@@ -55,7 +53,7 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
-        self.delete_issue(id).map_err(TrackerError::from)
+        Ok(self.delete_issue(id)?)
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
@@ -78,8 +76,7 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn resolve_project_id(&self, identifier: &str) -> Result<String> {
-        self.resolve_project_id(identifier)
-            .map_err(TrackerError::from)
+        Ok(self.resolve_project_id(identifier)?)
     }
 
     fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>> {
@@ -114,16 +111,16 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn delete_tag(&self, name: &str) -> Result<()> {
-        let tags = self.list_tags().map_err(TrackerError::from)?;
+        let tags = self.list_tags()?;
         let tag = tags
             .into_iter()
             .find(|t| t.name == name)
             .ok_or_else(|| TrackerError::NotFound(format!("Tag '{}' not found", name)))?;
-        self.delete_tag(&tag.id).map_err(TrackerError::from)
+        Ok(self.delete_tag(&tag.id)?)
     }
 
     fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
-        let tags = self.list_tags().map_err(TrackerError::from)?;
+        let tags = self.list_tags()?;
         let existing = tags
             .into_iter()
             .find(|t| t.name == current_name)
@@ -159,12 +156,11 @@ impl IssueTracker for YouTrackClient {
         link_type: &str,
         direction: &str,
     ) -> Result<()> {
-        self.link_issues(source, target, link_type, direction)
-            .map_err(TrackerError::from)
+        Ok(self.link_issues(source, target, link_type, direction)?)
     }
 
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
-        self.link_subtask(child, parent).map_err(TrackerError::from)
+        Ok(self.link_subtask(child, parent)?)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
@@ -253,8 +249,7 @@ impl IssueTracker for YouTrackClient {
             };
 
             let created = self
-                .add_bundle_value(bundle_type.to_api_path(), bundle_id, &request)
-                .map_err(TrackerError::from)?;
+                .add_bundle_value(bundle_type.to_api_path(), bundle_id, &request)?;
 
             results.push(convert::bundle_value_response_to_core(created));
         }
@@ -354,7 +349,7 @@ impl KnowledgeBase for YouTrackClient {
     }
 
     fn delete_article(&self, id: &str) -> Result<()> {
-        self.delete_article(id).map_err(TrackerError::from)
+        Ok(self.delete_article(id)?)
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {

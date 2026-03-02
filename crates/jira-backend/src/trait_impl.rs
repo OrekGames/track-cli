@@ -63,7 +63,7 @@ impl IssueTracker for JiraClient {
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
-        self.delete_issue(id).map_err(TrackerError::from)
+        Ok(self.delete_issue(id)?)
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
@@ -148,7 +148,7 @@ impl IssueTracker for JiraClient {
 
     fn get_issue_links(&self, issue_id: &str) -> Result<Vec<IssueLink>> {
         // Get the issue to retrieve its links
-        let issue = self.get_issue(issue_id).map_err(TrackerError::from)?;
+        let issue = self.get_issue(issue_id)?;
         Ok(issue
             .fields
             .issuelinks
@@ -178,7 +178,7 @@ impl IssueTracker for JiraClient {
             },
         };
 
-        self.create_link(&link).map_err(TrackerError::from)
+        Ok(self.create_link(&link)?)
     }
 
     fn link_subtask(&self, _child: &str, _parent: &str) -> Result<()> {

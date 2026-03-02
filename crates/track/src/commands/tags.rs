@@ -41,7 +41,7 @@ pub fn handle_tags(
 fn handle_list(client: &dyn IssueTracker, format: OutputFormat) -> Result<()> {
     let tags = client.list_tags().context("Failed to list tags")?;
 
-    output_list(&tags, format);
+    output_list(&tags, format)?;
     Ok(())
 }
 
@@ -66,7 +66,7 @@ fn handle_create(
 
     let created = client.create_tag(&tag).context("Failed to create tag")?;
 
-    output_result(&created, format);
+    output_result(&created, format)?;
     Ok(())
 }
 
@@ -101,6 +101,6 @@ fn handle_update(
         .update_tag(current_name, &tag)
         .context("Failed to update tag")?;
 
-    output_result(&updated, format);
+    output_result(&updated, format)?;
     Ok(())
 }

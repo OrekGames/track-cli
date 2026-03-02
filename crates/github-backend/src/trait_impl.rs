@@ -42,7 +42,7 @@ fn parse_issue_number(id: &str) -> std::result::Result<u64, TrackerError> {
 impl IssueTracker for GitHubClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
         let number = parse_issue_number(id)?;
-        let issue = self.get_issue(number).map_err(TrackerError::from)?;
+        let issue = self.get_issue(number)?;
 
         // If this is a PR, report as not found
         if issue.is_pull_request() {
@@ -61,9 +61,7 @@ impl IssueTracker for GitHubClient {
             1
         };
 
-        let result = self
-            .search_issues(&github_query, per_page, page)
-            .map_err(TrackerError::from)?;
+        let result = self.search_issues(&github_query, per_page, page)?;
 
         let total = result.total_count;
         let owner = self.owner().to_string();
@@ -87,18 +85,14 @@ impl IssueTracker for GitHubClient {
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
         let github_issue = create_issue_from_core(issue);
-        let created = self
-            .create_issue(&github_issue)
-            .map_err(TrackerError::from)?;
+        let created = self.create_issue(&github_issue)?;
         Ok(github_issue_to_core(created, self.owner(), self.repo()))
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
         let number = parse_issue_number(id)?;
         let github_update = update_issue_from_core(update);
-        let updated = self
-            .update_issue(number, &github_update)
-            .map_err(TrackerError::from)?;
+        let updated = self.update_issue(number, &github_update)?;
         Ok(github_issue_to_core(updated, self.owner(), self.repo()))
     }
 
@@ -185,7 +179,7 @@ impl IssueTracker for GitHubClient {
     }
 
     fn delete_tag(&self, name: &str) -> Result<()> {
-        self.delete_label(name).map_err(TrackerError::from)
+        Ok(self.delete_label(name)?)
     }
 
     fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
@@ -325,7 +319,7 @@ fn wiki_page_to_article(page: WikiPage, owner: &str, repo: &str) -> Article {
 impl KnowledgeBase for GitHubClient {
     fn get_article(&self, id: &str) -> Result<Article> {
         let wiki = self.wiki();
-        let page = wiki.get_page(id).map_err(TrackerError::from)?;
+        let page = wiki.get_page(id)?;
         let mut article = wiki_page_to_article(page, self.owner(), self.repo());
 
         // Check if this page has children
@@ -351,7 +345,7 @@ impl KnowledgeBase for GitHubClient {
         }
 
         let wiki = self.wiki();
-        let pages = wiki.list_pages().map_err(TrackerError::from)?;
+        let pages = wiki.list_pages()?;
 
         // Single-pass parent set for has_children
         let parent_slugs: HashSet<String> = pages.iter().filter_map(|p| p.parent.clone()).collect();
@@ -372,7 +366,7 @@ impl KnowledgeBase for GitHubClient {
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
         let wiki = self.wiki();
-        let pages = wiki.search_pages(query).map_err(TrackerError::from)?;
+        let pages = wiki.search_pages(query)?;
 
         // Single-pass parent set for has_children
         let parent_slugs: HashSet<String> = pages.iter().filter_map(|p| p.parent.clone()).collect();
@@ -412,9 +406,8 @@ impl KnowledgeBase for GitHubClient {
 
         let content = article.content.as_deref().unwrap_or("");
 
-        let page = wiki
-            .create_page(&slug, &article.summary, content, article.tags.clone())
-            .map_err(TrackerError::from)?;
+        let page =
+            wiki.create_page(&slug, &article.summary, content, article.tags.clone())?;
 
         Ok(wiki_page_to_article(page, self.owner(), self.repo()))
     }
@@ -422,18 +415,16 @@ impl KnowledgeBase for GitHubClient {
     fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
         let wiki = self.wiki();
 
-        let page = wiki
-            .update_page(
-                id,
-                update.summary.as_deref(),
-                update.content.as_deref(),
-                if update.tags.is_empty() {
-                    None
-                } else {
-                    Some(update.tags.clone())
-                },
-            )
-            .map_err(TrackerError::from)?;
+        let page = wiki.update_page(
+            id,
+            update.summary.as_deref(),
+            update.content.as_deref(),
+            if update.tags.is_empty() {
+                None
+            } else {
+                Some(update.tags.clone())
+            },
+        )?;
 
         Ok(wiki_page_to_article(page, self.owner(), self.repo()))
     }
@@ -441,15 +432,13 @@ impl KnowledgeBase for GitHubClient {
     fn delete_article(&self, id: &str) -> Result<()> {
         let wiki = self.wiki();
 
-        wiki.delete_page(id).map_err(TrackerError::from)
+        Ok(wiki.delete_page(id)?)
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
         let wiki = self.wiki();
 
-        let pages = wiki
-            .get_child_pages(parent_id)
-            .map_err(TrackerError::from)?;
+        let pages = wiki.get_child_pages(parent_id)?;
 
         let articles = pages
             .into_iter()
@@ -462,9 +451,7 @@ impl KnowledgeBase for GitHubClient {
     fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article> {
         let wiki = self.wiki();
 
-        let page = wiki
-            .move_page(article_id, new_parent_id)
-            .map_err(TrackerError::from)?;
+        let page = wiki.move_page(article_id, new_parent_id)?;
 
         Ok(wiki_page_to_article(page, self.owner(), self.repo()))
     }
