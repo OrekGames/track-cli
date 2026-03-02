@@ -125,8 +125,8 @@ impl Manifest {
             }
 
             // Check condition matching
-            if let Some(condition) = &mapping.when {
-                if let Some(body_contains) = &condition.body_contains {
+            if let Some(condition) = &mapping.when
+                && let Some(body_contains) = &condition.body_contains {
                     if let Some(body) = body {
                         if !body.contains(body_contains) {
                             continue;
@@ -135,7 +135,6 @@ impl Manifest {
                         continue;
                     }
                 }
-            }
 
             // Determine response file
             let file = if let Some(seq) = &mapping.sequence {

@@ -170,11 +170,10 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
             let mut scenarios: Vec<(std::path::PathBuf, Scenario)> = Vec::new();
             for entry in entries.flatten() {
                 let scenario_file = entry.path().join("scenario.toml");
-                if scenario_file.exists() {
-                    if let Ok(scenario) = Scenario::load(&scenario_file) {
+                if scenario_file.exists()
+                    && let Ok(scenario) = Scenario::load(&scenario_file) {
                         scenarios.push((entry.path(), scenario));
                     }
-                }
             }
 
             if scenarios.is_empty() {
@@ -318,11 +317,10 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
             let mut scenarios = Vec::new();
             for entry in entries.flatten() {
                 let scenario_file = entry.path().join("scenario.toml");
-                if scenario_file.exists() {
-                    if let Ok(scenario) = Scenario::load(&scenario_file) {
+                if scenario_file.exists()
+                    && let Ok(scenario) = Scenario::load(&scenario_file) {
                         scenarios.push((entry.path(), scenario));
                     }
-                }
             }
 
             match format {

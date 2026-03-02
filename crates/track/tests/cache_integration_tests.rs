@@ -4,8 +4,8 @@
 //! Each test that writes cache files uses a unique temp directory to avoid
 //! interference between tests.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use std::path::PathBuf;

@@ -1,11 +1,11 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
 use crate::output::{output_json, output_list, output_page_hint, output_progress, output_result};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use tracker_core::{
-    fetch_all_pages, CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField,
-    UpdateIssue,
+    CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
+    fetch_all_pages,
 };
 
 /// Shared fields for create, update, and batch-update commands.
@@ -812,11 +812,10 @@ fn try_cached_count(query: &str, skip: usize) -> Option<(u64, String)> {
     for project in &cache.projects {
         for template in &cache.query_templates {
             let expanded = template.query.replace("{PROJECT}", &project.short_name);
-            if expanded.eq_ignore_ascii_case(query) {
-                if let Some(count) = cache.get_issue_count(&project.short_name, &template.name) {
+            if expanded.eq_ignore_ascii_case(query)
+                && let Some(count) = cache.get_issue_count(&project.short_name, &template.name) {
                     return Some((count, age));
                 }
-            }
         }
     }
     None
@@ -1478,9 +1477,11 @@ mod tests {
     fn resolve_query_requires_query_or_template() {
         let result = resolve_search_query(None, None, None, None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Either a search query"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Either a search query")
+        );
     }
 }

@@ -240,22 +240,20 @@ impl Evaluator {
             }
 
             // Check min_calls
-            if let Some(min) = outcome.min_calls {
-                if call_count < min {
+            if let Some(min) = outcome.min_calls
+                && call_count < min {
                     expected_parts.push(format!("at least {} calls", min));
                     actual_parts.push(format!("only {} calls", call_count));
                     checks_passed = false;
                 }
-            }
 
             // Check max_calls
-            if let Some(max) = outcome.max_calls {
-                if call_count > max {
+            if let Some(max) = outcome.max_calls
+                && call_count > max {
                     expected_parts.push(format!("at most {} calls", max));
                     actual_parts.push(format!("{} calls (exceeds max)", call_count));
                     checks_passed = false;
                 }
-            }
         }
 
         // Check issue reference
@@ -415,8 +413,8 @@ impl Evaluator {
         }
 
         // Penalty: Extra commands
-        if let Some(max) = scoring.max_commands {
-            if calls.len() > max {
+        if let Some(max) = scoring.max_commands
+            && calls.len() > max {
                 let extra = calls.len() - max;
                 let penalty = extra as i32 * scoring.penalties.extra_command;
                 breakdown.penalties.push(ScoreAdjustment {
@@ -426,7 +424,6 @@ impl Evaluator {
                 });
                 breakdown.total_penalties += penalty;
             }
-        }
 
         // Penalty: Redundant fetches (same resource fetched multiple times)
         let redundant = self.count_redundant_fetches(calls);
@@ -453,8 +450,8 @@ impl Evaluator {
         }
 
         // Bonus: Under optimal
-        if let Some(optimal) = scoring.optimal_commands {
-            if calls.len() < optimal && scoring.bonuses.under_optimal > 0 {
+        if let Some(optimal) = scoring.optimal_commands
+            && calls.len() < optimal && scoring.bonuses.under_optimal > 0 {
                 let diff = optimal - calls.len();
                 let bonus = diff as i32 * scoring.bonuses.under_optimal;
                 breakdown.bonuses.push(ScoreAdjustment {
@@ -464,7 +461,6 @@ impl Evaluator {
                 });
                 breakdown.total_bonuses += bonus;
             }
-        }
 
         // Bonus: Cache usage (cache_refresh, cache_show, cache_status, or context commands)
         let cache_commands: Vec<&str> = calls

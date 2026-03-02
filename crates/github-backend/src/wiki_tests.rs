@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::wiki::{validate_slug, WikiManager};
+    use crate::wiki::{WikiManager, validate_slug};
     use git2::{Repository, Signature};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -191,9 +191,11 @@ mod tests {
         let (wiki, _) = setup_wiki(&temp);
 
         let results = wiki.search_pages("Getting Started").expect("search");
-        assert!(results
-            .iter()
-            .any(|p| p.slug == "Tutorials/Getting-Started"));
+        assert!(
+            results
+                .iter()
+                .any(|p| p.slug == "Tutorials/Getting-Started")
+        );
     }
 
     #[test]
@@ -202,9 +204,11 @@ mod tests {
         let (wiki, _) = setup_wiki(&temp);
 
         let results = wiki.search_pages("intro").expect("search");
-        assert!(results
-            .iter()
-            .any(|p| p.slug == "Tutorials/Getting-Started"));
+        assert!(
+            results
+                .iter()
+                .any(|p| p.slug == "Tutorials/Getting-Started")
+        );
     }
 
     // ====================================================================
@@ -317,9 +321,11 @@ mod tests {
 
         let children = wiki.get_child_pages("Tutorials").expect("children");
         assert!(!children.is_empty());
-        assert!(children
-            .iter()
-            .any(|p| p.slug == "Tutorials/Getting-Started"));
+        assert!(
+            children
+                .iter()
+                .any(|p| p.slug == "Tutorials/Getting-Started")
+        );
     }
 
     #[test]

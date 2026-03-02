@@ -4,8 +4,8 @@
 //!
 //! Note: Tests that modify call logs use #[serial] to avoid race conditions.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serial_test::serial;
 use std::fs;

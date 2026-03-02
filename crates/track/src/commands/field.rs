@@ -2,7 +2,7 @@
 
 use crate::cli::{FieldCommands, OutputFormat};
 use crate::output::output_result;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tracker_core::{
     AttachFieldToProject, BundleType, CreateBundle, CreateBundleValue, CreateCustomField,
     CustomFieldDefinition, CustomFieldType, IssueTracker,
@@ -106,7 +106,7 @@ fn handle_new(
             return Err(anyhow!(
                 "Field type '{}' does not support bundles. Use 'track field create' for this type.",
                 field_type_str
-            ))
+            ));
         }
     };
 
