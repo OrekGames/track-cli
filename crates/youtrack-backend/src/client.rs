@@ -569,9 +569,10 @@ impl YouTrackClient {
         for link in links {
             if link.link_type.name.eq_ignore_ascii_case(link_type_name)
                 && let Some(dir) = &link.direction
-                    && dir.eq_ignore_ascii_case(direction) {
-                        return Ok(link.id);
-                    }
+                && dir.eq_ignore_ascii_case(direction)
+            {
+                return Ok(link.id);
+            }
         }
 
         Err(YouTrackError::Api {

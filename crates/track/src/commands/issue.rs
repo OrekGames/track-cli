@@ -813,9 +813,10 @@ fn try_cached_count(query: &str, skip: usize) -> Option<(u64, String)> {
         for template in &cache.query_templates {
             let expanded = template.query.replace("{PROJECT}", &project.short_name);
             if expanded.eq_ignore_ascii_case(query)
-                && let Some(count) = cache.get_issue_count(&project.short_name, &template.name) {
-                    return Some((count, age));
-                }
+                && let Some(count) = cache.get_issue_count(&project.short_name, &template.name)
+            {
+                return Some((count, age));
+            }
         }
     }
     None

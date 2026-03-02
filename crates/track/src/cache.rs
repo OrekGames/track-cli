@@ -447,14 +447,15 @@ impl TrackerCache {
                 let project_dir = entry.path();
                 if project_dir.is_dir()
                     && let Ok(content) = fs::read_to_string(project_dir.join("meta.json"))
-                        && let Ok(meta) = serde_json::from_str::<ProjectShardMeta>(&content) {
-                            self.projects.push(CachedProject {
-                                id: meta.id.clone(),
-                                short_name: meta.short_name.clone(),
-                                name: meta.name.clone(),
-                                description: meta.description.clone(),
-                            });
-                        }
+                    && let Ok(meta) = serde_json::from_str::<ProjectShardMeta>(&content)
+                {
+                    self.projects.push(CachedProject {
+                        id: meta.id.clone(),
+                        short_name: meta.short_name.clone(),
+                        name: meta.name.clone(),
+                        description: meta.description.clone(),
+                    });
+                }
             }
         }
         Ok(())
@@ -471,17 +472,20 @@ impl TrackerCache {
         let backend_dir = root.join("backend");
         if backend_dir.exists() {
             if let Ok(content) = fs::read_to_string(backend_dir.join("tags.json"))
-                && let Ok(tags) = serde_json::from_str(&content) {
-                    self.tags = tags;
-                }
+                && let Ok(tags) = serde_json::from_str(&content)
+            {
+                self.tags = tags;
+            }
             if let Ok(content) = fs::read_to_string(backend_dir.join("query_templates.json"))
-                && let Ok(templates) = serde_json::from_str(&content) {
-                    self.query_templates = templates;
-                }
+                && let Ok(templates) = serde_json::from_str(&content)
+            {
+                self.query_templates = templates;
+            }
             if let Ok(content) = fs::read_to_string(backend_dir.join("link_types.json"))
-                && let Ok(link_types) = serde_json::from_str(&content) {
-                    self.link_types = link_types;
-                }
+                && let Ok(link_types) = serde_json::from_str(&content)
+            {
+                self.link_types = link_types;
+            }
         }
         Ok(())
     }
@@ -497,13 +501,15 @@ impl TrackerCache {
         let kb_dir = root.join("kb");
         if kb_dir.exists() {
             if let Ok(content) = fs::read_to_string(kb_dir.join("articles.json"))
-                && let Ok(articles) = serde_json::from_str(&content) {
-                    self.articles = articles;
-                }
+                && let Ok(articles) = serde_json::from_str(&content)
+            {
+                self.articles = articles;
+            }
             if let Ok(content) = fs::read_to_string(kb_dir.join("tree.json"))
-                && let Ok(tree) = serde_json::from_str(&content) {
-                    self.article_tree = tree;
-                }
+                && let Ok(tree) = serde_json::from_str(&content)
+            {
+                self.article_tree = tree;
+            }
         }
         Ok(())
     }
@@ -519,9 +525,10 @@ impl TrackerCache {
         let runtime_dir = root.join("runtime");
         if runtime_dir.exists()
             && let Ok(content) = fs::read_to_string(runtime_dir.join("recent_issues.json"))
-                && let Ok(recent) = serde_json::from_str(&content) {
-                    self.recent_issues = recent;
-                }
+            && let Ok(recent) = serde_json::from_str(&content)
+        {
+            self.recent_issues = recent;
+        }
         Ok(())
     }
 
@@ -545,51 +552,56 @@ impl TrackerCache {
             .map(|p| p.id.clone())
             .unwrap_or_else(|| {
                 if let Ok(content) = fs::read_to_string(project_dir.join("meta.json"))
-                    && let Ok(meta) = serde_json::from_str::<ProjectShardMeta>(&content) {
-                        return meta.id;
-                    }
+                    && let Ok(meta) = serde_json::from_str::<ProjectShardMeta>(&content)
+                {
+                    return meta.id;
+                }
                 "unknown".to_string()
             });
 
         // Load fields
         if let Ok(content) = fs::read_to_string(project_dir.join("fields.json"))
-            && let Ok(fields) = serde_json::from_str::<Vec<CachedField>>(&content) {
-                self.project_fields
-                    .retain(|pf| pf.project_short_name != project_key);
-                self.project_fields.push(ProjectFieldsCache {
-                    project_short_name: project_key.to_string(),
-                    project_id: project_id.clone(),
-                    fields,
-                });
-            }
+            && let Ok(fields) = serde_json::from_str::<Vec<CachedField>>(&content)
+        {
+            self.project_fields
+                .retain(|pf| pf.project_short_name != project_key);
+            self.project_fields.push(ProjectFieldsCache {
+                project_short_name: project_key.to_string(),
+                project_id: project_id.clone(),
+                fields,
+            });
+        }
 
         // Load users
         if let Ok(content) = fs::read_to_string(project_dir.join("users.json"))
-            && let Ok(users) = serde_json::from_str(&content) {
-                self.project_users
-                    .retain(|pu| pu.project_short_name != project_key);
-                self.project_users.push(ProjectUsersCache {
-                    project_short_name: project_key.to_string(),
-                    project_id: project_id.clone(),
-                    users,
-                });
-            }
+            && let Ok(users) = serde_json::from_str(&content)
+        {
+            self.project_users
+                .retain(|pu| pu.project_short_name != project_key);
+            self.project_users.push(ProjectUsersCache {
+                project_short_name: project_key.to_string(),
+                project_id: project_id.clone(),
+                users,
+            });
+        }
 
         // Load workflow
         if let Ok(content) = fs::read_to_string(project_dir.join("workflow.json"))
-            && let Ok(hints) = serde_json::from_str(&content) {
-                self.workflow_hints
-                    .retain(|wh| wh.project_short_name != project_key);
-                self.workflow_hints.push(hints);
-            }
+            && let Ok(hints) = serde_json::from_str(&content)
+        {
+            self.workflow_hints
+                .retain(|wh| wh.project_short_name != project_key);
+            self.workflow_hints.push(hints);
+        }
 
         // Load issue counts
         if let Ok(content) = fs::read_to_string(project_dir.join("issue_counts.json"))
-            && let Ok(counts) = serde_json::from_str::<Vec<CachedIssueCount>>(&content) {
-                self.issue_counts
-                    .retain(|ic| ic.project_short_name != project_key);
-                self.issue_counts.extend(counts);
-            }
+            && let Ok(counts) = serde_json::from_str::<Vec<CachedIssueCount>>(&content)
+        {
+            self.issue_counts
+                .retain(|ic| ic.project_short_name != project_key);
+            self.issue_counts.extend(counts);
+        }
 
         self.loaded_projects.insert(project_key.to_string());
         Ok(())
@@ -779,9 +791,10 @@ impl TrackerCache {
 
         // Fetch articles if knowledge base client is available
         if let Some(kb) = kb_client
-            && let Ok(articles) = kb.list_articles(None, 100, 0) {
-                cache.add_articles(articles);
-            }
+            && let Ok(articles) = kb.list_articles(None, 100, 0)
+        {
+            cache.add_articles(articles);
+        }
 
         Ok(cache)
     }

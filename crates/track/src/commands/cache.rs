@@ -172,14 +172,15 @@ pub fn handle_cache(
 
                     // Suggest refresh if stale
                     if let Some(age) = cache.age()
-                        && age.num_hours() >= 24 {
-                            println!();
-                            println!(
-                                "  {} Run '{}' to update.",
-                                "Tip:".yellow(),
-                                "track cache refresh".cyan()
-                            );
-                        }
+                        && age.num_hours() >= 24
+                    {
+                        println!();
+                        println!(
+                            "  {} Run '{}' to update.",
+                            "Tip:".yellow(),
+                            "track cache refresh".cyan()
+                        );
+                    }
                 }
             }
             Ok(())

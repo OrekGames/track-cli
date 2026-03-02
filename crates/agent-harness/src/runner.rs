@@ -33,10 +33,10 @@ const SKILL_FILE_PATH: &str = "agent-skills/SKILL.md";
 
 /// Strip YAML frontmatter (--- ... ---) from skill file content
 fn strip_frontmatter(content: &str) -> &str {
-    if let Some(stripped) = content.strip_prefix("---\n") {
-        if let Some(close) = stripped.find("\n---\n") {
-            return stripped[close + 5..].trim_start();
-        }
+    if let Some(stripped) = content.strip_prefix("---\n")
+        && let Some(close) = stripped.find("\n---\n")
+    {
+        return stripped[close + 5..].trim_start();
     }
     content
 }
@@ -62,10 +62,10 @@ fn load_skill_file() -> Option<String> {
             .and_then(|p| p.parent()) // project root
             .map(|p| p.join(SKILL_FILE_PATH));
 
-        if let Some(path) = path {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                return Some(strip_frontmatter(&content).to_string());
-            }
+        if let Some(path) = path
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            return Some(strip_frontmatter(&content).to_string());
         }
     }
 

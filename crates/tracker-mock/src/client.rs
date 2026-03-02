@@ -208,10 +208,11 @@ impl MockClient {
 
         if let Ok(mut writer) = self.log_writer.lock()
             && let Some(w) = writer.as_mut()
-                && let Ok(json) = serde_json::to_string(&entry) {
-                    let _ = writeln!(w, "{}", json);
-                    let _ = w.flush();
-                }
+            && let Ok(json) = serde_json::to_string(&entry)
+        {
+            let _ = writeln!(w, "{}", json);
+            let _ = w.flush();
+        }
     }
 
     /// Get the call log entries

@@ -368,10 +368,10 @@ fn run_all_scenarios(
 
     for entry in entries.flatten() {
         let scenario_file = entry.path().join("scenario.toml");
-        if scenario_file.exists() {
-            if let Ok(scenario) = Scenario::load(&scenario_file) {
-                scenarios.push((entry.path(), scenario));
-            }
+        if scenario_file.exists()
+            && let Ok(scenario) = Scenario::load(&scenario_file)
+        {
+            scenarios.push((entry.path(), scenario));
         }
     }
 
@@ -577,16 +577,16 @@ fn list_scenarios(path: &PathBuf) -> Result<()> {
 
     for entry in entries.flatten() {
         let scenario_file = entry.path().join("scenario.toml");
-        if scenario_file.exists() {
-            if let Ok(scenario) = Scenario::load(&scenario_file) {
-                println!(
-                    "\n  {} ({})",
-                    scenario.scenario.name.cyan().bold(),
-                    scenario.scenario.difficulty.dimmed()
-                );
-                println!("    {}", scenario.scenario.description);
-                println!("    Path: {}", entry.path().display().to_string().dimmed());
-            }
+        if scenario_file.exists()
+            && let Ok(scenario) = Scenario::load(&scenario_file)
+        {
+            println!(
+                "\n  {} ({})",
+                scenario.scenario.name.cyan().bold(),
+                scenario.scenario.difficulty.dimmed()
+            );
+            println!("    {}", scenario.scenario.description);
+            println!("    Path: {}", entry.path().display().to_string().dimmed());
         }
     }
     println!();

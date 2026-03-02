@@ -84,9 +84,10 @@ impl GitHubClient {
         // Detect rate limiting: 403 with x-ratelimit-remaining: 0
         if status == 403
             && let Some(remaining) = response.headers().get("x-ratelimit-remaining")
-                && remaining.to_str().unwrap_or("") == "0" {
-                    return Err(GitHubError::RateLimited);
-                }
+            && remaining.to_str().unwrap_or("") == "0"
+        {
+            return Err(GitHubError::RateLimited);
+        }
 
         // Try to read error body
         let body = response

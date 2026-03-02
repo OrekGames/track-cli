@@ -250,9 +250,10 @@ impl WikiManager {
             }
 
             if path.extension().and_then(|s| s.to_str()) == Some("md")
-                && let Ok(page) = self.read_page(path) {
-                    pages.push(page);
-                }
+                && let Ok(page) = self.read_page(path)
+            {
+                pages.push(page);
+            }
         }
 
         Ok(pages)
@@ -376,18 +377,18 @@ impl WikiManager {
         for oid in revwalk.flatten() {
             if let Ok(commit) = repo.find_commit(oid)
                 && let Ok(tree) = commit.tree()
-                    && tree.get_path(relative_path).is_ok() {
-                        let time = commit.time();
-                        let timestamp =
-                            DateTime::from_timestamp(time.seconds(), 0).unwrap_or_else(Utc::now);
+                && tree.get_path(relative_path).is_ok()
+            {
+                let time = commit.time();
+                let timestamp =
+                    DateTime::from_timestamp(time.seconds(), 0).unwrap_or_else(Utc::now);
 
-                        if last_commit_time.is_none() {
-                            last_commit_time = Some(timestamp);
-                            last_author =
-                                Some(commit.author().name().unwrap_or("Unknown").to_string());
-                        }
-                        first_commit_time = Some(timestamp);
-                    }
+                if last_commit_time.is_none() {
+                    last_commit_time = Some(timestamp);
+                    last_author = Some(commit.author().name().unwrap_or("Unknown").to_string());
+                }
+                first_commit_time = Some(timestamp);
+            }
         }
 
         let created = first_commit_time.unwrap_or_else(Utc::now);
