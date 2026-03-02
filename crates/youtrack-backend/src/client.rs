@@ -567,12 +567,11 @@ impl YouTrackClient {
         let links = self.get_issue_links(issue_id)?;
 
         for link in links {
-            if link.link_type.name.eq_ignore_ascii_case(link_type_name) {
-                if let Some(dir) = &link.direction {
-                    if dir.eq_ignore_ascii_case(direction) {
-                        return Ok(link.id);
-                    }
-                }
+            if link.link_type.name.eq_ignore_ascii_case(link_type_name)
+                && let Some(dir) = &link.direction
+                && dir.eq_ignore_ascii_case(direction)
+            {
+                return Ok(link.id);
             }
         }
 

@@ -16,9 +16,7 @@ use tracker_core::{
 
 impl IssueTracker for YouTrackClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
-        self.get_issue(id)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.get_issue(id)?.into())
     }
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
@@ -40,16 +38,12 @@ impl IssueTracker for YouTrackClient {
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
         let yt_create: crate::models::CreateIssue = issue.into();
-        self.create_issue(&yt_create)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.create_issue(&yt_create)?.into())
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
         let yt_update: crate::models::UpdateIssue = update.into();
-        self.update_issue(id, &yt_update)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.update_issue(id, &yt_update)?.into())
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
@@ -57,22 +51,16 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
-        self.list_projects()
-            .map(|projects| projects.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self.list_projects()?.into_iter().map(Into::into).collect())
     }
 
     fn get_project(&self, id: &str) -> Result<Project> {
-        self.get_project(id)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.get_project(id)?.into())
     }
 
     fn create_project(&self, project: &CreateProject) -> Result<Project> {
         let yt_create: crate::models::CreateProject = project.into();
-        self.create_project(&yt_create)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.create_project(&yt_create)?.into())
     }
 
     fn resolve_project_id(&self, identifier: &str) -> Result<String> {
@@ -80,21 +68,23 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>> {
-        self.get_project_custom_fields(project_id)
-            .map(|fields| fields.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .get_project_custom_fields(project_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
-        self.list_project_users(project_id)
-            .map(|users| users.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .list_project_users(project_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn list_tags(&self) -> Result<Vec<IssueTag>> {
-        self.list_tags()
-            .map(|tags| tags.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self.list_tags()?.into_iter().map(Into::into).collect())
     }
 
     fn create_tag(&self, tag: &CreateTag) -> Result<IssueTag> {
@@ -105,9 +95,7 @@ impl IssueTracker for YouTrackClient {
                 foreground: None,
             }),
         };
-        self.create_tag(&request)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.create_tag(&request)?.into())
     }
 
     fn delete_tag(&self, name: &str) -> Result<()> {
@@ -132,21 +120,23 @@ impl IssueTracker for YouTrackClient {
                 foreground: None,
             }),
         };
-        self.update_tag(&existing.id, &request)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.update_tag(&existing.id, &request)?.into())
     }
 
     fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
-        self.list_link_types()
-            .map(|link_types| link_types.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .list_link_types()?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn get_issue_links(&self, issue_id: &str) -> Result<Vec<IssueLink>> {
-        self.get_issue_links(issue_id)
-            .map(|links| links.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .get_issue_links(issue_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn link_issues(
@@ -164,28 +154,25 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
-        self.add_comment(issue_id, text)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.add_comment(issue_id, text)?.into())
     }
 
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
-        self.get_comments(issue_id)
-            .map(|comments| comments.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .get_comments(issue_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     // ========== Custom Field Admin Operations ==========
 
     fn list_custom_field_definitions(&self) -> Result<Vec<CustomFieldDefinition>> {
-        self.list_custom_field_definitions()
-            .map(|fields| {
-                fields
-                    .into_iter()
-                    .map(convert::custom_field_response_to_core)
-                    .collect()
-            })
-            .map_err(TrackerError::from)
+        Ok(self
+            .list_custom_field_definitions()?
+            .into_iter()
+            .map(convert::custom_field_response_to_core)
+            .collect())
     }
 
     fn create_custom_field(&self, field: &CreateCustomField) -> Result<CustomFieldDefinition> {
@@ -195,21 +182,17 @@ impl IssueTracker for YouTrackClient {
                 id: field.field_type.to_youtrack_id().to_string(),
             },
         };
-
-        self.create_custom_field(&request)
-            .map(convert::custom_field_response_to_core)
-            .map_err(TrackerError::from)
+        Ok(convert::custom_field_response_to_core(
+            self.create_custom_field(&request)?,
+        ))
     }
 
     fn list_bundles(&self, bundle_type: BundleType) -> Result<Vec<BundleDefinition>> {
-        self.list_bundles(bundle_type.to_api_path())
-            .map(|bundles| {
-                bundles
-                    .into_iter()
-                    .map(convert::bundle_response_to_core)
-                    .collect()
-            })
-            .map_err(TrackerError::from)
+        Ok(self
+            .list_bundles(bundle_type.to_api_path())?
+            .into_iter()
+            .map(convert::bundle_response_to_core)
+            .collect())
     }
 
     fn create_bundle(&self, bundle: &CreateBundle) -> Result<BundleDefinition> {
@@ -226,10 +209,10 @@ impl IssueTracker for YouTrackClient {
                 })
                 .collect(),
         };
-
-        self.create_bundle(bundle.bundle_type.to_api_path(), &request)
-            .map(convert::bundle_response_to_core)
-            .map_err(TrackerError::from)
+        Ok(convert::bundle_response_to_core(self.create_bundle(
+            bundle.bundle_type.to_api_path(),
+            &request,
+        )?))
     }
 
     fn add_bundle_values(
@@ -291,9 +274,9 @@ impl IssueTracker for YouTrackClient {
             empty_field_text: attachment.empty_field_text.clone(),
         };
 
-        self.attach_field_to_project(project_id, &request)
-            .map(convert::project_custom_field_response_to_core)
-            .map_err(TrackerError::from)
+        Ok(convert::project_custom_field_response_to_core(
+            self.attach_field_to_project(project_id, &request)?,
+        ))
     }
 }
 
@@ -303,9 +286,7 @@ impl IssueTracker for YouTrackClient {
 
 impl KnowledgeBase for YouTrackClient {
     fn get_article(&self, id: &str) -> Result<Article> {
-        self.get_article(id)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.get_article(id)?.into())
     }
 
     fn list_articles(
@@ -322,29 +303,25 @@ impl KnowledgeBase for YouTrackClient {
             self.list_articles(limit, skip)
         };
 
-        result
-            .map(|articles| articles.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(result?.into_iter().map(Into::into).collect())
     }
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
-        self.search_articles(query, limit, skip)
-            .map(|articles| articles.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .search_articles(query, limit, skip)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn create_article(&self, article: &CreateArticle) -> Result<Article> {
         let yt_create: crate::models::CreateArticle = article.into();
-        self.create_article(&yt_create)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.create_article(&yt_create)?.into())
     }
 
     fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
         let yt_update: crate::models::UpdateArticle = update.into();
-        self.update_article(id, &yt_update)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.update_article(id, &yt_update)?.into())
     }
 
     fn delete_article(&self, id: &str) -> Result<()> {
@@ -352,32 +329,34 @@ impl KnowledgeBase for YouTrackClient {
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
-        self.get_child_articles(parent_id)
-            .map(|articles| articles.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .get_child_articles(parent_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article> {
-        self.move_article(article_id, new_parent_id)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.move_article(article_id, new_parent_id)?.into())
     }
 
     fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
-        self.list_article_attachments(article_id)
-            .map(|attachments| attachments.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .list_article_attachments(article_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
-        self.get_article_comments(article_id)
-            .map(|comments| comments.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .get_article_comments(article_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment> {
-        self.add_article_comment(article_id, text)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.add_article_comment(article_id, text)?.into())
     }
 }

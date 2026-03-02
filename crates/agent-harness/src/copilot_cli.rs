@@ -133,10 +133,10 @@ const SKILL_FILE_PATH: &str = "agent-skills/SKILL.md";
 
 /// Strip YAML frontmatter (--- ... ---) from skill file content
 fn strip_frontmatter(content: &str) -> &str {
-    if let Some(stripped) = content.strip_prefix("---\n") {
-        if let Some(close) = stripped.find("\n---\n") {
-            return stripped[close + 5..].trim_start();
-        }
+    if let Some(stripped) = content.strip_prefix("---\n")
+        && let Some(close) = stripped.find("\n---\n")
+    {
+        return stripped[close + 5..].trim_start();
     }
     content
 }
@@ -164,10 +164,10 @@ fn load_skill_file() -> Option<String> {
             .and_then(|p| p.parent()) // project root
             .map(|p| p.join(SKILL_FILE_PATH));
 
-        if let Some(path) = path {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                return Some(strip_frontmatter(&content).to_string());
-            }
+        if let Some(path) = path
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            return Some(strip_frontmatter(&content).to_string());
         }
     }
 
@@ -484,15 +484,16 @@ fn extract_track_commands(interactions: &[CopilotInteraction]) -> Vec<CommandExe
     let mut commands = Vec::new();
 
     for interaction in interactions {
-        if let Some(cmd) = &interaction.command_suggested {
-            if is_track_command(cmd) && interaction.command_executed {
-                let args = parse_track_args(cmd);
-                commands.push(CommandExecution {
-                    args,
-                    output: interaction.response.clone(),
-                    is_error: false, // Would need to parse from output
-                });
-            }
+        if let Some(cmd) = &interaction.command_suggested
+            && is_track_command(cmd)
+            && interaction.command_executed
+        {
+            let args = parse_track_args(cmd);
+            commands.push(CommandExecution {
+                args,
+                output: interaction.response.clone(),
+                is_error: false, // Would need to parse from output
+            });
         }
     }
 

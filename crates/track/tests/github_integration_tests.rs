@@ -78,15 +78,14 @@ fn has_write_access() -> bool {
 
         if output.status.success() {
             // Clean up probe issue
-            if let Ok(s) = String::from_utf8(output.stdout) {
-                if let Ok(v) = serde_json::from_str::<Value>(&s) {
-                    if let Some(id) = v["id_readable"].as_str() {
-                        let number = id.split('#').next_back().unwrap_or("");
-                        let _ = track_github()
-                            .args(["issue", "update", number, "--state", "closed"])
-                            .assert();
-                    }
-                }
+            if let Ok(s) = String::from_utf8(output.stdout)
+                && let Ok(v) = serde_json::from_str::<Value>(&s)
+                && let Some(id) = v["id_readable"].as_str()
+            {
+                let number = id.split('#').next_back().unwrap_or("");
+                let _ = track_github()
+                    .args(["issue", "update", number, "--state", "closed"])
+                    .assert();
             }
             true
         } else {
@@ -865,10 +864,10 @@ fn test_github_tags_list() {
     assert!(json.is_array(), "Tags list should be an array");
 
     // Verify tag structure if we have tags
-    if let Some(tags) = json.as_array() {
-        if let Some(tag) = tags.first() {
-            assert!(tag.get("name").is_some(), "Tag should have 'name'");
-        }
+    if let Some(tags) = json.as_array()
+        && let Some(tag) = tags.first()
+    {
+        assert!(tag.get("name").is_some(), "Tag should have 'name'");
     }
 }
 

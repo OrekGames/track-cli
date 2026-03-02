@@ -1,12 +1,36 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
-use crate::output::{output_list, output_page_hint, output_progress, output_result};
-use anyhow::{anyhow, Context, Result};
+use crate::output::{output_json, output_list, output_page_hint, output_progress, output_result};
+use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use tracker_core::{
-    fetch_all_pages, CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField,
-    UpdateIssue,
+    CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
+    fetch_all_pages,
 };
+
+/// Shared fields for create, update, and batch-update commands.
+struct IssueFieldArgs<'a> {
+    summary: Option<&'a str>,
+    description: Option<&'a str>,
+    fields: &'a [String],
+    state: Option<&'a str>,
+    priority: Option<&'a str>,
+    assignee: Option<&'a str>,
+    tags: &'a [String],
+    validate: bool,
+    dry_run: bool,
+    json: Option<&'a str>,
+}
+
+/// Arguments for issue search.
+struct SearchArgs<'a> {
+    query: Option<&'a str>,
+    template: Option<&'a str>,
+    project: Option<&'a str>,
+    limit: usize,
+    skip: usize,
+    all: bool,
+}
 
 pub fn handle_issue(
     client: &dyn IssueTracker,
@@ -29,23 +53,28 @@ pub fn handle_issue(
             validate,
             dry_run,
             json,
-        } => handle_create(
-            client,
-            project.as_deref(),
-            summary.as_deref(),
-            description.as_deref(),
-            fields,
-            state.as_deref(),
-            priority.as_deref(),
-            assignee.as_deref(),
-            tags,
-            parent.as_deref(),
-            *validate,
-            *dry_run,
-            json.as_deref(),
-            format,
-            default_project,
-        ),
+        } => {
+            let args = IssueFieldArgs {
+                summary: summary.as_deref(),
+                description: description.as_deref(),
+                fields,
+                state: state.as_deref(),
+                priority: priority.as_deref(),
+                assignee: assignee.as_deref(),
+                tags,
+                validate: *validate,
+                dry_run: *dry_run,
+                json: json.as_deref(),
+            };
+            handle_create(
+                client,
+                &args,
+                project.as_deref(),
+                parent.as_deref(),
+                format,
+                default_project,
+            )
+        }
         IssueCommands::Update {
             ids,
             summary,
@@ -58,21 +87,21 @@ pub fn handle_issue(
             validate,
             dry_run,
             json,
-        } => handle_update_batch(
-            client,
-            ids,
-            summary.as_deref(),
-            description.as_deref(),
-            fields,
-            state.as_deref(),
-            priority.as_deref(),
-            assignee.as_deref(),
-            tags,
-            *validate,
-            *dry_run,
-            json.as_deref(),
-            format,
-        ),
+        } => {
+            let args = IssueFieldArgs {
+                summary: summary.as_deref(),
+                description: description.as_deref(),
+                fields,
+                state: state.as_deref(),
+                priority: priority.as_deref(),
+                assignee: assignee.as_deref(),
+                tags,
+                validate: *validate,
+                dry_run: *dry_run,
+                json: json.as_deref(),
+            };
+            handle_update_batch(client, ids, &args, format)
+        }
         IssueCommands::Search {
             query,
             template,
@@ -80,17 +109,17 @@ pub fn handle_issue(
             limit,
             skip,
             all,
-        } => handle_search(
-            client,
-            query.as_deref(),
-            template.as_deref(),
-            project.as_deref(),
-            *limit,
-            *skip,
-            *all,
-            format,
-            default_project,
-        ),
+        } => {
+            let args = SearchArgs {
+                query: query.as_deref(),
+                template: template.as_deref(),
+                project: project.as_deref(),
+                limit: *limit,
+                skip: *skip,
+                all: *all,
+            };
+            handle_search(client, &args, format, default_project)
+        }
         IssueCommands::Delete { ids } => handle_delete_batch(client, ids, format),
         IssueCommands::Comment { id, text } => handle_comment(client, id, text, format),
         IssueCommands::Comments { id, limit, all } => {
@@ -150,7 +179,7 @@ fn handle_get(client: &dyn IssueTracker, id: &str, full: bool, format: OutputFor
                 "links": links,
                 "comments": comments
             });
-            println!("{}", serde_json::to_string_pretty(&full_issue)?);
+            output_json(&full_issue)?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -223,25 +252,15 @@ fn handle_get(client: &dyn IssueTracker, id: &str, full: bool, format: OutputFor
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_create(
     client: &dyn IssueTracker,
+    args: &IssueFieldArgs,
     project: Option<&str>,
-    summary: Option<&str>,
-    description: Option<&str>,
-    fields: &[String],
-    state: Option<&str>,
-    priority: Option<&str>,
-    assignee: Option<&str>,
-    tags: &[String],
     parent: Option<&str>,
-    validate: bool,
-    dry_run: bool,
-    json: Option<&str>,
     format: OutputFormat,
     default_project: Option<&str>,
 ) -> Result<()> {
-    let (create, project_id) = if let Some(payload) = json {
+    let (create, project_id) = if let Some(payload) = args.json {
         let create = parse_create_payload(client, payload)?;
         let pid = create.project_id.clone();
         (create, pid)
@@ -255,7 +274,7 @@ fn handle_create(
                 )
             })?
             .to_string();
-        let summary = summary.ok_or_else(|| anyhow!("Summary is required"))?;
+        let summary = args.summary.ok_or_else(|| anyhow!("Summary is required"))?;
 
         // Resolve project shortName to internal ID
         let project_id = client
@@ -263,37 +282,44 @@ fn handle_create(
             .with_context(|| format!("Failed to resolve project '{}'", project_input))?;
 
         // Fetch project schema for field type detection
-        let schema = if !fields.is_empty() {
+        let schema = if !args.fields.is_empty() {
             client.get_project_custom_fields(&project_id).ok()
         } else {
             None
         };
 
-        let custom_fields =
-            build_custom_fields(fields, state, priority, assignee, schema.as_deref())?;
+        let custom_fields = build_custom_fields(
+            args.fields,
+            args.state,
+            args.priority,
+            args.assignee,
+            schema.as_deref(),
+        )?;
 
         let create = CreateIssue {
             project_id: project_id.clone(),
             summary: summary.to_string(),
-            description: description.map(|s| s.to_string()),
+            description: args.description.map(|s| s.to_string()),
             custom_fields,
-            tags: tags.to_vec(),
+            tags: args.tags.to_vec(),
         };
 
         (create, project_id)
     };
 
     // Validate custom fields if requested
-    if validate {
+    if args.validate {
         validate_custom_fields(client, &project_id, &create.custom_fields)?;
 
-        if dry_run {
+        if args.dry_run {
             match format {
                 OutputFormat::Json => {
-                    println!(
-                        r#"{{"valid": true, "message": "Validation passed", "fields_validated": {}}}"#,
-                        create.custom_fields.len()
-                    );
+                    let response = serde_json::json!({
+                        "valid": true,
+                        "message": "Validation passed",
+                        "fields_validated": create.custom_fields.len(),
+                    });
+                    output_json(&response)?;
                 }
                 OutputFormat::Text => {
                     use colored::Colorize;
@@ -321,10 +347,14 @@ fn handle_create(
         match format {
             OutputFormat::Json => {
                 // Output JSON with parent info included
-                println!(
-                    r#"{{"id":"{}","idReadable":"{}","summary":"{}","parent":"{}","message":"Issue created as subtask"}}"#,
-                    issue.id, issue.id_readable, issue.summary, parent_id
-                );
+                let response = serde_json::json!({
+                    "id": issue.id,
+                    "idReadable": issue.id_readable,
+                    "summary": issue.summary,
+                    "parent": parent_id,
+                    "message": "Issue created as subtask",
+                });
+                output_json(&response)?;
             }
             OutputFormat::Text => {
                 use colored::Colorize;
@@ -343,27 +373,17 @@ fn handle_create(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_update(
     client: &dyn IssueTracker,
     id: &str,
-    summary: Option<&str>,
-    description: Option<&str>,
-    fields: &[String],
-    state: Option<&str>,
-    priority: Option<&str>,
-    assignee: Option<&str>,
-    tags: &[String],
-    validate: bool,
-    dry_run: bool,
-    json: Option<&str>,
+    args: &IssueFieldArgs,
     format: OutputFormat,
 ) -> Result<()> {
-    let update = if let Some(payload) = json {
+    let update = if let Some(payload) = args.json {
         parse_update_payload(payload)?
     } else {
         // Fetch project schema for field type detection when generic fields are provided
-        let schema = if !fields.is_empty() {
+        let schema = if !args.fields.is_empty() {
             client
                 .get_issue(id)
                 .ok()
@@ -372,19 +392,24 @@ fn handle_update(
             None
         };
 
-        let custom_fields =
-            build_custom_fields(fields, state, priority, assignee, schema.as_deref())?;
+        let custom_fields = build_custom_fields(
+            args.fields,
+            args.state,
+            args.priority,
+            args.assignee,
+            schema.as_deref(),
+        )?;
 
         UpdateIssue {
-            summary: summary.map(|s| s.to_string()),
-            description: description.map(|s| s.to_string()),
+            summary: args.summary.map(|s| s.to_string()),
+            description: args.description.map(|s| s.to_string()),
             custom_fields,
-            tags: tags.to_vec(),
+            tags: args.tags.to_vec(),
         }
     };
 
     // Validate custom fields if requested
-    if validate && !update.custom_fields.is_empty() {
+    if args.validate && !update.custom_fields.is_empty() {
         // Get the issue to determine its project
         let existing_issue = client
             .get_issue(id)
@@ -392,7 +417,7 @@ fn handle_update(
 
         validate_custom_fields(client, &existing_issue.project.id, &update.custom_fields)?;
 
-        if dry_run {
+        if args.dry_run {
             match format {
                 OutputFormat::Json => {
                     println!(
@@ -718,22 +743,17 @@ fn parse_custom_fields_json(fields: &[serde_json::Value]) -> Result<Vec<CustomFi
     Ok(result)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_search(
     client: &dyn IssueTracker,
-    query: Option<&str>,
-    template: Option<&str>,
-    project: Option<&str>,
-    limit: usize,
-    skip: usize,
-    all: bool,
+    args: &SearchArgs,
     format: OutputFormat,
     default_project: Option<&str>,
 ) -> Result<()> {
     // Resolve query from template if needed
-    let actual_query = resolve_search_query(query, template, project, default_project)?;
+    let actual_query =
+        resolve_search_query(args.query, args.template, args.project, default_project)?;
 
-    let (issues, inline_total) = if all {
+    let (issues, inline_total) = if args.all {
         // Auto-paginate using the helper; default page size 100
         let page_size = 100usize;
         let res = fetch_all_pages(
@@ -749,7 +769,7 @@ fn handle_search(
         (res, None)
     } else {
         let result = client
-            .search_issues(&actual_query, limit, skip)
+            .search_issues(&actual_query, args.limit, args.skip)
             .context("Failed to search issues")?;
         (result.items, result.total)
     };
@@ -762,14 +782,14 @@ fn handle_search(
     output_list(&issues, format)?;
 
     // Pagination hint — priority cascade: inline total > cached total > heuristic
-    if !all {
+    if !args.all {
         let total_info = inline_total
             .map(|t| (t, "live".to_string()))
-            .or_else(|| try_cached_count(&actual_query, skip));
+            .or_else(|| try_cached_count(&actual_query, args.skip));
         output_page_hint(
             issues.len(),
-            limit,
-            skip,
+            args.limit,
+            args.skip,
             total_info.as_ref().map(|(n, s)| (*n, s.as_str())),
             format,
         );
@@ -792,10 +812,10 @@ fn try_cached_count(query: &str, skip: usize) -> Option<(u64, String)> {
     for project in &cache.projects {
         for template in &cache.query_templates {
             let expanded = template.query.replace("{PROJECT}", &project.short_name);
-            if expanded.eq_ignore_ascii_case(query) {
-                if let Some(count) = cache.get_issue_count(&project.short_name, &template.name) {
-                    return Some((count, age));
-                }
+            if expanded.eq_ignore_ascii_case(query)
+                && let Some(count) = cache.get_issue_count(&project.short_name, &template.name)
+            {
+                return Some((count, age));
             }
         }
     }
@@ -863,7 +883,11 @@ fn handle_delete(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> R
 
     match format {
         OutputFormat::Json => {
-            println!(r#"{{"success": true, "message": "Issue deleted"}}"#);
+            let response = serde_json::json!({
+                "success": true,
+                "message": "Issue deleted",
+            });
+            output_json(&response)?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -885,8 +909,7 @@ fn handle_comment(
 
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&comment)?;
-            println!("{}", json);
+            output_json(&comment)?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -916,8 +939,7 @@ fn handle_comments(
 
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&comments)?;
-            println!("{}", json);
+            output_json(&comments)?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -1073,59 +1095,22 @@ struct BatchSummary {
     results: Vec<BatchResult>,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_update_batch(
     client: &dyn IssueTracker,
     ids: &[String],
-    summary: Option<&str>,
-    description: Option<&str>,
-    fields: &[String],
-    state: Option<&str>,
-    priority: Option<&str>,
-    assignee: Option<&str>,
-    tags: &[String],
-    validate: bool,
-    dry_run: bool,
-    json: Option<&str>,
+    args: &IssueFieldArgs,
     format: OutputFormat,
 ) -> Result<()> {
     // Single issue - delegate to original handler
     if ids.len() == 1 {
-        return handle_update(
-            client,
-            &ids[0],
-            summary,
-            description,
-            fields,
-            state,
-            priority,
-            assignee,
-            tags,
-            validate,
-            dry_run,
-            json,
-            format,
-        );
+        return handle_update(client, &ids[0], args, format);
     }
 
     // Batch update
     let mut results = Vec::new();
 
     for id in ids {
-        let result = handle_update_single(
-            client,
-            id,
-            summary,
-            description,
-            fields,
-            state,
-            priority,
-            assignee,
-            tags,
-            validate,
-            dry_run,
-            json,
-        );
+        let result = handle_update_single(client, id, args);
 
         match result {
             Ok(issue) => {
@@ -1147,31 +1132,21 @@ fn handle_update_batch(
         }
     }
 
-    output_batch_results(&results, "updated", format);
+    output_batch_results(&results, "updated", format)?;
     Ok(())
 }
 
 /// Internal update function that returns the issue instead of printing
-#[allow(clippy::too_many_arguments)]
 fn handle_update_single(
     client: &dyn IssueTracker,
     id: &str,
-    summary: Option<&str>,
-    description: Option<&str>,
-    fields: &[String],
-    state: Option<&str>,
-    priority: Option<&str>,
-    assignee: Option<&str>,
-    tags: &[String],
-    validate: bool,
-    _dry_run: bool,
-    json: Option<&str>,
+    args: &IssueFieldArgs,
 ) -> Result<Issue> {
-    let update = if let Some(payload) = json {
+    let update = if let Some(payload) = args.json {
         parse_update_payload(payload)?
     } else {
         // Fetch project schema for field type detection when generic fields are provided
-        let schema = if !fields.is_empty() {
+        let schema = if !args.fields.is_empty() {
             client
                 .get_issue(id)
                 .ok()
@@ -1180,19 +1155,24 @@ fn handle_update_single(
             None
         };
 
-        let custom_fields =
-            build_custom_fields(fields, state, priority, assignee, schema.as_deref())?;
+        let custom_fields = build_custom_fields(
+            args.fields,
+            args.state,
+            args.priority,
+            args.assignee,
+            schema.as_deref(),
+        )?;
 
         UpdateIssue {
-            summary: summary.map(|s| s.to_string()),
-            description: description.map(|s| s.to_string()),
+            summary: args.summary.map(|s| s.to_string()),
+            description: args.description.map(|s| s.to_string()),
             custom_fields,
-            tags: tags.to_vec(),
+            tags: args.tags.to_vec(),
         }
     };
 
     // Validate custom fields if requested
-    if validate && !update.custom_fields.is_empty() {
+    if args.validate && !update.custom_fields.is_empty() {
         let existing_issue = client
             .get_issue(id)
             .with_context(|| format!("Failed to fetch issue '{}' for validation", id))?;
@@ -1243,7 +1223,7 @@ fn handle_delete_batch(
         }
     }
 
-    output_batch_results(&results, "deleted", format);
+    output_batch_results(&results, "deleted", format)?;
     Ok(())
 }
 
@@ -1307,12 +1287,12 @@ fn handle_state_transition_batch(
         }
     }
 
-    output_batch_results(&results, action, format);
+    output_batch_results(&results, action, format)?;
     Ok(())
 }
 
 /// Output batch operation results in the appropriate format
-fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFormat) {
+fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFormat) -> Result<()> {
     let succeeded = results.iter().filter(|r| r.success).count();
     let failed = results.len() - succeeded;
 
@@ -1325,7 +1305,7 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
 
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+            output_json(&summary)?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -1365,6 +1345,8 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
             }
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1496,9 +1478,11 @@ mod tests {
     fn resolve_query_requires_query_or_template() {
         let result = resolve_search_query(None, None, None, None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Either a search query"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Either a search query")
+        );
     }
 }

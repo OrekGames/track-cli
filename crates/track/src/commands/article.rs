@@ -2,7 +2,7 @@ use crate::cli::{ArticleCommands, OutputFormat};
 use crate::output::{output_list, output_page_hint, output_progress, output_result};
 use anyhow::{Context, Result};
 use std::fs;
-use tracker_core::{fetch_all_pages, CreateArticle, IssueTracker, KnowledgeBase, UpdateArticle};
+use tracker_core::{CreateArticle, IssueTracker, KnowledgeBase, UpdateArticle, fetch_all_pages};
 
 pub fn handle_article(
     issue_client: &dyn IssueTracker,

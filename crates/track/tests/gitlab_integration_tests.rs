@@ -887,10 +887,10 @@ fn test_gitlab_tags_list() {
     assert!(json.is_array(), "Tags list should be an array");
 
     // Verify tag structure if we have tags
-    if let Some(tags) = json.as_array() {
-        if let Some(tag) = tags.first() {
-            assert!(tag.get("name").is_some(), "Tag should have 'name'");
-        }
+    if let Some(tags) = json.as_array()
+        && let Some(tag) = tags.first()
+    {
+        assert!(tag.get("name").is_some(), "Tag should have 'name'");
     }
 }
 

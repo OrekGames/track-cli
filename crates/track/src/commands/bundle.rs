@@ -2,7 +2,7 @@
 
 use crate::cli::{BundleCommands, OutputFormat};
 use crate::output::output_result;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tracker_core::{BundleType, CreateBundle, CreateBundleValue, IssueTracker};
 
 pub fn handle_bundle(

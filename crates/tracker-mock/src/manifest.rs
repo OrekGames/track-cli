@@ -125,15 +125,15 @@ impl Manifest {
             }
 
             // Check condition matching
-            if let Some(condition) = &mapping.when {
-                if let Some(body_contains) = &condition.body_contains {
-                    if let Some(body) = body {
-                        if !body.contains(body_contains) {
-                            continue;
-                        }
-                    } else {
+            if let Some(condition) = &mapping.when
+                && let Some(body_contains) = &condition.body_contains
+            {
+                if let Some(body) = body {
+                    if !body.contains(body_contains) {
                         continue;
                     }
+                } else {
+                    continue;
                 }
             }
 

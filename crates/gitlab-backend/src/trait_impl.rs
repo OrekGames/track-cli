@@ -31,9 +31,7 @@ impl IssueTracker for GitLabClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
         let iid = parse_issue_iid(id)?;
         let project_id = self.project_id_str();
-        self.get_issue(iid)
-            .map(|i| gitlab_issue_to_core(i, &project_id))
-            .map_err(TrackerError::from)
+        Ok(gitlab_issue_to_core(self.get_issue(iid)?, &project_id))
     }
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
@@ -86,9 +84,10 @@ impl IssueTracker for GitLabClient {
         };
 
         let project_id = self.project_id_str();
-        self.create_issue(&create)
-            .map(|i| gitlab_issue_to_core(i, &project_id))
-            .map_err(TrackerError::from)
+        Ok(gitlab_issue_to_core(
+            self.create_issue(&create)?,
+            &project_id,
+        ))
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
@@ -124,9 +123,10 @@ impl IssueTracker for GitLabClient {
         };
 
         let project_id = self.project_id_str();
-        self.update_issue(iid, &gitlab_update)
-            .map(|i| gitlab_issue_to_core(i, &project_id))
-            .map_err(TrackerError::from)
+        Ok(gitlab_issue_to_core(
+            self.update_issue(iid, &gitlab_update)?,
+            &project_id,
+        ))
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
@@ -135,15 +135,11 @@ impl IssueTracker for GitLabClient {
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
-        self.list_projects()
-            .map(|ps| ps.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self.list_projects()?.into_iter().map(Into::into).collect())
     }
 
     fn get_project(&self, id: &str) -> Result<Project> {
-        self.get_project(id)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.get_project(id)?.into())
     }
 
     fn create_project(&self, _project: &CreateProject) -> Result<Project> {
@@ -162,9 +158,7 @@ impl IssueTracker for GitLabClient {
     }
 
     fn list_tags(&self) -> Result<Vec<IssueTag>> {
-        self.list_labels()
-            .map(|labels| labels.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self.list_labels()?.into_iter().map(Into::into).collect())
     }
 
     fn create_tag(&self, tag: &CreateTag) -> Result<IssueTag> {
@@ -174,9 +168,7 @@ impl IssueTracker for GitLabClient {
             color,
             description: tag.description.clone(),
         };
-        self.create_label(&label)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.create_label(&label)?.into())
     }
 
     fn delete_tag(&self, name: &str) -> Result<()> {
@@ -201,9 +193,7 @@ impl IssueTracker for GitLabClient {
             color: tag.color.clone(),
             description: tag.description.clone(),
         };
-        self.update_label(label.id, &update)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.update_label(label.id, &update)?.into())
     }
 
     fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
@@ -211,21 +201,20 @@ impl IssueTracker for GitLabClient {
     }
 
     fn list_project_users(&self, _project_id: &str) -> Result<Vec<User>> {
-        self.list_project_members()
-            .map(|members| members.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .list_project_members()?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn get_issue_links(&self, issue_id: &str) -> Result<Vec<IssueLink>> {
         let iid = parse_issue_iid(issue_id)?;
-        self.get_issue_links(iid)
-            .map(|links| {
-                links
-                    .into_iter()
-                    .map(|l| gitlab_link_to_core(l, iid))
-                    .collect()
-            })
-            .map_err(TrackerError::from)
+        Ok(self
+            .get_issue_links(iid)?
+            .into_iter()
+            .map(|l| gitlab_link_to_core(l, iid))
+            .collect())
     }
 
     fn link_issues(
@@ -258,16 +247,12 @@ impl IssueTracker for GitLabClient {
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
         let iid = parse_issue_iid(issue_id)?;
-        self.add_note(iid, text)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.add_note(iid, text)?.into())
     }
 
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         let iid = parse_issue_iid(issue_id)?;
-        self.get_notes(iid)
-            .map(|notes| notes.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self.get_notes(iid)?.into_iter().map(Into::into).collect())
     }
 }
 

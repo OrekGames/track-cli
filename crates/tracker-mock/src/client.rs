@@ -206,13 +206,12 @@ impl MockClient {
             duration_ms: start.elapsed().as_millis() as u64,
         };
 
-        if let Ok(mut writer) = self.log_writer.lock() {
-            if let Some(w) = writer.as_mut() {
-                if let Ok(json) = serde_json::to_string(&entry) {
-                    let _ = writeln!(w, "{}", json);
-                    let _ = w.flush();
-                }
-            }
+        if let Ok(mut writer) = self.log_writer.lock()
+            && let Some(w) = writer.as_mut()
+            && let Ok(json) = serde_json::to_string(&entry)
+        {
+            let _ = writeln!(w, "{}", json);
+            let _ = w.flush();
         }
     }
 

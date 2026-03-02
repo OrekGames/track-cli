@@ -209,10 +209,10 @@ const SKILL_FILE_PATH: &str = "agent-skills/SKILL.md";
 
 /// Strip YAML frontmatter (--- ... ---) from skill file content
 fn strip_frontmatter(content: &str) -> &str {
-    if let Some(stripped) = content.strip_prefix("---\n") {
-        if let Some(close) = stripped.find("\n---\n") {
-            return stripped[close + 5..].trim_start();
-        }
+    if let Some(stripped) = content.strip_prefix("---\n")
+        && let Some(close) = stripped.find("\n---\n")
+    {
+        return stripped[close + 5..].trim_start();
     }
     content
 }
@@ -240,10 +240,10 @@ fn load_skill_file() -> Option<String> {
             .and_then(|p| p.parent()) // project root
             .map(|p| p.join(SKILL_FILE_PATH));
 
-        if let Some(path) = path {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                return Some(strip_frontmatter(&content).to_string());
-            }
+        if let Some(path) = path
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            return Some(strip_frontmatter(&content).to_string());
         }
     }
 
@@ -352,12 +352,11 @@ fn parse_stream_output(stdout: impl std::io::Read, verbose: bool) -> Result<Vec<
             }
             Err(_) => {
                 // Try parsing as a generic JSON to see what we got
-                if verbose {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                        if let Some(t) = v.get("type") {
-                            eprintln!("{}: Unknown event type: {}", "Debug".dimmed(), t);
-                        }
-                    }
+                if verbose
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
+                    && let Some(t) = v.get("type")
+                {
+                    eprintln!("{}: Unknown event type: {}", "Debug".dimmed(), t);
                 }
             }
         }
@@ -370,10 +369,10 @@ fn parse_stream_output(stdout: impl std::io::Read, verbose: bool) -> Result<Vec<
 fn print_event(event: &GeminiEvent) {
     match event {
         GeminiEvent::System(sys) => {
-            if sys.subtype == "init" {
-                if let Some(msg) = &sys.message {
-                    println!("{}: {}", "System".dimmed(), msg);
-                }
+            if sys.subtype == "init"
+                && let Some(msg) = &sys.message
+            {
+                println!("{}: {}", "System".dimmed(), msg);
             }
         }
         GeminiEvent::Assistant(asst) => {
@@ -384,10 +383,10 @@ fn print_event(event: &GeminiEvent) {
                             println!("{}: {}", "Agent".green(), text);
                         }
                         ContentBlock::ToolUse { name, input, .. } => {
-                            if name == "Bash" {
-                                if let Some(cmd) = input.get("command").and_then(|c| c.as_str()) {
-                                    println!("{}: {}", "Executing".yellow(), cmd);
-                                }
+                            if name == "Bash"
+                                && let Some(cmd) = input.get("command").and_then(|c| c.as_str())
+                            {
+                                println!("{}: {}", "Executing".yellow(), cmd);
                             }
                         }
                         _ => {}
@@ -436,14 +435,12 @@ fn extract_commands(events: &[GeminiEvent]) -> Vec<CommandExecution> {
             GeminiEvent::Assistant(asst) => {
                 if let Some(msg) = &asst.message {
                     for block in &msg.content {
-                        if let ContentBlock::ToolUse { id, name, input } = block {
-                            if name == "Bash" {
-                                if let Some(cmd) = input.get("command").and_then(|c| c.as_str()) {
-                                    if is_track_command(cmd) {
-                                        pending_commands.push((id.clone(), cmd.to_string()));
-                                    }
-                                }
-                            }
+                        if let ContentBlock::ToolUse { id, name, input } = block
+                            && name == "Bash"
+                            && let Some(cmd) = input.get("command").and_then(|c| c.as_str())
+                            && is_track_command(cmd)
+                        {
+                            pending_commands.push((id.clone(), cmd.to_string()));
                         }
                     }
                 }

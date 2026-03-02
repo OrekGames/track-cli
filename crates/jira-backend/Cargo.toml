@@ -1,7 +1,7 @@
 [package]
 name = "jira-backend"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Jira backend implementation for tracker-core"
 
 [dependencies]

@@ -1,7 +1,12 @@
 pub mod article;
 pub mod bundle;
+pub mod cache;
+pub mod config;
 pub mod context;
+pub mod eval;
 pub mod field;
+pub mod init;
 pub mod issue;
+pub mod open;
 pub mod project;
 pub mod tags;

@@ -14,9 +14,7 @@ use crate::models::{CreateJiraIssueLink, IssueKeyRef, IssueLinkTypeName};
 
 impl IssueTracker for JiraClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
-        self.get_issue(id)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.get_issue(id)?.into())
     }
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
@@ -28,13 +26,10 @@ impl IssueTracker for JiraClient {
             convert_simple_query_to_jql(query)
         };
 
-        self.search_issues(&jql, limit, skip)
-            .map(|r| {
-                let total = r.total as u64;
-                let items = r.issues.into_iter().map(Into::into).collect();
-                SearchResult::with_total(items, total)
-            })
-            .map_err(TrackerError::from)
+        let r = self.search_issues(&jql, limit, skip)?;
+        let total = r.total as u64;
+        let items = r.issues.into_iter().map(Into::into).collect();
+        Ok(SearchResult::with_total(items, total))
     }
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
@@ -43,23 +38,17 @@ impl IssueTracker for JiraClient {
         } else {
             convert_simple_query_to_jql(query)
         };
-        self.count_issues(&jql)
-            .map(|n| Some(n as u64))
-            .map_err(TrackerError::from)
+        Ok(Some(self.count_issues(&jql)? as u64))
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
         let jira_issue = create_issue_to_jira(issue);
-        self.create_issue(&jira_issue)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.create_issue(&jira_issue)?.into())
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
         let jira_update = update_issue_to_jira(update);
-        self.update_issue(id, &jira_update)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.update_issue(id, &jira_update)?.into())
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
@@ -67,15 +56,11 @@ impl IssueTracker for JiraClient {
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
-        self.list_projects()
-            .map(|ps| ps.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self.list_projects()?.into_iter().map(Into::into).collect())
     }
 
     fn get_project(&self, id: &str) -> Result<Project> {
-        self.get_project(id)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.get_project(id)?.into())
     }
 
     fn create_project(&self, _project: &CreateProject) -> Result<Project> {
@@ -101,19 +86,16 @@ impl IssueTracker for JiraClient {
     }
 
     fn list_tags(&self) -> Result<Vec<IssueTag>> {
-        self.list_labels()
-            .map(|labels| {
-                labels
-                    .into_iter()
-                    .map(|name| IssueTag {
-                        id: name.clone(),
-                        name,
-                        color: None,
-                        issues_count: None,
-                    })
-                    .collect()
+        Ok(self
+            .list_labels()?
+            .into_iter()
+            .map(|name| IssueTag {
+                id: name.clone(),
+                name,
+                color: None,
+                issues_count: None,
             })
-            .map_err(TrackerError::from)
+            .collect())
     }
 
     fn create_tag(&self, _tag: &CreateTag) -> Result<IssueTag> {
@@ -135,15 +117,19 @@ impl IssueTracker for JiraClient {
     }
 
     fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
-        self.list_link_types()
-            .map(|link_types| link_types.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .list_link_types()?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
-        self.list_assignable_users(project_id)
-            .map(|users| users.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .list_assignable_users(project_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn get_issue_links(&self, issue_id: &str) -> Result<Vec<IssueLink>> {
@@ -192,15 +178,15 @@ impl IssueTracker for JiraClient {
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
-        self.add_comment(issue_id, text)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.add_comment(issue_id, text)?.into())
     }
 
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
-        self.get_comments(issue_id)
-            .map(|cs| cs.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .get_comments(issue_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 }
 

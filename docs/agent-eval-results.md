@@ -4,7 +4,7 @@ This document tracks the performance of different AI providers when using the `t
 
 ## Test Configuration
 
-- **Evaluation Date**: 2026-02-28
+- **Evaluation Date**: 2026-03-02
 - **Max Turns**: 20
 - **Min Passing Score**: 70%
 - **Total Scenarios**: 21
@@ -14,35 +14,35 @@ This document tracks the performance of different AI providers when using the `t
 ### Claude Code (CLI)
 
 **Provider**: `claude-code`
-**Evaluation Date**: 2026-02-28
+**Evaluation Date**: 2026-03-02
 **Pass Rate**: 21/21 (100%)
 
 | Scenario | Score | API Calls | Turns | Status |
 |----------|-------|-----------|-------|--------|
-| article-workflow | 90% | 11 | 10 | ✓ PASS |
+| article-workflow | 90% | 11 | 11 | ✓ PASS |
 | basic-workflow | 100% | 3 | 5 | ✓ PASS |
 | cache-efficiency | 90% | 9 | 2 | ✓ PASS |
-| cache-operations | 75% | 12 | 4 | ✓ PASS |
+| cache-operations | 75% | 12 | 2 | ✓ PASS |
 | config-management | 100% | 3 | 2 | ✓ PASS |
 | context-aggregation | 95% | 6 | 2 | ✓ PASS |
-| error-recovery | 95% | 4 | 7 | ✓ PASS |
+| error-recovery | 95% | 3 | 6 | ✓ PASS |
 | github-basic-workflow | 100% | 4 | 6 | ✓ PASS |
 | issue-batch-operations | 85% | 15 | 5 | ✓ PASS |
 | issue-comments-listing | 90% | 5 | 6 | ✓ PASS |
-| issue-create-advanced | 100% | 11 | 7 | ✓ PASS |
+| issue-create-advanced | 100% | 11 | 11 | ✓ PASS |
 | issue-delete | 100% | 5 | 4 | ✓ PASS |
-| issue-get-full | 82% | 9 | 8 | ✓ PASS |
+| issue-get-full | 90% | 8 | 8 | ✓ PASS |
 | issue-linking | 100% | 4 | 4 | ✓ PASS |
 | issue-search-templates | 100% | 6 | 8 | ✓ PASS |
-| issue-start-complete | 90% | 8 | 13 | ✓ PASS |
+| issue-start-complete | 100% | 4 | 5 | ✓ PASS |
 | jira-basic-workflow | 90% | 6 | 5 | ✓ PASS |
 | json-output | 100% | 4 | 4 | ✓ PASS |
 | project-operations | 100% | 6 | 5 | ✓ PASS |
-| tags-operations | 100% | 6 | 5 | ✓ PASS |
+| tags-operations | 100% | 6 | 6 | ✓ PASS |
 | validation-dry-run | 90% | 9 | 3 | ✓ PASS |
 
-**Average Score**: 94%
-**Average Turns**: 5.5
+**Average Score**: 95%
+**Average Turns**: 5.2
 
 ---
 
