@@ -78,9 +78,7 @@ impl IssueTracker for GitHubClient {
     }
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
-        self.count_issues(query)
-            .map(Some)
-            .map_err(TrackerError::from)
+        Ok(Some(self.count_issues(query)?))
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
@@ -104,9 +102,7 @@ impl IssueTracker for GitHubClient {
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
-        self.list_repos()
-            .map(|repos| repos.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self.list_repos()?.into_iter().map(Into::into).collect())
     }
 
     fn get_project(&self, id: &str) -> Result<Project> {
@@ -154,9 +150,7 @@ impl IssueTracker for GitHubClient {
     }
 
     fn list_tags(&self) -> Result<Vec<IssueTag>> {
-        self.list_labels()
-            .map(|labels| labels.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self.list_labels()?.into_iter().map(Into::into).collect())
     }
 
     fn create_tag(&self, tag: &CreateTag) -> Result<IssueTag> {
@@ -173,9 +167,7 @@ impl IssueTracker for GitHubClient {
             description: tag.description.clone(),
         };
 
-        self.create_label(&create)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.create_label(&create)?.into())
     }
 
     fn delete_tag(&self, name: &str) -> Result<()> {
@@ -200,9 +192,7 @@ impl IssueTracker for GitHubClient {
             description: tag.description.clone(),
         };
 
-        self.update_label(current_name, &update)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.update_label(current_name, &update)?.into())
     }
 
     fn get_issue_links(&self, _issue_id: &str) -> Result<Vec<IssueLink>> {
@@ -232,16 +222,16 @@ impl IssueTracker for GitHubClient {
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
         let number = parse_issue_number(issue_id)?;
-        self.add_comment(number, text)
-            .map(Into::into)
-            .map_err(TrackerError::from)
+        Ok(self.add_comment(number, text)?.into())
     }
 
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
         let number = parse_issue_number(issue_id)?;
-        self.get_comments(number)
-            .map(|cs| cs.into_iter().map(Into::into).collect())
-            .map_err(TrackerError::from)
+        Ok(self
+            .get_comments(number)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 }
 
