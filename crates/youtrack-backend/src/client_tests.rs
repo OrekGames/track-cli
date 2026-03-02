@@ -1396,10 +1396,14 @@ mod tests {
         let issue = client.update_issue("PROJ-123", &update).unwrap();
         assert_eq!(issue.id_readable, "PROJ-123");
         // Verify the state was reflected in the returned issue
-        let state_field = issue.custom_fields.iter().find(|f| {
-            matches!(f, CustomField::State { name, .. } if name == "Stage")
-        });
-        assert!(state_field.is_some(), "State custom field should be present");
+        let state_field = issue
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::State { name, .. } if name == "Stage"));
+        assert!(
+            state_field.is_some(),
+            "State custom field should be present"
+        );
         if let Some(CustomField::State { value: Some(v), .. }) = state_field {
             assert_eq!(v.name, "Done");
         }
