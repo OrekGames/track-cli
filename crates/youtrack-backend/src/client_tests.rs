@@ -1343,4 +1343,103 @@ mod tests {
         let color = tag.color.unwrap();
         assert_eq!(color.background, Some("#0075ca".to_string()));
     }
+
+    #[tokio::test]
+    async fn test_update_issue_state_only_uses_commands_api() {
+        let mock_server = MockServer::start().await;
+
+        // Commands API receives the state change
+        Mock::given(method("POST"))
+            .and(path("/api/commands"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(body_json(serde_json::json!({
+                "query": "Stage: Done",
+                "issues": [{"idReadable": "PROJ-123"}]
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        // GET fetches the updated issue after the command
+        Mock::given(method("GET"))
+            .and(path("/api/issues/PROJ-123"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "2-45",
+                "idReadable": "PROJ-123",
+                "summary": "Test issue",
+                "project": {"id": "0-1", "shortName": "PROJ"},
+                "customFields": [{
+                    "$type": "StateIssueCustomField",
+                    "name": "Stage",
+                    "value": {"name": "Done", "isResolved": true}
+                }],
+                "created": 1640000000000i64,
+                "updated": 1640100000000i64,
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Stage".to_string(),
+                value: Some(StateValueInput {
+                    name: "Done".to_string(),
+                }),
+            }],
+            tags: vec![],
+        };
+
+        let issue = client.update_issue("PROJ-123", &update).unwrap();
+        assert_eq!(issue.id_readable, "PROJ-123");
+        // Verify the state was reflected in the returned issue
+        let state_field = issue.custom_fields.iter().find(|f| {
+            matches!(f, CustomField::State { name, .. } if name == "Stage")
+        });
+        assert!(state_field.is_some(), "State custom field should be present");
+        if let Some(CustomField::State { value: Some(v), .. }) = state_field {
+            assert_eq!(v.name, "Done");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_issue_with_summary_uses_direct_post() {
+        let mock_server = MockServer::start().await;
+
+        // Direct POST to the issue endpoint for mixed updates (not commands API)
+        Mock::given(method("POST"))
+            .and(path("/api/issues/PROJ-123"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "2-45",
+                "idReadable": "PROJ-123",
+                "summary": "Updated summary",
+                "project": {"id": "0-1", "shortName": "PROJ"},
+                "customFields": [],
+                "created": 1640000000000i64,
+                "updated": 1640100000000i64,
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        // Mixed update: summary + state — must NOT go through commands API
+        let update = UpdateIssue {
+            summary: Some("Updated summary".to_string()),
+            description: None,
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Stage".to_string(),
+                value: Some(StateValueInput {
+                    name: "Done".to_string(),
+                }),
+            }],
+            tags: vec![],
+        };
+
+        let issue = client.update_issue("PROJ-123", &update).unwrap();
+        assert_eq!(issue.summary, "Updated summary");
+    }
 }

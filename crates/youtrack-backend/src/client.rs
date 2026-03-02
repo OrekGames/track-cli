@@ -185,6 +185,33 @@ impl YouTrackClient {
     }
 
     pub fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
+        // When the update contains only State field changes, use the commands API.
+        // Direct POST to /api/issues/{id} with state custom fields fails on some
+        // YouTrack instances with HTTP 500 when the field name doesn't match exactly.
+        // The commands API is more lenient and is what YouTrack's own UI uses.
+        let only_state_changes = update.summary.is_none()
+            && update.description.is_none()
+            && update.tags.is_empty()
+            && !update.custom_fields.is_empty()
+            && update
+                .custom_fields
+                .iter()
+                .all(|f| matches!(f, CustomFieldUpdate::State { .. }));
+
+        if only_state_changes {
+            for field in &update.custom_fields {
+                if let CustomFieldUpdate::State {
+                    name,
+                    value: Some(v),
+                } = field
+                {
+                    let query = format!("{}: {}", name, v.name);
+                    self.apply_command(&[id], &query)?;
+                }
+            }
+            return self.get_issue(id);
+        }
+
         let url = format!(
             "{}/api/issues/{}?fields={}",
             self.base_url, id, DEFAULT_ISSUE_FIELDS
@@ -202,6 +229,32 @@ impl YouTrackClient {
         let mut response = self.check_response(response)?;
         let issue: Issue = response.body_mut().read_json()?;
         Ok(issue)
+    }
+
+    /// Apply a YouTrack command to one or more issues via the Commands API.
+    ///
+    /// This uses `POST /api/commands` which accepts human-readable command strings
+    /// (e.g. `"Stage: Done"`) and is more reliable than direct field POSTs for
+    /// state transitions.
+    fn apply_command(&self, issue_ids: &[&str], query: &str) -> Result<()> {
+        let url = format!("{}/api/commands", self.base_url);
+
+        let body = serde_json::json!({
+            "query": query,
+            "issues": issue_ids.iter().map(|id| serde_json::json!({"idReadable": id})).collect::<Vec<_>>()
+        });
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(&body)
+            .map_err(|e| self.handle_error(e))?;
+
+        self.check_response(response)?;
+        Ok(())
     }
 
     pub fn delete_issue(&self, id: &str) -> Result<()> {
