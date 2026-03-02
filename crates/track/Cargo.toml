@@ -1,6 +1,6 @@
 [package]
 name = "track"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 description = "CLI for issue tracking systems (YouTrack, Jira, etc.)"
 

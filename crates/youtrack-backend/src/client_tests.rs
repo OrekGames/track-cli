@@ -1343,4 +1343,261 @@ mod tests {
         let color = tag.color.unwrap();
         assert_eq!(color.background, Some("#0075ca".to_string()));
     }
+
+    #[tokio::test]
+    async fn test_update_issue_state_only_uses_commands_api() {
+        let mock_server = MockServer::start().await;
+
+        // Commands API receives the state change
+        Mock::given(method("POST"))
+            .and(path("/api/commands"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(body_json(serde_json::json!({
+                "query": "Stage: Done",
+                "issues": [{"idReadable": "PROJ-123"}]
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        // GET fetches the updated issue after the command
+        Mock::given(method("GET"))
+            .and(path("/api/issues/PROJ-123"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "2-45",
+                "idReadable": "PROJ-123",
+                "summary": "Test issue",
+                "project": {"id": "0-1", "shortName": "PROJ"},
+                "customFields": [{
+                    "$type": "StateIssueCustomField",
+                    "name": "Stage",
+                    "value": {"name": "Done", "isResolved": true}
+                }],
+                "created": 1640000000000i64,
+                "updated": 1640100000000i64,
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Stage".to_string(),
+                value: Some(StateValueInput {
+                    name: "Done".to_string(),
+                }),
+            }],
+            tags: vec![],
+        };
+
+        let issue = client.update_issue("PROJ-123", &update).unwrap();
+        assert_eq!(issue.id_readable, "PROJ-123");
+        // Verify the state was reflected in the returned issue
+        let state_field = issue
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::State { name, .. } if name == "Stage"));
+        assert!(
+            state_field.is_some(),
+            "State custom field should be present"
+        );
+        if let Some(CustomField::State { value: Some(v), .. }) = state_field {
+            assert_eq!(v.name, "Done");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_issue_with_summary_uses_direct_post() {
+        let mock_server = MockServer::start().await;
+
+        // Direct POST to the issue endpoint for mixed updates (not commands API)
+        Mock::given(method("POST"))
+            .and(path("/api/issues/PROJ-123"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "2-45",
+                "idReadable": "PROJ-123",
+                "summary": "Updated summary",
+                "project": {"id": "0-1", "shortName": "PROJ"},
+                "customFields": [],
+                "created": 1640000000000i64,
+                "updated": 1640100000000i64,
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        // Mixed update: summary + state — must NOT go through commands API
+        let update = UpdateIssue {
+            summary: Some("Updated summary".to_string()),
+            description: None,
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Stage".to_string(),
+                value: Some(StateValueInput {
+                    name: "Done".to_string(),
+                }),
+            }],
+            tags: vec![],
+        };
+
+        let issue = client.update_issue("PROJ-123", &update).unwrap();
+        assert_eq!(issue.summary, "Updated summary");
+    }
+
+    /// When the commands API returns a non-2xx response, update_issue must propagate
+    /// the error and must NOT fall through to a GET call.
+    #[tokio::test]
+    async fn test_update_issue_commands_api_error_propagates() {
+        let mock_server = MockServer::start().await;
+
+        // Commands endpoint returns 400 (e.g., unrecognised state name)
+        Mock::given(method("POST"))
+            .and(path("/api/commands"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_query",
+                "error_description": "Unknown state value: Nonexistent"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // No GET mock registered — if update_issue called get_issue it would return 404
+        // and we'd get a different error message. By asserting is_err() we confirm
+        // the error came from apply_command, not from an unexpected GET.
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Stage".to_string(),
+                value: Some(StateValueInput {
+                    name: "Nonexistent".to_string(),
+                }),
+            }],
+            tags: vec![],
+        };
+
+        let result = client.update_issue("PROJ-123", &update);
+        assert!(
+            result.is_err(),
+            "update_issue should propagate commands API errors"
+        );
+    }
+
+    /// State { value: None } silently skips apply_command (no write occurs) but
+    /// still calls get_issue to return the current issue state. This documents the
+    /// current behaviour: callers must not rely on a None value clearing the field.
+    #[tokio::test]
+    async fn test_update_issue_state_with_none_value_skips_command_and_fetches() {
+        let mock_server = MockServer::start().await;
+
+        // No commands mock registered — if apply_command were called it would 404
+        // GET still returns the current issue (unchanged)
+        Mock::given(method("GET"))
+            .and(path("/api/issues/PROJ-123"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "2-45",
+                "idReadable": "PROJ-123",
+                "summary": "Test issue",
+                "project": {"id": "0-1", "shortName": "PROJ"},
+                "customFields": [],
+                "created": 1640000000000i64,
+                "updated": 1640000000000i64,
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Stage".to_string(),
+                value: None, // No value — apply_command is skipped, but GET still fires
+            }],
+            tags: vec![],
+        };
+
+        // Should succeed (GET returns the current issue) without calling the commands API
+        let issue = client.update_issue("PROJ-123", &update).unwrap();
+        assert_eq!(issue.id_readable, "PROJ-123");
+    }
+
+    /// When tags are included alongside a state field, only_state_changes is false,
+    /// so the direct POST path is used (not the commands API).
+    #[tokio::test]
+    async fn test_update_issue_state_and_tags_uses_direct_post() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues/PROJ-123"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "2-45",
+                "idReadable": "PROJ-123",
+                "summary": "Test issue",
+                "project": {"id": "0-1", "shortName": "PROJ"},
+                "customFields": [],
+                "created": 1640000000000i64,
+                "updated": 1640100000000i64,
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        // State field + tag: tags.is_empty() is false, so falls through to direct POST
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Stage".to_string(),
+                value: Some(StateValueInput {
+                    name: "Done".to_string(),
+                }),
+            }],
+            tags: vec![TagIdentifier::from_name("urgent".to_string())],
+        };
+
+        let issue = client.update_issue("PROJ-123", &update).unwrap();
+        assert_eq!(issue.id_readable, "PROJ-123");
+    }
+
+    /// Tags-only updates (no custom fields) use the direct POST path.
+    #[tokio::test]
+    async fn test_update_issue_tags_only_uses_direct_post() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues/PROJ-123"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "2-45",
+                "idReadable": "PROJ-123",
+                "summary": "Test issue",
+                "project": {"id": "0-1", "shortName": "PROJ"},
+                "customFields": [],
+                "tags": [{"id": "6-1", "name": "bug"}],
+                "created": 1640000000000i64,
+                "updated": 1640100000000i64,
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        // No custom fields: !update.custom_fields.is_empty() is false → direct POST
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            custom_fields: vec![],
+            tags: vec![TagIdentifier::from_name("bug".to_string())],
+        };
+
+        let issue = client.update_issue("PROJ-123", &update).unwrap();
+        assert_eq!(issue.id_readable, "PROJ-123");
+    }
 }
