@@ -75,7 +75,7 @@ fn handle_get(client: &dyn KnowledgeBase, id: &str, format: OutputFormat) -> Res
         .get_article(id)
         .with_context(|| format!("Failed to fetch article '{}'", id))?;
 
-    output_result(&article, format);
+    output_result(&article, format)?;
     Ok(())
 }
 
@@ -102,7 +102,7 @@ fn handle_list(
             .context("Failed to list articles")?
     };
 
-    output_list(&articles, format);
+    output_list(&articles, format)?;
     if !all {
         output_page_hint(articles.len(), limit, skip, None, format);
     }
@@ -137,7 +137,7 @@ fn handle_search(
             .with_context(|| format!("Failed to search articles with query '{}'", query))?
     };
 
-    output_list(&articles, format);
+    output_list(&articles, format)?;
     if !all {
         output_page_hint(articles.len(), limit, skip, None, format);
     }
@@ -200,7 +200,7 @@ fn handle_create(
         .create_article(&create)
         .context("Failed to create article")?;
 
-    output_result(&article, format);
+    output_result(&article, format)?;
     Ok(())
 }
 
@@ -233,7 +233,7 @@ fn handle_update(
         .update_article(id, &update)
         .with_context(|| format!("Failed to update article '{}'", id))?;
 
-    output_result(&article, format);
+    output_result(&article, format)?;
     Ok(())
 }
 
@@ -312,7 +312,7 @@ fn handle_move(
         }
     }
 
-    output_result(&article, format);
+    output_result(&article, format)?;
     Ok(())
 }
 
@@ -321,7 +321,7 @@ fn handle_attachments(client: &dyn KnowledgeBase, id: &str, format: OutputFormat
         .list_article_attachments(id)
         .with_context(|| format!("Failed to list attachments for article '{}'", id))?;
 
-    output_list(&attachments, format);
+    output_list(&attachments, format)?;
     Ok(())
 }
 
@@ -335,7 +335,7 @@ fn handle_comment(
         .add_article_comment(id, text)
         .with_context(|| format!("Failed to add comment to article '{}'", id))?;
 
-    output_result(&comment, format);
+    output_result(&comment, format)?;
     Ok(())
 }
 
@@ -356,6 +356,6 @@ fn handle_comments(
         comments.into_iter().take(limit).collect()
     };
 
-    output_list(&comments, format);
+    output_list(&comments, format)?;
     Ok(())
 }

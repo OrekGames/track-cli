@@ -43,8 +43,7 @@ impl IssueTracker for GitLabClient {
 
         // Use combined methods that read X-Total from the search response itself
         let (issues, total) = if search_text.is_empty() {
-            self.list_issues_with_total(state.as_deref(), limit, page)
-                .map_err(TrackerError::from)?
+            self.list_issues_with_total(state.as_deref(), limit, page)?
         } else {
             self.search_issues_with_total(
                 &search_text,
@@ -52,8 +51,7 @@ impl IssueTracker for GitLabClient {
                 labels.as_deref(),
                 limit,
                 page,
-            )
-            .map_err(TrackerError::from)?
+            )?
         };
 
         let items: Vec<Issue> = issues
@@ -69,8 +67,7 @@ impl IssueTracker for GitLabClient {
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
         let (search_text, state, _labels) = convert_query_to_gitlab_params(query);
-        self.count_issues_by_query(&search_text, state.as_deref())
-            .map_err(TrackerError::from)
+        Ok(self.count_issues_by_query(&search_text, state.as_deref())?)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
@@ -134,7 +131,7 @@ impl IssueTracker for GitLabClient {
 
     fn delete_issue(&self, id: &str) -> Result<()> {
         let iid = parse_issue_iid(id)?;
-        self.delete_issue(iid).map_err(TrackerError::from)
+        Ok(self.delete_issue(iid)?)
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
@@ -183,16 +180,16 @@ impl IssueTracker for GitLabClient {
     }
 
     fn delete_tag(&self, name: &str) -> Result<()> {
-        let labels = self.list_labels().map_err(TrackerError::from)?;
+        let labels = self.list_labels()?;
         let label = labels
             .into_iter()
             .find(|l| l.name == name)
             .ok_or_else(|| TrackerError::InvalidInput(format!("Tag '{}' not found", name)))?;
-        self.delete_label(label.id).map_err(TrackerError::from)
+        Ok(self.delete_label(label.id)?)
     }
 
     fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
-        let labels = self.list_labels().map_err(TrackerError::from)?;
+        let labels = self.list_labels()?;
         let label = labels
             .into_iter()
             .find(|l| l.name == current_name)
@@ -249,8 +246,7 @@ impl IssueTracker for GitLabClient {
             link_type: gitlab_link_type.to_string(),
         };
 
-        self.create_issue_link(source_iid, &link)
-            .map_err(TrackerError::from)
+        Ok(self.create_issue_link(source_iid, &link)?)
     }
 
     fn link_subtask(&self, _child: &str, _parent: &str) -> Result<()> {

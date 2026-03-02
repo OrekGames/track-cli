@@ -102,7 +102,7 @@ fn handle_create(
         .create_bundle(&create)
         .context("Failed to create bundle")?;
 
-    output_result(&bundle, format);
+    output_result(&bundle, format)?;
     Ok(())
 }
 

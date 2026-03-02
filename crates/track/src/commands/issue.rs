@@ -129,7 +129,7 @@ fn handle_get(client: &dyn IssueTracker, id: &str, full: bool, format: OutputFor
     record_issue_access(&issue);
 
     if !full {
-        output_result(&issue, format);
+        output_result(&issue, format)?;
         return Ok(());
     }
 
@@ -155,7 +155,7 @@ fn handle_get(client: &dyn IssueTracker, id: &str, full: bool, format: OutputFor
         OutputFormat::Text => {
             use colored::Colorize;
             // Print issue details
-            output_result(&issue, format);
+            output_result(&issue, format)?;
 
             // Print links
             if !links.is_empty() {
@@ -337,7 +337,7 @@ fn handle_create(
             }
         }
     } else {
-        output_result(&issue, format);
+        output_result(&issue, format)?;
     }
 
     Ok(())
@@ -419,7 +419,7 @@ fn handle_update(
         .update_issue(id, &update)
         .with_context(|| format!("Failed to update issue '{}'", id))?;
 
-    output_result(&issue, format);
+    output_result(&issue, format)?;
     Ok(())
 }
 
@@ -759,7 +759,7 @@ fn handle_search(
         record_issue_access(first);
     }
 
-    output_list(&issues, format);
+    output_list(&issues, format)?;
 
     // Pagination hint — priority cascade: inline total > cached total > heuristic
     if !all {

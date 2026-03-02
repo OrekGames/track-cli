@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 
 /// Initialize color mode based on CLI choice and environment
 pub fn init(choice: ColorChoice) {
-    let should_color = match choice {
+    colored::control::set_override(match choice {
         ColorChoice::Always => true,
         ColorChoice::Never => false,
         ColorChoice::Auto => {
@@ -15,11 +15,5 @@ pub fn init(choice: ColorChoice) {
                 std::io::stdout().is_terminal()
             }
         }
-    };
-
-    if should_color {
-        colored::control::set_override(true);
-    } else {
-        colored::control::set_override(false);
-    }
+    });
 }

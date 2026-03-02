@@ -1,5 +1,6 @@
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -33,7 +34,8 @@ pub struct Cli {
     pub command: Commands,
 }
 
-#[derive(ValueEnum, Clone, Debug, Copy, Default, PartialEq, Eq)]
+#[derive(ValueEnum, Clone, Debug, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Backend {
     /// YouTrack issue tracker
     #[default]
@@ -48,6 +50,17 @@ pub enum Backend {
     /// GitLab issue tracker
     #[value(name = "gitlab", alias = "gl")]
     GitLab,
+}
+
+impl std::fmt::Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Backend::YouTrack => write!(f, "youtrack"),
+            Backend::Jira => write!(f, "jira"),
+            Backend::GitHub => write!(f, "github"),
+            Backend::GitLab => write!(f, "gitlab"),
+        }
+    }
 }
 
 #[derive(ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]

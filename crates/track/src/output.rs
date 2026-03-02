@@ -7,25 +7,24 @@ use tracker_core::{
     Issue, IssueTag, Project, ProjectCustomField,
 };
 
-pub fn output_result<T: Serialize + Displayable>(result: &T, format: OutputFormat) {
+pub fn output_result<T: Serialize + Displayable>(result: &T, format: OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Json => {
-            if let Ok(json) = serde_json::to_string_pretty(result) {
-                println!("{}", json);
-            }
+            let json = serde_json::to_string_pretty(result)?;
+            println!("{}", json);
         }
         OutputFormat::Text => {
             println!("{}", result.display());
         }
     }
+    Ok(())
 }
 
-pub fn output_list<T: Serialize + Displayable>(items: &[T], format: OutputFormat) {
+pub fn output_list<T: Serialize + Displayable>(items: &[T], format: OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Json => {
-            if let Ok(json) = serde_json::to_string_pretty(&items) {
-                println!("{}", json);
-            }
+            let json = serde_json::to_string_pretty(&items)?;
+            println!("{}", json);
         }
         OutputFormat::Text => {
             for item in items {
@@ -34,6 +33,7 @@ pub fn output_list<T: Serialize + Displayable>(items: &[T], format: OutputFormat
             }
         }
     }
+    Ok(())
 }
 
 #[derive(Serialize)]

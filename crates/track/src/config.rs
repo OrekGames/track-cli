@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 /// Main configuration structure supporting multiple backends
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct Config {
-    /// Default backend to use (youtrack or jira)
+    /// Default backend to use (youtrack, jira, github, or gitlab)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backend: Option<String>,
+    pub backend: Option<Backend>,
     /// Global URL override (applies to any backend)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -307,13 +307,7 @@ impl Config {
     pub fn update_backend(backend: Backend) -> Result<()> {
         let path = local_track_config_path()?;
         if let Some(mut config) = Self::load_local_track_toml()? {
-            let backend_str = match backend {
-                Backend::YouTrack => "youtrack",
-                Backend::Jira => "jira",
-                Backend::GitHub => "github",
-                Backend::GitLab => "gitlab",
-            };
-            config.backend = Some(backend_str.to_string());
+            config.backend = Some(backend);
             config.save(&path)?;
             Ok(())
         } else {
@@ -325,12 +319,7 @@ impl Config {
 
     /// Get the configured backend, defaulting to YouTrack
     pub fn get_backend(&self) -> Backend {
-        match self.backend.as_deref() {
-            Some("jira") | Some("j") => Backend::Jira,
-            Some("github") | Some("gh") => Backend::GitHub,
-            Some("gitlab") | Some("gl") => Backend::GitLab,
-            _ => Backend::YouTrack, // Default
-        }
+        self.backend.unwrap_or_default()
     }
 }
 

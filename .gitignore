@@ -29,7 +29,7 @@ Cargo.lock
 jira-config.toml
 gitlab-config.toml
 *-config.toml
-
+F
 # AI coding agents
 .claude/
 .codex/
