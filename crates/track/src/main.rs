@@ -1356,7 +1356,11 @@ fn handle_init(
                 "Created agent guide:".green(),
                 guide_path.display()
             );
-            println!("  {}: {}", "Backend".dimmed(), backend.to_string().cyan().bold());
+            println!(
+                "  {}: {}",
+                "Backend".dimmed(),
+                backend.to_string().cyan().bold()
+            );
             if let Some((_, name)) = &validated_project {
                 println!("  {}: {}", "Default project".dimmed(), name.cyan().bold());
             }

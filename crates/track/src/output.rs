@@ -7,7 +7,10 @@ use tracker_core::{
     Issue, IssueTag, Project, ProjectCustomField,
 };
 
-pub fn output_result<T: Serialize + Displayable>(result: &T, format: OutputFormat) -> anyhow::Result<()> {
+pub fn output_result<T: Serialize + Displayable>(
+    result: &T,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
     match format {
         OutputFormat::Json => {
             let json = serde_json::to_string_pretty(result)?;
@@ -20,7 +23,10 @@ pub fn output_result<T: Serialize + Displayable>(result: &T, format: OutputForma
     Ok(())
 }
 
-pub fn output_list<T: Serialize + Displayable>(items: &[T], format: OutputFormat) -> anyhow::Result<()> {
+pub fn output_list<T: Serialize + Displayable>(
+    items: &[T],
+    format: OutputFormat,
+) -> anyhow::Result<()> {
     match format {
         OutputFormat::Json => {
             let json = serde_json::to_string_pretty(&items)?;

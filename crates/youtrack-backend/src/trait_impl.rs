@@ -248,8 +248,7 @@ impl IssueTracker for YouTrackClient {
                 ordinal: value.ordinal,
             };
 
-            let created = self
-                .add_bundle_value(bundle_type.to_api_path(), bundle_id, &request)?;
+            let created = self.add_bundle_value(bundle_type.to_api_path(), bundle_id, &request)?;
 
             results.push(convert::bundle_value_response_to_core(created));
         }

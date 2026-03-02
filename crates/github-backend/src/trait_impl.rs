@@ -406,8 +406,7 @@ impl KnowledgeBase for GitHubClient {
 
         let content = article.content.as_deref().unwrap_or("");
 
-        let page =
-            wiki.create_page(&slug, &article.summary, content, article.tags.clone())?;
+        let page = wiki.create_page(&slug, &article.summary, content, article.tags.clone())?;
 
         Ok(wiki_page_to_article(page, self.owner(), self.repo()))
     }
