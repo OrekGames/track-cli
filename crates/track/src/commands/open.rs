@@ -192,3 +192,59 @@ pub fn handle_issue_shortcut(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_issue_id_valid_standard() {
+        assert!(is_issue_id("PROJ-123"));
+        assert!(is_issue_id("A-1"));
+        assert!(is_issue_id("DEMO-42"));
+        assert!(is_issue_id("MY2PROJ-99"));
+    }
+
+    #[test]
+    fn is_issue_id_valid_lowercase() {
+        assert!(is_issue_id("proj-123"));
+        assert!(is_issue_id("demo-1"));
+    }
+
+    #[test]
+    fn is_issue_id_invalid_no_dash() {
+        assert!(!is_issue_id("PROJ123"));
+        assert!(!is_issue_id("abc"));
+        assert!(!is_issue_id("123"));
+    }
+
+    #[test]
+    fn is_issue_id_invalid_empty_parts() {
+        assert!(!is_issue_id("-123"));
+        assert!(!is_issue_id("PROJ-"));
+        assert!(!is_issue_id("-"));
+    }
+
+    #[test]
+    fn is_issue_id_invalid_multiple_dashes() {
+        assert!(!is_issue_id("PROJ-SUB-123"));
+        assert!(!is_issue_id("A-B-1"));
+    }
+
+    #[test]
+    fn is_issue_id_invalid_non_digit_suffix() {
+        assert!(!is_issue_id("PROJ-abc"));
+        assert!(!is_issue_id("PROJ-12a"));
+    }
+
+    #[test]
+    fn is_issue_id_invalid_special_chars_prefix() {
+        assert!(!is_issue_id("PR@J-123"));
+        assert!(!is_issue_id("PR OJ-123"));
+    }
+
+    #[test]
+    fn is_issue_id_empty_string() {
+        assert!(!is_issue_id(""));
+    }
+}
