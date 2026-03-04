@@ -201,18 +201,23 @@ impl WikiManager {
             .map_err(|e| GitHubError::Wiki(format!("Failed to analyze merge: {}", e)))?;
 
         if analysis.0.is_fast_forward() {
-            let mut reference = repo
+            // HEAD is a symbolic ref (points to refs/heads/master), so resolve it
+            // to the underlying branch ref before setting the target OID.
+            let head = repo
                 .find_reference("HEAD")
                 .map_err(|e| GitHubError::Wiki(format!("Failed to find HEAD: {}", e)))?;
-            let name = reference
-                .name()
-                .ok_or_else(|| GitHubError::Wiki("Invalid reference name".to_string()))?
+            let branch_ref_name = head
+                .symbolic_target()
+                .unwrap_or("refs/heads/master")
                 .to_string();
+            let mut branch_ref = repo
+                .find_reference(&branch_ref_name)
+                .map_err(|e| GitHubError::Wiki(format!("Failed to find branch ref: {}", e)))?;
             let msg = "Fast-forward merge".to_string();
-            reference
+            branch_ref
                 .set_target(fetch_commit.id(), &msg)
                 .map_err(|e| GitHubError::Wiki(format!("Failed to fast-forward: {}", e)))?;
-            repo.set_head(&name)
+            repo.set_head(&branch_ref_name)
                 .map_err(|e| GitHubError::Wiki(format!("Failed to set HEAD: {}", e)))?;
             repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
                 .map_err(|e| GitHubError::Wiki(format!("Failed to checkout: {}", e)))?;
