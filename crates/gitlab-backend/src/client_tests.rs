@@ -147,6 +147,7 @@ mod tests {
             labels: Some("bug".to_string()),
             assignee_ids: None,
             milestone_id: None,
+            issue_type: None,
         };
 
         let issue = client.create_issue(&create).unwrap();
