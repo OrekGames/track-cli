@@ -462,14 +462,15 @@ track --format json p ls    # JSON
 - **Authentication**: Basic Auth with email and API token
 - **Rich Text**: Uses Atlassian Document Format (ADF) for descriptions
 - **Project Creation**: Requires admin permissions (use web interface)
-- **Subtask Conversion**: Create as subtask from start with `--parent`
+- **Subtasks**: Create as subtask with `--parent`, or link existing issues with `issue link -t subtask`
 
 ### GitHub
 - **Scope**: Repository-scoped (requires owner and repo configuration)
 - **Issue IDs**: Uses numeric issue numbers (e.g., `42`), not project-prefixed keys
 - **Labels**: Map to tags with color support
 - **No Issue Deletion**: GitHub does not support deleting issues (close them instead)
-- **No Issue Links**: GitHub has no formal issue link system (reference issues via `#number` in comments)
+- **Subtasks**: Supported via the sub-issues API (`--parent`, `issue link -t subtask/parent`)
+- **No General Issue Links**: GitHub has no formal link system for non-parent-child relationships (reference issues via `#number` in comments)
 - **Pull Requests**: Automatically filtered out from issue lists
 - **Rate Limiting**: May encounter rate limits on public API; use authenticated requests
 
@@ -478,8 +479,8 @@ track --format json p ls    # JSON
 - **Issue IDs**: Uses IID (project-scoped, e.g., `#42`), not global IDs
 - **Labels**: Map to tags with color support (includes `#` prefix)
 - **Comments**: Called "notes" in GitLab API; system notes are filtered out
-- **API Version**: Uses GitLab REST API v4
-- **No Subtasks**: Use issue links instead of native subtask relationships
+- **API Version**: Uses GitLab REST API v4 (with GraphQL for parent-child)
+- **Subtasks**: Supported via the GraphQL API (`--parent`, `issue link -t subtask/parent`)
 
 ## Architecture
 
