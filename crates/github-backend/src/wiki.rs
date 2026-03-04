@@ -555,21 +555,28 @@ impl WikiManager {
         self.read_page(&new_path)
     }
 
-    /// Generate markdown with YAML front matter
+    /// Generate markdown, only including YAML front matter when tags are present.
+    /// GitHub Wiki doesn't render YAML front matter — it appears as raw text —
+    /// so we skip it when there's nothing extra to store (title comes from the
+    /// filename already).
     fn generate_markdown_with_frontmatter(
         &self,
-        title: &str,
+        _title: &str,
         content: &str,
         tags: &[String],
     ) -> String {
+        if tags.is_empty() {
+            return content.to_string();
+        }
+
         let front_matter = FrontMatter {
-            title: Some(title.to_string()),
+            title: None,
             tags: tags.to_vec(),
         };
 
         let yaml = match serde_yaml::to_string(&front_matter) {
             Ok(y) => y.trim_start_matches("---\n").trim().to_string(),
-            Err(_) => return format!("{}\n", content),
+            Err(_) => return content.to_string(),
         };
 
         format!("---\n{}\n---\n\n{}", yaml, content)
