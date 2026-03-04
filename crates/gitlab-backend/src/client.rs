@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 use ureq::Agent;
 
@@ -10,6 +11,7 @@ pub struct GitLabClient {
     base_url: String,
     token: String,
     project_id: Option<String>,
+    link_mappings: HashMap<String, String>,
 }
 
 impl GitLabClient {
@@ -29,7 +31,31 @@ impl GitLabClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
             project_id: project_id.map(|s| s.to_string()),
+            link_mappings: HashMap::new(),
         }
+    }
+
+    /// Set custom link type mappings (canonical name -> GitLab link type string)
+    pub fn with_link_mappings(mut self, mappings: HashMap<String, String>) -> Self {
+        self.link_mappings = mappings;
+        self
+    }
+
+    /// Resolve a canonical link type name to the GitLab-native link type string.
+    /// User overrides take precedence, then falls back to built-in defaults.
+    pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
+        if let Some(name) = self.link_mappings.get(canonical) {
+            return name.clone();
+        }
+        match canonical {
+            "relates" => "relates_to",
+            "depends" => "blocks",
+            "required" => "is_blocked_by",
+            "duplicates" => "relates_to",
+            "duplicated-by" => "relates_to",
+            _ => "relates_to",
+        }
+        .to_string()
     }
 
     /// Get the project ID string (or "unknown" if not configured).

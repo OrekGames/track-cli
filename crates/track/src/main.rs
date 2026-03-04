@@ -130,7 +130,8 @@ fn run(cli: Cli) -> Result<()> {
     match effective_backend {
         Backend::YouTrack => {
             let client =
-                YouTrackClient::new(config.url.as_ref().unwrap(), config.token.as_ref().unwrap());
+                YouTrackClient::new(config.url.as_ref().unwrap(), config.token.as_ref().unwrap())
+                    .with_link_mappings(config.youtrack.link_mappings.clone());
             run_with_client(&client, &client, &cli, &config)
         }
         Backend::Jira => {
@@ -138,7 +139,8 @@ fn run(cli: Cli) -> Result<()> {
             let email = config.email.as_ref().unwrap();
             let token = config.token.as_ref().unwrap();
 
-            let client = JiraClient::new(url, email, token);
+            let client = JiraClient::new(url, email, token)
+                .with_link_mappings(config.jira.link_mappings.clone());
             let confluence = ConfluenceClient::new(url, email, token);
             run_with_client(&client, &confluence, &cli, &config)
         }
@@ -173,7 +175,8 @@ fn run(cli: Cli) -> Result<()> {
             let base_url = config.url.as_ref().unwrap();
             let token = config.token.as_ref().unwrap();
             let project_id = config.gitlab.project_id.as_deref();
-            let client = GitLabClient::new(base_url, token, project_id);
+            let client = GitLabClient::new(base_url, token, project_id)
+                .with_link_mappings(config.gitlab.link_mappings.clone());
             run_with_client(&client, &client, &cli, &config)
         }
     }

@@ -120,7 +120,7 @@ track config set <key> <value> # Set a value
 track config get <key>         # Get a value
 ```
 
-**Config keys**: `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `jira.url`, `jira.email`, `jira.token`, `github.token`, `github.owner`, `github.repo`, `github.api_url`, `gitlab.token`, `gitlab.url`, `gitlab.project_id`, `gitlab.namespace`
+**Config keys**: `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `youtrack.link_mappings`, `jira.url`, `jira.email`, `jira.token`, `jira.link_mappings`, `github.token`, `github.owner`, `github.repo`, `github.api_url`, `gitlab.token`, `gitlab.url`, `gitlab.project_id`, `gitlab.namespace`, `gitlab.link_mappings`
 
 ---
 
@@ -191,6 +191,33 @@ track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fix
 | Add comment | `track a cmt KB-A-1 -m "Text"` | `track -b j a cmt 123456 -m "Text"` |
 
 **Note**: Knowledge base is YouTrack and Jira/Confluence only. GitHub and GitLab do not support articles. Confluence uses numeric IDs. YouTrack uses readable IDs (e.g., `KB-A-1`).
+
+### Link Type Mappings
+
+Built-in link types: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`. Unrecognized types pass through to the backend as-is (for admin-defined types like `clones`).
+
+Override default canonical-to-native mappings in config:
+
+```toml
+[jira.link_mappings]
+depends = "Requires"       # Default: "Blocks"
+
+[youtrack.link_mappings]
+depends = "Is required for" # Default: "Depend"
+
+[gitlab.link_mappings]
+depends = "is_blocked_by"  # Default: "blocks"
+```
+
+Default mappings:
+
+| Canonical | YouTrack | Jira | GitLab |
+|-----------|----------|------|--------|
+| `relates` | `Relates` | `Relates` | `relates_to` |
+| `depends` | `Depend` | `Blocks` | `blocks` |
+| `required` | `Depend` | `Blocks` | `is_blocked_by` |
+| `duplicates` | `Duplicate` | `Duplicate` | `relates_to` |
+| `duplicated-by` | `Duplicate` | `Duplicate` | `relates_to` |
 
 ### Command Aliases
 
@@ -428,6 +455,7 @@ track cache status        # Age, freshness, data counts
 13. **Confluence IDs**: Numeric page IDs and space IDs, not project keys
 14. **GitHub issue IDs**: Use numeric IDs (e.g., `42`), not project-prefixed keys
 15. **GitLab IIDs**: Project-scoped issue numbers; the client strips `#` prefix automatically
-16. **Link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
-17. **Error handling**: Check `track config test` first; common issues are expired tokens and wrong URLs
-18. **Agent skills**: `track init --skills` installs this skill file globally for Claude, Copilot, Cursor, and Gemini
+16. **Link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent` (unrecognized types pass through as-is)
+17. **Link type mappings**: Override default canonical-to-native mappings via `[backend.link_mappings]` in config (e.g., `[jira.link_mappings] depends = "Requires"`)
+18. **Error handling**: Check `track config test` first; common issues are expired tokens and wrong URLs
+19. **Agent skills**: `track init --skills` installs this skill file globally for Claude, Copilot, Cursor, and Gemini

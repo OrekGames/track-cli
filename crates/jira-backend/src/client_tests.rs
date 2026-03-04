@@ -795,4 +795,70 @@ mod tests {
         let result = client.delete_link("99999");
         assert!(result.is_err());
     }
+
+    // ==================== Link Type Resolution Tests ====================
+
+    #[test]
+    fn test_resolve_link_type_defaults() {
+        let client = JiraClient::new("https://test.atlassian.net", "a@b.com", "tok");
+
+        assert_eq!(client.resolve_link_type("relates"), "Relates");
+        assert_eq!(client.resolve_link_type("depends"), "Blocks");
+        assert_eq!(client.resolve_link_type("required"), "Blocks");
+        assert_eq!(client.resolve_link_type("duplicates"), "Duplicate");
+        assert_eq!(client.resolve_link_type("duplicated-by"), "Duplicate");
+    }
+
+    #[test]
+    fn test_resolve_link_type_with_overrides() {
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("depends".to_string(), "Requires".to_string());
+
+        let client = JiraClient::new("https://test.atlassian.net", "a@b.com", "tok")
+            .with_link_mappings(mappings);
+
+        // Overridden
+        assert_eq!(client.resolve_link_type("depends"), "Requires");
+        // Non-overridden still use defaults
+        assert_eq!(client.resolve_link_type("relates"), "Relates");
+        assert_eq!(client.resolve_link_type("duplicates"), "Duplicate");
+    }
+
+    #[test]
+    fn test_resolve_link_type_unknown_falls_through() {
+        let client = JiraClient::new("https://test.atlassian.net", "a@b.com", "tok");
+
+        assert_eq!(client.resolve_link_type("nonexistent"), "Relates");
+    }
+
+    #[tokio::test]
+    async fn test_link_issues_depends_creates_blocks_with_correct_direction() {
+        let mock_server = MockServer::start().await;
+
+        // Expect POST to /rest/api/3/issueLink with Blocks type and correct direction
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issueLink"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "type": { "name": "Blocks" },
+                "inwardIssue": { "key": "PROJ-1" },
+                "outwardIssue": { "key": "PROJ-2" }
+            })))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        // "depends" + "OUTWARD" means: PROJ-1 depends on PROJ-2
+        // which is: PROJ-2 blocks PROJ-1
+        // so outward=PROJ-2 (the blocker), inward=PROJ-1 (the blocked)
+        use tracker_core::IssueTracker;
+        let result = client.link_issues("PROJ-1", "PROJ-2", "depends", "OUTWARD");
+        assert!(result.is_ok());
+    }
 }

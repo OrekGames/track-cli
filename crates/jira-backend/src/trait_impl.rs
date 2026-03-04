@@ -7,9 +7,7 @@ use tracker_core::{
 };
 
 use crate::client::JiraClient;
-use crate::convert::{
-    create_issue_to_jira, get_standard_custom_fields, map_link_type, update_issue_to_jira,
-};
+use crate::convert::{create_issue_to_jira, get_standard_custom_fields, update_issue_to_jira};
 use crate::models::{
     CreateJiraIssueLink, IssueKeyRef, IssueLinkTypeName, ParentId, UpdateJiraIssue,
     UpdateJiraIssueFields,
@@ -151,19 +149,30 @@ impl IssueTracker for JiraClient {
         source: &str,
         target: &str,
         link_type: &str,
-        _direction: &str,
+        direction: &str,
     ) -> Result<()> {
-        let jira_link_type = map_link_type(link_type);
+        let jira_link_type = self.resolve_link_type(link_type);
+
+        // Direction controls issue placement:
+        // OUTWARD (depends): source depends on target → target blocks source
+        //   → outward=target, inward=source
+        // INWARD (required): source is required for target → source blocks target
+        //   → outward=source, inward=target
+        // BOTH (relates): bidirectional, order doesn't matter
+        let (outward, inward) = match direction.to_uppercase().as_str() {
+            "OUTWARD" => (target, source),
+            _ => (source, target),
+        };
 
         let link = CreateJiraIssueLink {
             link_type: IssueLinkTypeName {
-                name: jira_link_type.to_string(),
+                name: jira_link_type,
             },
             inward_issue: IssueKeyRef {
-                key: target.to_string(),
+                key: inward.to_string(),
             },
             outward_issue: IssueKeyRef {
-                key: source.to_string(),
+                key: outward.to_string(),
             },
         };
 

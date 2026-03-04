@@ -1,5 +1,6 @@
 use crate::error::{Result, YouTrackError};
 use crate::models::*;
+use std::collections::HashMap;
 use std::time::Duration;
 use ureq::Agent;
 
@@ -11,6 +12,7 @@ pub struct YouTrackClient {
     agent: Agent,
     base_url: String,
     token: String,
+    link_mappings: HashMap<String, String>,
 }
 
 impl YouTrackClient {
@@ -25,7 +27,31 @@ impl YouTrackClient {
             agent,
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
+            link_mappings: HashMap::new(),
         }
+    }
+
+    /// Set custom link type mappings (canonical name -> YouTrack link type name)
+    pub fn with_link_mappings(mut self, mappings: HashMap<String, String>) -> Self {
+        self.link_mappings = mappings;
+        self
+    }
+
+    /// Resolve a canonical link type name to the YouTrack-native link type name.
+    /// User overrides take precedence, then falls back to built-in defaults.
+    pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
+        if let Some(name) = self.link_mappings.get(canonical) {
+            return name.clone();
+        }
+        match canonical {
+            "relates" => "Relates",
+            "depends" => "Depend",
+            "required" => "Depend",
+            "duplicates" => "Duplicate",
+            "duplicated-by" => "Duplicate",
+            _ => "Relates",
+        }
+        .to_string()
     }
 
     fn auth_header(&self) -> String {
@@ -621,9 +647,10 @@ impl YouTrackClient {
         Ok(())
     }
 
-    /// Link two issues together with the specified link type
-    /// `link_type` should be one of: "Relates", "Depend", "Duplicate", "Subtask"
-    /// `direction` should be "OUTWARD", "INWARD", or "BOTH" depending on the link type
+    /// Link two issues together with the specified link type.
+    /// `link_type` is a canonical name (e.g. "relates", "depends") that gets
+    /// resolved to the YouTrack-native name via `resolve_link_type`.
+    /// `direction` should be "OUTWARD", "INWARD", or "BOTH" depending on the link type.
     pub fn link_issues(
         &self,
         source_issue_id: &str,
@@ -631,7 +658,8 @@ impl YouTrackClient {
         link_type: &str,
         direction: &str,
     ) -> Result<()> {
-        let link_id = self.find_link_id(source_issue_id, link_type, direction)?;
+        let resolved_type = self.resolve_link_type(link_type);
+        let link_id = self.find_link_id(source_issue_id, &resolved_type, direction)?;
         self.add_issue_to_link(source_issue_id, &link_id, target_issue_id)
     }
 

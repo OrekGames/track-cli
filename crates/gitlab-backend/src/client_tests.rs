@@ -713,4 +713,39 @@ mod tests {
         let result = client.delete_issue_link(42, 999);
         assert!(result.is_err());
     }
+
+    // ==================== Link Type Resolution Tests ====================
+
+    #[test]
+    fn test_resolve_link_type_defaults() {
+        let client = GitLabClient::new("https://gitlab.com/api/v4", "test-token", Some("123"));
+
+        assert_eq!(client.resolve_link_type("relates"), "relates_to");
+        assert_eq!(client.resolve_link_type("depends"), "blocks");
+        assert_eq!(client.resolve_link_type("required"), "is_blocked_by");
+        assert_eq!(client.resolve_link_type("duplicates"), "relates_to");
+        assert_eq!(client.resolve_link_type("duplicated-by"), "relates_to");
+    }
+
+    #[test]
+    fn test_resolve_link_type_with_overrides() {
+        let mut mappings = std::collections::HashMap::new();
+        mappings.insert("duplicates".to_string(), "blocks".to_string());
+
+        let client = GitLabClient::new("https://gitlab.com/api/v4", "test-token", Some("123"))
+            .with_link_mappings(mappings);
+
+        // Overridden
+        assert_eq!(client.resolve_link_type("duplicates"), "blocks");
+        // Non-overridden still use defaults
+        assert_eq!(client.resolve_link_type("relates"), "relates_to");
+        assert_eq!(client.resolve_link_type("depends"), "blocks");
+    }
+
+    #[test]
+    fn test_resolve_link_type_unknown_falls_through() {
+        let client = GitLabClient::new("https://gitlab.com/api/v4", "test-token", Some("123"));
+
+        assert_eq!(client.resolve_link_type("nonexistent"), "relates_to");
+    }
 }

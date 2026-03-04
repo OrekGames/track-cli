@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 use ureq::Agent;
 
@@ -27,6 +28,7 @@ pub struct JiraClient {
     agent: Agent,
     base_url: String,
     auth_header: String,
+    link_mappings: HashMap<String, String>,
 }
 
 impl JiraClient {
@@ -51,7 +53,31 @@ impl JiraClient {
             agent,
             base_url: base_url.trim_end_matches('/').to_string(),
             auth_header,
+            link_mappings: HashMap::new(),
         }
+    }
+
+    /// Set custom link type mappings (canonical name -> Jira link type name)
+    pub fn with_link_mappings(mut self, mappings: HashMap<String, String>) -> Self {
+        self.link_mappings = mappings;
+        self
+    }
+
+    /// Resolve a canonical link type name to the Jira-native link type name.
+    /// User overrides take precedence, then falls back to built-in defaults.
+    pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
+        if let Some(name) = self.link_mappings.get(canonical) {
+            return name.clone();
+        }
+        match canonical {
+            "relates" => "Relates",
+            "depends" => "Blocks",
+            "required" => "Blocks",
+            "duplicates" => "Duplicate",
+            "duplicated-by" => "Duplicate",
+            _ => "Relates",
+        }
+        .to_string()
     }
 
     /// Get the API base URL (v3 for Cloud, v2 for Server)

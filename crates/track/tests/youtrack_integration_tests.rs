@@ -2221,3 +2221,182 @@ fn test_unlink_alias_ul() {
         .success()
         .stdout(predicate::str::contains("unlinked"));
 }
+
+// ============================================================================
+// Link Type Mapping Tests (mock-based)
+// ============================================================================
+
+/// Mock response for GET /api/issues/{id}/links — returns link buckets
+/// that the client uses to find the correct bucket ID for a link type.
+fn mock_link_buckets_response() -> String {
+    serde_json::json!([
+        {
+            "id": "100-0b",
+            "direction": "BOTH",
+            "linkType": {
+                "id": "100-0",
+                "name": "Relates",
+                "sourceToTarget": "relates to",
+                "targetToSource": "is related to",
+                "directed": false
+            },
+            "issues": []
+        },
+        {
+            "id": "101-0o",
+            "direction": "OUTWARD",
+            "linkType": {
+                "id": "101-0",
+                "name": "Depend",
+                "sourceToTarget": "depends on",
+                "targetToSource": "is required for",
+                "directed": true
+            },
+            "issues": []
+        },
+        {
+            "id": "101-0i",
+            "direction": "INWARD",
+            "linkType": {
+                "id": "101-0",
+                "name": "Depend",
+                "sourceToTarget": "depends on",
+                "targetToSource": "is required for",
+                "directed": true
+            },
+            "issues": []
+        },
+        {
+            "id": "102-0o",
+            "direction": "OUTWARD",
+            "linkType": {
+                "id": "102-0",
+                "name": "Duplicate",
+                "sourceToTarget": "duplicates",
+                "targetToSource": "is duplicated by",
+                "directed": true
+            },
+            "issues": []
+        }
+    ])
+    .to_string()
+}
+
+#[test]
+fn test_youtrack_link_relates_text_output() {
+    // YouTrack link requires 2 calls: GET links (find bucket ID), POST add issue to link
+    let responses = vec![
+        mock_link_buckets_response(), // GET /api/issues/PROJ-1/links
+        String::new(),                // POST /api/issues/PROJ-1/links/100-0b/issues
+    ];
+    let (_server, port) = start_mock_server_multi(responses);
+    thread::sleep(Duration::from_millis(50));
+
+    cargo_bin_cmd!("track")
+        .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "relates"])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PROJ-1"))
+        .stdout(predicate::str::contains("relates to"))
+        .stdout(predicate::str::contains("PROJ-2"));
+}
+
+#[test]
+fn test_youtrack_link_depends_json_output() {
+    let responses = vec![
+        mock_link_buckets_response(), // GET /api/issues/PROJ-1/links
+        String::new(),                // POST /api/issues/PROJ-1/links/101-0o/issues
+    ];
+    let (_server, port) = start_mock_server_multi(responses);
+    thread::sleep(Duration::from_millis(50));
+
+    let output = cargo_bin_cmd!("track")
+        .args([
+            "-o", "json", "issue", "link", "PROJ-1", "PROJ-2", "-t", "depends",
+        ])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["source"], "PROJ-1");
+    assert_eq!(json["target"], "PROJ-2");
+    assert_eq!(json["linkType"], "depends");
+    assert_eq!(json["description"], "depends on");
+}
+
+#[test]
+fn test_youtrack_link_required_uses_inward_direction() {
+    // "required" should look for the INWARD Depend bucket
+    let responses = vec![
+        mock_link_buckets_response(), // GET /api/issues/PROJ-1/links
+        String::new(),                // POST /api/issues/PROJ-1/links/101-0i/issues
+    ];
+    let (_server, port) = start_mock_server_multi(responses);
+    thread::sleep(Duration::from_millis(50));
+
+    let output = cargo_bin_cmd!("track")
+        .args([
+            "-o", "json", "issue", "link", "PROJ-1", "PROJ-2", "-t", "required",
+        ])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["linkType"], "required");
+    assert_eq!(json["description"], "is required for");
+}
+
+#[test]
+fn test_youtrack_link_custom_type_passthrough() {
+    // Custom type "clones" gets passed through with BOTH direction.
+    // It resolves to "clones" (unknown → default "Relates" via resolve_link_type).
+    // The mock returns Relates bucket for BOTH direction.
+    let responses = vec![
+        mock_link_buckets_response(), // GET links — "Relates" has BOTH direction
+        String::new(),                // POST add issue
+    ];
+    let (_server, port) = start_mock_server_multi(responses);
+    thread::sleep(Duration::from_millis(50));
+
+    let output = cargo_bin_cmd!("track")
+        .args([
+            "-o", "json", "issue", "link", "PROJ-1", "PROJ-2", "-t", "clones",
+        ])
+        .env("TRACKER_TOKEN", "test-token")
+        .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
+        .env_remove("YOUTRACK_URL")
+        .env_remove("YOUTRACK_TOKEN")
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["linkType"], "clones");
+}

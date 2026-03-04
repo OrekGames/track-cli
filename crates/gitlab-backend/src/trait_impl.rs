@@ -9,7 +9,7 @@ use tracker_core::{
 use crate::client::GitLabClient;
 use crate::convert::{
     convert_query_to_gitlab_params, get_gitlab_link_types, get_standard_custom_fields,
-    gitlab_issue_to_core, gitlab_link_to_core, map_link_type,
+    gitlab_issue_to_core, gitlab_link_to_core,
 };
 use crate::models::{
     CreateGitLabIssue, CreateGitLabIssueLink, CreateGitLabLabel, UpdateGitLabIssue,
@@ -257,13 +257,13 @@ impl IssueTracker for GitLabClient {
     ) -> Result<()> {
         let source_iid = parse_issue_iid(source)?;
         let target_iid = parse_issue_iid(target)?;
-        let gitlab_link_type = map_link_type(link_type);
+        let gitlab_link_type = self.resolve_link_type(link_type);
 
         let project_id = self.project_id_str();
         let link = CreateGitLabIssueLink {
             target_project_id: project_id,
             target_issue_iid: target_iid,
-            link_type: gitlab_link_type.to_string(),
+            link_type: gitlab_link_type,
         };
 
         Ok(self.create_issue_link(source_iid, &link)?)
