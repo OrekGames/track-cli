@@ -82,27 +82,29 @@ impl IssueTracker for GitHubClient {
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
-        if issue.parent.is_some() {
-            return Err(TrackerError::InvalidInput(
-                "GitHub does not support a parent field. Use task lists in the issue body instead."
-                    .to_string(),
-            ));
-        }
         let github_issue = create_issue_from_core(issue);
         let created = self.create_issue(&github_issue)?;
+
+        // If a parent was requested, add as sub-issue via the sub-issues API
+        if let Some(ref parent_id) = issue.parent {
+            let parent_number = parse_issue_number(parent_id)?;
+            self.add_sub_issue(parent_number, created.id)?;
+        }
+
         Ok(github_issue_to_core(created, self.owner(), self.repo()))
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
-        if update.parent.is_some() {
-            return Err(TrackerError::InvalidInput(
-                "GitHub does not support a parent field. Use task lists in the issue body instead."
-                    .to_string(),
-            ));
-        }
         let number = parse_issue_number(id)?;
         let github_update = update_issue_from_core(update);
         let updated = self.update_issue(number, &github_update)?;
+
+        // If a parent was requested, add as sub-issue via the sub-issues API
+        if let Some(ref parent_id) = update.parent {
+            let parent_number = parse_issue_number(parent_id)?;
+            self.add_sub_issue(parent_number, updated.id)?;
+        }
+
         Ok(github_issue_to_core(updated, self.owner(), self.repo()))
     }
 
@@ -225,11 +227,14 @@ impl IssueTracker for GitHubClient {
         ))
     }
 
-    fn link_subtask(&self, _child: &str, _parent: &str) -> Result<()> {
-        Err(TrackerError::InvalidInput(
-            "GitHub does not support subtask relationships. Use task lists in issue body or reference via #number."
-                .to_string(),
-        ))
+    fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
+        let child_number = parse_issue_number(child)?;
+        let parent_number = parse_issue_number(parent)?;
+
+        // Fetch the child issue to get its global ID (the sub-issues API needs id, not number)
+        let child_issue = self.get_issue(child_number)?;
+
+        Ok(self.add_sub_issue(parent_number, child_issue.id)?)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {

@@ -490,6 +490,84 @@ impl GitLabClient {
         Ok(total)
     }
 
+    // ==================== Work Item (GraphQL) Operations ====================
+
+    /// Derive the GraphQL endpoint URL from the REST API base URL.
+    ///
+    /// The base_url is expected to end with `/api/v4` (e.g. `https://gitlab.com/api/v4`).
+    /// The GraphQL endpoint lives at `/api/graphql`.
+    fn graphql_url(&self) -> String {
+        if let Some(prefix) = self.base_url.strip_suffix("/api/v4") {
+            format!("{}/api/graphql", prefix)
+        } else {
+            // Fallback: append /graphql to whatever base we have
+            format!("{}/graphql", self.base_url)
+        }
+    }
+
+    /// Set the parent of a work item (issue) using the GitLab GraphQL API.
+    ///
+    /// Both IDs must be **global** numeric IDs (not project-scoped IIDs).
+    /// The mutation uses the `hierarchyWidget` on `workItemUpdate`.
+    pub fn set_work_item_parent(&self, child_global_id: u64, parent_global_id: u64) -> Result<()> {
+        let graphql_url = self.graphql_url();
+
+        let query = format!(
+            r#"mutation {{ workItemUpdate(input: {{ id: "gid://gitlab/Issue/{}", hierarchyWidget: {{ parentId: "gid://gitlab/Issue/{}" }} }}) {{ workItem {{ id }} errors }} }}"#,
+            child_global_id, parent_global_id
+        );
+
+        let body = serde_json::json!({ "query": query });
+
+        let response = self
+            .agent
+            .post(&graphql_url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(&body)
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let result: serde_json::Value = response.body_mut().read_json()?;
+
+        // Check for top-level GraphQL errors
+        if let Some(errors) = result.get("errors")
+            && let Some(arr) = errors.as_array()
+            && !arr.is_empty()
+        {
+            let msg = arr
+                .iter()
+                .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(GitLabError::Api {
+                status: 0,
+                message: format!("GraphQL error: {}", msg),
+            });
+        }
+
+        // Check for mutation-level errors (workItemUpdate.errors)
+        if let Some(data) = result.get("data")
+            && let Some(update) = data.get("workItemUpdate")
+            && let Some(errors) = update.get("errors")
+            && let Some(arr) = errors.as_array()
+            && !arr.is_empty()
+        {
+            let msg = arr
+                .iter()
+                .filter_map(|e| e.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(GitLabError::Api {
+                status: 0,
+                message: format!("Failed to set parent: {}", msg),
+            });
+        }
+
+        Ok(())
+    }
+
     // ==================== Member Operations ====================
 
     /// List project members (including inherited members)

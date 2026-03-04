@@ -1054,19 +1054,15 @@ mod tests {
 
     #[test]
     fn parses_update_with_parent_flag() {
-        let cli = Cli::parse_from([
-            "track",
-            "issue",
-            "update",
-            "PROJ-1",
-            "--parent",
-            "PROJ-100",
-        ]);
+        let cli = Cli::parse_from(["track", "issue", "update", "PROJ-1", "--parent", "PROJ-100"]);
 
         match cli.command {
             Commands::Issue { action } => match action {
                 IssueCommands::Update {
-                    ids, parent, summary, ..
+                    ids,
+                    parent,
+                    summary,
+                    ..
                 } => {
                     assert_eq!(ids, vec!["PROJ-1"]);
                     assert_eq!(parent.as_deref(), Some("PROJ-100"));

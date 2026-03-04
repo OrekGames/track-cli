@@ -956,15 +956,66 @@ fn handle_link(
     link_type: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    // Map user-friendly link type to backend link type name and direction
+    // Parent-child relationships use link_subtask() — each backend implements this natively
+    match link_type.to_lowercase().as_str() {
+        "subtask" | "subtask-of" => {
+            client
+                .link_subtask(source, target)
+                .with_context(|| format!("Failed to set {} as subtask of {}", source, target))?;
+            let description = "is subtask of";
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        r#"{{"success":true,"source":"{}","target":"{}","linkType":"{}","description":"{}"}}"#,
+                        source, target, link_type, description
+                    );
+                }
+                OutputFormat::Text => {
+                    use colored::Colorize;
+                    println!(
+                        "{} {} {}",
+                        source.cyan().bold(),
+                        description.dimmed(),
+                        target.cyan().bold()
+                    );
+                }
+            }
+            return Ok(());
+        }
+        "parent" | "parent-of" => {
+            client
+                .link_subtask(target, source)
+                .with_context(|| format!("Failed to set {} as parent of {}", source, target))?;
+            let description = "is parent of";
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        r#"{{"success":true,"source":"{}","target":"{}","linkType":"{}","description":"{}"}}"#,
+                        source, target, link_type, description
+                    );
+                }
+                OutputFormat::Text => {
+                    use colored::Colorize;
+                    println!(
+                        "{} {} {}",
+                        source.cyan().bold(),
+                        description.dimmed(),
+                        target.cyan().bold()
+                    );
+                }
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // All other link types use link_issues()
     let (backend_link_type, direction, description) = match link_type.to_lowercase().as_str() {
         "relates" => ("Relates", "BOTH", "relates to"),
         "depends" => ("Depend", "OUTWARD", "depends on"),
         "required" | "required-for" => ("Depend", "INWARD", "is required for"),
         "duplicates" | "duplicate" => ("Duplicate", "OUTWARD", "duplicates"),
         "duplicated-by" => ("Duplicate", "INWARD", "is duplicated by"),
-        "subtask" | "subtask-of" => ("Subtask", "INWARD", "is subtask of"),
-        "parent" | "parent-of" => ("Subtask", "OUTWARD", "is parent of"),
         _ => {
             return Err(anyhow!(
                 "Unknown link type '{}'. Valid types: relates, depends, required, duplicates, duplicated-by, subtask, parent",

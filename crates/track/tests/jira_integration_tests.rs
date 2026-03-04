@@ -614,6 +614,158 @@ fn test_jira_issue_link() {
     }
 }
 
+#[test]
+#[ignore]
+fn test_jira_issue_link_subtask() {
+    if !config_exists() {
+        return;
+    }
+
+    // Create parent and child issues
+    let create_parent = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "create", "-p", "SMS", "-s", "Subtask Link Parent"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let create_child = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "create", "-p", "SMS", "-s", "Subtask Link Child"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(create_parent).unwrap()).unwrap();
+    let child: Value = serde_json::from_str(&String::from_utf8(create_child).unwrap()).unwrap();
+    let parent_key = parent["id_readable"].as_str().unwrap().to_string();
+    let child_key = child["id_readable"].as_str().unwrap().to_string();
+
+    // Link child as subtask of parent: issue link CHILD PARENT -t subtask
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "link", &child_key, &parent_key, "-t", "subtask"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success();
+
+    // Verify parent was set by fetching the child issue
+    let get_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "get", &child_key])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let fetched: Value = serde_json::from_str(&String::from_utf8(get_output).unwrap()).unwrap();
+    assert_eq!(
+        fetched["parent"].as_str(),
+        Some(parent_key.as_str()),
+        "Child issue should have parent set to {}",
+        parent_key
+    );
+
+    // Clean up
+    for key in [&child_key, &parent_key] {
+        cargo_bin_cmd!("track")
+            .args(["-b", "jira", "--config"])
+            .arg(jira_config_path())
+            .args(["issue", "delete", key])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_jira_issue_link_parent() {
+    if !config_exists() {
+        return;
+    }
+
+    // Create parent and child issues
+    let create_parent = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "create", "-p", "SMS", "-s", "Parent Link Parent"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let create_child = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "create", "-p", "SMS", "-s", "Parent Link Child"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(create_parent).unwrap()).unwrap();
+    let child: Value = serde_json::from_str(&String::from_utf8(create_child).unwrap()).unwrap();
+    let parent_key = parent["id_readable"].as_str().unwrap().to_string();
+    let child_key = child["id_readable"].as_str().unwrap().to_string();
+
+    // Link parent as parent of child: issue link PARENT CHILD -t parent
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "link", &parent_key, &child_key, "-t", "parent"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success();
+
+    // Verify parent was set by fetching the child issue
+    let get_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "get", &child_key])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let fetched: Value = serde_json::from_str(&String::from_utf8(get_output).unwrap()).unwrap();
+    assert_eq!(
+        fetched["parent"].as_str(),
+        Some(parent_key.as_str()),
+        "Child issue should have parent set to {}",
+        parent_key
+    );
+
+    // Clean up
+    for key in [&child_key, &parent_key] {
+        cargo_bin_cmd!("track")
+            .args(["-b", "jira", "--config"])
+            .arg(jira_config_path())
+            .args(["issue", "delete", key])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+    }
+}
+
 // ============================================================================
 // Feature Parity Tests - Compare YouTrack and Jira Behavior
 // ============================================================================
@@ -819,6 +971,378 @@ fn test_jira_invalid_jql() {
         .timeout(Duration::from_secs(30))
         .assert()
         .failure();
+}
+
+// ============================================================================
+// Parent Field Operations
+// ============================================================================
+
+#[test]
+#[ignore]
+fn test_jira_issue_create_with_parent() {
+    if !config_exists() {
+        return;
+    }
+
+    // Create a parent issue as an Epic (Jira hierarchy: Epic → Task → Subtask)
+    let parent_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Parent Epic for Test",
+            "-f",
+            "Type=Epic",
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(parent_output).unwrap()).unwrap();
+    let parent_key = parent["id_readable"].as_str().unwrap().to_string();
+
+    // Create a child Task with --parent pointing to the Epic
+    let child_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Child Task with Parent",
+            "--parent",
+            &parent_key,
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let child_key = child["id_readable"].as_str().unwrap().to_string();
+    assert!(
+        child_key.starts_with("SMS-"),
+        "Child issue should be created successfully"
+    );
+
+    // Clean up both issues
+    for key in [&child_key, &parent_key] {
+        cargo_bin_cmd!("track")
+            .args(["-b", "jira", "--config"])
+            .arg(jira_config_path())
+            .args(["issue", "delete", key])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_jira_issue_update_with_parent() {
+    if !config_exists() {
+        return;
+    }
+
+    // Create a parent Epic
+    let parent_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Parent Epic for Update Test",
+            "-f",
+            "Type=Epic",
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(parent_output).unwrap()).unwrap();
+    let parent_key = parent["id_readable"].as_str().unwrap().to_string();
+
+    // Create a standalone Task (no parent)
+    let child_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "create", "-p", "SMS", "-s", "Standalone Task"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let child_key = child["id_readable"].as_str().unwrap().to_string();
+
+    // Update the Task to set --parent to the Epic
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "update", &child_key, "--parent", &parent_key])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success();
+
+    // Clean up both issues
+    for key in [&child_key, &parent_key] {
+        cargo_bin_cmd!("track")
+            .args(["-b", "jira", "--config"])
+            .arg(jira_config_path())
+            .args(["issue", "delete", key])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_jira_issue_create_with_parent_json() {
+    if !config_exists() {
+        return;
+    }
+
+    // Create a parent Epic
+    let parent_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Parent Epic for JSON Test",
+            "-f",
+            "Type=Epic",
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(parent_output).unwrap()).unwrap();
+    let parent_key = parent["id_readable"].as_str().unwrap().to_string();
+
+    // Create a child Task via --json payload with parent field
+    let json_payload = format!(
+        r#"{{"project": "SMS", "summary": "JSON Child Task", "parent": "{}"}}"#,
+        parent_key
+    );
+
+    let child_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "create", "--json", &json_payload])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let child_key = child["id_readable"].as_str().unwrap().to_string();
+    assert!(
+        child_key.starts_with("SMS-"),
+        "JSON-created child issue should succeed"
+    );
+
+    // Clean up both issues
+    for key in [&child_key, &parent_key] {
+        cargo_bin_cmd!("track")
+            .args(["-b", "jira", "--config"])
+            .arg(jira_config_path())
+            .args(["issue", "delete", key])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_jira_issue_update_with_parent_json() {
+    if !config_exists() {
+        return;
+    }
+
+    // Create a parent Epic
+    let parent_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Parent Epic for JSON Update Test",
+            "-f",
+            "Type=Epic",
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(parent_output).unwrap()).unwrap();
+    let parent_key = parent["id_readable"].as_str().unwrap().to_string();
+
+    // Create a standalone Task
+    let child_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Standalone Task for JSON Update",
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let child_key = child["id_readable"].as_str().unwrap().to_string();
+
+    // Update the Task via --json to set parent to the Epic
+    let json_payload = format!(r#"{{"parent": "{}"}}"#, parent_key);
+
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "update", &child_key, "--json", &json_payload])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success();
+
+    // Clean up both issues
+    for key in [&child_key, &parent_key] {
+        cargo_bin_cmd!("track")
+            .args(["-b", "jira", "--config"])
+            .arg(jira_config_path())
+            .args(["issue", "delete", key])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_jira_issue_create_subtask_with_parent() {
+    if !config_exists() {
+        return;
+    }
+
+    // Create a parent Task (in Jira: Task → Subtask hierarchy)
+    let parent_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Parent Task for Subtask Test",
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(parent_output).unwrap()).unwrap();
+    let parent_key = parent["id_readable"].as_str().unwrap().to_string();
+
+    // Create a Subtask with --parent pointing to the Task
+    let child_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Subtask under Parent Task",
+            "-f",
+            "Type=Subtask",
+            "--parent",
+            &parent_key,
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let child_key = child["id_readable"].as_str().unwrap().to_string();
+    assert!(
+        child_key.starts_with("SMS-"),
+        "Subtask should be created successfully under parent Task"
+    );
+
+    // Verify the subtask's Type is Subtask
+    let type_field = child["custom_fields"].as_array().and_then(|fields| {
+        fields.iter().find(|f| {
+            f.get("SingleEnum")
+                .and_then(|e| e["name"].as_str())
+                .is_some_and(|n| n == "Type")
+        })
+    });
+    if let Some(field) = type_field {
+        assert_eq!(
+            field["SingleEnum"]["value"].as_str().unwrap(),
+            "Subtask",
+            "Child issue type should be Subtask"
+        );
+    }
+
+    // Clean up both issues (child first, then parent)
+    for key in [&child_key, &parent_key] {
+        cargo_bin_cmd!("track")
+            .args(["-b", "jira", "--config"])
+            .arg(jira_config_path())
+            .args(["issue", "delete", key])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+    }
 }
 
 // ============================================================================

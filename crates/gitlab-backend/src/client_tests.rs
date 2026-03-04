@@ -583,4 +583,99 @@ mod tests {
 
         assert_eq!(result, None);
     }
+
+    // ==================== Work Item Parent Operations ====================
+
+    #[tokio::test]
+    async fn test_set_work_item_parent() {
+        let mock_server = MockServer::start().await;
+
+        // The client base_url is the mock URI (no /api/v4 suffix),
+        // so graphql_url() falls back to "{base_url}/graphql"
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "workItemUpdate": {
+                        "workItem": {
+                            "id": "gid://gitlab/Issue/1042"
+                        },
+                        "errors": []
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = client.set_work_item_parent(1042, 1010);
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_work_item_parent_graphql_top_level_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "errors": [
+                    { "message": "You don't have permission to perform this action" }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = client.set_work_item_parent(1042, 1010);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::GitLabError::Api { message, .. } => {
+                assert!(
+                    message.contains("GraphQL error"),
+                    "Expected GraphQL error, got: {}",
+                    message
+                );
+            }
+            other => panic!("Expected Api error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_work_item_parent_mutation_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "workItemUpdate": {
+                        "workItem": null,
+                        "errors": ["Issue not found"]
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = client.set_work_item_parent(1042, 9999);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::GitLabError::Api { message, .. } => {
+                assert!(
+                    message.contains("Failed to set parent"),
+                    "Expected mutation error, got: {}",
+                    message
+                );
+            }
+            other => panic!("Expected Api error, got: {:?}", other),
+        }
+    }
 }

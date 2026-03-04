@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::client::GitHubClient;
-    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Helper to create a mock GitHub issue response
@@ -571,6 +571,59 @@ mod tests {
 
         let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let result = client.get_issue(99999);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::GitHubError::Api { status, .. } => {
+                assert_eq!(status, 404);
+            }
+            other => panic!("Expected Api error, got: {:?}", other),
+        }
+    }
+
+    // ==================== Sub-Issue Operations ====================
+
+    #[tokio::test]
+    async fn test_add_sub_issue() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/10/sub_issues"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(body_json(serde_json::json!({
+                "sub_issue_id": 1042,
+                "replace_parent": true
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 1042,
+                "number": 42,
+                "title": "Child issue",
+                "state": "open"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let result = client.add_sub_issue(10, 1042);
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_sub_issue_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/999/sub_issues"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "message": "Not Found"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let result = client.add_sub_issue(999, 1042);
 
         assert!(result.is_err());
         match result.unwrap_err() {
