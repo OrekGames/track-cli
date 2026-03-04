@@ -69,6 +69,12 @@ impl IssueTracker for GitLabClient {
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
+        if issue.parent.is_some() {
+            return Err(TrackerError::InvalidInput(
+                "GitLab does not support a parent field. Use issue links instead.".to_string(),
+            ));
+        }
+
         let labels = if issue.tags.is_empty() {
             None
         } else {
@@ -91,6 +97,12 @@ impl IssueTracker for GitLabClient {
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
+        if update.parent.is_some() {
+            return Err(TrackerError::InvalidInput(
+                "GitLab does not support a parent field. Use issue links instead.".to_string(),
+            ));
+        }
+
         let iid = parse_issue_iid(id)?;
 
         // Check for state changes in custom_fields

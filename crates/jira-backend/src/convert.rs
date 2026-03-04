@@ -234,7 +234,10 @@ pub fn create_issue_to_jira(issue: &CreateIssue) -> CreateJiraIssue {
             } else {
                 Some(issue.tags.clone())
             },
-            parent: None, // Parent is not directly available in CreateIssue
+            parent: issue.parent.as_ref().map(|key| ParentId {
+                id: None,
+                key: Some(key.clone()),
+            }),
         },
     }
 }
@@ -263,6 +266,10 @@ pub fn update_issue_to_jira(update: &UpdateIssue) -> UpdateJiraIssue {
             } else {
                 Some(update.tags.clone())
             },
+            parent: update.parent.as_ref().map(|key| ParentId {
+                id: None,
+                key: Some(key.clone()),
+            }),
         },
     }
 }
@@ -367,4 +374,76 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             state_values: vec![],
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracker_core::{CreateIssue, UpdateIssue};
+
+    #[test]
+    fn create_issue_to_jira_maps_parent() {
+        let issue = CreateIssue {
+            project_id: "PROJ".to_string(),
+            summary: "Child task".to_string(),
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+            parent: Some("PROJ-100".to_string()),
+        };
+
+        let jira = create_issue_to_jira(&issue);
+        let parent = jira.fields.parent.expect("parent should be set");
+        assert_eq!(parent.key.as_deref(), Some("PROJ-100"));
+        assert!(parent.id.is_none());
+    }
+
+    #[test]
+    fn create_issue_to_jira_omits_parent_when_none() {
+        let issue = CreateIssue {
+            project_id: "PROJ".to_string(),
+            summary: "Regular task".to_string(),
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+            parent: None,
+        };
+
+        let jira = create_issue_to_jira(&issue);
+        assert!(jira.fields.parent.is_none());
+    }
+
+    #[test]
+    fn update_issue_to_jira_maps_parent() {
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+            parent: Some("PROJ-200".to_string()),
+        };
+
+        let jira = update_issue_to_jira(&update);
+        let parent = jira.fields.parent.expect("parent should be set");
+        assert_eq!(parent.key.as_deref(), Some("PROJ-200"));
+    }
+
+    #[test]
+    fn update_issue_to_jira_parent_serializes_correctly() {
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+            parent: Some("DS-100".to_string()),
+        };
+
+        let jira = update_issue_to_jira(&update);
+        let json = serde_json::to_value(&jira).unwrap();
+
+        // parent.key should be present, parent.id should be omitted
+        let parent = &json["fields"]["parent"];
+        assert_eq!(parent["key"], "DS-100");
+        assert!(parent.get("id").is_none() || parent["id"].is_null());
+    }
 }

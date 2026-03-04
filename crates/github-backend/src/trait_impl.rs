@@ -82,12 +82,24 @@ impl IssueTracker for GitHubClient {
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
+        if issue.parent.is_some() {
+            return Err(TrackerError::InvalidInput(
+                "GitHub does not support a parent field. Use task lists in the issue body instead."
+                    .to_string(),
+            ));
+        }
         let github_issue = create_issue_from_core(issue);
         let created = self.create_issue(&github_issue)?;
         Ok(github_issue_to_core(created, self.owner(), self.repo()))
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
+        if update.parent.is_some() {
+            return Err(TrackerError::InvalidInput(
+                "GitHub does not support a parent field. Use task lists in the issue body instead."
+                    .to_string(),
+            ));
+        }
         let number = parse_issue_number(id)?;
         let github_update = update_issue_from_core(update);
         let updated = self.update_issue(number, &github_update)?;

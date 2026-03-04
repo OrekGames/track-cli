@@ -168,11 +168,10 @@ impl IssueTracker for JiraClient {
     }
 
     fn link_subtask(&self, _child: &str, _parent: &str) -> Result<()> {
-        // In Jira, subtask relationship is set during issue creation
-        // To convert an existing issue to a subtask, you need to move it
-        // This is not directly supported via simple API call
+        // In Jira, parent/child is set during issue creation or update via the parent field.
+        // Converting an existing issue to a subtask post-creation is not supported via simple API call.
         Err(TrackerError::InvalidInput(
-            "Converting existing issues to subtasks is not supported. Create the issue as a subtask instead."
+            "Converting existing issues to subtasks is not supported. Use `--parent` on `issue create` or `issue update` instead."
                 .to_string(),
         ))
     }

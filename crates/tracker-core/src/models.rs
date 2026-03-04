@@ -202,6 +202,8 @@ pub struct CreateIssue {
     pub description: Option<String>,
     pub custom_fields: Vec<CustomFieldUpdate>,
     pub tags: Vec<String>,
+    /// Parent issue ID (e.g., "PROJ-123"). Backend handles natively if supported.
+    pub parent: Option<String>,
 }
 
 /// Data for updating an issue
@@ -211,6 +213,8 @@ pub struct UpdateIssue {
     pub description: Option<String>,
     pub custom_fields: Vec<CustomFieldUpdate>,
     pub tags: Vec<String>,
+    /// Parent issue ID (e.g., "PROJ-123"). Backend handles natively if supported.
+    pub parent: Option<String>,
 }
 
 /// Custom field update value
