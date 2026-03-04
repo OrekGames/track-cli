@@ -135,6 +135,10 @@ default_project = "PROJ"
 url = "https://your-domain.atlassian.net"
 email = "you@example.com"
 token = "your-api-token"
+
+# Optional: override link type name mappings per backend
+# [jira.link_mappings]
+# depends = "Requires"
 ```
 
 With this setup, you can use the default backend (YouTrack) or switch to Jira:
@@ -264,12 +268,38 @@ track issue comments PROJ-123 --limit 10
 track issue link PROJ-1 PROJ-2              # Relates (default)
 track issue link PROJ-1 PROJ-2 -t depends   # Depends on
 track issue link PROJ-1 PROJ-2 -t subtask   # Subtask
+track issue link PROJ-1 PROJ-2 -t clones    # Custom/admin-defined type
 
 # Unlink (remove a link by its ID — get link IDs from `track i g PROJ-1 --full`)
 track issue unlink PROJ-1 "142-3t/PROJ-2"   # YouTrack (composite ID)
 track -b j issue unlink PROJ-1 12345         # Jira (numeric link ID)
 track -b gl issue unlink 42 789              # GitLab (numeric link ID)
 ```
+
+**Built-in link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
+
+Unrecognized type names are passed through to the backend as-is, so admin-defined link types (e.g., `clones`, `causes`) work without CLI changes.
+
+#### Custom Link Type Mappings
+
+Each backend maps canonical link type names (like `depends`) to its native name (e.g., `"Blocks"` on Jira, `"Depend"` on YouTrack). You can override these mappings in your config file:
+
+```toml
+# Override Jira's default mapping for "depends" (default: "Blocks")
+[jira.link_mappings]
+depends = "Requires"
+duplicates = "Cloners"
+
+# Override YouTrack's default mapping
+[youtrack.link_mappings]
+depends = "Is required for"
+
+# Override GitLab's default mapping
+[gitlab.link_mappings]
+depends = "is_blocked_by"
+```
+
+This is useful when your instance has custom or renamed link types.
 
 
 ### Projects

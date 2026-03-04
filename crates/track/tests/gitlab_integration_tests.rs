@@ -2019,3 +2019,157 @@ fn test_gitlab_unlink_json_output() {
     assert_eq!(json["source"], "#42");
     assert_eq!(json["linkId"], "789");
 }
+
+// ============================================================================
+// Link Type Mapping Tests (mock-based)
+// ============================================================================
+
+#[test]
+fn test_gitlab_link_depends_text_output() {
+    // GitLab returns 201 Created on POST to issue links
+    let mock_response = serde_json::json!({
+        "source_issue": mock_gitlab_issue_simple(1, "Source"),
+        "target_issue": mock_gitlab_issue_simple(2, "Target")
+    })
+    .to_string();
+    let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_gitlab_mock_config(port);
+    cargo_bin_cmd!("track")
+        .args(["-b", "gitlab", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "#1", "#2", "-t", "depends"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#1"))
+        .stdout(predicate::str::contains("depends on"))
+        .stdout(predicate::str::contains("#2"));
+}
+
+#[test]
+fn test_gitlab_link_depends_json_output() {
+    let mock_response = serde_json::json!({
+        "source_issue": mock_gitlab_issue_simple(1, "Source"),
+        "target_issue": mock_gitlab_issue_simple(2, "Target")
+    })
+    .to_string();
+    let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_gitlab_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "gitlab", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "#1", "#2", "-t", "depends"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["source"], "#1");
+    assert_eq!(json["target"], "#2");
+    assert_eq!(json["linkType"], "depends");
+    assert_eq!(json["description"], "depends on");
+}
+
+#[test]
+fn test_gitlab_link_relates_text_output() {
+    let mock_response = serde_json::json!({
+        "source_issue": mock_gitlab_issue_simple(1, "Source"),
+        "target_issue": mock_gitlab_issue_simple(2, "Target")
+    })
+    .to_string();
+    let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_gitlab_mock_config(port);
+    cargo_bin_cmd!("track")
+        .args(["-b", "gitlab", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "#1", "#2", "-t", "relates"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("relates to"));
+}
+
+#[test]
+fn test_gitlab_link_custom_type_passthrough() {
+    let mock_response = serde_json::json!({
+        "source_issue": mock_gitlab_issue_simple(1, "Source"),
+        "target_issue": mock_gitlab_issue_simple(2, "Target")
+    })
+    .to_string();
+    let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_gitlab_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "gitlab", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "#1", "#2", "-t", "clones"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["linkType"], "clones");
+}
+
+/// Write a GitLab mock config with custom link_mappings.
+fn write_gitlab_mock_config_with_mappings(port: u16) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("track-gl-link-map-test-{}", port));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join(".track.toml");
+    let content = format!(
+        r#"
+[gitlab]
+token = "test"
+url = "http://127.0.0.1:{}/api/v4"
+project_id = "1"
+
+[gitlab.link_mappings]
+depends = "is_blocked_by"
+"#,
+        port
+    );
+    std::fs::write(&config_path, content).unwrap();
+    config_path
+}
+
+#[test]
+fn test_gitlab_link_with_config_mappings() {
+    let mock_response = serde_json::json!({
+        "source_issue": mock_gitlab_issue_simple(1, "Source"),
+        "target_issue": mock_gitlab_issue_simple(2, "Target")
+    })
+    .to_string();
+    let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_gitlab_mock_config_with_mappings(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "gitlab", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "#1", "#2", "-t", "depends"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["linkType"], "depends");
+}

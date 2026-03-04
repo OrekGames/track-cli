@@ -1011,22 +1011,21 @@ fn handle_link(
     }
 
     // All other link types use link_issues()
-    let (backend_link_type, direction, description) = match link_type.to_lowercase().as_str() {
-        "relates" => ("Relates", "BOTH", "relates to"),
-        "depends" => ("Depend", "OUTWARD", "depends on"),
-        "required" | "required-for" => ("Depend", "INWARD", "is required for"),
-        "duplicates" | "duplicate" => ("Duplicate", "OUTWARD", "duplicates"),
-        "duplicated-by" => ("Duplicate", "INWARD", "is duplicated by"),
-        _ => {
-            return Err(anyhow!(
-                "Unknown link type '{}'. Valid types: relates, depends, required, duplicates, duplicated-by, subtask, parent",
-                link_type
-            ));
-        }
+    let lowered = link_type.to_lowercase();
+    let (canonical_type, direction, description) = match lowered.as_str() {
+        "relates" => ("relates", "BOTH", "relates to"),
+        "depends" => ("depends", "OUTWARD", "depends on"),
+        "required" | "required-for" => ("required", "INWARD", "is required for"),
+        "duplicates" | "duplicate" => ("duplicates", "OUTWARD", "duplicates"),
+        "duplicated-by" => ("duplicated-by", "INWARD", "is duplicated by"),
+        // Pass through unrecognized types to the backend as-is (bidirectional default).
+        // This supports custom link types defined by backend admins, either directly
+        // by native name or via link_mappings config.
+        _ => (lowered.as_str(), "BOTH", lowered.as_str()),
     };
 
     client
-        .link_issues(source, target, backend_link_type, direction)
+        .link_issues(source, target, canonical_type, direction)
         .with_context(|| format!("Failed to link {} to {}", source, target))?;
 
     match format {

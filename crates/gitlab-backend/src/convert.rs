@@ -167,19 +167,6 @@ pub fn gitlab_link_to_core(link: GitLabIssueLink, _current_iid: u64) -> IssueLin
     }
 }
 
-/// Map a link type name to the GitLab link type string.
-///
-/// Accepts both GitLab-native names and CLI backend link type names
-/// (e.g. "Depend" from the CLI's `--type depends` mapping).
-pub fn map_link_type(link_type: &str) -> &str {
-    match link_type.to_lowercase().as_str() {
-        "relates" | "related" | "relates_to" => "relates_to",
-        "blocks" | "depend" | "depends" | "dependency" => "blocks",
-        "is_blocked_by" | "blocked" | "blocked_by" | "required" => "is_blocked_by",
-        _ => "relates_to",
-    }
-}
-
 /// Get the 3 standard GitLab link types as tracker-core IssueLinkType values
 pub fn get_gitlab_link_types() -> Vec<IssueLinkType> {
     vec![

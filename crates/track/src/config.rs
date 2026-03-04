@@ -6,6 +6,7 @@ use figment::{
     providers::{Env, Format, Serialized, Toml},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -48,11 +49,13 @@ pub struct BackendConfig {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub link_mappings: HashMap<String, String>,
 }
 
 impl BackendConfig {
     pub fn is_empty(&self) -> bool {
-        self.url.is_none() && self.token.is_none()
+        self.url.is_none() && self.token.is_none() && self.link_mappings.is_empty()
     }
 }
 
@@ -65,11 +68,16 @@ pub struct JiraConfig {
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub link_mappings: HashMap<String, String>,
 }
 
 impl JiraConfig {
     pub fn is_empty(&self) -> bool {
-        self.url.is_none() && self.email.is_none() && self.token.is_none()
+        self.url.is_none()
+            && self.email.is_none()
+            && self.token.is_none()
+            && self.link_mappings.is_empty()
     }
 }
 
@@ -107,6 +115,8 @@ pub struct GitLabConfig {
     pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub link_mappings: HashMap<String, String>,
 }
 
 impl GitLabConfig {
@@ -115,6 +125,7 @@ impl GitLabConfig {
             && self.url.is_none()
             && self.project_id.is_none()
             && self.namespace.is_none()
+            && self.link_mappings.is_empty()
     }
 }
 
@@ -399,4 +410,101 @@ pub fn local_track_config_path() -> Result<PathBuf> {
     std::env::current_dir()
         .map(|dir| dir.join(".track.toml"))
         .map_err(|e| anyhow!("Failed to get current directory: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_with_link_mappings() {
+        let toml_str = r#"
+backend = "jira"
+[jira]
+url = "https://test.atlassian.net"
+email = "user@example.com"
+token = "secret"
+
+[jira.link_mappings]
+depends = "Requires"
+required = "Requires"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.jira.link_mappings.get("depends"),
+            Some(&"Requires".to_string())
+        );
+        assert_eq!(
+            config.jira.link_mappings.get("required"),
+            Some(&"Requires".to_string())
+        );
+        assert!(!config.jira.is_empty());
+    }
+
+    #[test]
+    fn test_config_without_link_mappings() {
+        let toml_str = r#"
+backend = "jira"
+[jira]
+url = "https://test.atlassian.net"
+email = "user@example.com"
+token = "secret"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.jira.link_mappings.is_empty());
+    }
+
+    #[test]
+    fn test_config_youtrack_link_mappings() {
+        let toml_str = r#"
+backend = "youtrack"
+[youtrack]
+url = "https://yt.example.com"
+token = "secret"
+
+[youtrack.link_mappings]
+depends = "Custom Depend"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.youtrack.link_mappings.get("depends"),
+            Some(&"Custom Depend".to_string())
+        );
+    }
+
+    #[test]
+    fn test_config_gitlab_link_mappings() {
+        let toml_str = r#"
+backend = "gitlab"
+[gitlab]
+url = "https://gitlab.com/api/v4"
+token = "secret"
+project_id = "123"
+
+[gitlab.link_mappings]
+duplicates = "blocks"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.gitlab.link_mappings.get("duplicates"),
+            Some(&"blocks".to_string())
+        );
+    }
+
+    #[test]
+    fn test_config_link_mappings_serialization_roundtrip() {
+        let mut config = Config::default();
+        config
+            .jira
+            .link_mappings
+            .insert("depends".to_string(), "Requires".to_string());
+        config.jira.url = Some("https://test.atlassian.net".to_string());
+
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(
+            parsed.jira.link_mappings.get("depends"),
+            Some(&"Requires".to_string())
+        );
+    }
 }

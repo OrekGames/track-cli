@@ -1630,3 +1630,297 @@ fn test_jira_unlink_json_output() {
     assert_eq!(json["source"], "PROJ-123");
     assert_eq!(json["linkId"], "12345");
 }
+
+// ============================================================================
+// Link Type Mapping Tests (mock-based)
+// ============================================================================
+
+#[test]
+fn test_jira_link_depends_text_output() {
+    // Jira returns 201 Created on POST /rest/api/3/issueLink
+    let mock_response = String::new();
+    let (_server, port) = start_jira_mock_server(mock_response);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "depends"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PROJ-1"))
+        .stdout(predicate::str::contains("depends on"))
+        .stdout(predicate::str::contains("PROJ-2"));
+}
+
+#[test]
+fn test_jira_link_depends_json_output() {
+    let mock_response = String::new();
+    let (_server, port) = start_jira_mock_server(mock_response);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "depends"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["source"], "PROJ-1");
+    assert_eq!(json["target"], "PROJ-2");
+    assert_eq!(json["linkType"], "depends");
+    assert_eq!(json["description"], "depends on");
+}
+
+#[test]
+fn test_jira_link_relates_text_output() {
+    let mock_response = String::new();
+    let (_server, port) = start_jira_mock_server(mock_response);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "relates"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("relates to"));
+}
+
+#[test]
+fn test_jira_link_duplicates_json_output() {
+    let mock_response = String::new();
+    let (_server, port) = start_jira_mock_server(mock_response);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "duplicates"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["linkType"], "duplicates");
+    assert_eq!(json["description"], "duplicates");
+}
+
+#[test]
+fn test_jira_link_custom_type_passthrough() {
+    // Custom/unknown link types should pass through to the backend
+    let mock_response = String::new();
+    let (_server, port) = start_jira_mock_server(mock_response);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "clones"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["linkType"], "clones");
+}
+
+/// Write a Jira mock config with custom link_mappings section.
+fn write_jira_mock_config_with_mappings(port: u16) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("track-jira-link-map-test-{}", port));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join(".track.toml");
+    let content = format!(
+        r#"
+[jira]
+url = "http://127.0.0.1:{}"
+email = "test@test.com"
+token = "test"
+
+[jira.link_mappings]
+depends = "Requires"
+"#,
+        port
+    );
+    std::fs::write(&config_path, content).unwrap();
+    config_path
+}
+
+#[test]
+fn test_jira_link_with_config_mappings() {
+    // Even with custom mappings, the CLI-level behavior is the same
+    // (the mapping happens inside the backend, transparent to the user)
+    let mock_response = String::new();
+    let (_server, port) = start_jira_mock_server(mock_response);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config_with_mappings(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "depends"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["linkType"], "depends");
+    assert_eq!(json["description"], "depends on");
+}
+
+// ============================================================================
+// Live Link Type Mapping Tests
+// ============================================================================
+
+#[test]
+#[ignore]
+fn test_jira_live_link_depends() {
+    if !config_exists() {
+        return;
+    }
+
+    // Create two issues
+    let create1 = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "create", "-p", "SMS", "-s", "Depends Link Test 1"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let create2 = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "create", "-p", "SMS", "-s", "Depends Link Test 2"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let issue1: Value = serde_json::from_str(&String::from_utf8(create1).unwrap()).unwrap();
+    let issue2: Value = serde_json::from_str(&String::from_utf8(create2).unwrap()).unwrap();
+    let key1 = issue1["id_readable"].as_str().unwrap().to_string();
+    let key2 = issue2["id_readable"].as_str().unwrap().to_string();
+
+    // Link with "depends" — should create a "Blocks" link (via config or default mapping)
+    // The config has [jira.link_mappings] depends = "Blocks", confirming the mapping is used
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "link", &key1, &key2, "-t", "depends"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("depends on"));
+
+    // Clean up
+    for key in [&key1, &key2] {
+        cargo_bin_cmd!("track")
+            .args(["-b", "jira", "--config"])
+            .arg(jira_config_path())
+            .args(["issue", "delete", key])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_jira_live_link_duplicates() {
+    if !config_exists() {
+        return;
+    }
+
+    // Create two issues
+    let create1 = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Duplicate Link Test 1",
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let create2 = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Duplicate Link Test 2",
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let issue1: Value = serde_json::from_str(&String::from_utf8(create1).unwrap()).unwrap();
+    let issue2: Value = serde_json::from_str(&String::from_utf8(create2).unwrap()).unwrap();
+    let key1 = issue1["id_readable"].as_str().unwrap().to_string();
+    let key2 = issue2["id_readable"].as_str().unwrap().to_string();
+
+    // Link with "duplicates" — should create a "Duplicate" link
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "link", &key1, &key2, "-t", "duplicates"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("duplicates"));
+
+    // Clean up
+    for key in [&key1, &key2] {
+        cargo_bin_cmd!("track")
+            .args(["-b", "jira", "--config"])
+            .arg(jira_config_path())
+            .args(["issue", "delete", key])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+    }
+}

@@ -78,6 +78,18 @@ project_id = "12345"
 
 **Note**: GitLab URL should include the `/api/v4` path. The `project_id` can be a numeric ID or a URL-encoded path (e.g., `group%2Fproject`). Issue operations require `project_id` to be set.
 
+**Link type mappings** (optional — override default canonical-to-native name mappings):
+```toml
+[jira.link_mappings]
+depends = "Requires"
+
+[youtrack.link_mappings]
+depends = "Is required for"
+
+[gitlab.link_mappings]
+depends = "is_blocked_by"
+```
+
 ### Quick Setup with `track init`
 
 Creates a `.track.toml` in the current directory:
@@ -169,7 +181,7 @@ track config set gitlab.project_id "12345"
 track config get default_project
 ```
 
-**Available config keys**: `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `jira.url`, `jira.email`, `jira.token`, `github.token`, `github.owner`, `github.repo`, `github.api_url`, `gitlab.token`, `gitlab.url`, `gitlab.project_id`, `gitlab.namespace`
+**Available config keys**: `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `youtrack.link_mappings`, `jira.url`, `jira.email`, `jira.token`, `jira.link_mappings`, `github.token`, `github.owner`, `github.repo`, `github.api_url`, `gitlab.token`, `gitlab.url`, `gitlab.project_id`, `gitlab.namespace`, `gitlab.link_mappings`
 
 ---
 
@@ -609,9 +621,37 @@ track -b gl i link 10 42 -t parent      # Make #10 parent of #42
 track -b gl i link PROJ-1 PROJ-2        # relates_to (default)
 ```
 
-**Link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
+**Built-in link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
+
+Unrecognized type names are passed through to the backend as-is, so admin-defined types (e.g., `clones`, `causes`) work without CLI changes.
 
 **Note**: `subtask` and `parent` types use native parent-child APIs on all backends. GitHub only supports subtask/parent link types (no `relates`, `depends`, etc.).
+
+#### Custom Link Type Mappings
+
+Each backend maps canonical names to native link type names. Override these in config if your instance uses custom or renamed link types:
+
+```toml
+[jira.link_mappings]
+depends = "Requires"       # Override default "Blocks"
+duplicates = "Clones"     # Override default "Duplicate"
+
+[youtrack.link_mappings]
+depends = "Is required for"
+
+[gitlab.link_mappings]
+depends = "is_blocked_by"
+```
+
+Default mappings per backend:
+
+| Canonical | YouTrack | Jira | GitLab |
+|-----------|----------|------|--------|
+| `relates` | `Relates` | `Relates` | `relates_to` |
+| `depends` | `Depend` | `Blocks` | `blocks` |
+| `required` | `Depend` | `Blocks` | `is_blocked_by` |
+| `duplicates` | `Duplicate` | `Duplicate` | `relates_to` |
+| `duplicated-by` | `Duplicate` | `Duplicate` | `relates_to` |
 
 ### Unlink Issues
 

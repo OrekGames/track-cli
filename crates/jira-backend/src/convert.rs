@@ -283,19 +283,6 @@ fn parse_jira_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
     })
 }
 
-/// Map link type from tracker-core to Jira link type name
-pub fn map_link_type(link_type: &str) -> &str {
-    match link_type.to_lowercase().as_str() {
-        "relates" | "related" => "Relates",
-        "depends" | "dependency" => "Blocks",
-        "required" => "Blocks",
-        "duplicates" | "duplicate" => "Duplicate",
-        "duplicated-by" => "Duplicate",
-        "subtask" | "parent" => "Subtask",
-        _ => "Relates",
-    }
-}
-
 /// Get standard Jira custom fields for a project
 pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
     use tracker_core::StateValueInfo;
