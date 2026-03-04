@@ -486,6 +486,14 @@ pub enum IssueCommands {
         #[arg(long = "type", short = 't', default_value = "relates")]
         link_type: String,
     },
+    /// Remove a link between issues
+    #[command(visible_alias = "ul")]
+    Unlink {
+        /// Source issue ID (e.g., PROJ-123)
+        source: String,
+        /// Link ID to remove (from `issue get --full` or `issue links` output)
+        link_id: String,
+    },
     /// Start work on issue(s) (set state to in-progress) - supports comma-separated IDs
     Start {
         /// Issue ID(s) - comma-separated for batch (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
@@ -1168,6 +1176,38 @@ mod tests {
                     assert_eq!(link_type, "depends");
                 }
                 _ => panic!("expected issue link"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_unlink_command() {
+        let cli = Cli::parse_from(["track", "issue", "unlink", "PROJ-123", "142-3t/PROJ-456"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Unlink { source, link_id } => {
+                    assert_eq!(source, "PROJ-123");
+                    assert_eq!(link_id, "142-3t/PROJ-456");
+                }
+                _ => panic!("expected issue unlink"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_unlink_alias() {
+        let cli = Cli::parse_from(["track", "issue", "ul", "PROJ-123", "abc123"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Unlink { source, link_id } => {
+                    assert_eq!(source, "PROJ-123");
+                    assert_eq!(link_id, "abc123");
+                }
+                _ => panic!("expected issue unlink via alias"),
             },
             _ => panic!("expected issue command"),
         }

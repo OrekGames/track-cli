@@ -143,8 +143,19 @@ impl IssueTracker for YouTrackClient {
         Ok(self
             .get_issue_links(issue_id)?
             .into_iter()
-            .map(Into::into)
+            .flat_map(convert::flatten_youtrack_link)
             .collect())
+    }
+
+    fn unlink_issues(&self, source: &str, link_id: &str) -> Result<()> {
+        // Composite ID format: "bucket_id/TARGET_ID"
+        let (bucket_id, target_id) = link_id.split_once('/').ok_or_else(|| {
+            TrackerError::InvalidInput(format!(
+                "Invalid YouTrack link ID '{}': expected format 'bucket_id/TARGET_ID'",
+                link_id
+            ))
+        })?;
+        Ok(self.remove_issue_from_link(source, bucket_id, target_id)?)
     }
 
     fn link_issues(

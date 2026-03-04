@@ -1970,3 +1970,52 @@ fn test_gitlab_no_hint_on_partial_page() {
         stderr
     );
 }
+
+// ============================================================================
+// Unlink Tests
+// ============================================================================
+
+#[test]
+fn test_gitlab_unlink_text_output() {
+    // GitLab returns 200 OK on delete issue link
+    let mock_response = String::new();
+    let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_gitlab_mock_config(port);
+    cargo_bin_cmd!("track")
+        .args(["-b", "gitlab", "--config"])
+        .arg(&cfg)
+        .args(["issue", "unlink", "#42", "789"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#42"))
+        .stdout(predicate::str::contains("unlinked"))
+        .stdout(predicate::str::contains("789"));
+}
+
+#[test]
+fn test_gitlab_unlink_json_output() {
+    let mock_response = String::new();
+    let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_gitlab_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "gitlab", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "unlink", "#42", "789"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let output_str = String::from_utf8(output).unwrap();
+    let json: Value = serde_json::from_str(&output_str).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["source"], "#42");
+    assert_eq!(json["linkId"], "789");
+}
