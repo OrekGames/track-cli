@@ -358,6 +358,21 @@ impl JiraClient {
         Ok(())
     }
 
+    /// Delete an issue link by its link ID
+    pub fn delete_link(&self, link_id: &str) -> Result<()> {
+        let url = self.api_url(&format!("/issueLink/{}", link_id));
+
+        let response = self
+            .agent
+            .delete(&url)
+            .header("Authorization", &self.auth_header)
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        self.check_response(response)?;
+        Ok(())
+    }
+
     // ==================== Label Operations ====================
 
     /// List all labels in the Jira instance

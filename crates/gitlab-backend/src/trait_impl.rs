@@ -269,6 +269,17 @@ impl IssueTracker for GitLabClient {
         Ok(self.create_issue_link(source_iid, &link)?)
     }
 
+    fn unlink_issues(&self, source: &str, link_id: &str) -> Result<()> {
+        let iid = parse_issue_iid(source)?;
+        let issue_link_id: u64 = link_id.parse().map_err(|_| {
+            TrackerError::InvalidInput(format!(
+                "Invalid GitLab link ID '{}': must be a number",
+                link_id
+            ))
+        })?;
+        Ok(self.delete_issue_link(iid, issue_link_id)?)
+    }
+
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
         let child_iid = parse_issue_iid(child)?;
         let parent_iid = parse_issue_iid(parent)?;

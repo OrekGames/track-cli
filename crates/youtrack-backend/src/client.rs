@@ -594,6 +594,33 @@ impl YouTrackClient {
         self.add_issue_to_link(child_issue_id, &link_id, parent_issue_id)
     }
 
+    /// Remove a target issue from a link bucket.
+    ///
+    /// `source_issue_id` is the issue that owns the link.
+    /// `bucket_id` is the YouTrack link bucket ID (e.g., `"142-3t"`).
+    /// `target_issue_id` is the target issue readable ID to remove (e.g., `"PROJ-456"`).
+    pub fn remove_issue_from_link(
+        &self,
+        source_issue_id: &str,
+        bucket_id: &str,
+        target_issue_id: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "{}/api/issues/{}/links/{}/issues/{}",
+            self.base_url, source_issue_id, bucket_id, target_issue_id
+        );
+
+        let response = self
+            .agent
+            .delete(&url)
+            .header("Authorization", &self.auth_header())
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        self.check_response(response)?;
+        Ok(())
+    }
+
     /// Link two issues together with the specified link type
     /// `link_type` should be one of: "Relates", "Depend", "Duplicate", "Subtask"
     /// `direction` should be "OUTWARD", "INWARD", or "BOTH" depending on the link type

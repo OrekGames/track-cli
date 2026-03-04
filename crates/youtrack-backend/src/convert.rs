@@ -164,22 +164,30 @@ impl From<yt::IssueTag> for core::IssueTag {
     }
 }
 
-/// Convert YouTrack IssueLink to tracker-core IssueLink
-impl From<yt::IssueLink> for core::IssueLink {
-    fn from(link: yt::IssueLink) -> Self {
-        Self {
-            id: link.id,
-            direction: link.direction,
-            link_type: core::IssueLinkType {
-                id: link.link_type.id,
-                name: link.link_type.name,
-                source_to_target: link.link_type.source_to_target,
-                target_to_source: link.link_type.target_to_source,
-                directed: link.link_type.directed,
-            },
-            issues: link.issues.into_iter().map(Into::into).collect(),
-        }
-    }
+/// Flatten a YouTrack IssueLink into one core::IssueLink per target issue.
+///
+/// YouTrack's link ID is a *bucket* ID shared by all targets of the same
+/// link-type + direction.  We produce a composite ID `"bucket/TARGET"` so
+/// each pair is individually addressable for unlinking.
+pub fn flatten_youtrack_link(link: yt::IssueLink) -> Vec<core::IssueLink> {
+    link.issues
+        .into_iter()
+        .map(|issue| {
+            let target_id = issue.id_readable.as_deref().unwrap_or(&issue.id);
+            core::IssueLink {
+                id: format!("{}/{}", link.id, target_id),
+                direction: link.direction.clone(),
+                link_type: core::IssueLinkType {
+                    id: link.link_type.id.clone(),
+                    name: link.link_type.name.clone(),
+                    source_to_target: link.link_type.source_to_target.clone(),
+                    target_to_source: link.link_type.target_to_source.clone(),
+                    directed: link.link_type.directed,
+                },
+                issues: vec![issue.into()],
+            }
+        })
+        .collect()
 }
 
 /// Convert YouTrack LinkedIssue to tracker-core LinkedIssue

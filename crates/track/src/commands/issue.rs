@@ -134,6 +134,7 @@ pub fn handle_issue(
             target,
             link_type,
         } => handle_link(client, source, target, link_type, format),
+        IssueCommands::Unlink { source, link_id } => handle_unlink(client, source, link_id, format),
         IssueCommands::Start { ids, field, state } => {
             handle_state_transition_batch(client, ids, field, state, "started", format)
         }
@@ -1042,6 +1043,35 @@ fn handle_link(
                 source.cyan().bold(),
                 description.dimmed(),
                 target.cyan().bold()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn handle_unlink(
+    client: &dyn IssueTracker,
+    source: &str,
+    link_id: &str,
+    format: OutputFormat,
+) -> Result<()> {
+    client
+        .unlink_issues(source, link_id)
+        .with_context(|| format!("Failed to unlink {} (link {})", source, link_id))?;
+
+    match format {
+        OutputFormat::Json => {
+            println!(
+                r#"{{"success":true,"source":"{}","linkId":"{}"}}"#,
+                source, link_id
+            );
+        }
+        OutputFormat::Text => {
+            use colored::Colorize;
+            println!(
+                "{} unlinked (link {} removed)",
+                source.cyan().bold(),
+                link_id.dimmed()
             );
         }
     }

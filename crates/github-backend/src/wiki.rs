@@ -565,16 +565,12 @@ impl WikiManager {
         content: &str,
         tags: &[String],
     ) -> String {
-        if tags.is_empty() && title.is_empty() {
+        if tags.is_empty() {
             return content.to_string();
         }
 
         let front_matter = FrontMatter {
-            title: if title.is_empty() {
-                None
-            } else {
-                Some(title.to_string())
-            },
+            title: Some(title.to_string()),
             tags: tags.to_vec(),
         };
 

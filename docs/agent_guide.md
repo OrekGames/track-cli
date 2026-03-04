@@ -188,6 +188,7 @@ track config get default_project
 | Search | `track i s "project: PROJ #Unresolved"` | `track -b j i s "project = PROJ"` | `track -b gh i s "is:open label:bug"` | `track -b gl i s "state=opened"` |
 | Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` | `track -b gh i cmt PROJ-42 -m "Text"` | `track -b gl i cmt PROJ-42 -m "Text"` |
 | Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Subtask/parent only | `track -b gl i link PROJ-1 PROJ-2` |
+| Unlink | `track i ul PROJ-1 <link-id>` | `track -b j i ul PROJ-1 <link-id>` | Not supported | `track -b gl i ul #42 <link-id>` |
 
 **GitHub/GitLab notes**:
 - GitHub and GitLab use numeric issue IDs (e.g., `42`), not project-prefixed keys
@@ -256,6 +257,7 @@ track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fix
 | `track issue complete` | `track i done`, `track i resolve` |
 | `track issue start` | `track i start` |
 | `track issue link` | `track i link` |
+| `track issue unlink` | `track i ul` |
 | `track project` | `track p` |
 | `track project list` | `track p ls` |
 | `track project get` | `track p g` |
@@ -611,6 +613,24 @@ track -b gl i link PROJ-1 PROJ-2        # relates_to (default)
 
 **Note**: `subtask` and `parent` types use native parent-child APIs on all backends. GitHub only supports subtask/parent link types (no `relates`, `depends`, etc.).
 
+### Unlink Issues
+
+```bash
+# First, get the link ID from issue details:
+track i g PROJ-123 --full        # Shows links with their IDs
+
+# YouTrack (composite ID: bucket/target)
+track i ul PROJ-123 "142-3t/PROJ-456"
+
+# Jira (numeric link ID from issue links)
+track -b j i ul PROJ-123 12345
+
+# GitLab (numeric link ID)
+track -b gl i ul 42 789
+```
+
+**Note**: GitHub does not support unlinking (it has no formal link system). The link ID comes from the output of `track issue get --full`.
+
 ---
 
 ## Session Startup
@@ -880,6 +900,7 @@ track i new -p PROJ -s "Summary" --priority "Normal"
 track i u PROJ-123 --field "Stage=Done"
 track i cmt PROJ-123 -m "Comment"
 track i link PROJ-1 PROJ-2 -t depends
+track i ul PROJ-1 "142-3t/PROJ-2" # Remove a link (use ID from --full)
 track p ls                         # List projects
 
 # === CUSTOM FIELD ADMIN (YouTrack only) ===

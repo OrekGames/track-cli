@@ -455,6 +455,21 @@ impl GitLabClient {
         Ok(())
     }
 
+    /// Delete an issue link by issue IID and link ID
+    pub fn delete_issue_link(&self, iid: u64, issue_link_id: u64) -> Result<()> {
+        let url = self.project_url(&format!("/issues/{}/links/{}", iid, issue_link_id))?;
+
+        let response = self
+            .agent
+            .delete(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        self.check_response(response)?;
+        Ok(())
+    }
+
     // ==================== Count Operations ====================
 
     /// Count issues matching search criteria by reading the X-Total header.

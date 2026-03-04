@@ -170,6 +170,10 @@ impl IssueTracker for JiraClient {
         Ok(self.create_link(&link)?)
     }
 
+    fn unlink_issues(&self, _source: &str, link_id: &str) -> Result<()> {
+        Ok(self.delete_link(link_id)?)
+    }
+
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
         // Jira handles parent-child via the parent field — update the child issue
         let update = UpdateJiraIssue {

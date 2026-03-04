@@ -679,4 +679,38 @@ mod tests {
             other => panic!("Expected Api error, got: {:?}", other),
         }
     }
+
+    #[tokio::test]
+    async fn test_delete_issue_link() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/projects/123/issues/42/links/789"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = client.delete_issue_link(42, 789);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_issue_link_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/projects/123/issues/42/links/999"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "message": "404 Not found"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = client.delete_issue_link(42, 999);
+        assert!(result.is_err());
+    }
 }

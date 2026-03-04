@@ -758,4 +758,41 @@ mod tests {
         assert_eq!(issue.fields.issuelinks[1].link_type.name, "Relates");
         assert!(issue.fields.issuelinks[1].inward_issue.is_some());
     }
+
+    #[tokio::test]
+    async fn test_delete_link() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/rest/api/3/issueLink/12345"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let result = client.delete_link("12345");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_link_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/rest/api/3/issueLink/99999"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "errorMessages": ["No issue link with id '99999' exists."],
+                "errors": {}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let result = client.delete_link("99999");
+        assert!(result.is_err());
+    }
 }

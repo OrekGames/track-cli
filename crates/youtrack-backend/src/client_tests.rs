@@ -1600,4 +1600,111 @@ mod tests {
         let issue = client.update_issue("PROJ-123", &update).unwrap();
         assert_eq!(issue.id_readable, "PROJ-123");
     }
+
+    #[tokio::test]
+    async fn test_remove_issue_from_link() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/api/issues/PROJ-123/links/142-3t/issues/PROJ-456"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = client.remove_issue_from_link("PROJ-123", "142-3t", "PROJ-456");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_remove_issue_from_link_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/api/issues/PROJ-123/links/142-3t/issues/PROJ-999"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": "Not Found",
+                "error_description": "Entity with id PROJ-999 not found"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = client.remove_issue_from_link("PROJ-123", "142-3t", "PROJ-999");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_flatten_youtrack_link() {
+        use crate::convert::flatten_youtrack_link;
+
+        let link = IssueLink {
+            id: "142-3t".to_string(),
+            direction: Some("OUTWARD".to_string()),
+            link_type: IssueLinkType {
+                id: "lt-1".to_string(),
+                name: "Relates".to_string(),
+                source_to_target: Some("relates to".to_string()),
+                target_to_source: Some("relates to".to_string()),
+                directed: false,
+            },
+            issues: vec![
+                LinkedIssue {
+                    id: "2-100".to_string(),
+                    id_readable: Some("PROJ-100".to_string()),
+                    summary: Some("First target".to_string()),
+                },
+                LinkedIssue {
+                    id: "2-200".to_string(),
+                    id_readable: Some("PROJ-200".to_string()),
+                    summary: Some("Second target".to_string()),
+                },
+            ],
+        };
+
+        let flattened = flatten_youtrack_link(link);
+
+        assert_eq!(flattened.len(), 2);
+        assert_eq!(flattened[0].id, "142-3t/PROJ-100");
+        assert_eq!(flattened[0].issues.len(), 1);
+        assert_eq!(
+            flattened[0].issues[0].id_readable,
+            Some("PROJ-100".to_string())
+        );
+        assert_eq!(flattened[1].id, "142-3t/PROJ-200");
+        assert_eq!(flattened[1].issues.len(), 1);
+        assert_eq!(
+            flattened[1].issues[0].id_readable,
+            Some("PROJ-200".to_string())
+        );
+    }
+
+    #[test]
+    fn test_flatten_youtrack_link_uses_id_when_no_readable() {
+        use crate::convert::flatten_youtrack_link;
+
+        let link = IssueLink {
+            id: "142-3t".to_string(),
+            direction: Some("OUTWARD".to_string()),
+            link_type: IssueLinkType {
+                id: "lt-1".to_string(),
+                name: "Relates".to_string(),
+                source_to_target: None,
+                target_to_source: None,
+                directed: false,
+            },
+            issues: vec![LinkedIssue {
+                id: "2-100".to_string(),
+                id_readable: None,
+                summary: None,
+            }],
+        };
+
+        let flattened = flatten_youtrack_link(link);
+
+        assert_eq!(flattened.len(), 1);
+        assert_eq!(flattened[0].id, "142-3t/2-100");
+    }
 }

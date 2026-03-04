@@ -1581,3 +1581,52 @@ fn test_jira_no_hint_on_partial_page() {
         stderr
     );
 }
+
+// ============================================================================
+// Unlink Tests
+// ============================================================================
+
+#[test]
+fn test_jira_unlink_text_output() {
+    // Jira returns 204 No Content on delete link — mock returns 200 which is also fine
+    let mock_response = String::new();
+    let (_server, port) = start_jira_mock_server(mock_response);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(&cfg)
+        .args(["issue", "unlink", "PROJ-123", "12345"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PROJ-123"))
+        .stdout(predicate::str::contains("unlinked"))
+        .stdout(predicate::str::contains("12345"));
+}
+
+#[test]
+fn test_jira_unlink_json_output() {
+    let mock_response = String::new();
+    let (_server, port) = start_jira_mock_server(mock_response);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "unlink", "PROJ-123", "12345"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let output_str = String::from_utf8(output).unwrap();
+    let json: Value = serde_json::from_str(&output_str).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["source"], "PROJ-123");
+    assert_eq!(json["linkId"], "12345");
+}

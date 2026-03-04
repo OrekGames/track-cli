@@ -372,6 +372,16 @@ impl IssueTracker for MockClient {
         self.get_response("link_issues", args, None)
     }
 
+    fn unlink_issues(&self, source: &str, link_id: &str) -> Result<()> {
+        let args = [
+            ("source".to_string(), source.to_string()),
+            ("link_id".to_string(), link_id.to_string()),
+        ]
+        .into_iter()
+        .collect();
+        self.get_response("unlink_issues", args, None)
+    }
+
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
         let args = [
             ("child".to_string(), child.to_string()),

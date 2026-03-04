@@ -170,6 +170,14 @@ pub trait IssueTracker: Send + Sync {
     /// Create a subtask link (child is subtask of parent)
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()>;
 
+    /// Remove a link by its link ID (as returned by `get_issue_links`).
+    fn unlink_issues(&self, source: &str, link_id: &str) -> Result<()> {
+        let _ = (source, link_id);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Unlinking issues is not supported by this backend".to_string(),
+        ))
+    }
+
     // ========== Comment Operations ==========
 
     /// Add a comment to an issue
