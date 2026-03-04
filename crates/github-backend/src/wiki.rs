@@ -561,16 +561,20 @@ impl WikiManager {
     /// filename already).
     fn generate_markdown_with_frontmatter(
         &self,
-        _title: &str,
+        title: &str,
         content: &str,
         tags: &[String],
     ) -> String {
-        if tags.is_empty() {
+        if tags.is_empty() && title.is_empty() {
             return content.to_string();
         }
 
         let front_matter = FrontMatter {
-            title: None,
+            title: if title.is_empty() {
+                None
+            } else {
+                Some(title.to_string())
+            },
             tags: tags.to_vec(),
         };
 
