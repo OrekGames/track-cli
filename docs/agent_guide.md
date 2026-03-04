@@ -24,7 +24,7 @@
 | **Project Creation** | Yes | No (admin only) | No | No |
 | **Issue Delete** | Yes | Yes | No (close instead) | Yes |
 | **Issue Links** | Yes | Yes | No (use `#number` references) | Yes |
-| **Subtasks** | Yes | Yes | No (use task lists) | No (use issue links) |
+| **Subtasks** | Yes | Yes | Yes (sub-issues API) | Yes (GraphQL API) |
 
 ## Configuration
 
@@ -187,12 +187,12 @@ track config get default_project
 | Delete | `track i del PROJ-123` | `track -b j i del PROJ-123` | Not supported | `track -b gl i del PROJ-42` |
 | Search | `track i s "project: PROJ #Unresolved"` | `track -b j i s "project = PROJ"` | `track -b gh i s "is:open label:bug"` | `track -b gl i s "state=opened"` |
 | Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` | `track -b gh i cmt PROJ-42 -m "Text"` | `track -b gl i cmt PROJ-42 -m "Text"` |
-| Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Not supported | `track -b gl i link PROJ-1 PROJ-2` |
+| Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Subtask/parent only | `track -b gl i link PROJ-1 PROJ-2` |
 
 **GitHub/GitLab notes**:
 - GitHub and GitLab use numeric issue IDs (e.g., `42`), not project-prefixed keys
 - GitHub does not support deleting issues -- close them with `track -b gh i u PROJ-42 --state closed`
-- GitHub does not support issue links -- reference issues via `#42` in comments
+- GitHub issue links only support subtask/parent types (`-t subtask`, `-t parent`); for other relationships, reference issues via `#42` in comments
 - GitHub project (`-p`) is implicit from the configured `owner/repo`
 
 ### Project Operations
@@ -520,9 +520,11 @@ track -b j i new -s "Subtask" --parent PROJ-100
 
 # GitHub (project implicit from owner/repo config)
 track -b gh i new -s "Bug title" -d "Description"
+track -b gh i new -s "Subtask" --parent 10   # Sub-issue of #10
 
 # GitLab (project implicit from project_id config)
 track -b gl i new -s "Bug title" -d "Description"
+track -b gl i new -s "Subtask" --parent 10   # Child of #10
 ```
 
 ### Update Issue
@@ -593,15 +595,21 @@ track i link PROJ-1 PROJ-2 -t subtask    # Subtask link
 # Jira
 track -b j i link PROJ-1 PROJ-2
 track -b j i link PROJ-1 PROJ-2 -t Blocks
+track -b j i link PROJ-1 PROJ-2 -t subtask   # Set parent-child
+
+# GitHub (subtask/parent only)
+track -b gh i link 42 10 -t subtask      # Make #42 a sub-issue of #10
+track -b gh i link 10 42 -t parent       # Make #10 parent of #42
 
 # GitLab
-track -b gl i link PROJ-1 PROJ-2         # relates_to (default)
-
-# GitHub - No native issue links; reference via comments:
-track -b gh i cmt PROJ-42 -m "Related to #43"
+track -b gl i link 42 10 -t subtask     # Make #42 a child of #10
+track -b gl i link 10 42 -t parent      # Make #10 parent of #42
+track -b gl i link PROJ-1 PROJ-2        # relates_to (default)
 ```
 
 **Link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
+
+**Note**: `subtask` and `parent` types use native parent-child APIs on all backends. GitHub only supports subtask/parent link types (no `relates`, `depends`, etc.).
 
 ---
 
@@ -982,9 +990,9 @@ namespace = "mygroup"
 6. **Field discovery**: `track p f PROJ` or `track cache show` lists custom fields with valid values
 7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, issue counts, and articles
 8. **Query templates**: Cache includes pre-built queries - check `track cache show` for available templates
-9. **Jira limitations**: No project creation, no subtask conversion, no custom field admin
-10. **GitHub limitations**: No issue delete (close instead), no issue links (use `#N` references), no knowledge base
-11. **GitLab limitations**: No project creation, no subtask links, no knowledge base
+9. **Jira limitations**: No project creation, no custom field admin
+10. **GitHub limitations**: No issue delete (close instead), no general issue links (only subtask/parent; use `#N` references for others), no knowledge base
+11. **GitLab limitations**: No project creation, no knowledge base
 12. **Query syntax**: YouTrack `project: PROJ` vs Jira `project = PROJ` vs GitHub `is:open` vs GitLab `state=opened`
 13. **Confluence IDs**: Numeric page IDs (`123456`) and space IDs (`65957`), not project keys
 14. **Custom field admin**: YouTrack only - use `track field new` for convenience command that creates field with values and attaches to project

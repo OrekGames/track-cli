@@ -273,6 +273,8 @@ pub struct UpdateJiraIssueFields {
     pub priority: Option<PriorityId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ParentId>,
 }
 
 /// Request to create an issue link

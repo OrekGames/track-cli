@@ -81,13 +81,25 @@ impl IssueTracker for GitLabClient {
             labels,
             assignee_ids: None,
             milestone_id: None,
+            // GitLab's work item hierarchy requires child items to be Task type
+            issue_type: if issue.parent.is_some() {
+                Some("task".to_string())
+            } else {
+                None
+            },
         };
 
+        let created = self.create_issue(&create)?;
+
+        // If a parent was requested, set it via the GraphQL API after creation
+        if let Some(ref parent_id) = issue.parent {
+            let parent_iid = parse_issue_iid(parent_id)?;
+            let parent_issue = self.get_issue(parent_iid)?;
+            self.set_work_item_parent(created.id, parent_issue.id)?;
+        }
+
         let project_id = self.project_id_str();
-        Ok(gitlab_issue_to_core(
-            self.create_issue(&create)?,
-            &project_id,
-        ))
+        Ok(gitlab_issue_to_core(created, &project_id))
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
@@ -122,11 +134,30 @@ impl IssueTracker for GitLabClient {
             milestone_id: None,
         };
 
+        // Only call REST update if there are actual REST fields to update;
+        // GitLab's PUT endpoint rejects empty bodies with 400
+        let has_rest_fields = gitlab_update.title.is_some()
+            || gitlab_update.description.is_some()
+            || gitlab_update.labels.is_some()
+            || gitlab_update.state_event.is_some()
+            || gitlab_update.assignee_ids.is_some()
+            || gitlab_update.milestone_id.is_some();
+
+        let updated = if has_rest_fields {
+            self.update_issue(iid, &gitlab_update)?
+        } else {
+            self.get_issue(iid)?
+        };
+
+        // If a parent was requested, set it via the GraphQL API
+        if let Some(ref parent_id) = update.parent {
+            let parent_iid = parse_issue_iid(parent_id)?;
+            let parent_issue = self.get_issue(parent_iid)?;
+            self.set_work_item_parent(updated.id, parent_issue.id)?;
+        }
+
         let project_id = self.project_id_str();
-        Ok(gitlab_issue_to_core(
-            self.update_issue(iid, &gitlab_update)?,
-            &project_id,
-        ))
+        Ok(gitlab_issue_to_core(updated, &project_id))
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
@@ -238,11 +269,16 @@ impl IssueTracker for GitLabClient {
         Ok(self.create_issue_link(source_iid, &link)?)
     }
 
-    fn link_subtask(&self, _child: &str, _parent: &str) -> Result<()> {
-        Err(TrackerError::InvalidInput(
-            "GitLab does not support native subtask relationships. Use issue links instead."
-                .to_string(),
-        ))
+    fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
+        let child_iid = parse_issue_iid(child)?;
+        let parent_iid = parse_issue_iid(parent)?;
+
+        // Fetch both issues to get their global IDs (GraphQL needs global, not IID)
+        let child_issue = self.get_issue(child_iid)?;
+        let parent_issue = self.get_issue(parent_iid)?;
+
+        // Use GraphQL workItemUpdate to set the parent
+        Ok(self.set_work_item_parent(child_issue.id, parent_issue.id)?)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {

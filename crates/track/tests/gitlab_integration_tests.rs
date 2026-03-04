@@ -1062,6 +1062,194 @@ fn test_gitlab_issue_link_depends() {
     }
 }
 
+#[test]
+#[ignore]
+fn test_gitlab_issue_link_subtask() {
+    if !config_exists() {
+        return;
+    }
+
+    // GitLab hierarchy: Issue can parent Task (not another Issue).
+    // Create parent_1, child as Task (via --parent parent_1), then re-parent to parent_2.
+    let create_parent1 = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Subtask Link Parent 1",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent1: Value = serde_json::from_str(&String::from_utf8(create_parent1).unwrap()).unwrap();
+    let parent1_iid = parent1["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Create child as Task (auto-set via --parent)
+    let create_child = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Subtask Link Child",
+            "--parent",
+            &parent1_iid,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(create_child).unwrap()).unwrap();
+    let child_iid = child["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Create a second parent to re-parent the child
+    let create_parent2 = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Subtask Link Parent 2",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent2: Value = serde_json::from_str(&String::from_utf8(create_parent2).unwrap()).unwrap();
+    let parent2_iid = parent2["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Re-parent child to parent_2 via link -t subtask
+    track_gitlab()
+        .args(["issue", "link", &child_iid, &parent2_iid, "-t", "subtask"])
+        .assert()
+        .success();
+
+    // Clean up
+    for iid in [&child_iid, &parent2_iid, &parent1_iid] {
+        track_gitlab()
+            .args(["issue", "delete", iid])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gitlab_issue_link_parent() {
+    if !config_exists() {
+        return;
+    }
+
+    // GitLab hierarchy: Issue can parent Task (not another Issue).
+    // Create parent_1, child as Task (via --parent), then re-parent via -t parent.
+    let create_parent1 = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Parent Link Parent 1",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent1: Value = serde_json::from_str(&String::from_utf8(create_parent1).unwrap()).unwrap();
+    let parent1_iid = parent1["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Create child as Task (auto-set via --parent)
+    let create_child = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Parent Link Child",
+            "--parent",
+            &parent1_iid,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(create_child).unwrap()).unwrap();
+    let child_iid = child["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Create a second parent
+    let create_parent2 = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Parent Link Parent 2",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent2: Value = serde_json::from_str(&String::from_utf8(create_parent2).unwrap()).unwrap();
+    let parent2_iid = parent2["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Re-parent via link -t parent (parent2 is parent of child)
+    track_gitlab()
+        .args(["issue", "link", &parent2_iid, &child_iid, "-t", "parent"])
+        .assert()
+        .success();
+
+    // Clean up
+    for iid in [&child_iid, &parent2_iid, &parent1_iid] {
+        track_gitlab()
+            .args(["issue", "delete", iid])
+            .assert()
+            .success();
+    }
+}
+
 // ============================================================================
 // Backend-Specific Limitations
 // ============================================================================
@@ -1113,20 +1301,20 @@ fn test_gitlab_project_create_not_supported() {
 
 #[test]
 #[ignore]
-fn test_gitlab_subtask_link_falls_back_to_relates() {
+fn test_gitlab_create_issue_with_parent() {
     if !config_exists() {
         return;
     }
 
-    // Create two issues for the link attempt
-    let create1_output = track_gitlab_json()
+    // Create a parent issue first
+    let parent_output = track_gitlab_json()
         .args([
             "issue",
             "create",
             "-p",
             GITLAB_PROJECT,
             "-s",
-            "Subtask Test Parent",
+            "Parent Issue for Create Test",
         ])
         .assert()
         .success()
@@ -1134,7 +1322,174 @@ fn test_gitlab_subtask_link_falls_back_to_relates() {
         .stdout
         .clone();
 
-    let create2_output = track_gitlab_json()
+    let parent: Value = serde_json::from_str(&String::from_utf8(parent_output).unwrap()).unwrap();
+    let parent_iid = parent["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Create a child issue with --parent
+    let child_output = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Child Issue via --parent",
+            "--parent",
+            &parent_iid,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let child_iid = child["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Clean up
+    for iid in [&child_iid, &parent_iid] {
+        track_gitlab()
+            .args(["issue", "delete", iid])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gitlab_update_issue_with_parent() {
+    if !config_exists() {
+        return;
+    }
+
+    // GitLab hierarchy: Issue can parent Task (not another Issue).
+    // Create parent_1, child as Task (via --parent), then update --parent to parent_2.
+    let parent1_output = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Parent 1 for Update Test",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent1: Value = serde_json::from_str(&String::from_utf8(parent1_output).unwrap()).unwrap();
+    let parent1_iid = parent1["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Create child as Task (auto-set via --parent)
+    let child_output = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Child for Update Test",
+            "--parent",
+            &parent1_iid,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let child_iid = child["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Create a second parent to re-parent to
+    let parent2_output = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Parent 2 for Update Test",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent2: Value = serde_json::from_str(&String::from_utf8(parent2_output).unwrap()).unwrap();
+    let parent2_iid = parent2["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Re-parent child via update --parent
+    track_gitlab()
+        .args(["issue", "update", &child_iid, "--parent", &parent2_iid])
+        .assert()
+        .success();
+
+    // Clean up
+    for iid in [&child_iid, &parent2_iid, &parent1_iid] {
+        track_gitlab()
+            .args(["issue", "delete", iid])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gitlab_subtask_link_sets_parent() {
+    if !config_exists() {
+        return;
+    }
+
+    // GitLab hierarchy: Issue can parent Task (not another Issue).
+    // Create parent_1, child as Task (via --parent), then re-parent via subtask link to parent_2.
+    let parent1_output = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Subtask Test Parent 1",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent1: Value = serde_json::from_str(&String::from_utf8(parent1_output).unwrap()).unwrap();
+    let parent1_iid = parent1["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Create child as Task (auto-set via --parent)
+    let child_output = track_gitlab_json()
         .args([
             "issue",
             "create",
@@ -1142,6 +1497,8 @@ fn test_gitlab_subtask_link_falls_back_to_relates() {
             GITLAB_PROJECT,
             "-s",
             "Subtask Test Child",
+            "--parent",
+            &parent1_iid,
         ])
         .assert()
         .success()
@@ -1149,27 +1506,44 @@ fn test_gitlab_subtask_link_falls_back_to_relates() {
         .stdout
         .clone();
 
-    let issue1: Value = serde_json::from_str(&String::from_utf8(create1_output).unwrap()).unwrap();
-    let issue2: Value = serde_json::from_str(&String::from_utf8(create2_output).unwrap()).unwrap();
-    let iid1 = issue1["id_readable"]
-        .as_str()
-        .unwrap()
-        .trim_start_matches('#')
-        .to_string();
-    let iid2 = issue2["id_readable"]
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let child_iid = child["id_readable"]
         .as_str()
         .unwrap()
         .trim_start_matches('#')
         .to_string();
 
-    // Subtask link type falls back to relates_to on GitLab (no native subtask support)
+    // Create a second parent to re-parent to via subtask link
+    let parent2_output = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Subtask Test Parent 2",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent2: Value = serde_json::from_str(&String::from_utf8(parent2_output).unwrap()).unwrap();
+    let parent2_iid = parent2["id_readable"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches('#')
+        .to_string();
+
+    // Re-parent child via subtask link (uses GraphQL to set native parent-child)
     track_gitlab()
-        .args(["issue", "link", &iid2, &iid1, "-t", "subtask"])
+        .args(["issue", "link", &child_iid, &parent2_iid, "-t", "subtask"])
         .assert()
         .success();
 
-    // Clean up
-    for iid in [&iid1, &iid2] {
+    // Clean up (delete child first, then parents)
+    for iid in [&child_iid, &parent2_iid, &parent1_iid] {
         track_gitlab()
             .args(["issue", "delete", iid])
             .assert()

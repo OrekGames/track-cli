@@ -954,6 +954,160 @@ fn test_github_link_issues_not_supported() {
         );
 }
 
+#[test]
+#[ignore]
+fn test_github_issue_link_subtask() {
+    if !config_exists() || !has_write_access() {
+        return;
+    }
+
+    // Create parent and child issues
+    let create_parent = track_github_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Subtask Link Parent",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let create_child = track_github_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Subtask Link Child",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(create_parent).unwrap()).unwrap();
+    let child: Value = serde_json::from_str(&String::from_utf8(create_child).unwrap()).unwrap();
+    let parent_number = parent["id_readable"]
+        .as_str()
+        .unwrap()
+        .split('#')
+        .next_back()
+        .unwrap()
+        .to_string();
+    let child_number = child["id_readable"]
+        .as_str()
+        .unwrap()
+        .split('#')
+        .next_back()
+        .unwrap()
+        .to_string();
+
+    // Link child as subtask of parent via sub-issues API
+    track_github()
+        .args([
+            "issue",
+            "link",
+            &child_number,
+            &parent_number,
+            "-t",
+            "subtask",
+        ])
+        .assert()
+        .success();
+
+    // Clean up
+    for num in [&child_number, &parent_number] {
+        track_github()
+            .args(["issue", "update", num, "--state", "closed"])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_github_issue_link_parent() {
+    if !config_exists() || !has_write_access() {
+        return;
+    }
+
+    // Create parent and child issues
+    let create_parent = track_github_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Parent Link Parent",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let create_child = track_github_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Parent Link Child",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(create_parent).unwrap()).unwrap();
+    let child: Value = serde_json::from_str(&String::from_utf8(create_child).unwrap()).unwrap();
+    let parent_number = parent["id_readable"]
+        .as_str()
+        .unwrap()
+        .split('#')
+        .next_back()
+        .unwrap()
+        .to_string();
+    let child_number = child["id_readable"]
+        .as_str()
+        .unwrap()
+        .split('#')
+        .next_back()
+        .unwrap()
+        .to_string();
+
+    // Link parent as parent-of child via sub-issues API
+    track_github()
+        .args([
+            "issue",
+            "link",
+            &parent_number,
+            &child_number,
+            "-t",
+            "parent",
+        ])
+        .assert()
+        .success();
+
+    // Clean up
+    for num in [&child_number, &parent_number] {
+        track_github()
+            .args(["issue", "update", num, "--state", "closed"])
+            .assert()
+            .success();
+    }
+}
+
 // ============================================================================
 // Delete (Unsupported on GitHub)
 // ============================================================================
@@ -1056,6 +1210,144 @@ fn test_github_project_create_not_supported() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not supported"));
+}
+
+#[test]
+#[ignore]
+fn test_github_create_issue_with_parent() {
+    if !config_exists() || !has_write_access() {
+        return;
+    }
+
+    // Create a parent issue first
+    let parent_output = track_github_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Parent Issue for Create Test",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(parent_output).unwrap()).unwrap();
+    let parent_number = parent["id_readable"]
+        .as_str()
+        .unwrap()
+        .split('#')
+        .next_back()
+        .unwrap()
+        .to_string();
+
+    // Create a child issue with --parent
+    let child_output = track_github_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Child Issue via --parent",
+            "--parent",
+            &parent_number,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let child_number = child["id_readable"]
+        .as_str()
+        .unwrap()
+        .split('#')
+        .next_back()
+        .unwrap()
+        .to_string();
+
+    // Clean up
+    for num in [&child_number, &parent_number] {
+        track_github()
+            .args(["issue", "update", num, "--state", "closed"])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_github_update_issue_with_parent() {
+    if !config_exists() || !has_write_access() {
+        return;
+    }
+
+    // Create parent and child issues
+    let parent_output = track_github_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Parent Issue for Update Test",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let child_output = track_github_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITHUB_PROJECT,
+            "-s",
+            "Child Issue for Update Test",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parent: Value = serde_json::from_str(&String::from_utf8(parent_output).unwrap()).unwrap();
+    let child: Value = serde_json::from_str(&String::from_utf8(child_output).unwrap()).unwrap();
+    let parent_number = parent["id_readable"]
+        .as_str()
+        .unwrap()
+        .split('#')
+        .next_back()
+        .unwrap()
+        .to_string();
+    let child_number = child["id_readable"]
+        .as_str()
+        .unwrap()
+        .split('#')
+        .next_back()
+        .unwrap()
+        .to_string();
+
+    // Update child to set parent
+    track_github()
+        .args(["issue", "update", &child_number, "--parent", &parent_number])
+        .assert()
+        .success();
+
+    // Clean up
+    for num in [&child_number, &parent_number] {
+        track_github()
+            .args(["issue", "update", num, "--state", "closed"])
+            .assert()
+            .success();
+    }
 }
 
 // ============================================================================

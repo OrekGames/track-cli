@@ -201,18 +201,23 @@ impl WikiManager {
             .map_err(|e| GitHubError::Wiki(format!("Failed to analyze merge: {}", e)))?;
 
         if analysis.0.is_fast_forward() {
-            let mut reference = repo
+            // HEAD is a symbolic ref (points to refs/heads/master), so resolve it
+            // to the underlying branch ref before setting the target OID.
+            let head = repo
                 .find_reference("HEAD")
                 .map_err(|e| GitHubError::Wiki(format!("Failed to find HEAD: {}", e)))?;
-            let name = reference
-                .name()
-                .ok_or_else(|| GitHubError::Wiki("Invalid reference name".to_string()))?
+            let branch_ref_name = head
+                .symbolic_target()
+                .unwrap_or("refs/heads/master")
                 .to_string();
+            let mut branch_ref = repo
+                .find_reference(&branch_ref_name)
+                .map_err(|e| GitHubError::Wiki(format!("Failed to find branch ref: {}", e)))?;
             let msg = "Fast-forward merge".to_string();
-            reference
+            branch_ref
                 .set_target(fetch_commit.id(), &msg)
                 .map_err(|e| GitHubError::Wiki(format!("Failed to fast-forward: {}", e)))?;
-            repo.set_head(&name)
+            repo.set_head(&branch_ref_name)
                 .map_err(|e| GitHubError::Wiki(format!("Failed to set HEAD: {}", e)))?;
             repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
                 .map_err(|e| GitHubError::Wiki(format!("Failed to checkout: {}", e)))?;
@@ -550,21 +555,28 @@ impl WikiManager {
         self.read_page(&new_path)
     }
 
-    /// Generate markdown with YAML front matter
+    /// Generate markdown, only including YAML front matter when tags are present.
+    /// GitHub Wiki doesn't render YAML front matter — it appears as raw text —
+    /// so we skip it when there's nothing extra to store (title comes from the
+    /// filename already).
     fn generate_markdown_with_frontmatter(
         &self,
-        title: &str,
+        _title: &str,
         content: &str,
         tags: &[String],
     ) -> String {
+        if tags.is_empty() {
+            return content.to_string();
+        }
+
         let front_matter = FrontMatter {
-            title: Some(title.to_string()),
+            title: None,
             tags: tags.to_vec(),
         };
 
         let yaml = match serde_yaml::to_string(&front_matter) {
             Ok(y) => y.trim_start_matches("---\n").trim().to_string(),
-            Err(_) => return format!("{}\n", content),
+            Err(_) => return content.to_string(),
         };
 
         format!("---\n{}\n---\n\n{}", yaml, content)

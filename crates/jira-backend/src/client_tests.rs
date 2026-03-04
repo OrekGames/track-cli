@@ -254,6 +254,7 @@ mod tests {
                 description: None,
                 priority: None,
                 labels: None,
+                parent: None,
             },
         };
 

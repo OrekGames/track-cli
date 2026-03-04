@@ -31,6 +31,7 @@ disable-model-invocation: false
 | **Project Creation** | Yes | No | No | No |
 | **Issue Delete** | Yes | Yes | No (close instead) | Yes |
 | **Issue Links** | Yes | Yes | No (use `#number` references) | Yes |
+| **Subtasks** | Yes | Yes | Yes (sub-issues API) | Yes (GraphQL API) |
 
 ## Configuration
 
@@ -137,14 +138,15 @@ track config get <key>         # Get a value
 | Delete | `track i del PROJ-123` | `track -b j i del PROJ-123` | Not supported | `track -b gl i del PROJ-42` |
 | Search | `track i s "project: PROJ #Unresolved"` | `track -b j i s "project = PROJ"` | `track -b gh i s "is:open"` | `track -b gl i s "state=opened"` |
 | Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` | `track -b gh i cmt PROJ-42 -m "Text"` | `track -b gl i cmt PROJ-42 -m "Text"` |
-| Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Not supported | `track -b gl i link PROJ-1 PROJ-2` |
+| Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Subtask/parent only | `track -b gl i link PROJ-1 PROJ-2` |
 | Start | `track i start PROJ-123` | — | — | — |
 | Complete | `track i done PROJ-123` | — | — | — |
 
 **GitHub/GitLab notes**:
 - Use numeric issue IDs (e.g., `42`), not project-prefixed keys
-- GitHub: no delete (close with `--state closed`), no links (reference via `#42` in comments)
+- GitHub: no delete (close with `--state closed`), links only for subtask/parent (reference via `#42` in comments for other relationships)
 - GitHub/GitLab: project is implicit from config (`owner/repo` or `project_id`)
+- All backends support `--parent` on create/update and `issue link -t subtask/parent`
 
 ### Project Operations
 
@@ -418,9 +420,9 @@ track cache status        # Age, freshness, data counts
 7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, issue counts, and articles
 8. **Query templates**: Cache includes pre-built queries - check `track cache show` for available templates
 9. **Pagination**: Use `--all` to fetch all results; `--limit`/`--skip` for manual paging. Safety cap at 1000 (override with `TRACK_MAX_RESULTS`)
-10. **GitHub limitations**: No issue delete (close instead), no issue links (use `#N` references), no knowledge base
-11. **GitLab limitations**: No project creation, no subtask links, no knowledge base
-12. **Jira limitations**: No project creation, no subtask conversion, no custom field admin
+10. **GitHub limitations**: No issue delete (close instead), no general issue links (only subtask/parent; use `#N` references for others), no knowledge base
+11. **GitLab limitations**: No project creation, no knowledge base
+12. **Jira limitations**: No project creation, no custom field admin
 13. **Confluence IDs**: Numeric page IDs and space IDs, not project keys
 14. **GitHub issue IDs**: Use numeric IDs (e.g., `42`), not project-prefixed keys
 15. **GitLab IIDs**: Project-scoped issue numbers; the client strips `#` prefix automatically

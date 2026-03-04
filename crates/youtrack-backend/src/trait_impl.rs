@@ -38,12 +38,20 @@ impl IssueTracker for YouTrackClient {
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
         let yt_create: crate::models::CreateIssue = issue.into();
-        Ok(self.create_issue(&yt_create)?.into())
+        let created: Issue = self.create_issue(&yt_create)?.into();
+        if let Some(ref parent_id) = issue.parent {
+            self.link_subtask(&created.id_readable, parent_id)?;
+        }
+        Ok(created)
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
         let yt_update: crate::models::UpdateIssue = update.into();
-        Ok(self.update_issue(id, &yt_update)?.into())
+        let updated: Issue = self.update_issue(id, &yt_update)?.into();
+        if let Some(ref parent_id) = update.parent {
+            self.link_subtask(id, parent_id)?;
+        }
+        Ok(updated)
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {

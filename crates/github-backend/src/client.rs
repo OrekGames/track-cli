@@ -249,6 +249,34 @@ impl GitHubClient {
         Ok(updated)
     }
 
+    // ==================== Sub-Issue Operations ====================
+
+    /// Add an issue as a sub-issue of a parent issue.
+    ///
+    /// `parent_number` is the issue number of the parent.
+    /// `child_id` is the **global numeric ID** (not the issue number) of the child.
+    pub fn add_sub_issue(&self, parent_number: u64, child_id: u64) -> Result<()> {
+        let url = self.repo_url(&format!("/issues/{}/sub_issues", parent_number));
+
+        let body = serde_json::json!({
+            "sub_issue_id": child_id,
+            "replace_parent": true
+        });
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send_json(&body)
+            .map_err(GitHubError::Http)?;
+
+        self.check_response(response)?;
+        Ok(())
+    }
+
     // ==================== Repository Operations ====================
 
     /// List repositories for the authenticated user

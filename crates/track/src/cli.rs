@@ -377,7 +377,7 @@ pub enum IssueCommands {
     /// Update existing issue(s) - supports comma-separated IDs for batch updates
     #[command(visible_alias = "u", group(
         ArgGroup::new("update_fields")
-            .args(["summary", "description", "fields", "state", "priority", "assignee", "tags", "json"])
+            .args(["summary", "description", "fields", "state", "priority", "assignee", "tags", "parent", "json"])
             .required(true)
             .multiple(true)
     ))]
@@ -411,6 +411,9 @@ pub enum IssueCommands {
         /// Tag name (can be repeated)
         #[arg(long = "tag", short = 't', conflicts_with = "json")]
         tags: Vec<String>,
+        /// Parent issue ID to set on this issue (e.g., PROJ-123)
+        #[arg(long, conflicts_with = "json")]
+        parent: Option<String>,
         /// Validate custom fields against project schema before updating
         #[arg(long)]
         validate: bool,
@@ -418,7 +421,7 @@ pub enum IssueCommands {
         #[arg(long, requires = "validate")]
         dry_run: bool,
         /// JSON payload for issue update
-        #[arg(long, conflicts_with_all = ["summary", "description", "fields", "state", "priority", "assignee", "tags", "validate", "dry_run"], value_name = "JSON")]
+        #[arg(long, conflicts_with_all = ["summary", "description", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
         json: Option<String>,
     },
     /// Search issues
@@ -1047,6 +1050,43 @@ mod tests {
             },
             _ => panic!("expected issue command"),
         }
+    }
+
+    #[test]
+    fn parses_update_with_parent_flag() {
+        let cli = Cli::parse_from(["track", "issue", "update", "PROJ-1", "--parent", "PROJ-100"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Update {
+                    ids,
+                    parent,
+                    summary,
+                    ..
+                } => {
+                    assert_eq!(ids, vec!["PROJ-1"]);
+                    assert_eq!(parent.as_deref(), Some("PROJ-100"));
+                    assert!(summary.is_none());
+                }
+                _ => panic!("expected issue update"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn rejects_update_json_with_parent_flag() {
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "update",
+            "PROJ-1",
+            "--json",
+            r#"{"summary":"X"}"#,
+            "--parent",
+            "PROJ-100",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]

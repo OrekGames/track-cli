@@ -10,7 +10,10 @@ use crate::client::JiraClient;
 use crate::convert::{
     create_issue_to_jira, get_standard_custom_fields, map_link_type, update_issue_to_jira,
 };
-use crate::models::{CreateJiraIssueLink, IssueKeyRef, IssueLinkTypeName};
+use crate::models::{
+    CreateJiraIssueLink, IssueKeyRef, IssueLinkTypeName, ParentId, UpdateJiraIssue,
+    UpdateJiraIssueFields,
+};
 
 impl IssueTracker for JiraClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
@@ -167,14 +170,19 @@ impl IssueTracker for JiraClient {
         Ok(self.create_link(&link)?)
     }
 
-    fn link_subtask(&self, _child: &str, _parent: &str) -> Result<()> {
-        // In Jira, subtask relationship is set during issue creation
-        // To convert an existing issue to a subtask, you need to move it
-        // This is not directly supported via simple API call
-        Err(TrackerError::InvalidInput(
-            "Converting existing issues to subtasks is not supported. Create the issue as a subtask instead."
-                .to_string(),
-        ))
+    fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
+        // Jira handles parent-child via the parent field — update the child issue
+        let update = UpdateJiraIssue {
+            fields: UpdateJiraIssueFields {
+                parent: Some(ParentId {
+                    key: Some(parent.to_string()),
+                    id: None,
+                }),
+                ..Default::default()
+            },
+        };
+        self.update_issue(child, &update)?;
+        Ok(())
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {

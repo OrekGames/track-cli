@@ -17,6 +17,7 @@ struct IssueFieldArgs<'a> {
     priority: Option<&'a str>,
     assignee: Option<&'a str>,
     tags: &'a [String],
+    parent: Option<&'a str>,
     validate: bool,
     dry_run: bool,
     json: Option<&'a str>,
@@ -62,6 +63,7 @@ pub fn handle_issue(
                 priority: priority.as_deref(),
                 assignee: assignee.as_deref(),
                 tags,
+                parent: None, // parent is passed separately to handle_create
                 validate: *validate,
                 dry_run: *dry_run,
                 json: json.as_deref(),
@@ -84,6 +86,7 @@ pub fn handle_issue(
             priority,
             assignee,
             tags,
+            parent,
             validate,
             dry_run,
             json,
@@ -96,6 +99,7 @@ pub fn handle_issue(
                 priority: priority.as_deref(),
                 assignee: assignee.as_deref(),
                 tags,
+                parent: parent.as_deref(),
                 validate: *validate,
                 dry_run: *dry_run,
                 json: json.as_deref(),
@@ -302,6 +306,7 @@ fn handle_create(
             description: args.description.map(|s| s.to_string()),
             custom_fields,
             tags: args.tags.to_vec(),
+            parent: parent.map(|s| s.to_string()),
         };
 
         (create, project_id)
@@ -338,37 +343,7 @@ fn handle_create(
         .create_issue(&create)
         .context("Failed to create issue")?;
 
-    // If parent is specified, create the subtask link
-    if let Some(parent_id) = parent {
-        client
-            .link_subtask(&issue.id_readable, parent_id)
-            .with_context(|| format!("Failed to link issue as subtask of '{}'", parent_id))?;
-
-        match format {
-            OutputFormat::Json => {
-                // Output JSON with parent info included
-                let response = serde_json::json!({
-                    "id": issue.id,
-                    "idReadable": issue.id_readable,
-                    "summary": issue.summary,
-                    "parent": parent_id,
-                    "message": "Issue created as subtask",
-                });
-                output_json(&response)?;
-            }
-            OutputFormat::Text => {
-                use colored::Colorize;
-                println!(
-                    "Created {} as subtask of {}: {}",
-                    issue.id_readable.cyan().bold(),
-                    parent_id.cyan(),
-                    issue.summary
-                );
-            }
-        }
-    } else {
-        output_result(&issue, format)?;
-    }
+    output_result(&issue, format)?;
 
     Ok(())
 }
@@ -405,6 +380,7 @@ fn handle_update(
             description: args.description.map(|s| s.to_string()),
             custom_fields,
             tags: args.tags.to_vec(),
+            parent: args.parent.map(|s| s.to_string()),
         }
     };
 
@@ -607,6 +583,7 @@ struct CreateIssuePayload {
     custom_fields: Vec<serde_json::Value>,
     #[serde(default)]
     tags: Vec<TagInput>,
+    parent: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -630,6 +607,7 @@ struct UpdateIssuePayload {
     custom_fields: Vec<serde_json::Value>,
     #[serde(default)]
     tags: Vec<TagInput>,
+    parent: Option<String>,
 }
 
 fn parse_create_payload(client: &dyn IssueTracker, payload: &str) -> Result<CreateIssue> {
@@ -658,6 +636,7 @@ fn parse_create_payload(client: &dyn IssueTracker, payload: &str) -> Result<Crea
         description: parsed.description,
         custom_fields,
         tags,
+        parent: parsed.parent,
     })
 }
 
@@ -676,6 +655,7 @@ fn parse_update_payload(payload: &str) -> Result<UpdateIssue> {
         && parsed.description.is_none()
         && custom_fields.is_empty()
         && tags.is_empty()
+        && parsed.parent.is_none()
     {
         return Err(anyhow!(
             "Issue update JSON payload must include at least one field to update"
@@ -687,6 +667,7 @@ fn parse_update_payload(payload: &str) -> Result<UpdateIssue> {
         description: parsed.description,
         custom_fields,
         tags,
+        parent: parsed.parent,
     })
 }
 
@@ -975,15 +956,66 @@ fn handle_link(
     link_type: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    // Map user-friendly link type to backend link type name and direction
+    // Parent-child relationships use link_subtask() — each backend implements this natively
+    match link_type.to_lowercase().as_str() {
+        "subtask" | "subtask-of" => {
+            client
+                .link_subtask(source, target)
+                .with_context(|| format!("Failed to set {} as subtask of {}", source, target))?;
+            let description = "is subtask of";
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        r#"{{"success":true,"source":"{}","target":"{}","linkType":"{}","description":"{}"}}"#,
+                        source, target, link_type, description
+                    );
+                }
+                OutputFormat::Text => {
+                    use colored::Colorize;
+                    println!(
+                        "{} {} {}",
+                        source.cyan().bold(),
+                        description.dimmed(),
+                        target.cyan().bold()
+                    );
+                }
+            }
+            return Ok(());
+        }
+        "parent" | "parent-of" => {
+            client
+                .link_subtask(target, source)
+                .with_context(|| format!("Failed to set {} as parent of {}", source, target))?;
+            let description = "is parent of";
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        r#"{{"success":true,"source":"{}","target":"{}","linkType":"{}","description":"{}"}}"#,
+                        source, target, link_type, description
+                    );
+                }
+                OutputFormat::Text => {
+                    use colored::Colorize;
+                    println!(
+                        "{} {} {}",
+                        source.cyan().bold(),
+                        description.dimmed(),
+                        target.cyan().bold()
+                    );
+                }
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // All other link types use link_issues()
     let (backend_link_type, direction, description) = match link_type.to_lowercase().as_str() {
         "relates" => ("Relates", "BOTH", "relates to"),
         "depends" => ("Depend", "OUTWARD", "depends on"),
         "required" | "required-for" => ("Depend", "INWARD", "is required for"),
         "duplicates" | "duplicate" => ("Duplicate", "OUTWARD", "duplicates"),
         "duplicated-by" => ("Duplicate", "INWARD", "is duplicated by"),
-        "subtask" | "subtask-of" => ("Subtask", "INWARD", "is subtask of"),
-        "parent" | "parent-of" => ("Subtask", "OUTWARD", "is parent of"),
         _ => {
             return Err(anyhow!(
                 "Unknown link type '{}'. Valid types: relates, depends, required, duplicates, duplicated-by, subtask, parent",
@@ -1044,6 +1076,7 @@ fn handle_state_transition(
         description: None,
         custom_fields: vec![custom_field],
         tags: vec![],
+        parent: None,
     };
 
     let issue = client
@@ -1168,6 +1201,7 @@ fn handle_update_single(
             description: args.description.map(|s| s.to_string()),
             custom_fields,
             tags: args.tags.to_vec(),
+            parent: args.parent.map(|s| s.to_string()),
         }
     };
 
@@ -1259,6 +1293,7 @@ fn handle_state_transition_batch(
         description: None,
         custom_fields: vec![custom_field],
         tags: vec![],
+        parent: None,
     };
 
     // Batch state transition
@@ -1484,5 +1519,43 @@ mod tests {
                 .to_string()
                 .contains("Either a search query")
         );
+    }
+
+    #[test]
+    fn create_payload_deserializes_parent() {
+        let json = r#"{"project":"PROJ","summary":"Child","parent":"PROJ-100"}"#;
+        let parsed: CreateIssuePayload = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.parent.as_deref(), Some("PROJ-100"));
+    }
+
+    #[test]
+    fn create_payload_parent_defaults_to_none() {
+        let json = r#"{"project":"PROJ","summary":"Regular"}"#;
+        let parsed: CreateIssuePayload = serde_json::from_str(json).unwrap();
+        assert!(parsed.parent.is_none());
+    }
+
+    #[test]
+    fn update_payload_deserializes_parent() {
+        let json = r#"{"parent":"PROJ-200"}"#;
+        let result = parse_update_payload(json);
+        assert!(result.is_ok());
+        let update = result.unwrap();
+        assert_eq!(update.parent.as_deref(), Some("PROJ-200"));
+    }
+
+    #[test]
+    fn update_payload_parent_alone_is_valid() {
+        // parent alone should satisfy the "at least one field" requirement
+        let json = r#"{"parent":"PROJ-100"}"#;
+        let result = parse_update_payload(json);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn update_payload_empty_still_rejected() {
+        let json = r#"{}"#;
+        let result = parse_update_payload(json);
+        assert!(result.is_err());
     }
 }
