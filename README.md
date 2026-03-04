@@ -264,6 +264,11 @@ track issue comments PROJ-123 --limit 10
 track issue link PROJ-1 PROJ-2              # Relates (default)
 track issue link PROJ-1 PROJ-2 -t depends   # Depends on
 track issue link PROJ-1 PROJ-2 -t subtask   # Subtask
+
+# Unlink (remove a link by its ID — get link IDs from `track i g PROJ-1 --full`)
+track issue unlink PROJ-1 "142-3t/PROJ-2"   # YouTrack (composite ID)
+track -b j issue unlink PROJ-1 12345         # Jira (numeric link ID)
+track -b gl issue unlink 42 789              # GitLab (numeric link ID)
 ```
 
 
@@ -392,6 +397,8 @@ Single command to get all relevant data: projects, fields, users, query template
 | `track issue comment` | `track i cmt` |
 | `track issue complete` | `track i done`, `track i resolve` |
 | `track issue start` | `track i start` |
+| `track issue link` | `track i link` |
+| `track issue unlink` | `track i ul` |
 | `track project` | `track p` |
 | `track project list` | `track p ls` |
 | `track project fields` | `track p f` |
@@ -511,7 +518,7 @@ crates/
 # Build
 cargo build
 
-# Test
+# Test (unit + mock integration tests)
 cargo test
 
 # Test specific crate
@@ -519,6 +526,12 @@ cargo test --package youtrack-backend
 cargo test --package jira-backend
 cargo test --package github-backend
 cargo test --package gitlab-backend
+
+# Run live integration tests (requires .track.toml with valid credentials)
+cargo test --package track --test youtrack_integration_tests -- --ignored
+cargo test --package track --test jira_integration_tests -- --ignored
+cargo test --package track --test github_integration_tests -- --ignored
+cargo test --package track --test gitlab_integration_tests -- --ignored
 
 # Run without installing
 cargo run -- PROJ-123

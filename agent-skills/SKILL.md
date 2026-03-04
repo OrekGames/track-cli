@@ -139,6 +139,7 @@ track config get <key>         # Get a value
 | Search | `track i s "project: PROJ #Unresolved"` | `track -b j i s "project = PROJ"` | `track -b gh i s "is:open"` | `track -b gl i s "state=opened"` |
 | Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` | `track -b gh i cmt PROJ-42 -m "Text"` | `track -b gl i cmt PROJ-42 -m "Text"` |
 | Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Subtask/parent only | `track -b gl i link PROJ-1 PROJ-2` |
+| Unlink | `track i ul PROJ-1 <link-id>` | `track -b j i ul PROJ-1 <link-id>` | Not supported | `track -b gl i ul #42 <link-id>` |
 | Start | `track i start PROJ-123` | — | — | — |
 | Complete | `track i done PROJ-123` | — | — | — |
 
@@ -206,6 +207,7 @@ track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fix
 | `track issue complete` | `track i done`, `track i resolve` |
 | `track issue start` | `track i start` |
 | `track issue link` | `track i link` |
+| `track issue unlink` | `track i ul` |
 | `track project` | `track p` |
 | `track project list` | `track p ls` |
 | `track project get` | `track p g` |
