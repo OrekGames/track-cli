@@ -64,6 +64,8 @@ pub struct CreateGitLabIssue {
     pub assignee_ids: Option<Vec<u64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub milestone_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue_type: Option<String>,
 }
 
 /// Request to update a GitLab issue

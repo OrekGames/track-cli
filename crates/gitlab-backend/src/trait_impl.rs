@@ -81,6 +81,12 @@ impl IssueTracker for GitLabClient {
             labels,
             assignee_ids: None,
             milestone_id: None,
+            // GitLab's work item hierarchy requires child items to be Task type
+            issue_type: if issue.parent.is_some() {
+                Some("task".to_string())
+            } else {
+                None
+            },
         };
 
         let created = self.create_issue(&create)?;
@@ -128,7 +134,20 @@ impl IssueTracker for GitLabClient {
             milestone_id: None,
         };
 
-        let updated = self.update_issue(iid, &gitlab_update)?;
+        // Only call REST update if there are actual REST fields to update;
+        // GitLab's PUT endpoint rejects empty bodies with 400
+        let has_rest_fields = gitlab_update.title.is_some()
+            || gitlab_update.description.is_some()
+            || gitlab_update.labels.is_some()
+            || gitlab_update.state_event.is_some()
+            || gitlab_update.assignee_ids.is_some()
+            || gitlab_update.milestone_id.is_some();
+
+        let updated = if has_rest_fields {
+            self.update_issue(iid, &gitlab_update)?
+        } else {
+            self.get_issue(iid)?
+        };
 
         // If a parent was requested, set it via the GraphQL API
         if let Some(ref parent_id) = update.parent {
