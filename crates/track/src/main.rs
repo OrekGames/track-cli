@@ -115,14 +115,16 @@ fn run(cli: Cli) -> Result<()> {
 
     let mut config = Config::load(cli.config.clone(), effective_backend)?;
     config.merge_with_cli(cli.url.clone(), cli.token.clone());
-    config.validate(effective_backend)?;
 
-    // Check if mock mode is enabled
+    // Check if mock mode is enabled (before config validation, since mock mode
+    // doesn't need real backend credentials)
     if let Some(mock_dir) = tracker_mock::get_mock_dir() {
         let client = MockClient::new(&mock_dir)
             .map_err(|e| anyhow::anyhow!("Failed to initialize mock client: {}", e))?;
         return run_with_client(&client, &client, &cli, &config);
     }
+
+    config.validate(effective_backend)?;
 
     // Create the appropriate backend client
     match effective_backend {
