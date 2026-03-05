@@ -1924,3 +1924,75 @@ fn test_jira_live_link_duplicates() {
             .success();
     }
 }
+
+// ============================================================================
+// Field Discovery
+// ============================================================================
+
+#[test]
+#[ignore]
+fn test_jira_project_fields_includes_custom_fields() {
+    if !config_exists() {
+        return;
+    }
+
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["project", "fields", "SMS"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let output_str = String::from_utf8(output).unwrap();
+    let fields: Vec<Value> = serde_json::from_str(&output_str).unwrap();
+
+    // Should have standard fields
+    let names: Vec<&str> = fields.iter().filter_map(|f| f["name"].as_str()).collect();
+    assert!(names.contains(&"Priority"), "should contain Priority");
+    assert!(names.contains(&"Status"), "should contain Status");
+
+    // Should also contain instance-level custom fields (from /rest/api/3/field)
+    // At minimum, there should be more than just the 5 hardcoded standard fields
+    assert!(
+        fields.len() > 5,
+        "expected more than 5 fields (got {}), instance-level custom fields should be included",
+        fields.len()
+    );
+}
+
+#[test]
+#[ignore]
+fn test_jira_project_fields_shows_field_ids() {
+    if !config_exists() {
+        return;
+    }
+
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["project", "fields", "SMS"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let output_str = String::from_utf8(output).unwrap();
+    let fields: Vec<Value> = serde_json::from_str(&output_str).unwrap();
+
+    // Custom fields should have customfield_ IDs
+    let has_custom_ids = fields.iter().any(|f| {
+        f["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("customfield_"))
+    });
+    assert!(
+        has_custom_ids,
+        "expected at least one field with a customfield_ ID"
+    );
+}

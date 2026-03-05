@@ -7,7 +7,10 @@ use tracker_core::{
 };
 
 use crate::client::JiraClient;
-use crate::convert::{create_issue_to_jira, get_standard_custom_fields, update_issue_to_jira};
+use crate::convert::{
+    create_issue_to_jira, get_standard_custom_fields, jira_field_to_project_custom_field,
+    merge_fields, update_issue_to_jira,
+};
 use crate::models::{
     CreateJiraIssueLink, IssueKeyRef, IssueLinkTypeName, ParentId, UpdateJiraIssue,
     UpdateJiraIssueFields,
@@ -43,12 +46,14 @@ impl IssueTracker for JiraClient {
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
-        let jira_issue = create_issue_to_jira(issue);
+        let fields = self.get_fields_cached();
+        let jira_issue = create_issue_to_jira(issue, &fields);
         Ok(self.create_issue(&jira_issue)?.into())
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
-        let jira_update = update_issue_to_jira(update);
+        let fields = self.get_fields_cached();
+        let jira_update = update_issue_to_jira(update, &fields);
         Ok(self.update_issue(id, &jira_update)?.into())
     }
 
@@ -81,9 +86,14 @@ impl IssueTracker for JiraClient {
     }
 
     fn get_project_custom_fields(&self, _project_id: &str) -> Result<Vec<ProjectCustomField>> {
-        // Return standard Jira fields
-        // Note: Getting actual custom fields would require additional API calls
-        Ok(get_standard_custom_fields())
+        let standard = get_standard_custom_fields();
+        let instance_fields: Vec<ProjectCustomField> = self
+            .get_fields_cached()
+            .iter()
+            .filter(|f| f.custom)
+            .map(jira_field_to_project_custom_field)
+            .collect();
+        Ok(merge_fields(standard, instance_fields))
     }
 
     fn list_tags(&self) -> Result<Vec<IssueTag>> {

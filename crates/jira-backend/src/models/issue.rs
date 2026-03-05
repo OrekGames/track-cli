@@ -212,6 +212,9 @@ pub struct CreateJiraIssueFields {
     /// Parent issue (for subtasks)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<ParentId>,
+    /// Arbitrary custom fields (e.g., "customfield_10016": 5)
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// Project identifier for requests
@@ -275,6 +278,9 @@ pub struct UpdateJiraIssueFields {
     pub labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<ParentId>,
+    /// Arbitrary custom fields (e.g., "customfield_10016": 5)
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// Request to create an issue link
