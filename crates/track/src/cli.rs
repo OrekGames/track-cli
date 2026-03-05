@@ -339,7 +339,7 @@ pub enum IssueCommands {
         )]
         summary: Option<String>,
         /// Issue description
-        #[arg(long, short = 'd', conflicts_with = "json")]
+        #[arg(long, short = 'd', conflicts_with = "json", allow_hyphen_values = true)]
         description: Option<String>,
         /// Custom field value (format: FIELD=VALUE, can be repeated)
         #[arg(
@@ -389,7 +389,7 @@ pub enum IssueCommands {
         #[arg(long, short = 's')]
         summary: Option<String>,
         /// New description
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', allow_hyphen_values = true)]
         description: Option<String>,
         /// Custom field value (format: FIELD=VALUE, can be repeated)
         #[arg(
@@ -542,7 +542,7 @@ pub enum ProjectCommands {
         #[arg(long, short = 's')]
         short_name: String,
         /// Project description
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', allow_hyphen_values = true)]
         description: Option<String>,
     },
     /// List custom fields for a project
@@ -661,7 +661,7 @@ pub enum TagCommands {
         #[arg(long = "tag-color")]
         tag_color: Option<String>,
         /// Description
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', allow_hyphen_values = true)]
         description: Option<String>,
     },
     /// Delete a tag/label
@@ -682,7 +682,7 @@ pub enum TagCommands {
         #[arg(long = "tag-color")]
         tag_color: Option<String>,
         /// New description
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', allow_hyphen_values = true)]
         description: Option<String>,
     },
 }

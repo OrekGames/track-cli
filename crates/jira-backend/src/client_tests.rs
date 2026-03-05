@@ -202,7 +202,7 @@ mod tests {
                     key: Some("TEST".to_string()),
                 },
                 summary: "New issue".to_string(),
-                description: Some(text_to_adf("New description")),
+                description: Some(markdown_to_adf("New description")),
                 issuetype: IssueTypeId {
                     id: None,
                     name: Some("Task".to_string()),
@@ -523,9 +523,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_text_to_adf_conversion() {
-        // Test that we can convert plain text to ADF format
-        let adf = text_to_adf("Hello World");
+    async fn test_markdown_to_adf_conversion() {
+        // Test that plain text produces a valid ADF doc
+        let adf = markdown_to_adf("Hello World");
 
         assert_eq!(adf["type"], "doc");
         assert_eq!(adf["version"], 1);
