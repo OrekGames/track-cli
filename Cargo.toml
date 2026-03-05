@@ -33,6 +33,9 @@ open = "5.3"
 thiserror = "2.0"
 anyhow = "1.0"
 
+# Markdown parsing
+pulldown-cmark = { version = "0.12", default-features = false }
+
 # Testing
 tokio = { version = "1", features = ["rt", "macros"] }
 wiremock = "0.6"

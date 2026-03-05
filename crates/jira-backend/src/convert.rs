@@ -189,7 +189,7 @@ impl From<JiraIssueLink> for IssueLink {
 
 /// Convert CreateIssue to Jira format
 pub fn create_issue_to_jira(issue: &CreateIssue) -> CreateJiraIssue {
-    let description = issue.description.as_ref().map(|d| text_to_adf(d));
+    let description = issue.description.as_ref().map(|d| markdown_to_adf(d));
 
     // Extract priority from custom fields if provided
     let priority = issue.custom_fields.iter().find_map(|cf| match cf {
@@ -244,7 +244,7 @@ pub fn create_issue_to_jira(issue: &CreateIssue) -> CreateJiraIssue {
 
 /// Convert UpdateIssue to Jira format
 pub fn update_issue_to_jira(update: &UpdateIssue) -> UpdateJiraIssue {
-    let description = update.description.as_ref().map(|d| text_to_adf(d));
+    let description = update.description.as_ref().map(|d| markdown_to_adf(d));
 
     let priority = update.custom_fields.iter().find_map(|cf| match cf {
         CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
