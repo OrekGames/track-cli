@@ -92,20 +92,28 @@ jobs:
             fi
 
           else
-            # Push to main — look for unreleased v* tags
-            echo "Scanning for unreleased tags on main..."
-            for TAG in $(git tag -l 'v*.*.*' --sort=-version:refname --merged HEAD); do
-              if ! gh release view "$TAG" >/dev/null 2>&1; then
-                VERSION="${TAG#v}"
-                echo "Found unreleased tag: $TAG"
-                should_release=true
-                version="$VERSION"
-                break
-              fi
-            done
+            # Push to main — only release a tag matching the current Cargo.toml version.
+            # This prevents stale old tags (whose releases were deleted) from being
+            # re-released, and ignores tags created on unmerged feature branches.
+            CARGO_VERSION=$(awk -F'"' '/^version/ { print $2; exit }' crates/track/Cargo.toml)
+            EXPECTED_TAG="v${CARGO_VERSION}"
+            echo "Cargo.toml version: ${CARGO_VERSION} (expected tag: ${EXPECTED_TAG})"
 
-            if [ "$should_release" = "false" ]; then
-              echo "No unreleased tags found on main"
+            if git rev-parse "$EXPECTED_TAG" >/dev/null 2>&1; then
+              TAG_COMMIT=$(git rev-parse "$EXPECTED_TAG^{commit}")
+              if git merge-base --is-ancestor "$TAG_COMMIT" HEAD 2>/dev/null; then
+                if ! gh release view "$EXPECTED_TAG" >/dev/null 2>&1; then
+                  echo "Found unreleased tag matching Cargo.toml: $EXPECTED_TAG"
+                  should_release=true
+                  version="$CARGO_VERSION"
+                else
+                  echo "Release $EXPECTED_TAG already exists"
+                fi
+              else
+                echo "Tag $EXPECTED_TAG exists but is not reachable from main"
+              fi
+            else
+              echo "No tag $EXPECTED_TAG found — waiting for version-tag workflow"
             fi
           fi
 
