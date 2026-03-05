@@ -455,11 +455,20 @@ fn build_custom_fields(
     for field in fields {
         let (name, value) = parse_field_value(field)?;
 
-        let detected_type = project_fields.and_then(|pf| {
-            pf.iter()
-                .find(|f| f.name.eq_ignore_ascii_case(&name))
-                .map(|f| f.field_type.as_str())
-        });
+        let matched_field =
+            project_fields.and_then(|pf| pf.iter().find(|f| f.name.eq_ignore_ascii_case(&name)));
+
+        if matched_field.is_none() && project_fields.is_some() {
+            eprintln!(
+                "Warning: field '{}' not found in project schema. \
+                 The update may be silently ignored by the server. \
+                 Use 'track project fields <PROJECT>' to see available fields, \
+                 or use --validate to catch this as an error.",
+                name
+            );
+        }
+
+        let detected_type = matched_field.map(|f| f.field_type.as_str());
 
         let update = match detected_type {
             Some(ft) if ft.contains("state") => CustomFieldUpdate::State { name, value },
@@ -557,9 +566,10 @@ fn validate_custom_fields(
                 }
             }
             None => {
-                // Field not found - this might be okay for some backends, but warn
-                // We don't error here because some backends (like Jira) may have
-                // fields that aren't returned by get_project_custom_fields
+                return Err(anyhow!(
+                    "Unknown field '{}'. Use 'track project fields <PROJECT>' to see available fields.",
+                    field_name
+                ));
             }
         }
     }
@@ -1598,5 +1608,40 @@ mod tests {
         let json = r#"{}"#;
         let result = parse_update_payload(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_custom_fields_warns_on_unknown_field_with_schema() {
+        use tracker_core::ProjectCustomField;
+
+        let schema = vec![ProjectCustomField {
+            id: "1".to_string(),
+            name: "Priority".to_string(),
+            field_type: "enum[1]".to_string(),
+            required: false,
+            values: vec![],
+            state_values: vec![],
+        }];
+
+        // "Story Points" is not in the schema, should still succeed but with a warning
+        let fields = vec!["Story Points=5".to_string()];
+        let result = build_custom_fields(&fields, None, None, None, Some(&schema));
+        // Should still succeed (warning goes to stderr, not an error)
+        assert!(result.is_ok());
+        let updates = result.unwrap();
+        assert_eq!(updates.len(), 1);
+        assert!(
+            matches!(&updates[0], CustomFieldUpdate::SingleEnum { name, value }
+                if name == "Story Points" && value == "5"
+            ),
+        );
+    }
+
+    #[test]
+    fn build_custom_fields_no_warning_without_schema() {
+        // Without schema, fields should pass through silently (no schema to check against)
+        let fields = vec!["Story Points=5".to_string()];
+        let result = build_custom_fields(&fields, None, None, None, None);
+        assert!(result.is_ok());
     }
 }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 use ureq::Agent;
 
@@ -29,6 +30,8 @@ pub struct JiraClient {
     base_url: String,
     auth_header: String,
     link_mappings: HashMap<String, String>,
+    /// Cached instance-level field metadata (lazy-loaded)
+    field_cache: Mutex<Option<Vec<JiraField>>>,
 }
 
 impl JiraClient {
@@ -54,6 +57,7 @@ impl JiraClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             auth_header,
             link_mappings: HashMap::new(),
+            field_cache: Mutex::new(None),
         }
     }
 
@@ -397,6 +401,42 @@ impl JiraClient {
 
         self.check_response(response)?;
         Ok(())
+    }
+
+    // ==================== Field Operations ====================
+
+    /// Get field metadata, using a cached copy if available.
+    /// Falls back to an empty list on error (graceful degradation).
+    pub fn get_fields_cached(&self) -> Vec<JiraField> {
+        let mut cache = self.field_cache.lock().unwrap();
+        if let Some(ref fields) = *cache {
+            return fields.clone();
+        }
+        match self.get_all_fields() {
+            Ok(fields) => {
+                *cache = Some(fields.clone());
+                fields
+            }
+            Err(_) => vec![],
+        }
+    }
+
+    /// Fetch all field definitions from the Jira instance.
+    /// Returns system fields and instance-level custom fields with their IDs, names, and types.
+    pub fn get_all_fields(&self) -> Result<Vec<JiraField>> {
+        let url = self.api_url("/field");
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let fields: Vec<JiraField> = response.body_mut().read_json()?;
+        Ok(fields)
     }
 
     // ==================== Label Operations ====================

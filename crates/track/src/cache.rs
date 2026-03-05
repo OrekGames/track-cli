@@ -183,6 +183,9 @@ pub struct ProjectFieldsCache {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CachedField {
     pub name: String,
+    /// Backend-specific field ID (e.g., "customfield_10016" for Jira, field bundle ID for YouTrack)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_id: Option<String>,
     pub field_type: String,
     pub required: bool,
     /// Enum values for enum-type fields (Priority, State, Type, etc.)
@@ -684,6 +687,7 @@ impl TrackerCache {
                     .iter()
                     .map(|f| CachedField {
                         name: f.name.clone(),
+                        field_id: Some(f.id.clone()),
                         field_type: f.field_type.clone(),
                         required: f.required,
                         values: f.values.clone(),
@@ -1478,6 +1482,7 @@ mod tests {
             project_id: "p1".to_string(),
             fields: vec![CachedField {
                 name: "Field 1".to_string(),
+                field_id: None,
                 field_type: "string".to_string(),
                 required: false,
                 values: vec![],
