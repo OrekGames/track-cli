@@ -486,7 +486,7 @@ pub fn markdown_to_adf(text: &str) -> serde_json::Value {
                 if let Some((key, content)) = block_stack.pop() {
                     let node = if key.starts_with("taskItem:") {
                         // ADF taskItem takes inline content directly — no paragraph wrapper.
-                        let state = key.splitn(2, ':').nth(1).unwrap_or("TODO");
+                        let state = key.split_once(':').map(|x| x.1).unwrap_or("TODO");
                         json!({
                             "type": "taskItem",
                             "attrs": { "localId": next_id(), "state": state },
@@ -524,7 +524,7 @@ pub fn markdown_to_adf(text: &str) -> serde_json::Value {
             }
             Event::End(TagEnd::CodeBlock) => {
                 if let Some((key, content)) = block_stack.pop() {
-                    let lang = key.splitn(2, ':').nth(1).unwrap_or("").to_string();
+                    let lang = key.split_once(':').map(|x| x.1).unwrap_or("").to_string();
                     let node = if lang.is_empty() {
                         json!({ "type": "codeBlock", "content": content })
                     } else {
