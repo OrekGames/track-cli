@@ -341,6 +341,9 @@ pub enum IssueCommands {
         /// Issue description
         #[arg(long, short = 'd', conflicts_with = "json", allow_hyphen_values = true)]
         description: Option<String>,
+        /// Read body text from a file ("-" for stdin), sets description
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["description", "json"])]
+        body_file: Option<PathBuf>,
         /// Custom field value (format: FIELD=VALUE, can be repeated)
         #[arg(
             long = "field",
@@ -371,13 +374,13 @@ pub enum IssueCommands {
         #[arg(long, requires = "validate")]
         dry_run: bool,
         /// JSON payload for issue creation
-        #[arg(long, conflicts_with_all = ["project", "summary", "description", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
+        #[arg(long, conflicts_with_all = ["project", "summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
         json: Option<String>,
     },
     /// Update existing issue(s) - supports comma-separated IDs for batch updates
     #[command(visible_alias = "u", group(
         ArgGroup::new("update_fields")
-            .args(["summary", "description", "fields", "state", "priority", "assignee", "tags", "parent", "json"])
+            .args(["summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "json"])
             .required(true)
             .multiple(true)
     ))]
@@ -391,6 +394,9 @@ pub enum IssueCommands {
         /// New description
         #[arg(long, short = 'd', allow_hyphen_values = true)]
         description: Option<String>,
+        /// Read body text from a file ("-" for stdin), sets description
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["description", "json"])]
+        body_file: Option<PathBuf>,
         /// Custom field value (format: FIELD=VALUE, can be repeated)
         #[arg(
             long = "field",
@@ -421,7 +427,7 @@ pub enum IssueCommands {
         #[arg(long, requires = "validate")]
         dry_run: bool,
         /// JSON payload for issue update
-        #[arg(long, conflicts_with_all = ["summary", "description", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
+        #[arg(long, conflicts_with_all = ["summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
         json: Option<String>,
     },
     /// Search issues
@@ -462,8 +468,11 @@ pub enum IssueCommands {
         /// Issue ID (e.g., PROJ-123)
         id: String,
         /// Comment text
-        #[arg(short = 'm', long = "message")]
-        text: String,
+        #[arg(short = 'm', long = "message", required_unless_present = "body_file")]
+        text: Option<String>,
+        /// Read comment text from a file ("-" for stdin)
+        #[arg(long, value_name = "PATH", conflicts_with = "text")]
+        body_file: Option<PathBuf>,
     },
     /// List comments on an issue
     Comments {
@@ -544,6 +553,9 @@ pub enum ProjectCommands {
         /// Project description
         #[arg(long, short = 'd', allow_hyphen_values = true)]
         description: Option<String>,
+        /// Read body text from a file ("-" for stdin), sets description
+        #[arg(long, value_name = "PATH", conflicts_with = "description")]
+        body_file: Option<PathBuf>,
     },
     /// List custom fields for a project
     #[command(visible_alias = "f")]
@@ -663,6 +675,9 @@ pub enum TagCommands {
         /// Description
         #[arg(long, short = 'd', allow_hyphen_values = true)]
         description: Option<String>,
+        /// Read body text from a file ("-" for stdin), sets description
+        #[arg(long, value_name = "PATH", conflicts_with = "description")]
+        body_file: Option<PathBuf>,
     },
     /// Delete a tag/label
     #[command(visible_alias = "rm")]
@@ -684,6 +699,9 @@ pub enum TagCommands {
         /// New description
         #[arg(long, short = 'd', allow_hyphen_values = true)]
         description: Option<String>,
+        /// Read body text from a file ("-" for stdin), sets description
+        #[arg(long, value_name = "PATH", conflicts_with = "description")]
+        body_file: Option<PathBuf>,
     },
 }
 
@@ -738,8 +756,11 @@ pub enum ArticleCommands {
         /// Article content (Markdown)
         #[arg(long, short = 'c')]
         content: Option<String>,
-        /// Read content from file
-        #[arg(long, conflicts_with = "content")]
+        /// Read body text from a file ("-" for stdin), sets content
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["content", "content_file"])]
+        body_file: Option<PathBuf>,
+        /// Read content from file (hidden, use --body-file instead)
+        #[arg(long, conflicts_with_all = ["content", "body_file"], hide = true)]
         content_file: Option<PathBuf>,
         /// Parent article ID (for creating child articles)
         #[arg(long)]
@@ -759,8 +780,11 @@ pub enum ArticleCommands {
         /// New content (Markdown)
         #[arg(long, short = 'c')]
         content: Option<String>,
-        /// Read content from file
-        #[arg(long, conflicts_with = "content")]
+        /// Read body text from a file ("-" for stdin), sets content
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["content", "content_file"])]
+        body_file: Option<PathBuf>,
+        /// Read content from file (hidden, use --body-file instead)
+        #[arg(long, conflicts_with_all = ["content", "body_file"], hide = true)]
         content_file: Option<PathBuf>,
         /// Tag name (can be repeated)
         #[arg(long = "tag", short = 't')]
@@ -796,8 +820,11 @@ pub enum ArticleCommands {
         /// Article ID
         id: String,
         /// Comment text
-        #[arg(short = 'm', long = "message")]
-        text: String,
+        #[arg(short = 'm', long = "message", required_unless_present = "body_file")]
+        text: Option<String>,
+        /// Read comment text from a file ("-" for stdin)
+        #[arg(long, value_name = "PATH", conflicts_with = "text")]
+        body_file: Option<PathBuf>,
     },
     /// List comments on an article
     Comments {
@@ -1110,9 +1137,9 @@ mod tests {
 
         match cli.command {
             Commands::Issue { action } => match action {
-                IssueCommands::Comment { id, text } => {
+                IssueCommands::Comment { id, text, .. } => {
                     assert_eq!(id, "PROJ-123");
-                    assert_eq!(text, "This is a comment");
+                    assert_eq!(text.as_deref(), Some("This is a comment"));
                 }
                 _ => panic!("expected issue comment"),
             },
@@ -1936,6 +1963,420 @@ mod tests {
             Commands::Issue { action } => match action {
                 IssueCommands::Update { ids, .. } => {
                     assert_eq!(ids, vec!["PROJ-1"]);
+                }
+                _ => panic!("expected issue update"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    // =========================================================================
+    // --body-file Tests
+    // =========================================================================
+
+    #[test]
+    fn parses_issue_create_with_body_file() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Title",
+            "--body-file",
+            "/tmp/desc.md",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Create {
+                    body_file,
+                    description,
+                    ..
+                } => {
+                    assert_eq!(body_file, Some(PathBuf::from("/tmp/desc.md")));
+                    assert!(description.is_none());
+                }
+                _ => panic!("expected issue create"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_issue_update_with_body_file() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "update",
+            "PROJ-1",
+            "--body-file",
+            "desc.md",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Update {
+                    ids,
+                    body_file,
+                    description,
+                    ..
+                } => {
+                    assert_eq!(ids, vec!["PROJ-1"]);
+                    assert_eq!(body_file, Some(PathBuf::from("desc.md")));
+                    assert!(description.is_none());
+                }
+                _ => panic!("expected issue update"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_issue_update_body_file_satisfies_required_group() {
+        // --body-file alone should satisfy the update_fields requirement
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "update",
+            "PROJ-1",
+            "--body-file",
+            "desc.md",
+        ]);
+        assert!(
+            result.is_ok(),
+            "body-file should satisfy update_fields group"
+        );
+    }
+
+    #[test]
+    fn rejects_issue_create_body_file_with_description() {
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Title",
+            "--description",
+            "inline",
+            "--body-file",
+            "file.md",
+        ]);
+        assert!(result.is_err(), "body-file and description should conflict");
+    }
+
+    #[test]
+    fn rejects_issue_create_body_file_with_json() {
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "create",
+            "--json",
+            "{\"summary\":\"Test\"}",
+            "--body-file",
+            "file.md",
+        ]);
+        assert!(result.is_err(), "body-file and json should conflict");
+    }
+
+    #[test]
+    fn rejects_issue_update_body_file_with_description() {
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "update",
+            "PROJ-1",
+            "-d",
+            "inline",
+            "--body-file",
+            "file.md",
+        ]);
+        assert!(result.is_err(), "body-file and description should conflict");
+    }
+
+    #[test]
+    fn rejects_issue_update_body_file_with_json() {
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "update",
+            "PROJ-1",
+            "--json",
+            "{\"summary\":\"Test\"}",
+            "--body-file",
+            "file.md",
+        ]);
+        assert!(result.is_err(), "body-file and json should conflict");
+    }
+
+    #[test]
+    fn parses_issue_comment_with_body_file() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "comment",
+            "PROJ-1",
+            "--body-file",
+            "comment.md",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Comment {
+                    id,
+                    text,
+                    body_file,
+                } => {
+                    assert_eq!(id, "PROJ-1");
+                    assert!(text.is_none());
+                    assert_eq!(body_file, Some(PathBuf::from("comment.md")));
+                }
+                _ => panic!("expected issue comment"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn rejects_issue_comment_without_message_or_body_file() {
+        let result = Cli::try_parse_from(["track", "issue", "comment", "PROJ-1"]);
+        assert!(
+            result.is_err(),
+            "comment requires either --message or --body-file"
+        );
+    }
+
+    #[test]
+    fn rejects_issue_comment_with_both_message_and_body_file() {
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "comment",
+            "PROJ-1",
+            "-m",
+            "inline",
+            "--body-file",
+            "file.md",
+        ]);
+        assert!(result.is_err(), "message and body-file should conflict");
+    }
+
+    #[test]
+    fn parses_project_create_with_body_file() {
+        let cli = Cli::parse_from([
+            "track",
+            "project",
+            "create",
+            "-n",
+            "My Project",
+            "-s",
+            "PROJ",
+            "--body-file",
+            "desc.md",
+        ]);
+
+        match cli.command {
+            Commands::Project { action } => match action {
+                ProjectCommands::Create {
+                    body_file,
+                    description,
+                    ..
+                } => {
+                    assert_eq!(body_file, Some(PathBuf::from("desc.md")));
+                    assert!(description.is_none());
+                }
+                _ => panic!("expected project create"),
+            },
+            _ => panic!("expected project command"),
+        }
+    }
+
+    #[test]
+    fn parses_tag_create_with_body_file() {
+        let cli = Cli::parse_from(["track", "tags", "create", "bug", "--body-file", "desc.md"]);
+
+        match cli.command {
+            Commands::Tags { action } => match action {
+                TagCommands::Create {
+                    name,
+                    body_file,
+                    description,
+                    ..
+                } => {
+                    assert_eq!(name, "bug");
+                    assert_eq!(body_file, Some(PathBuf::from("desc.md")));
+                    assert!(description.is_none());
+                }
+                _ => panic!("expected tag create"),
+            },
+            _ => panic!("expected tag command"),
+        }
+    }
+
+    #[test]
+    fn parses_tag_update_with_body_file() {
+        let cli = Cli::parse_from(["track", "tags", "update", "bug", "--body-file", "desc.md"]);
+
+        match cli.command {
+            Commands::Tags { action } => match action {
+                TagCommands::Update {
+                    name,
+                    body_file,
+                    description,
+                    ..
+                } => {
+                    assert_eq!(name, "bug");
+                    assert_eq!(body_file, Some(PathBuf::from("desc.md")));
+                    assert!(description.is_none());
+                }
+                _ => panic!("expected tag update"),
+            },
+            _ => panic!("expected tag command"),
+        }
+    }
+
+    #[test]
+    fn parses_article_create_with_body_file() {
+        let cli = Cli::parse_from([
+            "track",
+            "article",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Title",
+            "--body-file",
+            "article.md",
+        ]);
+
+        match cli.command {
+            Commands::Article { action } => match action {
+                ArticleCommands::Create {
+                    body_file,
+                    content,
+                    content_file,
+                    ..
+                } => {
+                    assert_eq!(body_file, Some(PathBuf::from("article.md")));
+                    assert!(content.is_none());
+                    assert!(content_file.is_none());
+                }
+                _ => panic!("expected article create"),
+            },
+            _ => panic!("expected article command"),
+        }
+    }
+
+    #[test]
+    fn parses_article_create_with_content_file_backward_compat() {
+        let cli = Cli::parse_from([
+            "track",
+            "article",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Title",
+            "--content-file",
+            "article.md",
+        ]);
+
+        match cli.command {
+            Commands::Article { action } => match action {
+                ArticleCommands::Create {
+                    content_file,
+                    body_file,
+                    content,
+                    ..
+                } => {
+                    assert_eq!(content_file, Some(PathBuf::from("article.md")));
+                    assert!(body_file.is_none());
+                    assert!(content.is_none());
+                }
+                _ => panic!("expected article create"),
+            },
+            _ => panic!("expected article command"),
+        }
+    }
+
+    #[test]
+    fn rejects_article_create_body_file_with_content() {
+        let result = Cli::try_parse_from([
+            "track",
+            "article",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Title",
+            "-c",
+            "inline content",
+            "--body-file",
+            "file.md",
+        ]);
+        assert!(result.is_err(), "body-file and content should conflict");
+    }
+
+    #[test]
+    fn rejects_article_create_body_file_with_content_file() {
+        let result = Cli::try_parse_from([
+            "track",
+            "article",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Title",
+            "--content-file",
+            "old.md",
+            "--body-file",
+            "new.md",
+        ]);
+        assert!(
+            result.is_err(),
+            "body-file and content-file should conflict"
+        );
+    }
+
+    #[test]
+    fn parses_article_comment_with_body_file() {
+        let cli = Cli::parse_from([
+            "track",
+            "article",
+            "comment",
+            "ART-1",
+            "--body-file",
+            "comment.md",
+        ]);
+
+        match cli.command {
+            Commands::Article { action } => match action {
+                ArticleCommands::Comment {
+                    id,
+                    text,
+                    body_file,
+                } => {
+                    assert_eq!(id, "ART-1");
+                    assert!(text.is_none());
+                    assert_eq!(body_file, Some(PathBuf::from("comment.md")));
+                }
+                _ => panic!("expected article comment"),
+            },
+            _ => panic!("expected article command"),
+        }
+    }
+
+    #[test]
+    fn parses_issue_update_body_file_stdin_sentinel() {
+        let cli = Cli::parse_from(["track", "issue", "update", "PROJ-1", "--body-file", "-"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Update { body_file, .. } => {
+                    assert_eq!(body_file, Some(PathBuf::from("-")));
                 }
                 _ => panic!("expected issue update"),
             },

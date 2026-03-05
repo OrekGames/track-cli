@@ -1,7 +1,6 @@
 use crate::cli::{ArticleCommands, OutputFormat};
 use crate::output::{output_list, output_page_hint, output_progress, output_result};
-use anyhow::{Context, Result};
-use std::fs;
+use anyhow::{Context, Result, anyhow};
 use tracker_core::{CreateArticle, IssueTracker, KnowledgeBase, UpdateArticle, fetch_all_pages};
 
 pub fn handle_article(
@@ -28,42 +27,58 @@ pub fn handle_article(
             project,
             summary,
             content,
+            body_file,
             content_file,
             parent,
             tags,
-        } => handle_create(
-            issue_client,
-            kb_client,
-            project,
-            summary,
-            content.as_deref(),
-            content_file.as_deref(),
-            parent.as_deref(),
-            tags,
-            format,
-        ),
+        } => {
+            let file = body_file.as_deref().or(content_file.as_deref());
+            let resolved_content = super::resolve_body(content.as_deref(), file)?;
+            handle_create(
+                issue_client,
+                kb_client,
+                project,
+                summary,
+                resolved_content.as_deref(),
+                parent.as_deref(),
+                tags,
+                format,
+            )
+        }
         ArticleCommands::Update {
             id,
             summary,
             content,
+            body_file,
             content_file,
             tags,
-        } => handle_update(
-            kb_client,
-            id,
-            summary.as_deref(),
-            content.as_deref(),
-            content_file.as_deref(),
-            tags,
-            format,
-        ),
+        } => {
+            let file = body_file.as_deref().or(content_file.as_deref());
+            let resolved_content = super::resolve_body(content.as_deref(), file)?;
+            handle_update(
+                kb_client,
+                id,
+                summary.as_deref(),
+                resolved_content.as_deref(),
+                tags,
+                format,
+            )
+        }
         ArticleCommands::Delete { id } => handle_delete(kb_client, id),
         ArticleCommands::Tree { id } => handle_tree(kb_client, id, format),
         ArticleCommands::Move { id, parent } => {
             handle_move(kb_client, id, parent.as_deref(), format)
         }
         ArticleCommands::Attachments { id } => handle_attachments(kb_client, id, format),
-        ArticleCommands::Comment { id, text } => handle_comment(kb_client, id, text, format),
+        ArticleCommands::Comment {
+            id,
+            text,
+            body_file,
+        } => {
+            let resolved_text = super::resolve_body(text.as_deref(), body_file.as_deref())?
+                .ok_or_else(|| anyhow!("Comment text is required"))?;
+            handle_comment(kb_client, id, &resolved_text, format)
+        }
         ArticleCommands::Comments { id, limit, all } => {
             handle_comments(kb_client, id, *limit, *all, format)
         }
@@ -151,7 +166,6 @@ fn handle_create(
     project: &str,
     summary: &str,
     content: Option<&str>,
-    content_file: Option<&std::path::Path>,
     parent: Option<&str>,
     tags: &[String],
     format: OutputFormat,
@@ -178,20 +192,10 @@ fn handle_create(
         None
     };
 
-    // Read content from file if specified
-    let content =
-        if let Some(file_path) = content_file {
-            Some(fs::read_to_string(file_path).with_context(|| {
-                format!("Failed to read content from '{}'", file_path.display())
-            })?)
-        } else {
-            content.map(String::from)
-        };
-
     let create = CreateArticle {
         project_id,
         summary: summary.to_string(),
-        content,
+        content: content.map(String::from),
         parent_article_id,
         tags: tags.to_vec(),
     };
@@ -209,23 +213,12 @@ fn handle_update(
     id: &str,
     summary: Option<&str>,
     content: Option<&str>,
-    content_file: Option<&std::path::Path>,
     tags: &[String],
     format: OutputFormat,
 ) -> Result<()> {
-    // Read content from file if specified
-    let content =
-        if let Some(file_path) = content_file {
-            Some(fs::read_to_string(file_path).with_context(|| {
-                format!("Failed to read content from '{}'", file_path.display())
-            })?)
-        } else {
-            content.map(String::from)
-        };
-
     let update = UpdateArticle {
         summary: summary.map(String::from),
-        content,
+        content: content.map(String::from),
         tags: tags.to_vec(),
     };
 
