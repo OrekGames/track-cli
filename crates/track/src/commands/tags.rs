@@ -14,27 +14,35 @@ pub fn handle_tags(
             name,
             tag_color,
             description,
-        } => handle_create(
-            client,
-            name,
-            tag_color.as_deref(),
-            description.as_deref(),
-            format,
-        ),
+            body_file,
+        } => {
+            let resolved_desc = super::resolve_body(description.as_deref(), body_file.as_deref())?;
+            handle_create(
+                client,
+                name,
+                tag_color.as_deref(),
+                resolved_desc.as_deref(),
+                format,
+            )
+        }
         TagCommands::Delete { name } => handle_delete(client, name),
         TagCommands::Update {
             name,
             new_name,
             tag_color,
             description,
-        } => handle_update(
-            client,
-            name,
-            new_name.as_deref(),
-            tag_color.as_deref(),
-            description.as_deref(),
-            format,
-        ),
+            body_file,
+        } => {
+            let resolved_desc = super::resolve_body(description.as_deref(), body_file.as_deref())?;
+            handle_update(
+                client,
+                name,
+                new_name.as_deref(),
+                tag_color.as_deref(),
+                resolved_desc.as_deref(),
+                format,
+            )
+        }
     }
 }
 

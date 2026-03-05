@@ -618,7 +618,7 @@ fn test_article_create_command_format() {
         .stdout(predicate::str::contains("--project"))
         .stdout(predicate::str::contains("--summary"))
         .stdout(predicate::str::contains("--content"))
-        .stdout(predicate::str::contains("--content-file"))
+        .stdout(predicate::str::contains("--body-file"))
         .stdout(predicate::str::contains("--parent"))
         .stdout(predicate::str::contains("--tag"));
 }
@@ -631,7 +631,7 @@ fn test_article_update_command_format() {
         .success()
         .stdout(predicate::str::contains("--summary"))
         .stdout(predicate::str::contains("--content"))
-        .stdout(predicate::str::contains("--content-file"));
+        .stdout(predicate::str::contains("--body-file"));
 }
 
 // ============================================================================

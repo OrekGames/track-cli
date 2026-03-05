@@ -15,7 +15,11 @@ pub fn handle_project(
             name,
             short_name,
             description,
-        } => handle_create(client, name, short_name, description.clone(), format),
+            body_file,
+        } => {
+            let resolved_desc = super::resolve_body(description.as_deref(), body_file.as_deref())?;
+            handle_create(client, name, short_name, resolved_desc, format)
+        }
         ProjectCommands::Fields { id } => handle_fields(client, id, format),
         ProjectCommands::AttachField {
             project,

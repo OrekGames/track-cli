@@ -972,3 +972,311 @@ fn test_config_clear_json_output() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// =============================================================================
+// --body-file Tests
+// =============================================================================
+
+#[test]
+fn test_body_file_appears_in_issue_create_help() {
+    cargo_bin_cmd!("track")
+        .args(["issue", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--body-file"))
+        .stdout(predicate::str::contains("stdin"));
+}
+
+#[test]
+fn test_body_file_appears_in_issue_update_help() {
+    cargo_bin_cmd!("track")
+        .args(["issue", "update", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--body-file"));
+}
+
+#[test]
+fn test_body_file_appears_in_issue_comment_help() {
+    cargo_bin_cmd!("track")
+        .args(["issue", "comment", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--body-file"));
+}
+
+#[test]
+fn test_body_file_appears_in_project_create_help() {
+    cargo_bin_cmd!("track")
+        .args(["project", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--body-file"));
+}
+
+#[test]
+fn test_body_file_appears_in_tag_create_help() {
+    cargo_bin_cmd!("track")
+        .args(["tags", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--body-file"));
+}
+
+#[test]
+fn test_body_file_appears_in_tag_update_help() {
+    cargo_bin_cmd!("track")
+        .args(["tags", "update", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--body-file"));
+}
+
+#[test]
+fn test_body_file_appears_in_article_create_help() {
+    cargo_bin_cmd!("track")
+        .args(["article", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--body-file"));
+}
+
+#[test]
+fn test_body_file_appears_in_article_update_help() {
+    cargo_bin_cmd!("track")
+        .args(["article", "update", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--body-file"));
+}
+
+#[test]
+fn test_body_file_appears_in_article_comment_help() {
+    cargo_bin_cmd!("track")
+        .args(["article", "comment", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--body-file"));
+}
+
+#[test]
+fn test_content_file_hidden_from_article_help() {
+    // --content-file should be hidden (backward compat only)
+    cargo_bin_cmd!("track")
+        .args(["article", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--content-file").not());
+}
+
+#[test]
+fn test_body_file_conflicts_with_description() {
+    cargo_bin_cmd!("track")
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "PROJ",
+            "-s",
+            "Title",
+            "-d",
+            "inline desc",
+            "--body-file",
+            "/tmp/desc.md",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn test_body_file_conflicts_with_json_on_update() {
+    cargo_bin_cmd!("track")
+        .args([
+            "issue",
+            "update",
+            "PROJ-1",
+            "--json",
+            "{\"summary\":\"test\"}",
+            "--body-file",
+            "/tmp/desc.md",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn test_comment_requires_message_or_body_file() {
+    cargo_bin_cmd!("track")
+        .args(["issue", "comment", "PROJ-1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--message").or(predicate::str::contains("--body-file")));
+}
+
+#[test]
+fn test_body_file_reads_file_via_mock() {
+    let dir = temp_dir();
+    let scenario = fixtures_path().join("basic-workflow");
+
+    // Write a body file
+    let body = dir.join("comment.md");
+    fs::write(&body, "Comment from file\n").unwrap();
+
+    // Use mock mode to test the full flow — comment command reads the file
+    // and sends it to the mock backend
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"])
+        .args([
+            "issue",
+            "comment",
+            "DEMO-1",
+            "--body-file",
+            body.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Comment"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_body_file_error_on_missing_file() {
+    let dir = temp_dir();
+    let scenario = fixtures_path().join("basic-workflow");
+
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"])
+        .args([
+            "issue",
+            "update",
+            "DEMO-1",
+            "--body-file",
+            "/tmp/track-nonexistent-file-xyz.md",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Failed to read"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_body_file_reads_multiline_markdown() {
+    let dir = temp_dir();
+    let scenario = fixtures_path().join("basic-workflow");
+
+    // Write complex markdown with code blocks, angle brackets, etc.
+    let body = dir.join("complex.md");
+    fs::write(
+        &body,
+        "## Overview\n\n```rust\nfn main() -> Result<String> {\n    Ok(\"hello\".into())\n}\n```\n\n- Item 1\n- Item 2\n",
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"])
+        .args([
+            "issue",
+            "comment",
+            "DEMO-1",
+            "--body-file",
+            body.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_body_file_stdin_via_pipe() {
+    let dir = temp_dir();
+    let scenario = fixtures_path().join("basic-workflow");
+
+    // Test that --body-file - reads from stdin
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"])
+        .args(["issue", "comment", "DEMO-1", "--body-file", "-"])
+        .write_stdin("Comment from stdin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Comment"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_body_file_update_satisfies_required_fields() {
+    let dir = temp_dir();
+    let scenario = fixtures_path().join("basic-workflow");
+
+    let body = dir.join("desc.md");
+    fs::write(&body, "Updated description\n").unwrap();
+
+    // --body-file alone should satisfy the "at least one field" requirement
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"])
+        .args([
+            "issue",
+            "update",
+            "DEMO-1",
+            "--body-file",
+            body.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_content_file_backward_compat_still_parses() {
+    // --content-file should still be accepted on article commands (hidden alias).
+    // We verify the CLI does not reject the flag at parse time.
+    // The actual API call may fail (mock may not support update_article),
+    // so we only check that the error is NOT a parse/usage error.
+    let dir = temp_dir();
+    let scenario = fixtures_path().join("basic-workflow");
+
+    let body = dir.join("article.md");
+    fs::write(&body, "Article content from file\n").unwrap();
+
+    let output = cargo_bin_cmd!("track")
+        .current_dir(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"])
+        .args([
+            "article",
+            "update",
+            "DEMO-A-1",
+            "--content-file",
+            body.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Should NOT be a CLI parse error — any API-level error is fine
+    assert!(
+        !stderr.contains("unrecognized")
+            && !stderr.contains("not expected in this context")
+            && !stderr.contains("invalid value"),
+        "--content-file should be accepted as a hidden flag, got: {}",
+        stderr
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

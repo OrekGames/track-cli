@@ -45,6 +45,7 @@ pub fn handle_issue(
             project,
             summary,
             description,
+            body_file,
             fields,
             state,
             priority,
@@ -55,9 +56,10 @@ pub fn handle_issue(
             dry_run,
             json,
         } => {
+            let resolved_desc = super::resolve_body(description.as_deref(), body_file.as_deref())?;
             let args = IssueFieldArgs {
                 summary: summary.as_deref(),
-                description: description.as_deref(),
+                description: resolved_desc.as_deref(),
                 fields,
                 state: state.as_deref(),
                 priority: priority.as_deref(),
@@ -81,6 +83,7 @@ pub fn handle_issue(
             ids,
             summary,
             description,
+            body_file,
             fields,
             state,
             priority,
@@ -91,9 +94,10 @@ pub fn handle_issue(
             dry_run,
             json,
         } => {
+            let resolved_desc = super::resolve_body(description.as_deref(), body_file.as_deref())?;
             let args = IssueFieldArgs {
                 summary: summary.as_deref(),
-                description: description.as_deref(),
+                description: resolved_desc.as_deref(),
                 fields,
                 state: state.as_deref(),
                 priority: priority.as_deref(),
@@ -125,7 +129,15 @@ pub fn handle_issue(
             handle_search(client, &args, format, default_project)
         }
         IssueCommands::Delete { ids } => handle_delete_batch(client, ids, format),
-        IssueCommands::Comment { id, text } => handle_comment(client, id, text, format),
+        IssueCommands::Comment {
+            id,
+            text,
+            body_file,
+        } => {
+            let resolved_text = super::resolve_body(text.as_deref(), body_file.as_deref())?
+                .ok_or_else(|| anyhow!("Comment text is required"))?;
+            handle_comment(client, id, &resolved_text, format)
+        }
         IssueCommands::Comments { id, limit, all } => {
             handle_comments(client, id, *limit, *all, format)
         }

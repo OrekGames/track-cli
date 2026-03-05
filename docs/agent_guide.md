@@ -539,6 +539,12 @@ track -b gh i new -s "Subtask" --parent 10   # Sub-issue of #10
 # GitLab (project implicit from project_id config)
 track -b gl i new -s "Bug title" -d "Description"
 track -b gl i new -s "Subtask" --parent 10   # Child of #10
+
+# Description from file (avoids terminal escaping for complex content)
+track i new -p PROJ -s "Bug title" --body-file description.md
+
+# Description from stdin
+cat spec.md | track i new -p PROJ -s "Feature" --body-file -
 ```
 
 ### Update Issue
@@ -590,6 +596,12 @@ track i cmt PROJ-123 -m "Started implementation"
 track -b j i cmt PROJ-123 -m "Started implementation"
 track -b gh i cmt PROJ-42 -m "Started implementation"
 track -b gl i cmt PROJ-42 -m "Started implementation"
+
+# Comment from file (avoids terminal escaping issues)
+track i cmt PROJ-123 --body-file notes.md
+
+# Comment from stdin
+echo "Automated comment" | track i cmt PROJ-123 --body-file -
 
 # List comments
 track i comments PROJ-123
@@ -880,7 +892,7 @@ Replace `{PROJECT}` with the actual project key (e.g., `PROJ`)
 - **GitHub/GitLab**: No knowledge base support -- article commands return errors
 - **Confluence IDs**: Numeric for both pages (`123456`) and spaces (`65957`)
 - **Discover space IDs**: Run `track -b j a ls` to see existing pages with their space IDs
-- **Content**: Supports `--content "text"` or `--content-file ./doc.md`
+- **Content**: Supports `--content "text"` or `--body-file ./doc.md` (also accepts legacy `--content-file`)
 
 ---
 
@@ -1061,3 +1073,4 @@ namespace = "mygroup"
 16. **GitLab IIDs**: Project-scoped issue numbers; the client strips `#` prefix automatically
 17. **Pagination**: Use `--all` to fetch all results; `--limit`/`--skip` for manual paging. Safety cap at 1000 results (override with `TRACK_MAX_RESULTS`)
 18. **Issue counts**: `track context` and `track cache show` include per-project issue counts for each query template
+19. **`--body-file`**: All commands accepting text body input (`-d`, `-m`, `--content`) also accept `--body-file <path>` to read from a file, or `--body-file -` to read from stdin. Useful for complex content with special characters, code blocks, or markdown that would be difficult to pass as CLI arguments
