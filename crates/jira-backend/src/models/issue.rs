@@ -337,7 +337,7 @@ fn strip_html_tags(html: &str) -> String {
 /// (strong, em, strikethrough, code, links).
 pub fn markdown_to_adf(text: &str) -> serde_json::Value {
     use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     let parser = Parser::new_ext(
         text,
@@ -359,7 +359,10 @@ pub fn markdown_to_adf(text: &str) -> serde_json::Value {
     let mut in_table_head = false;
     // Counter for ADF localId values required by taskList/taskItem nodes
     let mut local_id: u32 = 0;
-    let mut next_id = || { local_id += 1; local_id.to_string() };
+    let mut next_id = || {
+        local_id += 1;
+        local_id.to_string()
+    };
 
     // Flush the inline buffer as content into the nearest enclosing block.
     // If no block is open, wraps in a paragraph and pushes to doc_content.
@@ -642,7 +645,11 @@ pub fn markdown_to_adf(text: &str) -> serde_json::Value {
             }
 
             Event::Start(Tag::TableCell) => {
-                let cell_type = if in_table_head { "tableHeader" } else { "tableCell" };
+                let cell_type = if in_table_head {
+                    "tableHeader"
+                } else {
+                    "tableCell"
+                };
                 block_stack.push((cell_type.to_string(), Vec::new()));
             }
             Event::End(TagEnd::TableCell) => {
@@ -692,7 +699,11 @@ pub fn markdown_to_adf(text: &str) -> serde_json::Value {
                 };
 
                 // Code blocks collect text directly into the block stack
-                if block_stack.last().map(|(k, _)| k.starts_with("codeBlock")).unwrap_or(false) {
+                if block_stack
+                    .last()
+                    .map(|(k, _)| k.starts_with("codeBlock"))
+                    .unwrap_or(false)
+                {
                     if let Some((_, content)) = block_stack.last_mut() {
                         content.push(node);
                     }
@@ -863,7 +874,10 @@ mod tests {
         let node = &block["content"][0];
         assert_eq!(node["text"], "Jira");
         assert_eq!(node["marks"][0]["type"], "link");
-        assert_eq!(node["marks"][0]["attrs"]["href"], "https://jira.example.com");
+        assert_eq!(
+            node["marks"][0]["attrs"]["href"],
+            "https://jira.example.com"
+        );
     }
 
     #[test]
@@ -945,7 +959,10 @@ mod tests {
         let node = &block["content"][0];
         assert_eq!(node["text"], "alt");
         assert_eq!(node["marks"][0]["type"], "link");
-        assert_eq!(node["marks"][0]["attrs"]["href"], "https://example.com/img.png");
+        assert_eq!(
+            node["marks"][0]["attrs"]["href"],
+            "https://example.com/img.png"
+        );
     }
 
     #[test]
@@ -1054,6 +1071,9 @@ mod tests {
             .filter_map(|n| n["text"].as_str().map(|s| s.to_string()))
             .collect::<Vec<_>>()
             .join("");
-        assert!(all_text.contains("block content"), "expected text from block HTML");
+        assert!(
+            all_text.contains("block content"),
+            "expected text from block HTML"
+        );
     }
 }
