@@ -317,7 +317,7 @@ fn test_config_show_no_config() {
         .args(["config", "show"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("No .track.toml"));
+        .stdout(predicate::str::contains("No configuration found"));
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -336,9 +336,22 @@ fn test_config_show_json_output() {
         .unwrap();
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["backend"], "jira");
-    assert_eq!(json["default_project"], "SMS");
-    assert_eq!(json["url"], "https://jira.example.com");
+    // New format: { "config": [{ "key": "...", "value": "...", "source": "..." }, ...] }
+    let config = json["config"]
+        .as_array()
+        .expect("config should be an array");
+    let find_val = |key: &str| -> Option<String> {
+        config
+            .iter()
+            .find(|e| e["key"] == key)
+            .and_then(|e| e["value"].as_str().map(|s| s.to_string()))
+    };
+    assert_eq!(find_val("backend"), Some("jira".to_string()));
+    assert_eq!(find_val("default_project"), Some("SMS".to_string()));
+    assert_eq!(
+        find_val("url"),
+        Some("https://jira.example.com".to_string())
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -403,9 +416,15 @@ fn test_config_path_output() {
     let output = track_in(&dir).args(["config", "path"]).output().unwrap();
     assert!(output.status.success());
     let path_str = String::from_utf8(output.stdout).unwrap();
+    // Output now shows both global and project paths
     assert!(
-        path_str.trim().ends_with(".track.toml"),
-        "config path should end with .track.toml, got: {}",
+        path_str.contains("Global:") && path_str.contains("Project:"),
+        "config path should show Global and Project lines, got: {}",
+        path_str.trim()
+    );
+    assert!(
+        path_str.contains(".track.toml"),
+        "config path should reference .track.toml, got: {}",
         path_str.trim()
     );
 
@@ -911,10 +930,20 @@ token = "ghp_tok"
         .unwrap();
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["backend"], "github");
-    assert_eq!(json["github"]["owner"], "org");
-    assert_eq!(json["github"]["repo"], "repo");
-    assert_eq!(json["github"]["has_token"], true);
+    // New format: { "config": [{ "key": "...", "value": "...", "source": "..." }, ...] }
+    let config = json["config"]
+        .as_array()
+        .expect("config should be an array");
+    let find_entry =
+        |key: &str| -> Option<&serde_json::Value> { config.iter().find(|e| e["key"] == key) };
+    assert_eq!(find_entry("backend").unwrap()["value"], "github");
+    assert_eq!(find_entry("github.owner").unwrap()["value"], "org");
+    assert_eq!(find_entry("github.repo").unwrap()["value"], "repo");
+    // Token should be hidden
+    assert_eq!(
+        find_entry("github.token").unwrap()["value"],
+        "(set - hidden)"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

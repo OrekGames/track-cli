@@ -157,10 +157,11 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Initialize a local .track.toml config file
+    /// Initialize a .track.toml config file
     ///
-    /// Creates a configuration file in the current directory. Use 'track config keys' to see
-    /// all available configuration keys. You can later modify the file with 'track config set'.
+    /// Creates a configuration file in the current directory (or globally with --global).
+    /// Use 'track config keys' to see all available configuration keys.
+    /// You can later modify the file with 'track config set'.
     ///
     /// Use --skills to install agent skill files globally for Claude, Copilot, Cursor, and Gemini.
     Init {
@@ -182,6 +183,9 @@ pub enum Commands {
         /// Install agent skill files globally for Claude, Copilot, Cursor, and Gemini
         #[arg(long)]
         skills: bool,
+        /// Create config at global level (~/.tracker-cli/.track.toml) instead of local
+        #[arg(long, short = 'g')]
+        global: bool,
     },
     /// Open an issue or the tracker dashboard in your browser
     Open {
@@ -209,8 +213,11 @@ pub enum ConfigCommands {
         key: String,
         /// Value to set
         value: String,
+        /// Write to global config (~/.tracker-cli/.track.toml) instead of project config
+        #[arg(long, short = 'g')]
+        global: bool,
     },
-    /// Get a configuration value
+    /// Get a configuration value (shows effective value with source)
     Get {
         /// Configuration key to get
         key: String,
@@ -227,13 +234,17 @@ pub enum ConfigCommands {
         #[arg(value_enum)]
         backend: Backend,
     },
-    /// Show current local configuration
+    /// Show configuration from all sources with origin markers
     Show,
     /// List all available configuration keys
     Keys,
-    /// Clear local configuration (remove default project and backend)
-    Clear,
-    /// Show local config file path
+    /// Clear configuration (remove default project and backend)
+    Clear {
+        /// Clear global config instead of project config
+        #[arg(long, short = 'g')]
+        global: bool,
+    },
+    /// Show config file paths
     Path,
     /// Test connection to the tracker (validates URL and token)
     Test,
@@ -1326,6 +1337,7 @@ mod tests {
                 backend,
                 email,
                 skills,
+                global,
             } => {
                 assert_eq!(url.as_deref(), Some("https://youtrack.example.com"));
                 assert_eq!(token.as_deref(), Some("perm:xxx"));
@@ -1333,6 +1345,7 @@ mod tests {
                 assert!(matches!(backend, Backend::YouTrack)); // Default
                 assert!(email.is_none());
                 assert!(!skills);
+                assert!(!global);
             }
             _ => panic!("expected init command"),
         }
@@ -1513,9 +1526,10 @@ mod tests {
 
         match cli.command {
             Commands::Config { action } => match action {
-                ConfigCommands::Set { key, value } => {
+                ConfigCommands::Set { key, value, global } => {
                     assert_eq!(key, "jira.email");
                     assert_eq!(value, "test@example.com");
+                    assert!(!global);
                 }
                 _ => panic!("expected config set"),
             },

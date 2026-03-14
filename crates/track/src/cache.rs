@@ -610,14 +610,28 @@ impl TrackerCache {
         Ok(())
     }
 
-    /// Get cache directory path
+    /// Get cache directory path.
+    /// - If explicit cache_dir is provided, use it.
+    /// - If in project context (.track.toml exists), use ./.tracker-cache/
+    /// - Otherwise (global context), use ~/.tracker-cli/cache/
     fn cache_dir_path(cache_dir: Option<PathBuf>) -> Result<PathBuf> {
         if let Some(dir) = cache_dir {
             return Ok(dir.join(CACHE_DIR_NAME));
         }
 
-        // Default to current directory
-        Ok(PathBuf::from(CACHE_DIR_NAME))
+        if crate::config::is_project_context() {
+            // Project context: cache alongside .track.toml
+            Ok(PathBuf::from(CACHE_DIR_NAME))
+        } else {
+            // Global context: cache in ~/.tracker-cli/cache/
+            crate::config::global_cache_dir()
+                .ok_or_else(|| anyhow!("Could not determine home directory for global cache"))
+        }
+    }
+
+    /// Get the resolved cache directory path (for external use, e.g. `cache path` command)
+    pub fn resolved_cache_dir() -> Result<PathBuf> {
+        Self::cache_dir_path(None)
     }
 
     /// Atomic write helper: write temp -> fsync -> rename
@@ -680,8 +694,20 @@ impl TrackerCache {
             })
             .collect();
 
-        // Fetch custom fields for each project and build workflow hints
-        for project in &projects {
+        // Determine which projects to fetch detailed data for:
+        // - If default_project is set (project context), only fetch that project's details
+        // - Otherwise (global context), fetch details for all projects
+        let projects_for_details: Vec<&tracker_core::Project> = if let Some(dp) = default_project {
+            projects
+                .iter()
+                .filter(|p| p.short_name.eq_ignore_ascii_case(dp))
+                .collect()
+        } else {
+            projects.iter().collect()
+        };
+
+        // Fetch custom fields and build workflow hints for scoped projects
+        for project in &projects_for_details {
             if let Ok(fields) = client.get_project_custom_fields(&project.id) {
                 let cached_fields: Vec<CachedField> = fields
                     .iter()
@@ -709,7 +735,7 @@ impl TrackerCache {
             }
         }
 
-        // Fetch tags
+        // Fetch tags (instance-level, always fetch all)
         if let Ok(tags) = client.list_tags() {
             cache.tags = tags
                 .iter()
@@ -722,7 +748,7 @@ impl TrackerCache {
                 .collect();
         }
 
-        // Fetch link types
+        // Fetch link types (instance-level, always fetch all)
         if let Ok(link_types) = client.list_link_types() {
             cache.link_types = link_types
                 .iter()
@@ -736,8 +762,8 @@ impl TrackerCache {
                 .collect();
         }
 
-        // Fetch project users
-        for project in &projects {
+        // Fetch project users for scoped projects
+        for project in &projects_for_details {
             if let Ok(users) = client.list_project_users(&project.id) {
                 let cached_users: Vec<CachedUser> = users
                     .iter()

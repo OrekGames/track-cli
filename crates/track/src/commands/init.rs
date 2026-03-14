@@ -66,6 +66,7 @@ fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_init(
     url: Option<&str>,
     token: Option<&str>,
@@ -74,6 +75,7 @@ pub fn handle_init(
     format: cli::OutputFormat,
     backend: Backend,
     skills: bool,
+    global: bool,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -93,7 +95,11 @@ pub fn handle_init(
         ));
     }
 
-    let config_path = config::local_track_config_path()?;
+    let config_path = if global {
+        config::global_config_path_ensure()?
+    } else {
+        config::local_track_config_path()?
+    };
 
     // Check if config already exists
     if config_path.exists() {
@@ -196,42 +202,60 @@ pub fn handle_init(
 
     config.save(&config_path)?;
 
-    // Write agent guide to the same directory as the config
-    let guide_path = config_path
-        .parent()
-        .map(|p| p.join("AGENT_GUIDE.md"))
-        .unwrap_or_else(|| std::path::PathBuf::from("AGENT_GUIDE.md"));
-    std::fs::write(&guide_path, AGENT_GUIDE)?;
+    // Write agent guide to the same directory as the config (skip for global init)
+    let guide_path = if !global {
+        let path = config_path
+            .parent()
+            .map(|p| p.join("AGENT_GUIDE.md"))
+            .unwrap_or_else(|| std::path::PathBuf::from("AGENT_GUIDE.md"));
+        std::fs::write(&path, AGENT_GUIDE)?;
+        Some(path)
+    } else {
+        None
+    };
 
     // If --skills was also passed, install skill files too
     if skills {
         install_agent_skills(format)?;
     }
 
+    let level = if global { "global" } else { "project" };
     match format {
         cli::OutputFormat::Json => {
             let mut result = serde_json::json!({
                 "success": true,
+                "level": level,
                 "backend": backend.to_string(),
                 "config_path": config_path.display().to_string(),
-                "guide_path": guide_path.display().to_string()
             });
+            if let Some(guide) = &guide_path {
+                result["guide_path"] = serde_json::json!(guide.display().to_string());
+            }
             if let Some((_, name)) = &validated_project {
                 result["default_project"] = serde_json::json!(name);
             }
             output_json(&result)?;
         }
         cli::OutputFormat::Text => {
+            let tag = if global {
+                "[global]".yellow().to_string()
+            } else {
+                "[project]".cyan().to_string()
+            };
             println!(
-                "{} {}",
-                "Created config file:".green(),
+                "{} {} {}",
+                tag,
+                "Created config:".green(),
                 config_path.display()
             );
-            println!(
-                "{} {}",
-                "Created agent guide:".green(),
-                guide_path.display()
-            );
+            if let Some(guide) = &guide_path {
+                println!(
+                    "{} {} {}",
+                    tag,
+                    "Created agent guide:".green(),
+                    guide.display()
+                );
+            }
             println!(
                 "  {}: {}",
                 "Backend".dimmed(),
@@ -244,10 +268,6 @@ pub fn handle_init(
             println!(
                 "{}",
                 "You can now use track commands without --url, --token, and -b flags.".dimmed()
-            );
-            println!(
-                "{}",
-                "AI agents can reference AGENT_GUIDE.md for CLI usage patterns.".dimmed()
             );
         }
     }

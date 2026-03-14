@@ -271,26 +271,41 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
             }
             Ok(())
         }
-        ConfigCommands::Set { key, value } => {
+        ConfigCommands::Set { key, value, global } => {
             let config_key = parse_config_key(key)?;
 
-            let config_path = config::local_track_config_path()?;
-            let mut cfg = Config::load_local_track_toml()?.unwrap_or_default();
+            let (config_path, mut cfg) = if *global {
+                let path = config::global_config_path_ensure()?;
+                let cfg = Config::load_global_track_toml()?.unwrap_or_default();
+                (path, cfg)
+            } else {
+                let path = config::local_track_config_path()?;
+                let cfg = Config::load_local_track_toml()?.unwrap_or_default();
+                (path, cfg)
+            };
             config_key.set_value(&mut cfg, value)?;
             cfg.save(&config_path)?;
 
+            let level = if *global { "global" } else { "project" };
             match format {
                 cli::OutputFormat::Json => {
                     output_json(&serde_json::json!({
                         "success": true,
                         "key": config_key.as_str(),
-                        "value": value
+                        "value": value,
+                        "level": level
                     }))?;
                 }
                 cli::OutputFormat::Text => {
                     use colored::Colorize;
+                    let tag = if *global {
+                        "[global]".yellow().to_string()
+                    } else {
+                        "[project]".cyan().to_string()
+                    };
                     println!(
-                        "Set {} = {}",
+                        "{} Set {} = {}",
+                        tag,
                         config_key.as_str().cyan().bold(),
                         value.green()
                     );
@@ -300,28 +315,51 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
         }
         ConfigCommands::Get { key } => {
             let config_key = parse_config_key(key)?;
-            let cfg = Config::load_local_track_toml()?.unwrap_or_default();
-            let value = config_key.get_value(&cfg);
+
+            // Check both levels to determine source
+            let global_cfg = Config::load_global_track_toml()?.unwrap_or_default();
+            let project_cfg = Config::load_local_track_toml()?.unwrap_or_default();
+
+            let global_val = config_key.get_value(&global_cfg);
+            let project_val = config_key.get_value(&project_cfg);
+
+            // Effective value: project overrides global
+            let (effective_val, source) = match (&project_val, &global_val) {
+                (Some(_), _) => (&project_val, "project"),
+                (None, Some(_)) => (&global_val, "global"),
+                (None, None) => (&None, ""),
+            };
 
             match format {
                 cli::OutputFormat::Json => {
-                    let is_set = value.is_some();
-                    let output = serde_json::json!({
+                    output_json(&serde_json::json!({
                         "key": config_key.as_str(),
-                        "value": value,
-                        "is_set": is_set
-                    });
-                    println!("{}", serde_json::to_string_pretty(&output)?);
+                        "value": effective_val,
+                        "source": if source.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(source.to_string()) },
+                        "is_set": effective_val.is_some(),
+                        "global_value": global_val,
+                        "project_value": project_val,
+                    }))?;
                 }
                 cli::OutputFormat::Text => {
                     use colored::Colorize;
-                    if let Some(v) = &value {
+                    if let Some(v) = effective_val {
                         let display_value = if config_key.is_secret() {
                             "(set - hidden)".to_string()
                         } else {
                             v.to_string()
                         };
-                        println!("{} = {}", config_key.as_str().cyan(), display_value.green());
+                        let tag = match source {
+                            "project" => "[project]".cyan().to_string(),
+                            "global" => "[global]".yellow().to_string(),
+                            _ => String::new(),
+                        };
+                        println!(
+                            "{} {} = {}",
+                            tag,
+                            config_key.as_str().cyan(),
+                            display_value.green()
+                        );
                     } else {
                         println!("{} is not set", config_key.as_str().cyan());
                     }
@@ -330,142 +368,253 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
             Ok(())
         }
         ConfigCommands::Show => {
-            let config = Config::load_local_track_toml()?;
-            match format {
-                cli::OutputFormat::Json => {
-                    if let Some(cfg) = &config {
-                        let output = serde_json::json!({
-                            "backend": cfg.backend,
-                            "default_project": cfg.default_project,
-                            "url": cfg.url,
-                            "has_token": cfg.token.is_some(),
-                            "has_email": cfg.email.is_some(),
-                            "youtrack": {
-                                "url": cfg.youtrack.url,
-                                "has_token": cfg.youtrack.token.is_some()
-                            },
-                            "jira": {
-                                "url": cfg.jira.url,
-                                "email": cfg.jira.email,
-                                "has_token": cfg.jira.token.is_some()
-                            },
-                            "github": {
-                                "owner": cfg.github.owner,
-                                "repo": cfg.github.repo,
-                                "api_url": cfg.github.api_url,
-                                "has_token": cfg.github.token.is_some()
-                            },
-                            "gitlab": {
-                                "url": cfg.gitlab.url,
-                                "project_id": cfg.gitlab.project_id,
-                                "namespace": cfg.gitlab.namespace,
-                                "has_token": cfg.gitlab.token.is_some()
-                            }
-                        });
-                        println!("{}", serde_json::to_string_pretty(&output)?);
-                    } else {
+            use colored::Colorize;
+
+            let global_cfg = Config::load_global_track_toml()?.unwrap_or_default();
+            let project_cfg = Config::load_local_track_toml()?;
+            let has_global = config::global_config_path()
+                .map(|p| p.exists())
+                .unwrap_or(false);
+            let has_project = project_cfg.is_some();
+            let project_cfg = project_cfg.unwrap_or_default();
+
+            if !has_global && !has_project {
+                match format {
+                    cli::OutputFormat::Json => {
                         println!("{{}}");
                     }
-                }
-                cli::OutputFormat::Text => {
-                    use colored::Colorize;
-                    if let Some(cfg) = config {
-                        let config_path = config::local_track_config_path()?;
-                        println!("{}:", "Configuration".white().bold());
-                        println!("  {}: {}", "File".dimmed(), config_path.display());
-                        let backend_name = cfg.backend.unwrap_or_default().to_string();
-                        println!("  {}: {}", "Backend".dimmed(), backend_name.cyan().bold());
-                        if let Some(url) = &cfg.url {
-                            println!("  {}: {}", "URL".dimmed(), url.cyan());
-                        }
-                        if cfg.email.is_some() {
-                            println!("  {}: {}", "Email".dimmed(), "(set)".green());
-                        }
-                        if cfg.token.is_some() {
-                            println!("  {}: {}", "Token".dimmed(), "(set)".green());
-                        }
-                        if let Some(project) = &cfg.default_project {
-                            println!(
-                                "  {}: {}",
-                                "Default project".dimmed(),
-                                project.cyan().bold()
-                            );
-                        }
-
-                        // Show backend-specific config if set
-                        if !cfg.youtrack.is_empty() {
-                            println!();
-                            println!("  {}:", "[youtrack]".white().bold());
-                            if let Some(url) = &cfg.youtrack.url {
-                                println!("    {}: {}", "url".dimmed(), url.cyan());
-                            }
-                            if cfg.youtrack.token.is_some() {
-                                println!("    {}: {}", "token".dimmed(), "(set)".green());
-                            }
-                        }
-
-                        if !cfg.jira.is_empty() {
-                            println!();
-                            println!("  {}:", "[jira]".white().bold());
-                            if let Some(url) = &cfg.jira.url {
-                                println!("    {}: {}", "url".dimmed(), url.cyan());
-                            }
-                            if let Some(email) = &cfg.jira.email {
-                                println!("    {}: {}", "email".dimmed(), email.cyan());
-                            }
-                            if cfg.jira.token.is_some() {
-                                println!("    {}: {}", "token".dimmed(), "(set)".green());
-                            }
-                        }
-
-                        if !cfg.github.is_empty() {
-                            println!();
-                            println!("  {}:", "[github]".white().bold());
-                            if let Some(owner) = &cfg.github.owner {
-                                println!("    {}: {}", "owner".dimmed(), owner.cyan());
-                            }
-                            if let Some(repo) = &cfg.github.repo {
-                                println!("    {}: {}", "repo".dimmed(), repo.cyan());
-                            }
-                            if let Some(api_url) = &cfg.github.api_url {
-                                println!("    {}: {}", "api_url".dimmed(), api_url.cyan());
-                            }
-                            if cfg.github.token.is_some() {
-                                println!("    {}: {}", "token".dimmed(), "(set)".green());
-                            }
-                        }
-
-                        if !cfg.gitlab.is_empty() {
-                            println!();
-                            println!("  {}:", "[gitlab]".white().bold());
-                            if let Some(url) = &cfg.gitlab.url {
-                                println!("    {}: {}", "url".dimmed(), url.cyan());
-                            }
-                            if let Some(project_id) = &cfg.gitlab.project_id {
-                                println!("    {}: {}", "project_id".dimmed(), project_id.cyan());
-                            }
-                            if let Some(namespace) = &cfg.gitlab.namespace {
-                                println!("    {}: {}", "namespace".dimmed(), namespace.cyan());
-                            }
-                            if cfg.gitlab.token.is_some() {
-                                println!("    {}: {}", "token".dimmed(), "(set)".green());
-                            }
-                        }
-                    } else {
-                        println!("No .track.toml configuration found.");
+                    cli::OutputFormat::Text => {
+                        println!("No configuration found.");
                         println!(
-                            "Run '{}' to create one.",
-                            "track init --url <URL> --token <TOKEN>".cyan()
+                            "Run '{}' or '{}' to create one.",
+                            "track init --url <URL> --token <TOKEN>".cyan(),
+                            "track init --global --url <URL> --token <TOKEN>".cyan()
                         );
                     }
+                }
+                return Ok(());
+            }
+
+            match format {
+                cli::OutputFormat::Json => {
+                    let mut entries = Vec::new();
+                    for key in ConfigKey::ALL {
+                        let global_val = key.get_value(&global_cfg);
+                        let project_val = key.get_value(&project_cfg);
+                        let (effective, source) = match (&project_val, &global_val) {
+                            (Some(_), _) => (&project_val, "project"),
+                            (None, Some(_)) => (&global_val, "global"),
+                            (None, None) => continue,
+                        };
+                        let display_val = if key.is_secret() {
+                            Some("(set - hidden)".to_string())
+                        } else {
+                            effective.clone()
+                        };
+                        entries.push(serde_json::json!({
+                            "key": key.as_str(),
+                            "value": display_val,
+                            "source": source,
+                        }));
+                    }
+                    output_json(&serde_json::json!({ "config": entries }))?;
+                }
+                cli::OutputFormat::Text => {
+                    // Show file paths
+                    println!("{}:", "Configuration".white().bold());
+                    if let Some(global_path) = config::global_config_path() {
+                        let status = if has_global {
+                            "(exists)".green().to_string()
+                        } else {
+                            "(not found)".dimmed().to_string()
+                        };
+                        println!(
+                            "  {} {} {}",
+                            "[global]".yellow(),
+                            global_path.display(),
+                            status
+                        );
+                    }
+                    let project_path = config::local_track_config_path()?;
+                    let status = if has_project {
+                        "(exists)".green().to_string()
+                    } else {
+                        "(not found)".dimmed().to_string()
+                    };
+                    println!(
+                        "  {} {} {}",
+                        "[project]".cyan(),
+                        project_path.display(),
+                        status
+                    );
+                    println!();
+
+                    // Helper to show a value with source tag
+                    let show_value = |label: &str,
+                                      global_val: &Option<String>,
+                                      project_val: &Option<String>,
+                                      is_secret: bool| {
+                        let (val, tag) = match (project_val, global_val) {
+                            (Some(v), _) => (Some(v.as_str()), "[project]".cyan().to_string()),
+                            (None, Some(v)) => (Some(v.as_str()), "[global]".yellow().to_string()),
+                            (None, None) => return,
+                        };
+                        if let Some(v) = val {
+                            let display = if is_secret {
+                                "(set)".green().to_string()
+                            } else {
+                                v.cyan().to_string()
+                            };
+                            println!("  {} {}: {}", tag, label.dimmed(), display);
+                        }
+                    };
+
+                    // Top-level keys
+                    show_value(
+                        "backend",
+                        &global_cfg.backend.map(|b| b.to_string()),
+                        &project_cfg.backend.map(|b| b.to_string()),
+                        false,
+                    );
+                    show_value("url", &global_cfg.url, &project_cfg.url, false);
+                    show_value("token", &global_cfg.token, &project_cfg.token, true);
+                    show_value("email", &global_cfg.email, &project_cfg.email, false);
+                    show_value(
+                        "default_project",
+                        &global_cfg.default_project,
+                        &project_cfg.default_project,
+                        false,
+                    );
+
+                    // Backend-specific sections
+                    let show_backend_section = |name: &str,
+                                                pairs: Vec<(
+                        &str,
+                        &Option<String>,
+                        &Option<String>,
+                        bool,
+                    )>| {
+                        let any_set = pairs.iter().any(|(_, g, p, _)| g.is_some() || p.is_some());
+                        if !any_set {
+                            return;
+                        }
+                        println!();
+                        println!("  {}:", format!("[{}]", name).white().bold());
+                        for (label, global_val, project_val, is_secret) in pairs {
+                            show_value(&format!("  {}", label), global_val, project_val, is_secret);
+                        }
+                    };
+
+                    show_backend_section(
+                        "youtrack",
+                        vec![
+                            (
+                                "url",
+                                &global_cfg.youtrack.url,
+                                &project_cfg.youtrack.url,
+                                false,
+                            ),
+                            (
+                                "token",
+                                &global_cfg.youtrack.token,
+                                &project_cfg.youtrack.token,
+                                true,
+                            ),
+                        ],
+                    );
+                    show_backend_section(
+                        "jira",
+                        vec![
+                            ("url", &global_cfg.jira.url, &project_cfg.jira.url, false),
+                            (
+                                "email",
+                                &global_cfg.jira.email,
+                                &project_cfg.jira.email,
+                                false,
+                            ),
+                            (
+                                "token",
+                                &global_cfg.jira.token,
+                                &project_cfg.jira.token,
+                                true,
+                            ),
+                        ],
+                    );
+                    show_backend_section(
+                        "github",
+                        vec![
+                            (
+                                "token",
+                                &global_cfg.github.token,
+                                &project_cfg.github.token,
+                                true,
+                            ),
+                            (
+                                "owner",
+                                &global_cfg.github.owner,
+                                &project_cfg.github.owner,
+                                false,
+                            ),
+                            (
+                                "repo",
+                                &global_cfg.github.repo,
+                                &project_cfg.github.repo,
+                                false,
+                            ),
+                            (
+                                "api_url",
+                                &global_cfg.github.api_url,
+                                &project_cfg.github.api_url,
+                                false,
+                            ),
+                        ],
+                    );
+                    show_backend_section(
+                        "gitlab",
+                        vec![
+                            (
+                                "token",
+                                &global_cfg.gitlab.token,
+                                &project_cfg.gitlab.token,
+                                true,
+                            ),
+                            (
+                                "url",
+                                &global_cfg.gitlab.url,
+                                &project_cfg.gitlab.url,
+                                false,
+                            ),
+                            (
+                                "project_id",
+                                &global_cfg.gitlab.project_id,
+                                &project_cfg.gitlab.project_id,
+                                false,
+                            ),
+                            (
+                                "namespace",
+                                &global_cfg.gitlab.namespace,
+                                &project_cfg.gitlab.namespace,
+                                false,
+                            ),
+                        ],
+                    );
                 }
             }
             Ok(())
         }
-        ConfigCommands::Clear => {
-            // Clear default_project and backend from .track.toml (keep url/token)
-            let config_path = config::local_track_config_path()?;
-            if let Some(mut cfg) = Config::load_local_track_toml()? {
+        ConfigCommands::Clear { global } => {
+            let (config_path, loaded) = if *global {
+                let path = config::global_config_path_ensure()?;
+                let cfg = Config::load_global_track_toml()?;
+                (path, cfg)
+            } else {
+                let path = config::local_track_config_path()?;
+                let cfg = Config::load_local_track_toml()?;
+                (path, cfg)
+            };
+            let level = if *global { "global" } else { "project" };
+
+            if let Some(mut cfg) = loaded {
                 cfg.default_project = None;
                 cfg.backend = None;
                 cfg.save(&config_path)?;
@@ -473,12 +622,18 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
                     cli::OutputFormat::Json => {
                         output_json(&serde_json::json!({
                             "success": true,
+                            "level": level,
                             "message": "Configuration cleared"
                         }))?;
                     }
                     cli::OutputFormat::Text => {
                         use colored::Colorize;
-                        println!("{}", "Default project and backend cleared.".green());
+                        let tag = if *global {
+                            "[global]".yellow().to_string()
+                        } else {
+                            "[project]".cyan().to_string()
+                        };
+                        println!("{} {}", tag, "Default project and backend cleared.".green());
                     }
                 }
             } else {
@@ -486,19 +641,54 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
                     cli::OutputFormat::Json => {
                         output_json(&serde_json::json!({
                             "success": true,
+                            "level": level,
                             "message": "No configuration to clear"
                         }))?;
                     }
                     cli::OutputFormat::Text => {
-                        println!("No .track.toml configuration found.");
+                        use colored::Colorize;
+                        let file_name = if *global {
+                            "~/.tracker-cli/.track.toml"
+                        } else {
+                            ".track.toml"
+                        };
+                        println!("No {} configuration found.", file_name.cyan());
                     }
                 }
             }
             Ok(())
         }
         ConfigCommands::Path => {
-            let path = config::local_track_config_path()?;
-            println!("{}", path.display());
+            match format {
+                cli::OutputFormat::Json => {
+                    let global = config::global_config_path();
+                    let project = config::local_track_config_path().ok();
+                    output_json(&serde_json::json!({
+                        "global": global.as_ref().map(|p| p.display().to_string()),
+                        "global_exists": global.as_ref().map(|p| p.exists()).unwrap_or(false),
+                        "project": project.as_ref().map(|p| p.display().to_string()),
+                        "project_exists": project.as_ref().map(|p| p.exists()).unwrap_or(false),
+                    }))?;
+                }
+                cli::OutputFormat::Text => {
+                    use colored::Colorize;
+                    if let Some(global) = config::global_config_path() {
+                        let status = if global.exists() {
+                            "(exists)".green().to_string()
+                        } else {
+                            "(not found)".dimmed().to_string()
+                        };
+                        println!("Global:  {} {}", global.display(), status);
+                    }
+                    let project = config::local_track_config_path()?;
+                    let status = if project.exists() {
+                        "(exists)".green().to_string()
+                    } else {
+                        "(not found)".dimmed().to_string()
+                    };
+                    println!("Project: {} {}", project.display(), status);
+                }
+            }
             Ok(())
         }
         ConfigCommands::Project { .. } | ConfigCommands::Test | ConfigCommands::Backend { .. } => {
@@ -575,7 +765,7 @@ pub fn handle_config(
         }
         // These are handled elsewhere before API validation
         ConfigCommands::Show
-        | ConfigCommands::Clear
+        | ConfigCommands::Clear { .. }
         | ConfigCommands::Path
         | ConfigCommands::Keys
         | ConfigCommands::Set { .. }

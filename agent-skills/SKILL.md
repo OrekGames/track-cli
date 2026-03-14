@@ -17,7 +17,7 @@ disable-model-invocation: false
 | **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`) |
 | **Output** | Text (default) or JSON (`-o json`) |
 | **Config** | `.track.toml` (local), `~/.tracker-cli/.track.toml` (global), env vars, or CLI flags |
-| **Cache** | `.tracker-cache/` - run `track cache refresh` for context |
+| **Cache** | `.tracker-cache/` (project) or `~/.tracker-cli/cache/` (global) - run `track cache refresh` for context |
 | **AI Context** | `track context` - aggregated context in single command |
 
 ## Backend Comparison
@@ -430,9 +430,13 @@ track context -p PROJ
 track cache refresh       # Fetch all cacheable data
 track cache show          # Display cached data
 track -o json cache show  # JSON format
-track cache path          # Cache file location
+track cache path          # Cache directory location
 track cache status        # Age, freshness, data counts
 ```
+
+**Cache location**: `.tracker-cache/` in project directory (when `.track.toml` exists), or `~/.tracker-cli/cache/` globally.
+
+**Project context**: When `default_project` is set, cache refresh only fetches detailed data (fields, users, workflows) for that project. Instance-level data (tags, link types, query templates) is always fetched.
 
 **Cache contents**: Backend metadata, projects, custom fields (with enum values), tags/labels, link types, query templates, project users, issue counts, recent issues, articles.
 
