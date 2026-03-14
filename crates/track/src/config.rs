@@ -1,6 +1,5 @@
 use crate::cli::Backend;
 use anyhow::{Result, anyhow};
-use directories::{BaseDirs, ProjectDirs};
 use figment::{
     Figment,
     providers::{Env, Format, Serialized, Toml},
@@ -290,10 +289,22 @@ impl Config {
     /// Load config from only the local .track.toml file (for updating it)
     pub fn load_local_track_toml() -> Result<Option<Self>> {
         let path = local_track_config_path()?;
+        Self::load_from_path(&path)
+    }
+
+    /// Load config from only the global ~/.tracker-cli/.track.toml file (for updating it)
+    pub fn load_global_track_toml() -> Result<Option<Self>> {
+        let path = global_config_path()
+            .ok_or_else(|| anyhow!("Could not determine home directory for global config"))?;
+        Self::load_from_path(&path)
+    }
+
+    /// Load config from a specific path
+    fn load_from_path(path: &Path) -> Result<Option<Self>> {
         if !path.exists() {
             return Ok(None);
         }
-        let content = fs::read_to_string(&path)
+        let content = fs::read_to_string(path)
             .map_err(|e| anyhow!("Failed to read {}: {}", path.display(), e))?;
         let config: Config = toml::from_str(&content)
             .map_err(|e| anyhow!("Failed to parse {}: {}", path.display(), e))?;
@@ -344,58 +355,23 @@ fn config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
 
     // Load configs from lowest to highest priority
     // Later entries override earlier ones in figment merge
-    if let Some(path) = get_project_config_path() {
-        push_unique(&mut paths, path);
+    // 1. Global: ~/.tracker-cli/.track.toml (lowest file priority)
+    if let Some(path) = get_global_config_path() {
+        paths.push(path);
     }
-    if let Some(path) = get_xdg_config_path() {
-        push_unique(&mut paths, path);
-    }
-    if let Some(path) = get_install_dir_config_path() {
-        push_unique(&mut paths, path);
-    }
-    if let Some(path) = get_local_config_path() {
-        push_unique(&mut paths, path);
-    }
-    // .track.toml has highest priority (project-specific)
-    if let Some(path) = get_local_track_config_path() {
-        push_unique(&mut paths, path);
+    // 2. Project: ./.track.toml (highest file priority)
+    if let Some(path) = get_local_track_config_path()
+        && !paths.contains(&path)
+    {
+        paths.push(path);
     }
 
     paths
 }
 
-fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if !paths.contains(&path) {
-        paths.push(path);
-    }
-}
-
-fn get_project_config_path() -> Option<PathBuf> {
-    ProjectDirs::from("", "", "track").map(|d| d.config_dir().join("config.toml"))
-}
-
-fn get_xdg_config_path() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Some(PathBuf::from(dir).join("track").join("config.toml"));
-    }
-
-    BaseDirs::new().map(|dirs| {
-        dirs.home_dir()
-            .join(".config")
-            .join("track")
-            .join("config.toml")
-    })
-}
-
-fn get_local_config_path() -> Option<PathBuf> {
-    std::env::current_dir()
-        .ok()
-        .map(|dir| dir.join("config.toml"))
-}
-
-/// Returns the path to the global install directory config (~/.tracker-cli/.track.toml)
-fn get_install_dir_config_path() -> Option<PathBuf> {
-    BaseDirs::new().map(|dirs| dirs.home_dir().join(".tracker-cli").join(".track.toml"))
+/// Returns the path to the global config (~/.tracker-cli/.track.toml)
+fn get_global_config_path() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".tracker-cli").join(".track.toml"))
 }
 
 /// Returns the path to the local .track.toml file in the current directory
@@ -405,11 +381,63 @@ fn get_local_track_config_path() -> Option<PathBuf> {
         .map(|dir| dir.join(".track.toml"))
 }
 
+/// Returns the user's home directory
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
 /// Returns the path where `track init` will create the config file
 pub fn local_track_config_path() -> Result<PathBuf> {
     std::env::current_dir()
         .map(|dir| dir.join(".track.toml"))
         .map_err(|e| anyhow!("Failed to get current directory: {}", e))
+}
+
+/// Returns the global config path (~/.tracker-cli/.track.toml)
+pub fn global_config_path() -> Option<PathBuf> {
+    get_global_config_path()
+}
+
+/// Returns the global config path, creating the parent directory if needed
+pub fn global_config_path_ensure() -> Result<PathBuf> {
+    let path = global_config_path()
+        .ok_or_else(|| anyhow!("Could not determine home directory for global config"))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| anyhow!("Failed to create directory {}: {}", parent.display(), e))?;
+    }
+    Ok(path)
+}
+
+/// Returns true if a .track.toml exists in the current directory (project context)
+pub fn is_project_context() -> bool {
+    get_local_track_config_path()
+        .map(|p| p.exists())
+        .unwrap_or(false)
+}
+
+/// Returns the global cache directory (~/.tracker-cli/cache/)
+pub fn global_cache_dir() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".tracker-cli").join("cache"))
+}
+
+/// Load backend from the full config chain (global -> project -> env)
+/// without requiring a backend argument.
+pub fn resolve_backend() -> Backend {
+    let mut figment = Figment::new().merge(Serialized::defaults(Config::default()));
+    for path in config_paths(None) {
+        if path.exists() {
+            figment = figment.merge(Toml::file(path));
+        }
+    }
+    figment = figment.merge(Env::prefixed("TRACKER_"));
+    figment
+        .extract::<Config>()
+        .ok()
+        .and_then(|c| c.backend)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -360,7 +360,7 @@ pub fn handle_cache(
             Ok(())
         }
         CacheCommands::Path => {
-            let path = std::env::current_dir()?.join(".tracker-cache");
+            let path = cache::TrackerCache::resolved_cache_dir()?;
             println!("{}", path.display());
             Ok(())
         }

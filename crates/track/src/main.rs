@@ -52,6 +52,7 @@ fn run(cli: Cli) -> Result<()> {
         backend,
         email,
         skills,
+        global,
     } = &cli.command
     {
         return commands::init::handle_init(
@@ -62,6 +63,7 @@ fn run(cli: Cli) -> Result<()> {
             cli.format,
             *backend,
             *skills,
+            *global,
         );
     }
 
@@ -70,7 +72,7 @@ fn run(cli: Cli) -> Result<()> {
         use cli::ConfigCommands;
         match action {
             ConfigCommands::Show
-            | ConfigCommands::Clear
+            | ConfigCommands::Clear { .. }
             | ConfigCommands::Path
             | ConfigCommands::Keys
             | ConfigCommands::Set { .. }
@@ -103,15 +105,8 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    // Determine effective backend: CLI flag takes precedence, then config, then default
-    let effective_backend = cli.backend.unwrap_or_else(|| {
-        // Try to get backend from config file
-        Config::load_local_track_toml()
-            .ok()
-            .flatten()
-            .map(|c| c.get_backend())
-            .unwrap_or(Backend::YouTrack)
-    });
+    // Determine effective backend: CLI flag > config chain (project > global > env) > default
+    let effective_backend = cli.backend.unwrap_or_else(config::resolve_backend);
 
     let mut config = Config::load(cli.config.clone(), effective_backend)?;
     config.merge_with_cli(cli.url.clone(), cli.token.clone());

@@ -9,8 +9,8 @@
 | **Binary** | `track` (or `target/release/track` if not installed) |
 | **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`) |
 | **Output** | Text (default) or JSON (`-o json`) |
-| **Config** | `.track.toml` in project dir, env vars, or CLI flags |
-| **Cache** | `.tracker-cache/` - run `track cache refresh` for context |
+| **Config** | `.track.toml` (project), `~/.tracker-cli/.track.toml` (global), env vars, or CLI flags |
+| **Cache** | `.tracker-cache/` (project) or `~/.tracker-cli/cache/` (global) - run `track cache refresh` for context |
 | **AI Context** | `track context` - aggregated context in single command |
 
 ## Backend Comparison
@@ -849,10 +849,16 @@ The cache stores comprehensive tracker context locally for fast lookups and AI c
 track cache refresh       # Fetch and store all cacheable data
 track cache show          # Display cached data (text)
 track -o json cache show  # JSON format (for programmatic use)
-track cache path          # Show cache file location
+track cache path          # Show cache directory location
 ```
 
-**Cache file** (`.tracker-cache/`) contains:
+**Cache location**:
+- **Project context** (`.track.toml` exists): `.tracker-cache/` in the current directory
+- **Global context** (no `.track.toml`): `~/.tracker-cli/cache/`
+
+**Project-scoped refresh**: When `default_project` is set, cache refresh only fetches detailed data (fields, users, workflows) for that project. Instance-level data (tags, link types, query templates) is always fetched in full.
+
+**Cache directory** contains:
 
 | Data | Description |
 |------|-------------|

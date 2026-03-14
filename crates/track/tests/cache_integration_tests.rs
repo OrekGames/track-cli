@@ -48,9 +48,19 @@ fn temp_dir() -> PathBuf {
     dir
 }
 
+/// Ensure a .track.toml exists in the temp directory so the cache resolves locally.
+fn ensure_project_context(dir: &PathBuf) {
+    let track_toml = dir.join(".track.toml");
+    if !track_toml.exists() {
+        fs::write(&track_toml, "# test project context\n").unwrap();
+    }
+}
+
 /// Build a track command pointed at a temp directory with mock backend enabled.
 /// Passes dummy --url and --token since config validation runs before mock activation.
+/// Creates a .track.toml to ensure project context (local cache).
 fn track_in(dir: &PathBuf) -> Command {
+    ensure_project_context(dir);
     let mut cmd = cargo_bin_cmd!("track");
     cmd.current_dir(dir)
         .env("TRACK_MOCK_DIR", cache_scenario().to_str().unwrap())
@@ -60,7 +70,9 @@ fn track_in(dir: &PathBuf) -> Command {
 
 /// Build a track command pointed at a temp directory WITHOUT mock (for reading cache only).
 /// Uses a dummy config so validation doesn't require a real server.
+/// Creates a .track.toml to ensure project context (local cache).
 fn track_in_no_mock(dir: &PathBuf) -> Command {
+    ensure_project_context(dir);
     let mut cmd = cargo_bin_cmd!("track");
     cmd.current_dir(dir)
         .args(["--url", "https://mock.test", "--token", "mock-token"]);
