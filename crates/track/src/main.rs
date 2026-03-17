@@ -158,6 +158,12 @@ fn run(cli: Cli) -> Result<()> {
                         "GitHub repo not configured. Set via 'track config set github.repo <REPO>' or GITHUB_REPO env var"
                     )
                 })?;
+            // Auto-derive default_project from owner/repo when not explicitly set.
+            // This scopes cache refresh to just this repo instead of fetching all
+            // repos visible to the token (which can include org repos).
+            if config.default_project.is_none() {
+                config.default_project = Some(format!("{}/{}", owner, repo));
+            }
             let token = config.token.as_ref().unwrap();
             let client = if let Some(api_url) = config.url.as_deref() {
                 GitHubClient::with_base_url(api_url, owner, repo, token)

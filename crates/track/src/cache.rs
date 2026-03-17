@@ -682,8 +682,19 @@ impl TrackerCache {
             ..Self::default()
         };
 
-        // Fetch projects
-        let projects = client.list_projects().context("Failed to fetch projects")?;
+        // Fetch projects:
+        // - If default_project is set (project context), only fetch that project to avoid
+        //   pulling all repos visible to the token (which can include org repos and
+        //   waste API quota on backends like GitHub with broad token scopes)
+        // - Otherwise (global context), fetch all projects
+        let projects = if let Some(dp) = default_project {
+            match client.get_project(dp) {
+                Ok(p) => vec![p],
+                Err(_) => client.list_projects().context("Failed to fetch projects")?,
+            }
+        } else {
+            client.list_projects().context("Failed to fetch projects")?
+        };
         cache.projects = projects
             .iter()
             .map(|p| CachedProject {
@@ -694,9 +705,7 @@ impl TrackerCache {
             })
             .collect();
 
-        // Determine which projects to fetch detailed data for:
-        // - If default_project is set (project context), only fetch that project's details
-        // - Otherwise (global context), fetch details for all projects
+        // Determine which projects to fetch detailed data for
         let projects_for_details: Vec<&tracker_core::Project> = if let Some(dp) = default_project {
             projects
                 .iter()
