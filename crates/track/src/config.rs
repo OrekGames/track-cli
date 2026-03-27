@@ -194,47 +194,50 @@ impl Config {
     fn apply_backend_config(&mut self, backend: Backend) {
         match backend {
             Backend::YouTrack => {
-                // If global url/token are set, they override backend-specific ones
-                // But if global ones are not set, use backend-specific ones
-                if self.url.is_none() {
-                    self.url = self.youtrack.url.take();
+                if let Some(u) = self.youtrack.url.take() {
+                    self.url = Some(u);
                 }
-                if self.token.is_none() {
-                    self.token = self.youtrack.token.take();
+                if let Some(t) = self.youtrack.token.take() {
+                    self.token = Some(t);
                 }
             }
             Backend::Jira => {
-                // Jira needs url, email, and token
-                if self.url.is_none() {
-                    self.url = self.jira.url.take();
+                if let Some(u) = self.jira.url.take() {
+                    self.url = Some(u);
                 }
-                if self.email.is_none() {
-                    self.email = self.jira.email.take();
+                if let Some(e) = self.jira.email.take() {
+                    self.email = Some(e);
                 }
-                if self.token.is_none() {
-                    self.token = self.jira.token.take();
+                if let Some(t) = self.jira.token.take() {
+                    self.token = Some(t);
                 }
             }
             Backend::GitHub => {
-                // GitHub needs token; url defaults to api.github.com
-                if self.url.is_none() {
-                    self.url = self
-                        .github
-                        .api_url
-                        .take()
-                        .or_else(|| Some("https://api.github.com".to_string()));
+                if let Some(api_url) = self.github.api_url.take() {
+                    self.url = Some(api_url);
+                } else {
+                    // GitHub typically defaults to api.github.com.
+                    // If the global generic URL is set to a completely different service (like YouTrack/GitLab),
+                    // we should disregard it and use the GitHub default to prevent cross-contamination.
+                    let is_github_url = self
+                        .url
+                        .as_deref()
+                        .map_or(false, |u| u.to_lowercase().contains("github"));
+                    
+                    if !is_github_url {
+                        self.url = Some("https://api.github.com".to_string());
+                    }
                 }
-                if self.token.is_none() {
-                    self.token = self.github.token.take();
+                if let Some(t) = self.github.token.take() {
+                    self.token = Some(t);
                 }
             }
             Backend::GitLab => {
-                // GitLab needs token and url
-                if self.url.is_none() {
-                    self.url = self.gitlab.url.take();
+                if let Some(u) = self.gitlab.url.take() {
+                    self.url = Some(u);
                 }
-                if self.token.is_none() {
-                    self.token = self.gitlab.token.take();
+                if let Some(t) = self.gitlab.token.take() {
+                    self.token = Some(t);
                 }
             }
         }
