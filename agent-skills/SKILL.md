@@ -411,6 +411,16 @@ track i new -p PROJ -s "Title" --field "Priority=Invalid" --validate --dry-run
 
 **Key point**: `--validate` alone still creates/updates if valid. Add `--dry-run` to check without making changes.
 
+### Post-Action Verification & Diffing
+
+The CLI verifies issue create/update operations to detect "silent failures" where the backend ignores a field change (e.g., read-only fields, invalid transitions).
+
+- **Warnings**: Ignored fields cause a `⚠ Warning:` to `stderr` (exit code remains 0). Agents should read stderr to see if their update applied fully.
+- **Verbose Diffing**: Use `--verbose` (`-v`) on create/update to force an explicit diff showing:
+  - Requested changes (`Old -> New`)
+  - Server-side side effects (`(Side Effect) Stage: Open -> Done`)
+  - Ignored requests (`Field (Ignored)`)
+
 ### Workflow Hints
 
 ```bash

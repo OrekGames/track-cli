@@ -1,5 +1,6 @@
 use crate::cli::OutputFormat;
 use colored::Colorize;
+use std::collections::HashSet;
 use serde::Serialize;
 use std::io::IsTerminal;
 use tracker_core::{
@@ -11,6 +12,27 @@ pub fn output_json<T: Serialize + ?Sized>(value: &T) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(value)?;
     println!("{}", json);
     Ok(())
+}
+
+/// Output verification warnings to stderr.
+pub fn output_verification_warnings(warnings: &[String], format: OutputFormat) {
+    if warnings.is_empty() {
+        return;
+    }
+
+    match format {
+        OutputFormat::Text => {
+            for warning in warnings {
+                eprintln!("{} {}", "⚠ Warning:".yellow().bold(), warning);
+            }
+        }
+        OutputFormat::Json => {
+            // Print to stderr to avoid polluting stdout JSON, but still provide the information.
+            for warning in warnings {
+                eprintln!("{} {}", "⚠ Warning:".yellow().bold(), warning);
+            }
+        }
+    }
 }
 
 pub fn output_result<T: Serialize + Displayable>(
@@ -44,6 +66,137 @@ pub fn output_list<T: Serialize + Displayable>(
         }
     }
     Ok(())
+}
+
+/// Output a summary of changes made to an issue.
+pub fn output_change_summary(
+    old: Option<&Issue>,
+    new: &Issue,
+    update: Option<&tracker_core::UpdateIssue>,
+    create: Option<&tracker_core::CreateIssue>,
+    format: OutputFormat,
+) {
+    if format != OutputFormat::Text {
+        return;
+    }
+
+    use colored::Colorize;
+
+    println!("{}", "--- Change Summary ---".bright_black());
+
+    // 1. Identify which fields were requested
+    let mut requested_fields: HashSet<String> = HashSet::new();
+    if let Some(u) = update {
+        if u.summary.is_some() { requested_fields.insert("Summary".to_string().to_lowercase()); }
+        if u.description.is_some() { requested_fields.insert("Description".to_string().to_lowercase()); }
+        if u.parent.is_some() { requested_fields.insert("Parent".to_string().to_lowercase()); }
+        for f in &u.custom_fields {
+            requested_fields.insert(match f {
+                tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
+                tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
+                tracker_core::CustomFieldUpdate::State { name, .. } => name,
+                tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
+            }.to_lowercase());
+        }
+    }
+    if let Some(c) = create {
+        requested_fields.insert("Summary".to_string().to_lowercase());
+        if c.description.is_some() { requested_fields.insert("Description".to_string().to_lowercase()); }
+        if c.parent.is_some() { requested_fields.insert("Parent".to_string().to_lowercase()); }
+        for f in &c.custom_fields {
+            requested_fields.insert(match f {
+                tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
+                tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
+                tracker_core::CustomFieldUpdate::State { name, .. } => name,
+                tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
+            }.to_lowercase());
+        }
+    }
+
+    // 2. Identify all detected changes
+    let mut displayed_fields = HashSet::new();
+
+    // Check Summary
+    if old.map(|o| &o.summary) != Some(&new.summary) {
+        display_change("Summary", old.map(|o| o.summary.as_str()), Some(&new.summary), &requested_fields);
+    }
+    displayed_fields.insert("summary".to_string());
+
+    // Check Description
+    if old.and_then(|o| o.description.as_deref()) != new.description.as_deref() {
+        display_change("Description", old.and_then(|o| o.description.as_deref()), new.description.as_deref(), &requested_fields);
+    }
+    displayed_fields.insert("description".to_string());
+
+    // Check Custom Fields
+    for new_cf in &new.custom_fields {
+        let name = match new_cf {
+            CustomField::SingleEnum { name, .. } => name,
+            CustomField::State { name, .. } => name,
+            CustomField::SingleUser { name, .. } => name,
+            CustomField::Text { name, .. } => name,
+            CustomField::MultiEnum { name, .. } => name,
+            CustomField::Unknown { name, .. } => name,
+        };
+        
+        let old_val = old.and_then(|o| find_field_value(o, name));
+        let new_val = find_field_value(new, name);
+
+        if old_val != new_val {
+            display_change(name, old_val.as_deref(), new_val.as_deref(), &requested_fields);
+        }
+        displayed_fields.insert(name.to_lowercase());
+    }
+
+    // Check for ignored fields (requested but not in new or not changed)
+    for req_field in &requested_fields {
+        if !displayed_fields.contains(req_field) {
+            // Requested but not displayed -> likely ignored
+            println!("  {} ({})", req_field.bold(), "Ignored".yellow().dimmed());
+        }
+    }
+}
+
+fn display_change(name: &str, old: Option<&str>, new: Option<&str>, requested: &HashSet<String>) {
+    use colored::Colorize;
+    let is_requested = requested.contains(&name.to_lowercase());
+    let prefix = if is_requested { "" } else { "(Side Effect) " };
+    let label = if is_requested { name.bold() } else { name.bright_black() };
+
+    match (old, new) {
+        (Some(o), Some(n)) if o != n => {
+            println!("  {}{}: {} -> {}", prefix.dimmed(), label, o.dimmed(), n.green());
+        }
+        (None, Some(n)) => {
+            println!("  {}{}: {}", prefix.dimmed(), label, n.green());
+        }
+        (Some(o), None) => {
+             println!("  {}{}: {} -> {}", prefix.dimmed(), label, o.dimmed(), "None".red());
+        }
+        _ => {}
+    }
+}
+
+fn find_field_value(issue: &Issue, name: &str) -> Option<String> {
+    issue.custom_fields.iter().find(|f| {
+        match f {
+            CustomField::SingleEnum { name: n, .. } => n.eq_ignore_ascii_case(name),
+            CustomField::State { name: n, .. } => n.eq_ignore_ascii_case(name),
+            CustomField::SingleUser { name: n, .. } => n.eq_ignore_ascii_case(name),
+            CustomField::Text { name: n, .. } => n.eq_ignore_ascii_case(name),
+            CustomField::MultiEnum { name: n, .. } => n.eq_ignore_ascii_case(name),
+            CustomField::Unknown { name: n, .. } => n.eq_ignore_ascii_case(name),
+        }
+    }).and_then(|f| {
+        match f {
+            CustomField::SingleEnum { value, .. } => value.clone(),
+            CustomField::State { value, .. } => value.clone(),
+            CustomField::SingleUser { login, .. } => login.clone(),
+            CustomField::Text { value, .. } => value.clone(),
+            CustomField::MultiEnum { values, .. } => Some(values.join(", ")),
+            CustomField::Unknown { .. } => None,
+        }
+    })
 }
 
 #[derive(Serialize)]
@@ -206,6 +359,9 @@ impl Displayable for CustomField {
             }
             CustomField::Text { name, value } => {
                 format!("{}: {}", name.dimmed(), value.as_deref().unwrap_or("None"))
+            }
+            CustomField::MultiEnum { name, values } => {
+                format!("{}: {}", name.dimmed(), values.join(", "))
             }
             CustomField::Unknown { name } => {
                 format!("{}: {}", name.dimmed(), "Unknown field".dimmed())

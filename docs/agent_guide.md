@@ -790,6 +790,26 @@ track i u PROJ-123 --field "State=Done" --validate
 track i u PROJ-123 --field "State=Done" --validate --dry-run
 ```
 
+### Post-Action Verification & Diffing
+
+The CLI automatically verifies issue creation and update operations to detect "silent failures" where the backend ignores a requested field change (common with read-only fields or invalid state transitions).
+
+- **Warnings**: If a requested field change is ignored, the CLI will output a HTTP-success but print a `⚠ Warning:` to `stderr`. This helps AI agents realize that an update failed to apply.
+- **Complete Diffing**: Use the `--verbose` (`-v`) flag on `create` or `update` commands to force an explicit "From -> To" diff of all fields. This diff detects:
+  - Requested changes (e.g. `Summary: Old -> New`)
+  - Server-side side effects (e.g. `(Side Effect) Stage: Open -> Done`)
+  - Ignored requests (e.g. `CustomField (Ignored)`)
+
+```bash
+# Update with verbose diffing
+track i u PROJ-123 --state "Done" --verbose
+
+# Output looks like:
+# --- Change Summary ---
+#   State: In Progress -> Done
+#   (Side Effect) Resolved: None -> 1711584000123
+```
+
 ### Workflow Hints
 
 The cache includes workflow hints showing valid state transitions for each project. This helps prevent state transition failures due to workflow constraints.

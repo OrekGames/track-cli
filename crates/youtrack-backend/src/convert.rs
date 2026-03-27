@@ -46,6 +46,10 @@ impl From<yt::CustomField> for core::CustomField {
                 name,
                 value: value.map(|v| v.text),
             },
+            yt::CustomField::MultiEnum { name, value } => core::CustomField::MultiEnum {
+                name,
+                values: value.into_iter().map(|v| v.name).collect(),
+            },
             yt::CustomField::Unknown => core::CustomField::Unknown {
                 name: "Unknown".to_string(),
             },

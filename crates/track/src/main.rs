@@ -190,6 +190,7 @@ fn run_with_client(
             action,
             cli.format,
             config.default_project.as_deref(),
+            cli.verbose,
         ),
         Commands::Project { action } => {
             commands::project::handle_project(issue_client, action, cli.format)

@@ -10,6 +10,10 @@ pub struct Cli {
     #[arg(long, short = 'o', value_enum, global = true, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
 
+    /// Verbose output (shows detailed changes and additional context)
+    #[arg(long, short = 'v', global = true)]
+    pub verbose: bool,
+
     /// When to colorize output
     #[arg(long, value_enum, global = true, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,

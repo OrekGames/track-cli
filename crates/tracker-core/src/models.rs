@@ -53,6 +53,10 @@ pub enum CustomField {
         name: String,
         value: Option<String>,
     },
+    MultiEnum {
+        name: String,
+        values: Vec<String>,
+    },
     Unknown {
         name: String,
     },
