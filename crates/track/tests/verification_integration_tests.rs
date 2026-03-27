@@ -45,7 +45,8 @@ fn test_issue_update_verification_warning() {
         "tags": [],
         "created": 1640000000000i64,
         "updated": 1640000000000i64
-    }).to_string();
+    })
+    .to_string();
 
     let (_server, port) = start_mock_server_multi(vec![issue_json.clone(), issue_json]);
     thread::sleep(Duration::from_millis(100));
@@ -59,7 +60,9 @@ fn test_issue_update_verification_warning() {
         .assert()
         .success()
         .stderr(predicate::str::contains("⚠ Warning:"))
-        .stderr(predicate::str::contains("Summary: expected 'New Summary', got 'Old Summary'"));
+        .stderr(predicate::str::contains(
+            "Summary: expected 'New Summary', got 'Old Summary'",
+        ));
 }
 
 #[test]
@@ -70,7 +73,8 @@ fn test_issue_create_verification_warning() {
         "id": "0-1",
         "name": "Test Project",
         "shortName": "PROJ"
-    }]).to_string();
+    }])
+    .to_string();
 
     let issue_json = serde_json::json!({
         "id": "1-2",
@@ -84,13 +88,21 @@ fn test_issue_create_verification_warning() {
         "tags": [],
         "created": 1640000000000i64,
         "updated": 1640000000000i64
-    }).to_string();
+    })
+    .to_string();
 
     let (_server, port) = start_mock_server_multi(vec![project_json, issue_json]);
     thread::sleep(Duration::from_millis(100));
 
     cargo_bin_cmd!("track")
-        .args(["issue", "create", "--project", "PROJ", "--summary", "Original Summary"])
+        .args([
+            "issue",
+            "create",
+            "--project",
+            "PROJ",
+            "--summary",
+            "Original Summary",
+        ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
         .env_remove("YOUTRACK_URL")
@@ -98,7 +110,9 @@ fn test_issue_create_verification_warning() {
         .assert()
         .success()
         .stderr(predicate::str::contains("⚠ Warning:"))
-        .stderr(predicate::str::contains("Summary: expected 'Original Summary', got 'Mismatched Summary'"));
+        .stderr(predicate::str::contains(
+            "Summary: expected 'Original Summary', got 'Mismatched Summary'",
+        ));
 }
 
 #[test]
@@ -114,7 +128,8 @@ fn test_issue_update_verbose_diff() {
         "tags": [],
         "created": 1640000000000i64,
         "updated": 1640000000000i64
-    }).to_string();
+    })
+    .to_string();
 
     let new_issue = serde_json::json!({
         "id": "1-1",
@@ -125,13 +140,21 @@ fn test_issue_update_verbose_diff() {
         "tags": [],
         "created": 1640000000000i64,
         "updated": 1640000000001i64
-    }).to_string();
+    })
+    .to_string();
 
     let (_server, port) = start_mock_server_multi(vec![old_issue, new_issue.clone(), new_issue]);
     thread::sleep(Duration::from_millis(100));
 
     cargo_bin_cmd!("track")
-        .args(["issue", "update", "PROJ-123", "--summary", "New Summary", "--verbose"])
+        .args([
+            "issue",
+            "update",
+            "PROJ-123",
+            "--summary",
+            "New Summary",
+            "--verbose",
+        ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
         .env_remove("YOUTRACK_URL")
@@ -139,5 +162,7 @@ fn test_issue_update_verbose_diff() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--- Change Summary ---"))
-        .stdout(predicate::str::contains("Summary: Old Summary -> New Summary"));
+        .stdout(predicate::str::contains(
+            "Summary: Old Summary -> New Summary",
+        ));
 }

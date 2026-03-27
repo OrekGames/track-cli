@@ -222,8 +222,8 @@ impl Config {
                     let is_github_url = self
                         .url
                         .as_deref()
-                        .map_or(false, |u| u.to_lowercase().contains("github"));
-                    
+                        .is_some_and(|u| u.to_lowercase().contains("github"));
+
                     if !is_github_url {
                         self.url = Some("https://api.github.com".to_string());
                     }

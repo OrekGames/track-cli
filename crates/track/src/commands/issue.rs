@@ -456,7 +456,13 @@ fn handle_update(
     crate::output::output_verification_warnings(&warnings, format);
 
     if verbose {
-        crate::output::output_change_summary(old_issue.as_ref(), &issue, Some(&update), None, format);
+        crate::output::output_change_summary(
+            old_issue.as_ref(),
+            &issue,
+            Some(&update),
+            None,
+            format,
+        );
         println!();
     }
 
@@ -1468,19 +1474,19 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
 fn verify_issue_update(requested: &UpdateIssue, result: &Issue) -> Vec<String> {
     let mut warnings = Vec::new();
 
-    if let Some(req_summary) = &requested.summary {
-        if result.summary != *req_summary {
-            warnings.push(format!(
-                "Summary: expected '{}', got '{}'",
-                req_summary, result.summary
-            ));
-        }
+    if let Some(req_summary) = &requested.summary
+        && result.summary != *req_summary
+    {
+        warnings.push(format!(
+            "Summary: expected '{}', got '{}'",
+            req_summary, result.summary
+        ));
     }
 
-    if let Some(req_desc) = &requested.description {
-        if result.description.as_deref() != Some(req_desc) {
-            warnings.push("Description: update was not applied correctly".to_string());
-        }
+    if let Some(req_desc) = &requested.description
+        && result.description.as_deref() != Some(req_desc)
+    {
+        warnings.push("Description: update was not applied correctly".to_string());
     }
 
     for req_field in &requested.custom_fields {
@@ -1503,10 +1509,10 @@ fn verify_issue_create(requested: &CreateIssue, result: &Issue) -> Vec<String> {
         ));
     }
 
-    if let Some(req_desc) = &requested.description {
-        if result.description.as_deref() != Some(req_desc) {
-            warnings.push("Description: was not saved correctly".to_string());
-        }
+    if let Some(req_desc) = &requested.description
+        && result.description.as_deref() != Some(req_desc)
+    {
+        warnings.push("Description: was not saved correctly".to_string());
     }
 
     for req_field in &requested.custom_fields {
@@ -1562,7 +1568,8 @@ fn verify_field_match(
         (
             CustomFieldUpdate::MultiEnum { name, values },
             Some(CustomField::MultiEnum {
-                values: actual_vals, ..
+                values: actual_vals,
+                ..
             }),
         ) => {
             if actual_vals != values {

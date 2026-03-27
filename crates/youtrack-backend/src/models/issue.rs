@@ -88,10 +88,7 @@ pub enum CustomField {
         value: Option<TextValue>,
     },
     #[serde(rename = "MultiEnumIssueCustomField")]
-    MultiEnum {
-        name: String,
-        value: Vec<EnumValue>,
-    },
+    MultiEnum { name: String, value: Vec<EnumValue> },
     #[serde(other)]
     Unknown,
 }
