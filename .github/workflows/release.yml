@@ -92,29 +92,41 @@ jobs:
             fi
 
           else
-            # Push to main — only release a tag matching the current Cargo.toml version.
-            # This prevents stale old tags (whose releases were deleted) from being
-            # re-released, and ignores tags created on unmerged feature branches.
+            # Push to main — release a tag matching the current Cargo.toml version.
+            # If the tag is missing or not on main, we create/move it (like manual trigger).
             CARGO_VERSION=$(awk -F'"' '/^version/ { print $2; exit }' crates/track/Cargo.toml)
-            EXPECTED_TAG="v${CARGO_VERSION}"
-            echo "Cargo.toml version: ${CARGO_VERSION} (expected tag: ${EXPECTED_TAG})"
+            VERSION="${CARGO_VERSION}"
+            TAG="v${VERSION}"
+            echo "Cargo.toml version: ${VERSION} (target tag: ${TAG})"
 
-            if git rev-parse "$EXPECTED_TAG" >/dev/null 2>&1; then
-              TAG_COMMIT=$(git rev-parse "$EXPECTED_TAG^{commit}")
+            # Check if release already exists
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Release $TAG already exists, skipping"
+              echo "should_release=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            if git rev-parse "$TAG" >/dev/null 2>&1; then
+              TAG_COMMIT=$(git rev-parse "$TAG^{commit}")
               if git merge-base --is-ancestor "$TAG_COMMIT" HEAD 2>/dev/null; then
-                if ! gh release view "$EXPECTED_TAG" >/dev/null 2>&1; then
-                  echo "Found unreleased tag matching Cargo.toml: $EXPECTED_TAG"
-                  should_release=true
-                  version="$CARGO_VERSION"
-                else
-                  echo "Release $EXPECTED_TAG already exists"
-                fi
+                echo "Tag $TAG exists and is reachable from main"
               else
-                echo "Tag $EXPECTED_TAG exists but is not reachable from main"
+                echo "Tag $TAG exists but is not reachable from main (likely a squash merge). Moving tag to HEAD."
+                git config user.name "github-actions[bot]"
+                git config user.email "github-actions[bot]@users.noreply.github.com"
+                git tag -f "$TAG"
+                git push origin "$TAG" --force
               fi
             else
-              echo "No tag $EXPECTED_TAG found — waiting for version-tag workflow"
+              echo "Tag $TAG does not exist. Creating tag on HEAD."
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git tag "$TAG"
+              git push origin "$TAG"
             fi
+
+            should_release=true
+            version="$VERSION"
           fi
 
           echo "should_release=$should_release" >> $GITHUB_OUTPUT
