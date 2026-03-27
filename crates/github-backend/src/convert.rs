@@ -146,12 +146,19 @@ pub fn create_issue_from_core(issue: &CreateIssue) -> CreateGitHubIssue {
 
 /// Convert a tracker-core UpdateIssue to a GitHub UpdateGitHubIssue
 pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
-    // Extract state from custom fields (CLI sends "State", backends may use "Status")
+    // Extract state from custom fields (CLI sends "State" or "Stage", backends may use "Status")
     let state = update.custom_fields.iter().find_map(|cf| match cf {
         CustomFieldUpdate::State { name, value }
-            if name.to_lowercase() == "status" || name.to_lowercase() == "state" =>
+            if name.to_lowercase() == "status"
+                || name.to_lowercase() == "state"
+                || name.to_lowercase() == "stage" =>
         {
-            Some(value.clone())
+            let mapped_value = match value.to_lowercase().as_str() {
+                "done" | "resolved" | "closed" | "completed" => "closed",
+                "open" | "in progress" | "develop" | "reopened" => "open",
+                _ => value.as_str(), // Fallback
+            };
+            Some(mapped_value.to_string())
         }
         _ => None,
     });
