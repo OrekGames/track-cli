@@ -623,7 +623,7 @@ pub enum FieldCommands {
         #[arg(long, short = 'p', required = true)]
         project: String,
         /// Comma-separated values for the field
-        #[arg(long, short = 'v', value_delimiter = ',', required = true)]
+        #[arg(long, value_delimiter = ',', required = true)]
         values: Vec<String>,
         /// Value(s) that represent resolved state (for state fields, comma-separated)
         #[arg(long, value_delimiter = ',')]
@@ -652,7 +652,7 @@ pub enum BundleCommands {
         #[arg(long, short = 't', default_value = "enum")]
         bundle_type: String,
         /// Initial values (comma-separated)
-        #[arg(long, short = 'v', value_delimiter = ',')]
+        #[arg(long, value_delimiter = ',')]
         values: Vec<String>,
         /// Value(s) that represent resolved state (for state bundles, comma-separated)
         #[arg(long, value_delimiter = ',')]
@@ -666,7 +666,7 @@ pub enum BundleCommands {
         #[arg(long, short = 't', required = true)]
         bundle_type: String,
         /// Value name to add
-        #[arg(long, short = 'v', required = true)]
+        #[arg(long, required = true)]
         value: String,
         /// Mark this value as resolved (for state bundles)
         #[arg(long)]
