@@ -38,6 +38,7 @@ pub fn handle_issue(
     action: &IssueCommands,
     format: OutputFormat,
     default_project: Option<&str>,
+    verbose: bool,
 ) -> Result<()> {
     match action {
         IssueCommands::Get { id, full } => handle_get(client, id, *full, format),
@@ -77,6 +78,7 @@ pub fn handle_issue(
                 parent.as_deref(),
                 format,
                 default_project,
+                verbose,
             )
         }
         IssueCommands::Update {
@@ -108,7 +110,7 @@ pub fn handle_issue(
                 dry_run: *dry_run,
                 json: json.as_deref(),
             };
-            handle_update_batch(client, ids, &args, format)
+            handle_update_batch(client, ids, &args, format, verbose)
         }
         IssueCommands::Search {
             query,
@@ -276,6 +278,7 @@ fn handle_create(
     parent: Option<&str>,
     format: OutputFormat,
     default_project: Option<&str>,
+    verbose: bool,
 ) -> Result<()> {
     let (create, project_id) = if let Some(payload) = args.json {
         let create = parse_create_payload(client, payload)?;
@@ -356,6 +359,14 @@ fn handle_create(
         .create_issue(&create)
         .context("Failed to create issue")?;
 
+    let warnings = verify_issue_create(&create, &issue);
+    crate::output::output_verification_warnings(&warnings, format);
+
+    if verbose {
+        crate::output::output_change_summary(None, &issue, None, Some(&create), format);
+        println!();
+    }
+
     output_result(&issue, format)?;
 
     Ok(())
@@ -366,6 +377,7 @@ fn handle_update(
     id: &str,
     args: &IssueFieldArgs,
     format: OutputFormat,
+    verbose: bool,
 ) -> Result<()> {
     let update = if let Some(payload) = args.json {
         parse_update_payload(payload)?
@@ -429,9 +441,30 @@ fn handle_update(
         }
     }
 
+    // Fetch old state if verbose for diffing
+    let old_issue = if verbose {
+        client.get_issue(id).ok()
+    } else {
+        None
+    };
+
     let issue = client
         .update_issue(id, &update)
         .with_context(|| format!("Failed to update issue '{}'", id))?;
+
+    let warnings = verify_issue_update(&update, &issue);
+    crate::output::output_verification_warnings(&warnings, format);
+
+    if verbose {
+        crate::output::output_change_summary(
+            old_issue.as_ref(),
+            &issue,
+            Some(&update),
+            None,
+            format,
+        );
+        println!();
+    }
 
     output_result(&issue, format)?;
     Ok(())
@@ -1184,10 +1217,11 @@ fn handle_update_batch(
     ids: &[String],
     args: &IssueFieldArgs,
     format: OutputFormat,
+    verbose: bool,
 ) -> Result<()> {
     // Single issue - delegate to original handler
     if ids.len() == 1 {
-        return handle_update(client, &ids[0], args, format);
+        return handle_update(client, &ids[0], args, format, verbose);
     }
 
     // Batch update
@@ -1435,6 +1469,186 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
     Ok(())
 }
 
+/// Verify that an issue update was correctly applied by the backend.
+/// Returns a list of warning messages for fields that do not match the request.
+fn verify_issue_update(requested: &UpdateIssue, result: &Issue) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if let Some(req_summary) = &requested.summary
+        && result.summary != *req_summary
+    {
+        warnings.push(format!(
+            "Summary: expected '{}', got '{}'",
+            req_summary, result.summary
+        ));
+    }
+
+    if let Some(req_desc) = &requested.description
+        && result.description.as_deref() != Some(req_desc)
+    {
+        warnings.push("Description: update was not applied correctly".to_string());
+    }
+
+    for req_field in &requested.custom_fields {
+        if let Some(warning) = verify_field_match(req_field, &result.custom_fields) {
+            warnings.push(warning);
+        }
+    }
+
+    warnings
+}
+
+/// Verify that an issue creation correctly applied all requested fields.
+fn verify_issue_create(requested: &CreateIssue, result: &Issue) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if result.summary != requested.summary {
+        warnings.push(format!(
+            "Summary: expected '{}', got '{}'",
+            requested.summary, result.summary
+        ));
+    }
+
+    if let Some(req_desc) = &requested.description
+        && result.description.as_deref() != Some(req_desc)
+    {
+        warnings.push("Description: was not saved correctly".to_string());
+    }
+
+    for req_field in &requested.custom_fields {
+        if let Some(warning) = verify_field_match(req_field, &result.custom_fields) {
+            warnings.push(warning);
+        }
+    }
+
+    warnings
+}
+
+/// Helper to verify if a requested custom field update is reflected in the issue's custom fields.
+fn verify_field_match(
+    requested: &CustomFieldUpdate,
+    actual_fields: &[tracker_core::CustomField],
+) -> Option<String> {
+    use tracker_core::CustomField;
+
+    let req_name = match requested {
+        CustomFieldUpdate::SingleEnum { name, .. } => name,
+        CustomFieldUpdate::MultiEnum { name, .. } => name,
+        CustomFieldUpdate::State { name, .. } => name,
+        CustomFieldUpdate::SingleUser { name, .. } => name,
+    };
+
+    let actual = actual_fields.iter().find(|f| match f {
+        CustomField::SingleEnum { name, .. } => name.eq_ignore_ascii_case(req_name),
+        CustomField::State { name, .. } => name.eq_ignore_ascii_case(req_name),
+        CustomField::SingleUser { name, .. } => name.eq_ignore_ascii_case(req_name),
+        CustomField::Text { name, .. } => name.eq_ignore_ascii_case(req_name),
+        CustomField::MultiEnum { name, .. } => name.eq_ignore_ascii_case(req_name),
+        CustomField::Unknown { name } => name.eq_ignore_ascii_case(req_name),
+    });
+
+    match (requested, actual) {
+        (
+            CustomFieldUpdate::SingleEnum { name, value },
+            Some(CustomField::SingleEnum {
+                value: actual_val, ..
+            }),
+        ) => {
+            if actual_val.as_deref().unwrap_or("") != value {
+                Some(format!(
+                    "Field '{}': expected '{}', got '{}'",
+                    name,
+                    value,
+                    actual_val.as_deref().unwrap_or("None")
+                ))
+            } else {
+                None
+            }
+        }
+        (
+            CustomFieldUpdate::MultiEnum { name, values },
+            Some(CustomField::MultiEnum {
+                values: actual_vals,
+                ..
+            }),
+        ) => {
+            if actual_vals != values {
+                Some(format!(
+                    "Field '{}': expected '{}', got '{}'",
+                    name,
+                    values.join(", "),
+                    actual_vals.join(", ")
+                ))
+            } else {
+                None
+            }
+        }
+        (
+            CustomFieldUpdate::State { name, value },
+            Some(CustomField::State {
+                value: actual_val, ..
+            }),
+        ) => {
+            if actual_val.as_deref().unwrap_or("") != value {
+                Some(format!(
+                    "Field '{}': expected '{}', got '{}'",
+                    name,
+                    value,
+                    actual_val.as_deref().unwrap_or("None")
+                ))
+            } else {
+                None
+            }
+        }
+        (
+            CustomFieldUpdate::SingleUser { name, login },
+            Some(CustomField::SingleUser {
+                login: actual_login,
+                ..
+            }),
+        ) => {
+            if actual_login.as_deref().unwrap_or("") != login {
+                Some(format!(
+                    "Field '{}': expected user '{}', got '{}'",
+                    name,
+                    login,
+                    actual_login.as_deref().unwrap_or("None")
+                ))
+            } else {
+                None
+            }
+        }
+        (
+            CustomFieldUpdate::MultiEnum { name, values },
+            Some(CustomField::SingleEnum {
+                value: actual_val, ..
+            }),
+        ) => {
+            // Backend might have mapped multi to single if only one value sent
+            if values.len() == 1 {
+                if actual_val.as_deref().unwrap_or("") != values[0] {
+                    Some(format!(
+                        "Field '{}': expected '{}', got '{}'",
+                        name,
+                        values[0],
+                        actual_val.as_deref().unwrap_or("None")
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                // For true multi-enum, we'd need a MultiEnum variant in CustomField (which tracker-core currently lacks, it usually flattens)
+                None
+            }
+        }
+        (_, None) => Some(format!(
+            "Field '{}': update was ignored by the server",
+            req_name
+        )),
+        _ => None, // Type mismatch or other case — already handled by build_custom_fields or server
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1643,5 +1857,82 @@ mod tests {
         let fields = vec!["Story Points=5".to_string()];
         let result = build_custom_fields(&fields, None, None, None, None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn verifies_issue_update_success() {
+        use tracker_core::{CustomField, ProjectRef};
+
+        let requested = UpdateIssue {
+            summary: Some("New Title".to_string()),
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "State".to_string(),
+                value: "Done".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let result = Issue {
+            id: "1".into(),
+            id_readable: "PROJ-1".into(),
+            summary: "New Title".into(),
+            description: None,
+            project: ProjectRef {
+                id: "P".into(),
+                name: None,
+                short_name: None,
+            },
+            custom_fields: vec![CustomField::State {
+                name: "State".to_string(),
+                value: Some("Done".to_string()),
+                is_resolved: true,
+            }],
+            tags: vec![],
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+        };
+
+        let warnings = verify_issue_update(&requested, &result);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn detects_verification_mismatch() {
+        use tracker_core::{CustomField, ProjectRef};
+
+        let requested = UpdateIssue {
+            summary: Some("New Title".to_string()),
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "State".to_string(),
+                value: "Done".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        // Result still has old summary and state
+        let result = Issue {
+            id: "1".into(),
+            id_readable: "PROJ-1".into(),
+            summary: "Old Title".into(),
+            description: None,
+            project: ProjectRef {
+                id: "P".into(),
+                name: None,
+                short_name: None,
+            },
+            custom_fields: vec![CustomField::State {
+                name: "State".to_string(),
+                value: Some("Open".to_string()),
+                is_resolved: false,
+            }],
+            tags: vec![],
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+        };
+
+        let warnings = verify_issue_update(&requested, &result);
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("Summary"));
+        assert!(warnings[1].contains("State"));
     }
 }
