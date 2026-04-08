@@ -7,6 +7,37 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    fn base64_encode_for_test(input: &str) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+        let bytes = input.as_bytes();
+        let mut result = String::new();
+
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as usize;
+            let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+            let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+
+            result.push(ALPHABET[b0 >> 2] as char);
+            result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+
+            if chunk.len() > 1 {
+                result.push(ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
+            } else {
+                result.push('=');
+            }
+
+            if chunk.len() > 2 {
+                result.push(ALPHABET[b2 & 0x3f] as char);
+            } else {
+                result.push('=');
+            }
+        }
+
+        result
+    }
+
     /// Helper to create a mock Jira issue response
     fn mock_jira_issue(key: &str, summary: &str) -> serde_json::Value {
         serde_json::json!({
@@ -77,6 +108,65 @@ mod tests {
             "self": format!("https://test.atlassian.net/rest/api/3/project/{}", key),
             "projectTypeKey": "software"
         })
+    }
+
+    #[tokio::test]
+    async fn test_auth_whitespace_trimming() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            // Base64 for "test@test.com:FAKE-TOKEN-DO-NOT-USE" is "dGVzdEB0ZXN0LmNvbTpGQUtFLVRPS0VOLURPLU5PVC1VU0U="
+            // The client should trim the whitespace before encoding
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTpGQUtFLVRPS0VOLURPLU5PVC1VU0U=",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "Test issue")),
+            )
+            .mount(&mock_server)
+            .await;
+
+        // Pass credentials with leading/trailing whitespace
+        let client = JiraClient::new(
+            &mock_server.uri(),
+            " test@test.com \n",
+            "\rFAKE-TOKEN-DO-NOT-USE\t ",
+        );
+        let issue = client.get_issue("TEST-123").unwrap();
+
+        assert_eq!(issue.key, "TEST-123");
+    }
+
+    #[tokio::test]
+    async fn test_auth_whitespace_proof_dirty_header_differs_but_client_sends_clean_header() {
+        let mock_server = MockServer::start().await;
+        let dirty_email = " test@test.com \n";
+        let dirty_token = "\rFAKE-TOKEN-DO-NOT-USE\t ";
+        let clean_credentials = "test@test.com:FAKE-TOKEN-DO-NOT-USE";
+        let dirty_credentials = format!("{}:{}", dirty_email, dirty_token);
+        let clean_header = format!("Basic {}", base64_encode_for_test(clean_credentials));
+        let dirty_header = format!("Basic {}", base64_encode_for_test(&dirty_credentials));
+
+        assert_ne!(
+            dirty_header, clean_header,
+            "Untrimmed credentials should produce a different Basic auth header"
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            .and(header("Authorization", clean_header.as_str()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "Test issue")),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), dirty_email, dirty_token);
+        let issue = client.get_issue("TEST-123").unwrap();
+
+        assert_eq!(issue.key, "TEST-123");
     }
 
     #[tokio::test]
