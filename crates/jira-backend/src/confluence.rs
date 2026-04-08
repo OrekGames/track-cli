@@ -29,7 +29,7 @@ impl ConfluenceClient {
             .into();
 
         // Base64 encode credentials for Basic Auth
-        let credentials = format!("{}:{}", email, api_token);
+        let credentials = format!("{}:{}", email.trim(), api_token.trim());
         let encoded = base64_encode(&credentials);
         let auth_header = format!("Basic {}", encoded);
 

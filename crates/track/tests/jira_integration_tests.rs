@@ -18,6 +18,7 @@ use predicates::prelude::*;
 use serde_json::Value;
 use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -1513,6 +1514,65 @@ token = "test"
     config_path
 }
 
+fn write_jira_mock_config_with_credentials(port: u16, email: &str, token: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("track-jira-test-auth-{}", port));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join(".track.toml");
+    let content = format!(
+        r#"
+[jira]
+url = "http://127.0.0.1:{}"
+email = {:?}
+token = {:?}
+"#,
+        port, email, token
+    );
+    std::fs::write(&config_path, content).unwrap();
+    config_path
+}
+
+fn start_jira_auth_capture_server(
+    response_body: String,
+) -> (thread::JoinHandle<()>, u16, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port");
+    let port = listener.local_addr().unwrap().port();
+    let captured_headers = Arc::new(Mutex::new(Vec::new()));
+    let captured_headers_for_thread = Arc::clone(&captured_headers);
+
+    let handle = thread::spawn(move || {
+        use std::io::{Read, Write};
+
+        let timeout = Duration::from_secs(3);
+        if let Some(stream) = listener.incoming().flatten().next() {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(timeout));
+            let mut buffer = [0; 4096];
+            if let Ok(size) = stream.read(&mut buffer) {
+                let request = String::from_utf8_lossy(&buffer[..size]);
+                if let Some(auth_header) = request.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("authorization")
+                        .then(|| value.trim().to_string())
+                }) {
+                    captured_headers_for_thread
+                        .lock()
+                        .unwrap()
+                        .push(auth_header);
+                }
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        }
+    });
+
+    (handle, port, captured_headers)
+}
+
 #[test]
 fn test_jira_pagination_hint_on_full_page() {
     // Jira search response includes total inline
@@ -1545,6 +1605,37 @@ fn test_jira_pagination_hint_on_full_page() {
         stderr.contains("results shown"),
         "Should show pagination hint on full page, got stderr: {}",
         stderr
+    );
+}
+
+#[test]
+fn test_jira_cli_trims_whitespace_in_basic_auth_header() {
+    let issue_response = mock_jira_issue("TEST-123", "Whitespace auth proof").to_string();
+    let (server, port, captured_headers) = start_jira_auth_capture_server(issue_response);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config_with_credentials(
+        port,
+        " test@test.com \n",
+        "\rFAKE-TOKEN-DO-NOT-USE\t ",
+    );
+
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(&cfg)
+        .args(["issue", "get", "TEST-123"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success();
+
+    server.join().unwrap();
+
+    let headers = captured_headers.lock().unwrap();
+    assert_eq!(headers.len(), 1, "Expected one Jira request through the CLI path");
+    assert_eq!(
+        headers[0],
+        "Basic dGVzdEB0ZXN0LmNvbTpGQUtFLVRPS0VOLURPLU5PVC1VU0U=",
+        "CLI should send the trimmed Jira Basic auth header"
     );
 }
 
