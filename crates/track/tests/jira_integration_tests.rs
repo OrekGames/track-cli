@@ -1514,7 +1514,11 @@ token = "test"
     config_path
 }
 
-fn write_jira_mock_config_with_credentials(port: u16, email: &str, token: &str) -> std::path::PathBuf {
+fn write_jira_mock_config_with_credentials(
+    port: u16,
+    email: &str,
+    token: &str,
+) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("track-jira-test-auth-{}", port));
     std::fs::create_dir_all(&dir).unwrap();
     let config_path = dir.join(".track.toml");
@@ -1631,10 +1635,13 @@ fn test_jira_cli_trims_whitespace_in_basic_auth_header() {
     server.join().unwrap();
 
     let headers = captured_headers.lock().unwrap();
-    assert_eq!(headers.len(), 1, "Expected one Jira request through the CLI path");
     assert_eq!(
-        headers[0],
-        "Basic dGVzdEB0ZXN0LmNvbTpGQUtFLVRPS0VOLURPLU5PVC1VU0U=",
+        headers.len(),
+        1,
+        "Expected one Jira request through the CLI path"
+    );
+    assert_eq!(
+        headers[0], "Basic dGVzdEB0ZXN0LmNvbTpGQUtFLVRPS0VOLURPLU5PVC1VU0U=",
         "CLI should send the trimmed Jira Basic auth header"
     );
 }

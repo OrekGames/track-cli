@@ -129,7 +129,11 @@ mod tests {
             .await;
 
         // Pass credentials with leading/trailing whitespace
-        let client = JiraClient::new(&mock_server.uri(), " test@test.com \n", "\rFAKE-TOKEN-DO-NOT-USE\t ");
+        let client = JiraClient::new(
+            &mock_server.uri(),
+            " test@test.com \n",
+            "\rFAKE-TOKEN-DO-NOT-USE\t ",
+        );
         let issue = client.get_issue("TEST-123").unwrap();
 
         assert_eq!(issue.key, "TEST-123");
