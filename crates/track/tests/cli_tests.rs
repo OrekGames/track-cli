@@ -154,12 +154,7 @@ fn test_config_file_is_used_for_defaults() {
     let output = cargo_bin_cmd!("track")
         .args(["--config"])
         .arg(&config_path)
-        .args([
-            "--format",
-            "json",
-            "project",
-            "list",
-        ])
+        .args(["--format", "json", "project", "list"])
         .env_remove("TRACKER_URL")
         .env_remove("TRACKER_TOKEN")
         .env_remove("TRACKER_BACKEND")
