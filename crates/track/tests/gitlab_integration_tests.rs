@@ -1850,17 +1850,29 @@ fn start_gitlab_mock_server_with_headers(
             let mut stream = stream;
             let _ = stream.set_read_timeout(Some(timeout));
             let mut buffer = [0; 4096];
-            if stream.read(&mut buffer).is_ok() {
-                let mut headers = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}",
-                    response_body.len()
-                );
-                for (key, value) in &extra_headers {
-                    headers.push_str(&format!("\r\n{}: {}", key, value));
+            // Read headers
+            let _ = stream.read(&mut buffer);
+
+            let mut headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+                response_body.len()
+            );
+            for (key, value) in &extra_headers {
+                headers.push_str(&format!("{}: {}\r\n", key, value));
+            }
+            headers.push_str("\r\n");
+            let response = format!("{}{}", headers, response_body);
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+
+            // Draining the request body before closing is important on Windows
+            // to avoid "Connection forcibly closed by remote host" errors (RST).
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            let mut discard = [0; 1024];
+            while let Ok(n) = stream.read(&mut discard) {
+                if n == 0 {
+                    break;
                 }
-                headers.push_str("\r\n\r\n");
-                let response = format!("{}{}", headers, response_body);
-                let _ = stream.write_all(response.as_bytes());
             }
         }
     });

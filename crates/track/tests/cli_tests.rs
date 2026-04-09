@@ -26,13 +26,25 @@ fn start_mock_server(port: u16, response_body: String) -> thread::JoinHandle<()>
 
         if let Some(mut stream) = listener.incoming().flatten().next() {
             let mut buffer = [0; 4096];
-            if stream.read(&mut buffer).is_ok() {
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    response_body.len(),
-                    response_body
-                );
-                let _ = stream.write_all(response.as_bytes());
+            // Read headers
+            let _ = stream.read(&mut buffer);
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+
+            // Draining the request body before closing is important on Windows
+            // to avoid "Connection forcibly closed by remote host" errors (RST).
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            let mut discard = [0; 1024];
+            while let Ok(n) = stream.read(&mut discard) {
+                if n == 0 {
+                    break;
+                }
             }
         }
     })
