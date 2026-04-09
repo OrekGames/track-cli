@@ -152,9 +152,9 @@ fn test_config_file_is_used_for_defaults() {
     thread::sleep(Duration::from_millis(200));
 
     let output = cargo_bin_cmd!("track")
+        .args(["--config"])
+        .arg(&config_path)
         .args([
-            "--config",
-            config_path.to_str().unwrap(),
             "--format",
             "json",
             "project",
@@ -162,8 +162,24 @@ fn test_config_file_is_used_for_defaults() {
         ])
         .env_remove("TRACKER_URL")
         .env_remove("TRACKER_TOKEN")
+        .env_remove("TRACKER_BACKEND")
+        .env_remove("TRACKER_CONFIG")
         .env_remove("YOUTRACK_URL")
         .env_remove("YOUTRACK_TOKEN")
+        .env_remove("JIRA_URL")
+        .env_remove("JIRA_EMAIL")
+        .env_remove("JIRA_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GITHUB_OWNER")
+        .env_remove("GITHUB_REPO")
+        .env_remove("GITHUB_API_URL")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_URL")
+        .env_remove("GITLAB_PROJECT_ID")
+        .env_remove("GITLAB_NAMESPACE")
+        .env_remove("TRACK_MOCK_DIR")
+        .env("HOME", &temp_dir)
+        .env("USERPROFILE", &temp_dir)
         .timeout(Duration::from_secs(5))
         .assert()
         .success()

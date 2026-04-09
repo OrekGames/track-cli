@@ -133,10 +133,10 @@ impl Config {
         let mut figment = Figment::new().merge(Serialized::defaults(Config::default()));
 
         let explicit_path = config_path.as_deref();
-        if let Some(path) = explicit_path
-            && !path.exists()
-        {
-            return Err(anyhow!("Config file not found: {}", path.display()));
+        if let Some(path) = explicit_path {
+            if !path.exists() {
+                return Err(anyhow!("Config file not found: {}", path.display()));
+            }
         }
 
         for path in config_paths(explicit_path) {
