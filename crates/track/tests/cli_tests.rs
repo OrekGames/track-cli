@@ -51,15 +51,35 @@ fn create_temp_dir() -> std::path::PathBuf {
 
 #[test]
 fn test_missing_config() {
+    let temp_home = create_temp_dir();
+
     cargo_bin_cmd!("track")
         .args(["issue", "get", "PROJ-1"])
         .env_remove("TRACKER_URL")
         .env_remove("TRACKER_TOKEN")
+        .env_remove("TRACKER_BACKEND")
+        .env_remove("TRACKER_CONFIG")
         .env_remove("YOUTRACK_URL")
         .env_remove("YOUTRACK_TOKEN")
+        .env_remove("JIRA_URL")
+        .env_remove("JIRA_EMAIL")
+        .env_remove("JIRA_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GITHUB_OWNER")
+        .env_remove("GITHUB_REPO")
+        .env_remove("GITHUB_API_URL")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_URL")
+        .env_remove("GITLAB_PROJECT_ID")
+        .env_remove("GITLAB_NAMESPACE")
+        .env_remove("TRACK_MOCK_DIR")
+        .env("HOME", &temp_home)
+        .env("USERPROFILE", &temp_home)
         .assert()
         .failure()
         .stderr(predicate::str::contains("URL not configured"));
+
+    let _ = std::fs::remove_dir_all(&temp_home);
 }
 
 #[test]
