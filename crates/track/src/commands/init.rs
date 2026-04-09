@@ -26,9 +26,22 @@ const SKILL_TOOL_DIRS: &[(&str, &str)] = &[
 fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
     use colored::Colorize;
 
+    // Prefer robust fallback chain for CI/container environments where
+    // platform home discovery APIs may fail (notably on Windows runners).
     let home = directories::BaseDirs::new()
+        .map(|d| d.home_dir().to_path_buf())
+        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+        .or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from))
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE")?;
+            let path = std::env::var_os("HOMEPATH")?;
+            Some(std::path::PathBuf::from(format!(
+                "{}{}",
+                drive.to_string_lossy(),
+                path.to_string_lossy()
+            )))
+        })
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    let home = home.home_dir();
     let mut installed = Vec::new();
 
     for &(tool_name, tool_dir) in SKILL_TOOL_DIRS {

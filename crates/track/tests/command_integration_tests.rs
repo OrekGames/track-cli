@@ -37,6 +37,8 @@ fn temp_dir() -> PathBuf {
 fn track_in(dir: &Path) -> assert_cmd::Command {
     let mut cmd = cargo_bin_cmd!("track");
     cmd.current_dir(dir)
+        .env("HOME", dir)
+        .env("USERPROFILE", dir)
         .env_remove("TRACKER_URL")
         .env_remove("TRACKER_TOKEN")
         .env_remove("TRACKER_BACKEND")

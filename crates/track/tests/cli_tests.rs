@@ -26,13 +26,25 @@ fn start_mock_server(port: u16, response_body: String) -> thread::JoinHandle<()>
 
         if let Some(mut stream) = listener.incoming().flatten().next() {
             let mut buffer = [0; 4096];
-            if stream.read(&mut buffer).is_ok() {
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    response_body.len(),
-                    response_body
-                );
-                let _ = stream.write_all(response.as_bytes());
+            // Read headers
+            let _ = stream.read(&mut buffer);
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+
+            // Draining the request body before closing is important on Windows
+            // to avoid "Connection forcibly closed by remote host" errors (RST).
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            let mut discard = [0; 1024];
+            while let Ok(n) = stream.read(&mut discard) {
+                if n == 0 {
+                    break;
+                }
             }
         }
     })
@@ -51,15 +63,35 @@ fn create_temp_dir() -> std::path::PathBuf {
 
 #[test]
 fn test_missing_config() {
+    let temp_home = create_temp_dir();
+
     cargo_bin_cmd!("track")
         .args(["issue", "get", "PROJ-1"])
         .env_remove("TRACKER_URL")
         .env_remove("TRACKER_TOKEN")
+        .env_remove("TRACKER_BACKEND")
+        .env_remove("TRACKER_CONFIG")
         .env_remove("YOUTRACK_URL")
         .env_remove("YOUTRACK_TOKEN")
+        .env_remove("JIRA_URL")
+        .env_remove("JIRA_EMAIL")
+        .env_remove("JIRA_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GITHUB_OWNER")
+        .env_remove("GITHUB_REPO")
+        .env_remove("GITHUB_API_URL")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_URL")
+        .env_remove("GITLAB_PROJECT_ID")
+        .env_remove("GITLAB_NAMESPACE")
+        .env_remove("TRACK_MOCK_DIR")
+        .env("HOME", &temp_home)
+        .env("USERPROFILE", &temp_home)
         .assert()
         .failure()
         .stderr(predicate::str::contains("URL not configured"));
+
+    let _ = std::fs::remove_dir_all(&temp_home);
 }
 
 #[test]
@@ -120,18 +152,29 @@ fn test_config_file_is_used_for_defaults() {
     thread::sleep(Duration::from_millis(200));
 
     let output = cargo_bin_cmd!("track")
-        .args([
-            "--config",
-            config_path.to_str().unwrap(),
-            "--format",
-            "json",
-            "project",
-            "list",
-        ])
+        .args(["--config"])
+        .arg(&config_path)
+        .args(["--format", "json", "project", "list"])
         .env_remove("TRACKER_URL")
         .env_remove("TRACKER_TOKEN")
+        .env_remove("TRACKER_BACKEND")
+        .env_remove("TRACKER_CONFIG")
         .env_remove("YOUTRACK_URL")
         .env_remove("YOUTRACK_TOKEN")
+        .env_remove("JIRA_URL")
+        .env_remove("JIRA_EMAIL")
+        .env_remove("JIRA_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GITHUB_OWNER")
+        .env_remove("GITHUB_REPO")
+        .env_remove("GITHUB_API_URL")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITLAB_URL")
+        .env_remove("GITLAB_PROJECT_ID")
+        .env_remove("GITLAB_NAMESPACE")
+        .env_remove("TRACK_MOCK_DIR")
+        .env("HOME", &temp_dir)
+        .env("USERPROFILE", &temp_dir)
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
