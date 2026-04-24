@@ -560,10 +560,7 @@ impl JiraClient {
         {
             return Ok(t.id.clone());
         }
-        if let Some(t) = transitions
-            .iter()
-            .find(|t| t.name.to_lowercase() == target)
-        {
+        if let Some(t) = transitions.iter().find(|t| t.name.to_lowercase() == target) {
             return Ok(t.id.clone());
         }
 
@@ -577,7 +574,10 @@ impl JiraClient {
     // ==================== Project Status Operations ====================
 
     /// GET /rest/api/3/project/{projectIdOrKey}/statuses
-    pub fn list_project_statuses(&self, project_key: &str) -> Result<Vec<ProjectIssueTypeStatuses>> {
+    pub fn list_project_statuses(
+        &self,
+        project_key: &str,
+    ) -> Result<Vec<ProjectIssueTypeStatuses>> {
         let url = self.api_url(&format!("/project/{}/statuses", project_key));
 
         let response = self

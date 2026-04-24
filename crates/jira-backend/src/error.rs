@@ -24,7 +24,9 @@ pub enum JiraError {
     #[error("API error ({status}): {message}")]
     Api { status: u16, message: String },
 
-    #[error("status '{requested}' is not reachable from the current state; available transitions: {available:?}")]
+    #[error(
+        "status '{requested}' is not reachable from the current state; available transitions: {available:?}"
+    )]
     InvalidTransition {
         requested: String,
         available: Vec<String>,

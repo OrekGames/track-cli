@@ -26,7 +26,7 @@ pub struct TransitionTarget {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusCategory {
-    pub key: String,   // "new" | "indeterminate" | "done"
+    pub key: String, // "new" | "indeterminate" | "done"
     pub name: String,
 }
 
@@ -42,8 +42,8 @@ pub struct TransitionId {
 
 #[derive(Debug, Deserialize)]
 pub struct ProjectIssueTypeStatuses {
-    pub id: String,          // issue type id
-    pub name: String,        // issue type name
+    pub id: String,   // issue type id
+    pub name: String, // issue type name
     pub statuses: Vec<ProjectStatus>,
 }
 

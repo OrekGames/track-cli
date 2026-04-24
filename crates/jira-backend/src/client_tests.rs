@@ -958,12 +958,14 @@ mod tests {
         // 3. Mock GET issue (re-fetch)
         Mock::given(method("GET"))
             .and(path("/rest/api/3/issue/TEST-123"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "Test issue")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "Test issue")),
+            )
             .mount(&mock_server)
             .await;
 
         let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
-        use tracker_core::{IssueTracker, UpdateIssue, CustomFieldUpdate};
+        use tracker_core::{CustomFieldUpdate, IssueTracker, UpdateIssue};
         let update = UpdateIssue {
             custom_fields: vec![CustomFieldUpdate::State {
                 name: "Status".to_string(),
@@ -1020,12 +1022,15 @@ mod tests {
         // 4. Mock GET issue
         Mock::given(method("GET"))
             .and(path("/rest/api/3/issue/TEST-123"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "New Summary")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(mock_jira_issue("TEST-123", "New Summary")),
+            )
             .mount(&mock_server)
             .await;
 
         let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
-        use tracker_core::{IssueTracker, UpdateIssue, CustomFieldUpdate};
+        use tracker_core::{CustomFieldUpdate, IssueTracker, UpdateIssue};
         let update = UpdateIssue {
             summary: Some("New Summary".to_string()),
             custom_fields: vec![CustomFieldUpdate::State {
