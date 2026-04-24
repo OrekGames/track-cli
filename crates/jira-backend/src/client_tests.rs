@@ -897,11 +897,12 @@ mod tests {
 
         let mut issue_json = mock_jira_issue("TEST-500", "Issue with custom fields");
         // Add custom fields to the mock response
-        let fields = issue_json.get_mut("fields").unwrap().as_object_mut().unwrap();
-        fields.insert(
-            "customfield_10016".to_string(),
-            serde_json::json!(5.0),
-        );
+        let fields = issue_json
+            .get_mut("fields")
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        fields.insert("customfield_10016".to_string(), serde_json::json!(5.0));
         fields.insert(
             "customfield_10020".to_string(),
             serde_json::json!([{"id": 1, "name": "Sprint 1"}]),
@@ -910,10 +911,7 @@ mod tests {
             "customfield_11000".to_string(),
             serde_json::json!({"value": "Option A"}),
         );
-        fields.insert(
-            "customfield_11001".to_string(),
-            serde_json::Value::Null,
-        );
+        fields.insert("customfield_11001".to_string(), serde_json::Value::Null);
 
         Mock::given(method("GET"))
             .and(path("/rest/api/3/issue/TEST-500"))
@@ -933,7 +931,10 @@ mod tests {
         assert_eq!(issue.fields.summary, "Issue with custom fields");
 
         // Custom fields captured in extra HashMap
-        assert_eq!(issue.fields.extra.get("customfield_10016").unwrap(), &serde_json::json!(5.0));
+        assert_eq!(
+            issue.fields.extra.get("customfield_10016").unwrap(),
+            &serde_json::json!(5.0)
+        );
         assert_eq!(
             issue.fields.extra.get("customfield_10020").unwrap(),
             &serde_json::json!([{"id": 1, "name": "Sprint 1"}])

@@ -463,7 +463,6 @@ fn parse_jira_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
 
 /// Get standard Jira custom fields for a project
 pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
-
     vec![
         ProjectCustomField {
             id: "priority".to_string(),
@@ -1105,14 +1104,18 @@ mod tests {
             .iter()
             .find(|f| matches!(f, CustomField::State { name, .. } if name == "Status"))
             .unwrap();
-        assert!(matches!(status, CustomField::State { value: Some(v), is_resolved: false, .. } if v == "Open"));
+        assert!(
+            matches!(status, CustomField::State { value: Some(v), is_resolved: false, .. } if v == "Open")
+        );
 
         let priority = core
             .custom_fields
             .iter()
             .find(|f| matches!(f, CustomField::SingleEnum { name, .. } if name == "Priority"))
             .unwrap();
-        assert!(matches!(priority, CustomField::SingleEnum { value: Some(v), .. } if v == "Medium"));
+        assert!(
+            matches!(priority, CustomField::SingleEnum { value: Some(v), .. } if v == "Medium")
+        );
     }
 
     #[test]
@@ -1256,32 +1259,30 @@ mod tests {
         let core = jira_issue_to_core(issue, &[]);
 
         // Should not have a field for the null value
-        assert!(!core
-            .custom_fields
-            .iter()
-            .any(|f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10016")));
+        assert!(
+            !core.custom_fields.iter().any(
+                |f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10016")
+            )
+        );
         // Should have the non-null field
-        assert!(core
-            .custom_fields
-            .iter()
-            .any(|f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10017")));
+        assert!(
+            core.custom_fields.iter().any(
+                |f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10017")
+            )
+        );
     }
 
     #[test]
     fn jira_issue_to_core_skips_empty_array_fields() {
         let mut extra = std::collections::HashMap::new();
-        extra.insert(
-            "customfield_10020".to_string(),
-            serde_json::json!([]),
-        );
+        extra.insert("customfield_10020".to_string(), serde_json::json!([]));
 
         let issue = mock_jira_issue_for_conversion(extra);
         let core = jira_issue_to_core(issue, &[]);
 
-        assert!(!core
-            .custom_fields
-            .iter()
-            .any(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "customfield_10020")));
+        assert!(!core.custom_fields.iter().any(
+            |f| matches!(f, CustomField::MultiEnum { name, .. } if name == "customfield_10020")
+        ));
     }
 
     #[test]
@@ -1331,34 +1332,37 @@ mod tests {
     fn jira_issue_to_core_ignores_non_custom_extra_fields() {
         let mut extra = std::collections::HashMap::new();
         // System fields that end up in extra should be ignored
-        extra.insert(
-            "environment".to_string(),
-            serde_json::json!("Production"),
-        );
-        extra.insert(
-            "customfield_10016".to_string(),
-            serde_json::json!(5.0),
-        );
+        extra.insert("environment".to_string(), serde_json::json!("Production"));
+        extra.insert("customfield_10016".to_string(), serde_json::json!(5.0));
 
         let issue = mock_jira_issue_for_conversion(extra);
         let core = jira_issue_to_core(issue, &[]);
 
         // "environment" should NOT be in custom_fields
-        assert!(!core
-            .custom_fields
-            .iter()
-            .any(|f| matches!(f, CustomField::Text { name, .. } if name == "environment")));
+        assert!(
+            !core
+                .custom_fields
+                .iter()
+                .any(|f| matches!(f, CustomField::Text { name, .. } if name == "environment"))
+        );
         // customfield_ should be present
-        assert!(core
-            .custom_fields
-            .iter()
-            .any(|f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10016")));
+        assert!(
+            core.custom_fields.iter().any(
+                |f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10016")
+            )
+        );
     }
 
     #[test]
     fn format_number_strips_trailing_zero() {
-        assert_eq!(format_number(&serde_json::Number::from_f64(5.0).unwrap()), "5");
-        assert_eq!(format_number(&serde_json::Number::from_f64(3.5).unwrap()), "3.5");
+        assert_eq!(
+            format_number(&serde_json::Number::from_f64(5.0).unwrap()),
+            "5"
+        );
+        assert_eq!(
+            format_number(&serde_json::Number::from_f64(3.5).unwrap()),
+            "3.5"
+        );
         assert_eq!(format_number(&serde_json::Number::from(42)), "42");
     }
 }
