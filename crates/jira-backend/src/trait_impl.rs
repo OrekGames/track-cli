@@ -128,11 +128,11 @@ impl IssueTracker for JiraClient {
         // Try to fetch real project statuses and splice them into the "status" field
         if let Ok(groups) = self.list_project_statuses(project_id) {
             let (values, state_values) = crate::convert::flatten_project_statuses(&groups);
-            if !values.is_empty() {
-                if let Some(status_field) = standard.iter_mut().find(|f| f.id == "status") {
-                    status_field.values = values;
-                    status_field.state_values = state_values;
-                }
+            if !values.is_empty()
+                && let Some(status_field) = standard.iter_mut().find(|f| f.id == "status")
+            {
+                status_field.values = values;
+                status_field.state_values = state_values;
             }
         }
 
