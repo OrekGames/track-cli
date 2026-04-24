@@ -6,24 +6,6 @@ use ureq::Agent;
 use crate::error::{JiraError, Result};
 use crate::models::*;
 
-/// Default fields to request for issues
-const DEFAULT_ISSUE_FIELDS: &[&str] = &[
-    "summary",
-    "description",
-    "status",
-    "priority",
-    "issuetype",
-    "project",
-    "assignee",
-    "reporter",
-    "labels",
-    "created",
-    "updated",
-    "subtasks",
-    "parent",
-    "issuelinks",
-];
-
 /// Jira REST API client
 pub struct JiraClient {
     agent: Agent,
@@ -174,12 +156,7 @@ impl JiraClient {
 
     /// Get an issue by key or ID
     pub fn get_issue(&self, key: &str) -> Result<JiraIssue> {
-        let fields = DEFAULT_ISSUE_FIELDS.join(",");
-        let url = format!(
-            "{}?fields={}",
-            self.api_url(&format!("/issue/{}", key)),
-            fields
-        );
+        let url = self.api_url(&format!("/issue/{}", key));
 
         let response = self
             .agent
@@ -194,13 +171,6 @@ impl JiraClient {
         Ok(issue)
     }
 
-    /// Count issues matching a JQL query without fetching issue data.
-    /// Uses maxResults=0 to get only the total count.
-    pub fn count_issues(&self, jql: &str) -> Result<usize> {
-        let result = self.search_issues(jql, 0, 0)?;
-        Ok(result.total)
-    }
-
     /// Search issues using JQL
     pub fn search_issues(
         &self,
@@ -208,16 +178,15 @@ impl JiraClient {
         max_results: usize,
         start_at: usize,
     ) -> Result<JiraSearchResult> {
-        // Note: Jira Cloud now uses /search/jql with GET request (as of 2024)
-        let fields = DEFAULT_ISSUE_FIELDS.join(",");
+        // Jira Cloud uses GET /search/jql (the old POST /search was removed).
+        // `fields=*all` is required — without it the endpoint returns only issue IDs.
         let jql_encoded = urlencoding::encode(jql);
         let url = format!(
-            "{}?jql={}&startAt={}&maxResults={}&fields={}",
+            "{}?jql={}&startAt={}&maxResults={}&fields=*all",
             self.api_url("/search/jql"),
             jql_encoded,
             start_at,
             max_results,
-            fields
         );
 
         let response = self

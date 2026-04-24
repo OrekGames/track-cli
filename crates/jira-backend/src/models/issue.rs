@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::comment::JiraComment;
@@ -56,6 +58,10 @@ pub struct JiraIssueFields {
     pub issuelinks: Vec<JiraIssueLink>,
     /// Comments (only included when expanded)
     pub comment: Option<JiraCommentsContainer>,
+    /// Extra/custom fields not captured by the named fields above.
+    /// Keys are field IDs like "customfield_10016".
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// Comments container in issue response
@@ -166,21 +172,18 @@ pub struct JiraIssueLinkType {
     pub outward: Option<String>,
 }
 
-/// Search result response
+/// Search result response from `/search/jql` endpoint.
+///
+/// The new Jira Cloud search endpoint returns `isLast` instead of `total`.
+/// It does not provide a total count of matching issues.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JiraSearchResult {
-    /// Starting index
-    #[serde(default)]
-    pub start_at: usize,
-    /// Maximum results per page
-    #[serde(default)]
-    pub max_results: usize,
-    /// Total number of results
-    #[serde(default)]
-    pub total: usize,
     /// Issues in this page
     pub issues: Vec<JiraIssue>,
+    /// Whether this is the last page of results
+    #[serde(default)]
+    pub is_last: bool,
 }
 
 /// Request to create an issue
