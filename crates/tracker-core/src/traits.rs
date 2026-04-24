@@ -185,6 +185,19 @@ pub trait IssueTracker: Send + Sync {
 
     /// Get comments for an issue
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>>;
+
+    /// Get a page of comments for an issue using offset pagination.
+    ///
+    /// Backends with page-based or cursor-based APIs should adapt those native
+    /// mechanisms so callers can rely on `limit` and `skip` as an offset window.
+    fn get_comments_page(&self, issue_id: &str, limit: usize, skip: usize) -> Result<Vec<Comment>> {
+        Ok(self
+            .get_comments(issue_id)?
+            .into_iter()
+            .skip(skip)
+            .take(limit)
+            .collect())
+    }
 }
 
 /// Trait for knowledge base / wiki operations

@@ -23,6 +23,48 @@ const SKILL_TOOL_DIRS: &[(&str, &str)] = &[
     ("Gemini CLI", ".gemini"),
 ];
 
+#[derive(Debug, Clone)]
+enum InitProject {
+    Default { short_name: String },
+    GitHub { owner: String, repo: String },
+    GitLab { id: String, display_name: String },
+}
+
+impl InitProject {
+    fn display_name(&self) -> String {
+        match self {
+            InitProject::Default { short_name, .. } => short_name.clone(),
+            InitProject::GitHub { owner, repo } => format!("{owner}/{repo}"),
+            InitProject::GitLab { display_name, .. } => display_name.clone(),
+        }
+    }
+
+    fn default_project(&self) -> Option<String> {
+        match self {
+            InitProject::Default { short_name, .. } => Some(short_name.clone()),
+            InitProject::GitHub { .. } | InitProject::GitLab { .. } => None,
+        }
+    }
+}
+
+fn parse_github_project(project: &str) -> Result<(String, String)> {
+    let (owner, repo) = project.split_once('/').ok_or_else(|| {
+        anyhow::anyhow!(
+            "GitHub requires --project in owner/repo format, got '{}'",
+            project
+        )
+    })?;
+
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return Err(anyhow::anyhow!(
+            "GitHub requires --project in owner/repo format, got '{}'",
+            project
+        ));
+    }
+
+    Ok((owner.to_string(), repo.to_string()))
+}
+
 fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
     use colored::Colorize;
 
@@ -90,8 +132,6 @@ pub fn handle_init(
     skills: bool,
     global: bool,
 ) -> Result<()> {
-    use colored::Colorize;
-
     // If --skills only (no url/token), just install skill files and return
     if skills && url.is_none() && token.is_none() {
         return install_agent_skills(format);
@@ -139,79 +179,158 @@ pub fn handle_init(
         Backend::YouTrack | Backend::GitHub | Backend::GitLab => email.map(|e| e.to_string()),
     };
 
-    // If project is specified, validate it against the server
-    let validated_project: Option<(String, String)> = if let Some(proj) = project {
-        // Create temporary client to validate project
-        let projects: Vec<tracker_core::Project> = match backend {
-            Backend::YouTrack => {
-                let client = YouTrackClient::new(url, token);
-                let tracker: &dyn IssueTracker = &client;
-                tracker.list_projects().map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to connect to server or list projects: {}\nCheck your URL and token.",
-                        e
-                    )
-                })?
-            }
-            Backend::Jira => {
-                let client = JiraClient::new(url, effective_email.as_ref().unwrap(), token);
-                let tracker: &dyn IssueTracker = &client;
-                tracker.list_projects().map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to connect to server or list projects: {}\nCheck your URL, email, and token.",
-                        e
-                    )
-                })?
-            }
-            Backend::GitHub => {
-                let client = GitHubClient::new("", "", token);
-                // For GitHub, we try to list repos to validate the token
-                let tracker: &dyn IssueTracker = &client;
-                tracker.list_projects().map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to connect to GitHub or list repositories: {}\nCheck your token.",
-                        e
-                    )
-                })?
-            }
-            Backend::GitLab => {
-                let client = GitLabClient::new(url, token, None);
-                let tracker: &dyn IssueTracker = &client;
-                tracker.list_projects().map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to connect to GitLab or list projects: {}\nCheck your URL and token.",
-                        e
-                    )
-                })?
-            }
-        };
-
-        let matched = projects
-            .iter()
-            .find(|p| {
-                p.short_name.eq_ignore_ascii_case(proj)
-                    || p.id == proj
-                    || p.name.eq_ignore_ascii_case(proj)
+    let validated_project: Option<InitProject> = match backend {
+        Backend::GitHub => {
+            let proj = project
+                .ok_or_else(|| anyhow::anyhow!("GitHub init requires --project owner/repo"))?;
+            let (owner, repo) = parse_github_project(proj)?;
+            let client = GitHubClient::with_base_url(url, &owner, &repo, token);
+            client.get_repo(&owner, &repo).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to validate GitHub repository '{}': {}\nCheck your API URL, token, owner, and repo.",
+                    proj,
+                    e
+                )
+            })?;
+            Some(InitProject::GitHub { owner, repo })
+        }
+        Backend::GitLab => {
+            let proj = project.ok_or_else(|| {
+                anyhow::anyhow!("GitLab init requires --project <PROJECT_ID_OR_PATH>")
+            })?;
+            let client = GitLabClient::new(url, token, None);
+            let gitlab_project = client.get_project(proj).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to validate GitLab project '{}': {}\nCheck your URL, token, and project.",
+                    proj,
+                    e
+                )
+            })?;
+            let display_name = gitlab_project
+                .path_with_namespace
+                .clone()
+                .or(gitlab_project.name_with_namespace.clone())
+                .unwrap_or_else(|| gitlab_project.name.clone());
+            Some(InitProject::GitLab {
+                id: gitlab_project.id.to_string(),
+                display_name,
             })
-            .ok_or_else(|| anyhow::anyhow!("Project '{}' not found on server", proj))?;
+        }
+        Backend::YouTrack | Backend::Jira => {
+            let Some(proj) = project else {
+                return create_config_and_finish(
+                    url,
+                    token,
+                    effective_email,
+                    format,
+                    backend,
+                    skills,
+                    global,
+                    config_path,
+                    None,
+                );
+            };
 
-        Some((matched.id.clone(), matched.short_name.clone()))
-    } else {
-        None
+            let projects: Vec<tracker_core::Project> = match backend {
+                Backend::YouTrack => {
+                    let client = YouTrackClient::new(url, token);
+                    let tracker: &dyn IssueTracker = &client;
+                    tracker.list_projects().map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to connect to server or list projects: {}\nCheck your URL and token.",
+                            e
+                        )
+                    })?
+                }
+                Backend::Jira => {
+                    let client = JiraClient::new(url, effective_email.as_ref().unwrap(), token);
+                    let tracker: &dyn IssueTracker = &client;
+                    tracker.list_projects().map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to connect to server or list projects: {}\nCheck your URL, email, and token.",
+                            e
+                        )
+                    })?
+                }
+                Backend::GitHub | Backend::GitLab => unreachable!("handled above"),
+            };
+
+            let matched = projects
+                .iter()
+                .find(|p| {
+                    p.short_name.eq_ignore_ascii_case(proj)
+                        || p.id == proj
+                        || p.name.eq_ignore_ascii_case(proj)
+                })
+                .ok_or_else(|| anyhow::anyhow!("Project '{}' not found on server", proj))?;
+
+            Some(InitProject::Default {
+                short_name: matched.short_name.clone(),
+            })
+        }
     };
 
+    create_config_and_finish(
+        url,
+        token,
+        effective_email,
+        format,
+        backend,
+        skills,
+        global,
+        config_path,
+        validated_project,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_config_and_finish(
+    url: &str,
+    token: &str,
+    effective_email: Option<String>,
+    format: cli::OutputFormat,
+    backend: Backend,
+    skills: bool,
+    global: bool,
+    config_path: std::path::PathBuf,
+    validated_project: Option<InitProject>,
+) -> Result<()> {
+    use colored::Colorize;
+
     // Create config with backend and optional default project
-    let config = Config {
+    let mut config = Config {
         backend: Some(backend),
         url: Some(url.to_string()),
         token: Some(token.to_string()),
         email: effective_email,
-        default_project: validated_project.as_ref().map(|(_, name)| name.clone()),
+        default_project: validated_project
+            .as_ref()
+            .and_then(InitProject::default_project),
         youtrack: Default::default(),
         jira: Default::default(),
         github: Default::default(),
         gitlab: Default::default(),
     };
+
+    match &validated_project {
+        Some(InitProject::GitHub { owner, repo }) => {
+            config.url = None;
+            config.token = None;
+            config.github.owner = Some(owner.clone());
+            config.github.repo = Some(repo.clone());
+            config.github.token = Some(token.to_string());
+            config.github.api_url = Some(url.to_string());
+        }
+        Some(InitProject::GitLab { id, .. }) => {
+            config.url = None;
+            config.token = None;
+            config.gitlab.url = Some(url.to_string());
+            config.gitlab.token = Some(token.to_string());
+            config.gitlab.project_id = Some(id.clone());
+        }
+        Some(InitProject::Default { .. }) => {}
+        None => {}
+    }
 
     config.save(&config_path)?;
 
@@ -244,8 +363,11 @@ pub fn handle_init(
             if let Some(guide) = &guide_path {
                 result["guide_path"] = serde_json::json!(guide.display().to_string());
             }
-            if let Some((_, name)) = &validated_project {
-                result["default_project"] = serde_json::json!(name);
+            if let Some(project) = &validated_project {
+                result["project"] = serde_json::json!(project.display_name());
+            }
+            if let Some(default_project) = config.default_project.as_deref() {
+                result["default_project"] = serde_json::json!(default_project);
             }
             output_json(&result)?;
         }
@@ -274,8 +396,12 @@ pub fn handle_init(
                 "Backend".dimmed(),
                 backend.to_string().cyan().bold()
             );
-            if let Some((_, name)) = &validated_project {
-                println!("  {}: {}", "Default project".dimmed(), name.cyan().bold());
+            if let Some(project) = &validated_project {
+                println!(
+                    "  {}: {}",
+                    "Project".dimmed(),
+                    project.display_name().cyan().bold()
+                );
             }
             println!();
             println!(

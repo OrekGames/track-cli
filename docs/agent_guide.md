@@ -60,10 +60,10 @@ backend = "github"
 token = "ghp_xxxxxxxxxxxx"
 owner = "your-org"
 repo = "your-repo"
-# api_url = "https://api.github.com"  # default, omit unless using GHE
+api_url = "https://api.github.com"
 ```
 
-**Note**: GitHub requires both `owner` and `repo`. The API URL defaults to `https://api.github.com`. Set `github.api_url` for GitHub Enterprise.
+**Note**: GitHub requires both `owner` and `repo`. `track init --backend github --project owner/repo` validates the repository and writes `github.owner`, `github.repo`, `github.token`, and `github.api_url`.
 
 **GitLab**:
 ```toml
@@ -76,7 +76,7 @@ project_id = "12345"
 # namespace = "your-group"
 ```
 
-**Note**: GitLab URL should include the `/api/v4` path. The `project_id` can be a numeric ID or a URL-encoded path (e.g., `group%2Fproject`). Issue operations require `project_id` to be set.
+**Note**: GitLab URL should include the `/api/v4` path. `track init --backend gitlab --project group/project` validates and resolves the project, then writes the numeric `gitlab.project_id`.
 
 **Link type mappings** (optional — override default canonical-to-native name mappings):
 ```toml
@@ -97,8 +97,8 @@ Creates a `.track.toml` in the current directory:
 ```bash
 track init --url https://youtrack.example.com --token YOUR_TOKEN --project PROJ
 track init --url https://company.atlassian.net --token API_TOKEN --backend jira --email you@example.com
-track init --url https://api.github.com --token ghp_TOKEN --backend github
-track init --url https://gitlab.com/api/v4 --token glpat-TOKEN --backend gitlab
+track init --url https://api.github.com --token ghp_TOKEN --backend github --project owner/repo
+track init --url https://gitlab.com/api/v4 --token glpat-TOKEN --backend gitlab --project group/project
 ```
 
 ### Install Agent Skills

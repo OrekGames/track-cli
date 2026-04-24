@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::client::GitHubClient;
+    use tracker_core::IssueTracker;
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -172,6 +173,34 @@ mod tests {
         assert!(!result.items[0].is_pull_request());
         assert!(result.items[1].is_pull_request());
         assert!(!result.items[2].is_pull_request());
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_issues_preserves_offset() {
+        let mock_server = MockServer::start().await;
+        let items: Vec<_> = (1..=50)
+            .map(|number| mock_github_issue(number, &format!("Search result {number}")))
+            .collect();
+
+        Mock::given(method("GET"))
+            .and(path("/search/issues"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "total_count": 50,
+                "incomplete_results": false,
+                "items": items
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let result =
+            <GitHubClient as IssueTracker>::search_issues(&client, "is:open", 20, 25).unwrap();
+
+        assert_eq!(result.items.len(), 20);
+        assert_eq!(result.items[0].id_readable, "owner/repo#26");
+        assert_eq!(result.items[19].id_readable, "owner/repo#45");
     }
 
     #[tokio::test]
@@ -445,6 +474,8 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/repos/owner/repo/issues/42/comments"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
             .and(header("Authorization", "Bearer test-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 {

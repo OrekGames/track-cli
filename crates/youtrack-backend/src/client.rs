@@ -38,7 +38,7 @@ impl YouTrackClient {
     }
 
     /// Resolve a canonical link type name to the YouTrack-native link type name.
-    /// User overrides take precedence, then falls back to built-in defaults.
+    /// User overrides take precedence, then built-in defaults, then pass-through.
     pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
         if let Some(name) = self.link_mappings.get(canonical) {
             return name.clone();
@@ -49,7 +49,7 @@ impl YouTrackClient {
             "required" => "Depend",
             "duplicates" => "Duplicate",
             "duplicated-by" => "Duplicate",
-            _ => "Relates",
+            _ => canonical,
         }
         .to_string()
     }
@@ -690,9 +690,19 @@ impl YouTrackClient {
 
     /// Get comments for an issue
     pub fn get_comments(&self, issue_id: &str) -> Result<Vec<IssueComment>> {
+        self.get_comments_page(issue_id, 100, 0)
+    }
+
+    /// Get a page of comments for an issue
+    pub fn get_comments_page(
+        &self,
+        issue_id: &str,
+        limit: usize,
+        skip: usize,
+    ) -> Result<Vec<IssueComment>> {
         let url = format!(
-            "{}/api/issues/{}/comments?fields=id,text,author(login,name),created",
-            self.base_url, issue_id
+            "{}/api/issues/{}/comments?fields=id,text,author(login,name),created&$top={}&$skip={}",
+            self.base_url, issue_id, limit, skip
         );
 
         let response = self

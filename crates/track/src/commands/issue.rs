@@ -379,6 +379,49 @@ fn handle_update(
     format: OutputFormat,
     verbose: bool,
 ) -> Result<()> {
+    let update = build_update(client, id, args)?;
+
+    if args.dry_run {
+        let fields_validated = validate_update(client, id, &update)?;
+        output_update_dry_run(id, fields_validated, format);
+        return Ok(());
+    }
+
+    // Validate custom fields if requested
+    if args.validate {
+        validate_update(client, id, &update)?;
+    }
+
+    // Fetch old state if verbose for diffing
+    let old_issue = if verbose {
+        client.get_issue(id).ok()
+    } else {
+        None
+    };
+
+    let issue = client
+        .update_issue(id, &update)
+        .with_context(|| format!("Failed to update issue '{}'", id))?;
+
+    let warnings = verify_issue_update(&update, &issue);
+    crate::output::output_verification_warnings(&warnings, format);
+
+    if verbose {
+        crate::output::output_change_summary(
+            old_issue.as_ref(),
+            &issue,
+            Some(&update),
+            None,
+            format,
+        );
+        println!();
+    }
+
+    output_result(&issue, format)?;
+    Ok(())
+}
+
+fn build_update(client: &dyn IssueTracker, id: &str, args: &IssueFieldArgs) -> Result<UpdateIssue> {
     let update = if let Some(payload) = args.json {
         parse_update_payload(payload)?
     } else {
@@ -409,65 +452,39 @@ fn handle_update(
         }
     };
 
-    // Validate custom fields if requested
-    if args.validate && !update.custom_fields.is_empty() {
-        // Get the issue to determine its project
+    Ok(update)
+}
+
+fn validate_update(client: &dyn IssueTracker, id: &str, update: &UpdateIssue) -> Result<usize> {
+    if !update.custom_fields.is_empty() {
         let existing_issue = client
             .get_issue(id)
             .with_context(|| format!("Failed to fetch issue '{}' for validation", id))?;
 
         validate_custom_fields(client, &existing_issue.project.id, &update.custom_fields)?;
+    }
 
-        if args.dry_run {
-            match format {
-                OutputFormat::Json => {
-                    println!(
-                        r#"{{"valid": true, "message": "Validation passed", "issue": "{}", "fields_validated": {}}}"#,
-                        id,
-                        update.custom_fields.len()
-                    );
-                }
-                OutputFormat::Text => {
-                    use colored::Colorize;
-                    println!("{}", "Validation passed".green().bold());
-                    println!(
-                        "  {} custom fields validated for issue {}",
-                        update.custom_fields.len(),
-                        id.cyan()
-                    );
-                }
-            }
-            return Ok(());
+    Ok(update.custom_fields.len())
+}
+
+fn output_update_dry_run(id: &str, fields_validated: usize, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            println!(
+                r#"{{"valid": true, "message": "Validation passed", "issue": "{}", "fields_validated": {}}}"#,
+                id, fields_validated
+            );
+        }
+        OutputFormat::Text => {
+            use colored::Colorize;
+            println!("{}", "Validation passed".green().bold());
+            println!(
+                "  {} custom fields validated for issue {}",
+                fields_validated,
+                id.cyan()
+            );
         }
     }
-
-    // Fetch old state if verbose for diffing
-    let old_issue = if verbose {
-        client.get_issue(id).ok()
-    } else {
-        None
-    };
-
-    let issue = client
-        .update_issue(id, &update)
-        .with_context(|| format!("Failed to update issue '{}'", id))?;
-
-    let warnings = verify_issue_update(&update, &issue);
-    crate::output::output_verification_warnings(&warnings, format);
-
-    if verbose {
-        crate::output::output_change_summary(
-            old_issue.as_ref(),
-            &issue,
-            Some(&update),
-            None,
-            format,
-        );
-        println!();
-    }
-
-    output_result(&issue, format)?;
-    Ok(())
 }
 
 /// Build a list of custom field updates from CLI arguments.
@@ -964,14 +981,16 @@ fn handle_comments(
     all: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    let comments = client
-        .get_comments(id)
-        .with_context(|| format!("Failed to get comments for issue '{}'", id))?;
-
-    let comments: Vec<_> = if all {
-        comments
+    let comments = if all {
+        fetch_all_pages(
+            |offset, page_limit| client.get_comments_page(id, page_limit, offset),
+            100,
+        )
+        .with_context(|| format!("Failed to get comments for issue '{}'", id))?
     } else {
-        comments.into_iter().take(limit).collect()
+        client
+            .get_comments_page(id, limit, 0)
+            .with_context(|| format!("Failed to get comments for issue '{}'", id))?
     };
 
     match format {
@@ -1228,7 +1247,13 @@ fn handle_update_batch(
     let mut results = Vec::new();
 
     for id in ids {
-        let result = handle_update_single(client, id, args);
+        let result = if args.dry_run {
+            build_update(client, id, args)
+                .and_then(|update| validate_update(client, id, &update))
+                .map(|_| None)
+        } else {
+            handle_update_single(client, id, args).map(Some)
+        };
 
         match result {
             Ok(issue) => {
@@ -1236,7 +1261,7 @@ fn handle_update_batch(
                     id: id.clone(),
                     success: true,
                     error: None,
-                    id_readable: Some(issue.id_readable),
+                    id_readable: issue.map(|issue| issue.id_readable),
                 });
             }
             Err(e) => {
@@ -1250,7 +1275,8 @@ fn handle_update_batch(
         }
     }
 
-    output_batch_results(&results, "updated", format)?;
+    let action = if args.dry_run { "validated" } else { "updated" };
+    output_batch_results(&results, action, format)?;
     Ok(())
 }
 
@@ -1260,43 +1286,10 @@ fn handle_update_single(
     id: &str,
     args: &IssueFieldArgs,
 ) -> Result<Issue> {
-    let update = if let Some(payload) = args.json {
-        parse_update_payload(payload)?
-    } else {
-        // Fetch project schema for field type detection when generic fields are provided
-        let schema = if !args.fields.is_empty() {
-            client
-                .get_issue(id)
-                .ok()
-                .and_then(|issue| client.get_project_custom_fields(&issue.project.id).ok())
-        } else {
-            None
-        };
+    let update = build_update(client, id, args)?;
 
-        let custom_fields = build_custom_fields(
-            args.fields,
-            args.state,
-            args.priority,
-            args.assignee,
-            schema.as_deref(),
-        )?;
-
-        UpdateIssue {
-            summary: args.summary.map(|s| s.to_string()),
-            description: args.description.map(|s| s.to_string()),
-            custom_fields,
-            tags: args.tags.to_vec(),
-            parent: args.parent.map(|s| s.to_string()),
-        }
-    };
-
-    // Validate custom fields if requested
-    if args.validate && !update.custom_fields.is_empty() {
-        let existing_issue = client
-            .get_issue(id)
-            .with_context(|| format!("Failed to fetch issue '{}' for validation", id))?;
-
-        validate_custom_fields(client, &existing_issue.project.id, &update.custom_fields)?;
+    if args.validate {
+        validate_update(client, id, &update)?;
     }
 
     let issue = client

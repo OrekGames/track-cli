@@ -6,7 +6,10 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::thread;
 
 // =============================================================================
 // Helpers
@@ -65,6 +68,24 @@ fn write_config(dir: &Path, content: &str) {
     fs::write(dir.join(".track.toml"), content).unwrap();
 }
 
+fn start_one_request_json_server(body: &'static str) -> (thread::JoinHandle<()>, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0; 2048];
+        let _ = stream.read(&mut buffer);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+
+    (handle, format!("http://{}", addr))
+}
+
 /// Get the path to the fixtures directory.
 fn fixtures_path() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -75,6 +96,77 @@ fn fixtures_path() -> PathBuf {
         .unwrap()
         .join("fixtures")
         .join("scenarios")
+}
+
+fn copy_dir_recursive(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        if source.is_dir() {
+            copy_dir_recursive(&source, &target);
+        } else {
+            fs::copy(&source, &target).unwrap();
+        }
+    }
+}
+
+fn copy_scenario(dir: &Path, name: &str) -> PathBuf {
+    let scenario = dir.join(name);
+    copy_dir_recursive(&fixtures_path().join(name), &scenario);
+    fs::write(scenario.join("call_log.jsonl"), "").unwrap();
+    scenario
+}
+
+fn add_second_basic_issue(scenario: &Path) {
+    fs::copy(
+        scenario.join("responses/get_issue_DEMO-1.json"),
+        scenario.join("responses/get_issue_DEMO-2.json"),
+    )
+    .unwrap();
+
+    let mut manifest = fs::OpenOptions::new()
+        .append(true)
+        .open(scenario.join("manifest.toml"))
+        .unwrap();
+    writeln!(
+        manifest,
+        r#"
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-2.json"
+[responses.args]
+id = "DEMO-2"
+"#
+    )
+    .unwrap();
+}
+
+fn write_comments_response(scenario: &Path, count: usize) {
+    let comments: Vec<_> = (1..=count)
+        .map(|index| {
+            serde_json::json!({
+                "id": format!("comment-{index}"),
+                "text": format!("Comment {index}"),
+                "author": null,
+                "created": null
+            })
+        })
+        .collect();
+    fs::write(
+        scenario.join("responses/get_comments_DEMO-1.json"),
+        serde_json::to_string(&comments).unwrap(),
+    )
+    .unwrap();
+}
+
+fn mock_call_methods(scenario: &Path) -> Vec<String> {
+    let log = fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default();
+    log.lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .map(|entry| entry["method"].as_str().unwrap().to_string())
+        .collect()
 }
 
 // =============================================================================
@@ -96,6 +188,35 @@ fn test_config_keys_text_output() {
         .stdout(predicate::str::contains("jira.url"))
         .stdout(predicate::str::contains("github.token"))
         .stdout(predicate::str::contains("gitlab.token"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_comments_all_fetches_multiple_pages() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+    write_comments_response(&scenario, 150);
+
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"])
+        .args(["issue", "comments", "DEMO-1", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Comments on DEMO-1 (150)"));
+
+    let methods = mock_call_methods(&scenario);
+    let get_comments_calls = methods
+        .iter()
+        .filter(|method| method.as_str() == "get_comments")
+        .count();
+    assert_eq!(
+        get_comments_calls, 2,
+        "--all should request comment pages until the final partial page, got methods: {:?}",
+        methods
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -613,6 +734,115 @@ fn test_init_jira_requires_email() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("email"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_init_github_requires_project() {
+    let dir = temp_dir();
+
+    track_in(&dir)
+        .args([
+            "init",
+            "--url",
+            "https://api.github.com",
+            "--token",
+            "tok",
+            "-b",
+            "github",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GitHub init requires --project"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_init_github_writes_backend_specific_config() {
+    let dir = temp_dir();
+    let (server, url) = start_one_request_json_server(
+        r#"{"id":1,"name":"repo","full_name":"owner/repo","description":null,"owner":{"login":"owner","id":2}}"#,
+    );
+
+    track_in(&dir)
+        .args([
+            "init",
+            "--url",
+            &url,
+            "--token",
+            "ghp-token",
+            "-b",
+            "github",
+            "--project",
+            "owner/repo",
+        ])
+        .assert()
+        .success();
+    server.join().unwrap();
+
+    let content = fs::read_to_string(dir.join(".track.toml")).unwrap();
+    assert!(content.contains("backend = \"github\""));
+    assert!(content.contains("[github]"));
+    assert!(content.contains("token = \"ghp-token\""));
+    assert!(content.contains("owner = \"owner\""));
+    assert!(content.contains("repo = \"repo\""));
+    assert!(content.contains(&format!("api_url = \"{}\"", url)));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_init_gitlab_requires_project() {
+    let dir = temp_dir();
+
+    track_in(&dir)
+        .args([
+            "init",
+            "--url",
+            "https://gitlab.com/api/v4",
+            "--token",
+            "tok",
+            "-b",
+            "gitlab",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GitLab init requires --project"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_init_gitlab_writes_backend_specific_config() {
+    let dir = temp_dir();
+    let (server, url) = start_one_request_json_server(
+        r#"{"id":42,"name":"project","name_with_namespace":"group / project","path":"project","path_with_namespace":"group/project","description":null,"web_url":"https://gitlab.example/group/project"}"#,
+    );
+
+    track_in(&dir)
+        .args([
+            "init",
+            "--url",
+            &url,
+            "--token",
+            "glpat-token",
+            "-b",
+            "gitlab",
+            "--project",
+            "group/project",
+        ])
+        .assert()
+        .success();
+    server.join().unwrap();
+
+    let content = fs::read_to_string(dir.join(".track.toml")).unwrap();
+    assert!(content.contains("backend = \"gitlab\""));
+    assert!(content.contains("[gitlab]"));
+    assert!(content.contains("url = \""));
+    assert!(content.contains("token = \"glpat-token\""));
+    assert!(content.contains("project_id = \"42\""));
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1269,6 +1499,85 @@ fn test_body_file_update_satisfies_required_fields() {
         ])
         .assert()
         .success();
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_update_validate_dry_run_does_not_update_single_issue() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"])
+        .args([
+            "issue",
+            "update",
+            "DEMO-1",
+            "--summary",
+            "Dry run summary",
+            "--description",
+            "Dry run description",
+            "--state",
+            "Done",
+            "--tag",
+            "triage",
+            "--parent",
+            "DEMO-99",
+            "--validate",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Validation passed"));
+
+    let methods = mock_call_methods(&scenario);
+    assert!(
+        !methods.iter().any(|method| method == "update_issue"),
+        "dry-run update must not call update_issue, got methods: {:?}",
+        methods
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_update_validate_dry_run_does_not_update_batch() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+    add_second_basic_issue(&scenario);
+
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"])
+        .args([
+            "issue",
+            "update",
+            "DEMO-1,DEMO-2",
+            "--summary",
+            "Batch dry run summary",
+            "--state",
+            "Done",
+            "--tag",
+            "triage",
+            "--parent",
+            "DEMO-99",
+            "--validate",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 issues validated"));
+
+    let methods = mock_call_methods(&scenario);
+    assert!(
+        !methods.iter().any(|method| method == "update_issue"),
+        "batch dry-run update must not call update_issue, got methods: {:?}",
+        methods
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

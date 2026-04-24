@@ -4,7 +4,7 @@
 mod tests {
     use crate::client::JiraClient;
     use crate::models::*;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn base64_encode_for_test(input: &str) -> String {
@@ -518,6 +518,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_comments_page_uses_pagination_params() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/comment"))
+            .and(query_param("startAt", "20"))
+            .and(query_param("maxResults", "10"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "startAt": 20,
+                "maxResults": 10,
+                "total": 20,
+                "comments": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let comments = client.get_comments_page("TEST-123", 10, 20).unwrap();
+
+        assert!(comments.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_unauthorized_error() {
         let mock_server = MockServer::start().await;
 
@@ -888,7 +911,7 @@ mod tests {
     fn test_resolve_link_type_unknown_falls_through() {
         let client = JiraClient::new("https://test.atlassian.net", "a@b.com", "tok");
 
-        assert_eq!(client.resolve_link_type("nonexistent"), "Relates");
+        assert_eq!(client.resolve_link_type("nonexistent"), "nonexistent");
     }
 
     #[tokio::test]
