@@ -924,6 +924,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_issue_with_state_calls_transitions_endpoint() {
+        let mock_server = MockServer::start().await;
+
+        // 1. Mock GET transitions
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Start Progress",
+                        "to": {
+                            "id": "3",
+                            "name": "In Progress"
+                        }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // 2. Mock POST transition
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "transition": { "id": "31" }
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        // 3. Mock GET issue (re-fetch)
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "Test issue")))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        use tracker_core::{IssueTracker, UpdateIssue, CustomFieldUpdate};
+        let update = UpdateIssue {
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Status".to_string(),
+                value: "In Progress".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let result = IssueTracker::update_issue(&client, "TEST-123", &update);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_update_issue_with_state_and_summary_sends_both_requests() {
+        let mock_server = MockServer::start().await;
+
+        // 1. Mock PUT field update
+        Mock::given(method("PUT"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "fields": {
+                    "summary": "New Summary"
+                }
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        // 2. Mock GET transitions
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Start Progress",
+                        "to": { "id": "3", "name": "In Progress" }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // 3. Mock POST transition
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "transition": { "id": "31" }
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        // 4. Mock GET issue
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "New Summary")))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        use tracker_core::{IssueTracker, UpdateIssue, CustomFieldUpdate};
+        let update = UpdateIssue {
+            summary: Some("New Summary".to_string()),
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Status".to_string(),
+                value: "In Progress".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let result = IssueTracker::update_issue(&client, "TEST-123", &update);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
     async fn test_link_issues_depends_creates_blocks_with_correct_direction() {
         let mock_server = MockServer::start().await;
 

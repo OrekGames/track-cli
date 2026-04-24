@@ -23,6 +23,12 @@ pub enum JiraError {
 
     #[error("API error ({status}): {message}")]
     Api { status: u16, message: String },
+
+    #[error("status '{requested}' is not reachable from the current state; available transitions: {available:?}")]
+    InvalidTransition {
+        requested: String,
+        available: Vec<String>,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, JiraError>;
@@ -37,6 +43,13 @@ impl From<JiraError> for TrackerError {
             JiraError::ProjectNotFound(id) => TrackerError::ProjectNotFound(id),
             JiraError::Unauthorized => TrackerError::Unauthorized,
             JiraError::Api { status, message } => TrackerError::Api { status, message },
+            JiraError::InvalidTransition {
+                requested,
+                available,
+            } => TrackerError::InvalidInput(format!(
+                "status '{}' is not reachable. available: {:?}",
+                requested, available
+            )),
         }
     }
 }

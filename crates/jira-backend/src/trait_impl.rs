@@ -52,9 +52,46 @@ impl IssueTracker for JiraClient {
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
-        let fields = self.get_fields_cached();
-        let jira_update = update_issue_to_jira(update, &fields);
-        Ok(self.update_issue(id, &jira_update)?.into())
+        use tracker_core::CustomFieldUpdate;
+
+        // 1. Separate the state change, if present.
+        let (status_update, other_fields): (Vec<_>, Vec<_>) = update
+            .custom_fields
+            .iter()
+            .cloned()
+            .partition(|cf| matches!(cf, CustomFieldUpdate::State { .. }));
+
+        let status_target = status_update.into_iter().next().and_then(|cf| match cf {
+            CustomFieldUpdate::State { value, .. } => Some(value),
+            _ => None,
+        });
+
+        let stripped = UpdateIssue {
+            custom_fields: other_fields,
+            ..update.clone()
+        };
+
+        // 2. PUT the remaining fields (skip the call entirely if nothing changed).
+        let has_field_updates = stripped.summary.is_some()
+            || stripped.description.is_some()
+            || !stripped.custom_fields.is_empty()
+            || !stripped.tags.is_empty()
+            || stripped.parent.is_some();
+
+        if has_field_updates {
+            let fields = self.get_fields_cached();
+            let jira_update = update_issue_to_jira(&stripped, &fields);
+            self.update_issue(id, &jira_update)?;
+        }
+
+        // 3. POST the transition, if requested.
+        if let Some(target) = status_target {
+            let transition_id = self.resolve_transition_id(id, &target)?;
+            self.transition_issue(id, &transition_id)?;
+        }
+
+        // 4. Re-fetch the fresh issue (matches current behavior).
+        Ok(self.get_issue(id)?.into())
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
@@ -85,8 +122,20 @@ impl IssueTracker for JiraClient {
             .map_err(|_| TrackerError::ProjectNotFound(identifier.to_string()))
     }
 
-    fn get_project_custom_fields(&self, _project_id: &str) -> Result<Vec<ProjectCustomField>> {
-        let standard = get_standard_custom_fields();
+    fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>> {
+        let mut standard = get_standard_custom_fields();
+
+        // Try to fetch real project statuses and splice them into the "status" field
+        if let Ok(groups) = self.list_project_statuses(project_id) {
+            let (values, state_values) = crate::convert::flatten_project_statuses(&groups);
+            if !values.is_empty() {
+                if let Some(status_field) = standard.iter_mut().find(|f| f.id == "status") {
+                    status_field.values = values;
+                    status_field.state_values = state_values;
+                }
+            }
+        }
+
         let instance_fields: Vec<ProjectCustomField> = self
             .get_fields_cached()
             .iter()
