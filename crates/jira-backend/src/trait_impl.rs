@@ -33,23 +33,19 @@ impl IssueTracker for JiraClient {
         };
 
         let r = self.search_issues(&jql, limit, skip)?;
-        let total = r.total as u64;
         let fields = self.get_fields_cached();
         let items = r
             .issues
             .into_iter()
             .map(|i| jira_issue_to_core(i, &fields))
             .collect();
-        Ok(SearchResult::with_total(items, total))
+        Ok(SearchResult::from_items(items))
     }
 
-    fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
-        let jql = if query.contains('=') || query.contains(" AND ") || query.contains(" OR ") {
-            query.to_string()
-        } else {
-            convert_simple_query_to_jql(query)
-        };
-        Ok(Some(self.count_issues(&jql)? as u64))
+    fn get_issue_count(&self, _query: &str) -> Result<Option<u64>> {
+        // The new /search/jql endpoint does not return a total count,
+        // and there is no separate count endpoint on Jira Cloud.
+        Ok(None)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {

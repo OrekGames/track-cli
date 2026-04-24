@@ -206,13 +206,11 @@ mod tests {
                 "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "startAt": 0,
-                "maxResults": 20,
-                "total": 2,
                 "issues": [
                     mock_jira_issue("TEST-123", "First issue"),
                     mock_jira_issue("TEST-124", "Second issue")
-                ]
+                ],
+                "isLast": true
             })))
             .mount(&mock_server)
             .await;
@@ -220,36 +218,10 @@ mod tests {
         let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
         let result = client.search_issues("project = TEST", 20, 0).unwrap();
 
-        assert_eq!(result.total, 2);
+        assert!(result.is_last);
         assert_eq!(result.issues.len(), 2);
         assert_eq!(result.issues[0].key, "TEST-123");
         assert_eq!(result.issues[1].key, "TEST-124");
-    }
-
-    #[tokio::test]
-    async fn test_count_issues() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/rest/api/3/search/jql"))
-            .and(header(
-                "Authorization",
-                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
-            ))
-            .and(wiremock::matchers::query_param("maxResults", "0"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "startAt": 0,
-                "maxResults": 0,
-                "total": 847,
-                "issues": []
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
-        let count = client.count_issues("project = TEST").unwrap();
-
-        assert_eq!(count, 847);
     }
 
     #[tokio::test]
@@ -632,16 +604,14 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/rest/api/3/search/jql"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "startAt": 10,
-                "maxResults": 5,
-                "total": 25,
                 "issues": [
                     mock_jira_issue("TEST-11", "Issue 11"),
                     mock_jira_issue("TEST-12", "Issue 12"),
                     mock_jira_issue("TEST-13", "Issue 13"),
                     mock_jira_issue("TEST-14", "Issue 14"),
                     mock_jira_issue("TEST-15", "Issue 15")
-                ]
+                ],
+                "isLast": false
             })))
             .mount(&mock_server)
             .await;
@@ -649,9 +619,7 @@ mod tests {
         let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
         let result = client.search_issues("project = TEST", 5, 10).unwrap();
 
-        assert_eq!(result.start_at, 10);
-        assert_eq!(result.max_results, 5);
-        assert_eq!(result.total, 25);
+        assert!(!result.is_last);
         assert_eq!(result.issues.len(), 5);
     }
 
