@@ -6,24 +6,6 @@ use ureq::Agent;
 use crate::error::{JiraError, Result};
 use crate::models::*;
 
-/// Default fields to request for issues
-const DEFAULT_ISSUE_FIELDS: &[&str] = &[
-    "summary",
-    "description",
-    "status",
-    "priority",
-    "issuetype",
-    "project",
-    "assignee",
-    "reporter",
-    "labels",
-    "created",
-    "updated",
-    "subtasks",
-    "parent",
-    "issuelinks",
-];
-
 /// Jira REST API client
 pub struct JiraClient {
     agent: Agent,
@@ -174,12 +156,7 @@ impl JiraClient {
 
     /// Get an issue by key or ID
     pub fn get_issue(&self, key: &str) -> Result<JiraIssue> {
-        let fields = DEFAULT_ISSUE_FIELDS.join(",");
-        let url = format!(
-            "{}?fields={}",
-            self.api_url(&format!("/issue/{}", key)),
-            fields
-        );
+        let url = self.api_url(&format!("/issue/{}", key));
 
         let response = self
             .agent
@@ -209,15 +186,13 @@ impl JiraClient {
         start_at: usize,
     ) -> Result<JiraSearchResult> {
         // Note: Jira Cloud now uses /search/jql with GET request (as of 2024)
-        let fields = DEFAULT_ISSUE_FIELDS.join(",");
         let jql_encoded = urlencoding::encode(jql);
         let url = format!(
-            "{}?jql={}&startAt={}&maxResults={}&fields={}",
+            "{}?jql={}&startAt={}&maxResults={}",
             self.api_url("/search/jql"),
             jql_encoded,
             start_at,
             max_results,
-            fields
         );
 
         let response = self

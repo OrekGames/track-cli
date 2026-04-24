@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use tracker_core::{
     Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueLink,
     IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag,
@@ -11,80 +12,244 @@ use tracker_core::{
 
 use crate::models::*;
 
-impl From<JiraIssue> for Issue {
-    fn from(j: JiraIssue) -> Self {
-        let description = j
-            .fields
-            .description
-            .as_ref()
-            .map(adf_to_text)
-            .filter(|s| !s.is_empty());
+/// Convert a Jira issue to a tracker-core Issue.
+///
+/// When `jira_fields` metadata is provided, custom field names and types are
+/// resolved from the metadata. Without it, field IDs are used as names and
+/// types are inferred from the JSON value shape.
+pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
+    let description = j
+        .fields
+        .description
+        .as_ref()
+        .map(adf_to_text)
+        .filter(|s| !s.is_empty());
 
-        let is_resolved = j
-            .fields
-            .status
-            .status_category
-            .as_ref()
-            .map(|c| c.key == "done")
-            .unwrap_or(false);
+    let is_resolved = j
+        .fields
+        .status
+        .status_category
+        .as_ref()
+        .map(|c| c.key == "done")
+        .unwrap_or(false);
 
-        let mut custom_fields = Vec::new();
+    let mut custom_fields = Vec::new();
 
-        // Map status as a State custom field
-        custom_fields.push(CustomField::State {
-            name: "Status".to_string(),
-            value: Some(j.fields.status.name.clone()),
-            is_resolved,
-        });
+    // Map status as a State custom field
+    custom_fields.push(CustomField::State {
+        name: "Status".to_string(),
+        value: Some(j.fields.status.name.clone()),
+        is_resolved,
+    });
 
-        // Map priority as a SingleEnum custom field
-        if let Some(ref priority) = j.fields.priority {
-            custom_fields.push(CustomField::SingleEnum {
-                name: "Priority".to_string(),
-                value: Some(priority.name.clone()),
-            });
-        }
-
-        // Map assignee as a SingleUser custom field
-        custom_fields.push(CustomField::SingleUser {
-            name: "Assignee".to_string(),
-            login: j
-                .fields
-                .assignee
-                .as_ref()
-                .and_then(|u| u.account_id.clone()),
-            display_name: j
-                .fields
-                .assignee
-                .as_ref()
-                .and_then(|u| u.display_name.clone()),
-        });
-
-        // Map issue type
+    // Map priority as a SingleEnum custom field
+    if let Some(ref priority) = j.fields.priority {
         custom_fields.push(CustomField::SingleEnum {
-            name: "Type".to_string(),
-            value: Some(j.fields.issuetype.name.clone()),
+            name: "Priority".to_string(),
+            value: Some(priority.name.clone()),
         });
+    }
 
-        Self {
-            id: j.id,
-            id_readable: j.key,
-            summary: j.fields.summary,
-            description,
-            project: j.fields.project.into(),
-            custom_fields,
-            tags: j
-                .fields
-                .labels
-                .into_iter()
-                .map(|label| Tag {
-                    id: label.clone(),
-                    name: label,
-                })
-                .collect(),
-            created: parse_jira_datetime(&j.fields.created).unwrap_or_else(Utc::now),
-            updated: parse_jira_datetime(&j.fields.updated).unwrap_or_else(Utc::now),
+    // Map assignee as a SingleUser custom field
+    custom_fields.push(CustomField::SingleUser {
+        name: "Assignee".to_string(),
+        login: j
+            .fields
+            .assignee
+            .as_ref()
+            .and_then(|u| u.account_id.clone()),
+        display_name: j
+            .fields
+            .assignee
+            .as_ref()
+            .and_then(|u| u.display_name.clone()),
+    });
+
+    // Map issue type
+    custom_fields.push(CustomField::SingleEnum {
+        name: "Type".to_string(),
+        value: Some(j.fields.issuetype.name.clone()),
+    });
+
+    // Map extra custom fields from the flattened HashMap
+    let id_to_name: HashMap<&str, &str> = jira_fields
+        .iter()
+        .map(|f| (f.id.as_str(), f.name.as_str()))
+        .collect();
+    let id_to_schema: HashMap<&str, &JiraFieldSchema> = jira_fields
+        .iter()
+        .filter_map(|f| f.schema.as_ref().map(|s| (f.id.as_str(), s)))
+        .collect();
+
+    for (key, value) in &j.fields.extra {
+        if !key.starts_with("customfield_") {
+            continue;
         }
+        if value.is_null() {
+            continue;
+        }
+        let name = id_to_name
+            .get(key.as_str())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| key.clone());
+        let schema = id_to_schema.get(key.as_str()).copied();
+        if let Some(cf) = json_value_to_custom_field(name, value, schema) {
+            custom_fields.push(cf);
+        }
+    }
+
+    Issue {
+        id: j.id,
+        id_readable: j.key,
+        summary: j.fields.summary,
+        description,
+        project: j.fields.project.into(),
+        custom_fields,
+        tags: j
+            .fields
+            .labels
+            .into_iter()
+            .map(|label| Tag {
+                id: label.clone(),
+                name: label,
+            })
+            .collect(),
+        created: parse_jira_datetime(&j.fields.created).unwrap_or_else(Utc::now),
+        updated: parse_jira_datetime(&j.fields.updated).unwrap_or_else(Utc::now),
+    }
+}
+
+/// Convert a Jira JSON custom field value to a core CustomField.
+///
+/// Uses schema type when available, falls back to value-shape heuristics.
+fn json_value_to_custom_field(
+    name: String,
+    value: &Value,
+    schema: Option<&JiraFieldSchema>,
+) -> Option<CustomField> {
+    match (schema.map(|s| s.field_type.as_str()), value) {
+        (_, Value::Null) => None,
+
+        // Schema-driven mapping
+        (Some("number"), Value::Number(n)) => Some(CustomField::Text {
+            name,
+            value: Some(format_number(n)),
+        }),
+        (Some("string"), Value::String(s)) => Some(CustomField::Text {
+            name,
+            value: Some(s.clone()),
+        }),
+        (Some("option"), Value::Object(obj)) => {
+            let val = obj.get("value").and_then(|v| v.as_str()).map(String::from);
+            Some(CustomField::SingleEnum { name, value: val })
+        }
+        (Some("user"), Value::Object(obj)) => {
+            let login = obj
+                .get("accountId")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let display_name = obj
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            Some(CustomField::SingleUser {
+                name,
+                login,
+                display_name,
+            })
+        }
+        (Some("array"), Value::Array(arr)) => convert_array_field(name, arr, schema),
+
+        // Heuristic fallbacks when no schema is available
+        (None, Value::Number(n)) => Some(CustomField::Text {
+            name,
+            value: Some(format_number(n)),
+        }),
+        (None, Value::String(s)) => Some(CustomField::Text {
+            name,
+            value: Some(s.clone()),
+        }),
+        (None, Value::Bool(b)) => Some(CustomField::Text {
+            name,
+            value: Some(b.to_string()),
+        }),
+        (None, Value::Object(obj)) => {
+            if let Some(v) = obj.get("value").and_then(|v| v.as_str()) {
+                Some(CustomField::SingleEnum {
+                    name,
+                    value: Some(v.to_string()),
+                })
+            } else if let Some(dn) = obj.get("displayName").and_then(|v| v.as_str()) {
+                let login = obj
+                    .get("accountId")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                Some(CustomField::SingleUser {
+                    name,
+                    login,
+                    display_name: Some(dn.to_string()),
+                })
+            } else if let Some(n) = obj.get("name").and_then(|v| v.as_str()) {
+                Some(CustomField::SingleEnum {
+                    name,
+                    value: Some(n.to_string()),
+                })
+            } else {
+                Some(CustomField::Unknown { name })
+            }
+        }
+        (None, Value::Array(arr)) => convert_array_field(name, arr, None),
+
+        _ => Some(CustomField::Unknown { name }),
+    }
+}
+
+/// Convert a JSON array field value to a core CustomField.
+fn convert_array_field(
+    name: String,
+    arr: &[Value],
+    schema: Option<&JiraFieldSchema>,
+) -> Option<CustomField> {
+    if arr.is_empty() {
+        return None;
+    }
+
+    let _items_type = schema.and_then(|s| s.items.as_deref());
+
+    let values: Vec<String> = arr
+        .iter()
+        .filter_map(|item| match item {
+            Value::String(s) => Some(s.clone()),
+            Value::Object(obj) => obj
+                .get("value")
+                .and_then(|v| v.as_str())
+                .or_else(|| obj.get("name").and_then(|v| v.as_str()))
+                .or_else(|| obj.get("displayName").and_then(|v| v.as_str()))
+                .map(String::from),
+            Value::Number(n) => Some(format_number(n)),
+            _ => None,
+        })
+        .collect();
+
+    if values.is_empty() {
+        None
+    } else {
+        Some(CustomField::MultiEnum { name, values })
+    }
+}
+
+/// Format a JSON number, stripping `.0` from integers.
+fn format_number(n: &serde_json::Number) -> String {
+    if let Some(i) = n.as_i64() {
+        i.to_string()
+    } else if let Some(f) = n.as_f64() {
+        if f.fract() == 0.0 {
+            (f as i64).to_string()
+        } else {
+            f.to_string()
+        }
+    } else {
+        n.to_string()
     }
 }
 
@@ -298,7 +463,6 @@ fn parse_jira_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
 
 /// Get standard Jira custom fields for a project
 pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
-    use tracker_core::StateValueInfo;
 
     vec![
         ProjectCustomField {
@@ -874,5 +1038,327 @@ mod tests {
         assert_eq!(state_values.len(), 3);
         assert!(state_values[2].is_resolved); // Closed should be resolved
         assert_eq!(state_values[2].name, "Closed");
+    }
+
+    // ==================== jira_issue_to_core tests ====================
+
+    /// Helper to build a minimal JiraIssue for conversion tests
+    fn mock_jira_issue_for_conversion(
+        extra: std::collections::HashMap<String, serde_json::Value>,
+    ) -> JiraIssue {
+        JiraIssue {
+            id: "10001".to_string(),
+            key: "TEST-1".to_string(),
+            self_url: None,
+            fields: JiraIssueFields {
+                summary: "Test issue".to_string(),
+                description: None,
+                status: JiraStatus {
+                    id: Some("1".to_string()),
+                    name: "Open".to_string(),
+                    status_category: Some(JiraStatusCategory {
+                        key: "new".to_string(),
+                        name: Some("To Do".to_string()),
+                    }),
+                },
+                priority: Some(JiraPriority {
+                    id: Some("3".to_string()),
+                    name: "Medium".to_string(),
+                }),
+                issuetype: JiraIssueType {
+                    id: Some("10001".to_string()),
+                    name: "Task".to_string(),
+                    subtask: false,
+                },
+                project: JiraProjectRef {
+                    id: "10000".to_string(),
+                    key: "TEST".to_string(),
+                    name: Some("Test".to_string()),
+                    self_url: None,
+                },
+                assignee: None,
+                reporter: None,
+                labels: vec![],
+                created: Some("2024-01-15T10:00:00.000+0000".to_string()),
+                updated: Some("2024-01-15T12:00:00.000+0000".to_string()),
+                subtasks: vec![],
+                parent: None,
+                issuelinks: vec![],
+                comment: None,
+                extra,
+            },
+        }
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_standard_fields() {
+        let issue = mock_jira_issue_for_conversion(Default::default());
+        let core = jira_issue_to_core(issue, &[]);
+
+        assert_eq!(core.id, "10001");
+        assert_eq!(core.id_readable, "TEST-1");
+        assert_eq!(core.summary, "Test issue");
+
+        // Standard 4 custom fields should be present
+        let status = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::State { name, .. } if name == "Status"))
+            .unwrap();
+        assert!(matches!(status, CustomField::State { value: Some(v), is_resolved: false, .. } if v == "Open"));
+
+        let priority = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::SingleEnum { name, .. } if name == "Priority"))
+            .unwrap();
+        assert!(matches!(priority, CustomField::SingleEnum { value: Some(v), .. } if v == "Medium"));
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_number_field_with_metadata() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("customfield_10016".to_string(), serde_json::json!(5.0));
+
+        let fields = vec![JiraField {
+            id: "customfield_10016".to_string(),
+            name: "Story Points".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "number".to_string(),
+                custom: None,
+                items: None,
+            }),
+        }];
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &fields);
+
+        let sp = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::Text { name, .. } if name == "Story Points"))
+            .unwrap();
+        assert!(matches!(sp, CustomField::Text { value: Some(v), .. } if v == "5"));
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_option_field_with_metadata() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "customfield_11000".to_string(),
+            serde_json::json!({"self": "https://...", "value": "Option A", "id": "10100"}),
+        );
+
+        let fields = vec![JiraField {
+            id: "customfield_11000".to_string(),
+            name: "Severity".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "option".to_string(),
+                custom: None,
+                items: None,
+            }),
+        }];
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &fields);
+
+        let severity = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::SingleEnum { name, .. } if name == "Severity"))
+            .unwrap();
+        assert!(
+            matches!(severity, CustomField::SingleEnum { value: Some(v), .. } if v == "Option A")
+        );
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_user_field_with_metadata() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "customfield_12000".to_string(),
+            serde_json::json!({
+                "accountId": "abc123",
+                "displayName": "Jane Doe"
+            }),
+        );
+
+        let fields = vec![JiraField {
+            id: "customfield_12000".to_string(),
+            name: "Reviewer".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "user".to_string(),
+                custom: None,
+                items: None,
+            }),
+        }];
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &fields);
+
+        let reviewer = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::SingleUser { name, .. } if name == "Reviewer"))
+            .unwrap();
+        assert!(matches!(
+            reviewer,
+            CustomField::SingleUser {
+                login: Some(l),
+                display_name: Some(dn),
+                ..
+            } if l == "abc123" && dn == "Jane Doe"
+        ));
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_array_field_sprint() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "customfield_10020".to_string(),
+            serde_json::json!([{"id": 1, "name": "Sprint 1"}, {"id": 2, "name": "Sprint 2"}]),
+        );
+
+        let fields = vec![JiraField {
+            id: "customfield_10020".to_string(),
+            name: "Sprint".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "array".to_string(),
+                custom: None,
+                items: Some("string".to_string()),
+            }),
+        }];
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &fields);
+
+        let sprint = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "Sprint"))
+            .unwrap();
+        assert!(
+            matches!(sprint, CustomField::MultiEnum { values, .. } if values == &["Sprint 1", "Sprint 2"])
+        );
+    }
+
+    #[test]
+    fn jira_issue_to_core_skips_null_custom_fields() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("customfield_10016".to_string(), serde_json::Value::Null);
+        extra.insert("customfield_10017".to_string(), serde_json::json!(3.0));
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &[]);
+
+        // Should not have a field for the null value
+        assert!(!core
+            .custom_fields
+            .iter()
+            .any(|f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10016")));
+        // Should have the non-null field
+        assert!(core
+            .custom_fields
+            .iter()
+            .any(|f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10017")));
+    }
+
+    #[test]
+    fn jira_issue_to_core_skips_empty_array_fields() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "customfield_10020".to_string(),
+            serde_json::json!([]),
+        );
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &[]);
+
+        assert!(!core
+            .custom_fields
+            .iter()
+            .any(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "customfield_10020")));
+    }
+
+    #[test]
+    fn jira_issue_to_core_heuristic_fallback_without_metadata() {
+        let mut extra = std::collections::HashMap::new();
+        // Number without schema
+        extra.insert("customfield_10016".to_string(), serde_json::json!(8.0));
+        // Object with "value" key → SingleEnum
+        extra.insert(
+            "customfield_11000".to_string(),
+            serde_json::json!({"value": "High"}),
+        );
+        // Object with "displayName" → SingleUser
+        extra.insert(
+            "customfield_12000".to_string(),
+            serde_json::json!({"accountId": "usr1", "displayName": "Bob"}),
+        );
+        // String
+        extra.insert(
+            "customfield_13000".to_string(),
+            serde_json::json!("free text"),
+        );
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        // No metadata — empty slice
+        let core = jira_issue_to_core(issue, &[]);
+
+        // Number → Text with "8"
+        assert!(core.custom_fields.iter().any(
+            |f| matches!(f, CustomField::Text { name, value: Some(v) } if name == "customfield_10016" && v == "8")
+        ));
+        // Object with "value" → SingleEnum
+        assert!(core.custom_fields.iter().any(
+            |f| matches!(f, CustomField::SingleEnum { name, value: Some(v) } if name == "customfield_11000" && v == "High")
+        ));
+        // Object with "displayName" → SingleUser
+        assert!(core.custom_fields.iter().any(
+            |f| matches!(f, CustomField::SingleUser { name, login: Some(l), display_name: Some(dn) } if name == "customfield_12000" && l == "usr1" && dn == "Bob")
+        ));
+        // String → Text
+        assert!(core.custom_fields.iter().any(
+            |f| matches!(f, CustomField::Text { name, value: Some(v) } if name == "customfield_13000" && v == "free text")
+        ));
+    }
+
+    #[test]
+    fn jira_issue_to_core_ignores_non_custom_extra_fields() {
+        let mut extra = std::collections::HashMap::new();
+        // System fields that end up in extra should be ignored
+        extra.insert(
+            "environment".to_string(),
+            serde_json::json!("Production"),
+        );
+        extra.insert(
+            "customfield_10016".to_string(),
+            serde_json::json!(5.0),
+        );
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &[]);
+
+        // "environment" should NOT be in custom_fields
+        assert!(!core
+            .custom_fields
+            .iter()
+            .any(|f| matches!(f, CustomField::Text { name, .. } if name == "environment")));
+        // customfield_ should be present
+        assert!(core
+            .custom_fields
+            .iter()
+            .any(|f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10016")));
+    }
+
+    #[test]
+    fn format_number_strips_trailing_zero() {
+        assert_eq!(format_number(&serde_json::Number::from_f64(5.0).unwrap()), "5");
+        assert_eq!(format_number(&serde_json::Number::from_f64(3.5).unwrap()), "3.5");
+        assert_eq!(format_number(&serde_json::Number::from(42)), "42");
     }
 }

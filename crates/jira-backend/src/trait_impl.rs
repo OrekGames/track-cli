@@ -9,7 +9,7 @@ use tracker_core::{
 use crate::client::JiraClient;
 use crate::convert::{
     create_issue_to_jira, get_standard_custom_fields, jira_field_to_project_custom_field,
-    merge_fields, update_issue_to_jira,
+    jira_issue_to_core, merge_fields, update_issue_to_jira,
 };
 use crate::models::{
     CreateJiraIssueLink, IssueKeyRef, IssueLinkTypeName, ParentId, UpdateJiraIssue,
@@ -18,7 +18,9 @@ use crate::models::{
 
 impl IssueTracker for JiraClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
-        Ok(self.get_issue(id)?.into())
+        let issue = self.get_issue(id)?;
+        let fields = self.get_fields_cached();
+        Ok(jira_issue_to_core(issue, &fields))
     }
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
@@ -32,7 +34,12 @@ impl IssueTracker for JiraClient {
 
         let r = self.search_issues(&jql, limit, skip)?;
         let total = r.total as u64;
-        let items = r.issues.into_iter().map(Into::into).collect();
+        let fields = self.get_fields_cached();
+        let items = r
+            .issues
+            .into_iter()
+            .map(|i| jira_issue_to_core(i, &fields))
+            .collect();
         Ok(SearchResult::with_total(items, total))
     }
 
@@ -48,11 +55,14 @@ impl IssueTracker for JiraClient {
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
         let fields = self.get_fields_cached();
         let jira_issue = create_issue_to_jira(issue, &fields);
-        Ok(self.create_issue(&jira_issue)?.into())
+        let created = self.create_issue(&jira_issue)?;
+        Ok(jira_issue_to_core(created, &fields))
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
         use tracker_core::CustomFieldUpdate;
+
+        let fields = self.get_fields_cached();
 
         // 1. Separate the state change, if present.
         let (status_update, other_fields): (Vec<_>, Vec<_>) = update
@@ -79,7 +89,6 @@ impl IssueTracker for JiraClient {
             || stripped.parent.is_some();
 
         if has_field_updates {
-            let fields = self.get_fields_cached();
             let jira_update = update_issue_to_jira(&stripped, &fields);
             self.update_issue(id, &jira_update)?;
         }
@@ -91,7 +100,7 @@ impl IssueTracker for JiraClient {
         }
 
         // 4. Re-fetch the fresh issue (matches current behavior).
-        Ok(self.get_issue(id)?.into())
+        Ok(jira_issue_to_core(self.get_issue(id)?, &fields))
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {

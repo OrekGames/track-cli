@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::comment::JiraComment;
@@ -56,6 +58,10 @@ pub struct JiraIssueFields {
     pub issuelinks: Vec<JiraIssueLink>,
     /// Comments (only included when expanded)
     pub comment: Option<JiraCommentsContainer>,
+    /// Extra/custom fields not captured by the named fields above.
+    /// Keys are field IDs like "customfield_10016".
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// Comments container in issue response

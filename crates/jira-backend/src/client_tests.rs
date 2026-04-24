@@ -924,6 +924,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_issue_captures_custom_fields_in_extra() {
+        let mock_server = MockServer::start().await;
+
+        let mut issue_json = mock_jira_issue("TEST-500", "Issue with custom fields");
+        // Add custom fields to the mock response
+        let fields = issue_json.get_mut("fields").unwrap().as_object_mut().unwrap();
+        fields.insert(
+            "customfield_10016".to_string(),
+            serde_json::json!(5.0),
+        );
+        fields.insert(
+            "customfield_10020".to_string(),
+            serde_json::json!([{"id": 1, "name": "Sprint 1"}]),
+        );
+        fields.insert(
+            "customfield_11000".to_string(),
+            serde_json::json!({"value": "Option A"}),
+        );
+        fields.insert(
+            "customfield_11001".to_string(),
+            serde_json::Value::Null,
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-500"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(issue_json))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let issue = client.get_issue("TEST-500").unwrap();
+
+        // Standard fields still work
+        assert_eq!(issue.key, "TEST-500");
+        assert_eq!(issue.fields.summary, "Issue with custom fields");
+
+        // Custom fields captured in extra HashMap
+        assert_eq!(issue.fields.extra.get("customfield_10016").unwrap(), &serde_json::json!(5.0));
+        assert_eq!(
+            issue.fields.extra.get("customfield_10020").unwrap(),
+            &serde_json::json!([{"id": 1, "name": "Sprint 1"}])
+        );
+        assert_eq!(
+            issue.fields.extra.get("customfield_11000").unwrap(),
+            &serde_json::json!({"value": "Option A"})
+        );
+        // Null fields are still captured in the map (filtering happens during conversion)
+        assert!(issue.fields.extra.contains_key("customfield_11001"));
+    }
+
+    #[tokio::test]
     async fn test_update_issue_with_state_calls_transitions_endpoint() {
         let mock_server = MockServer::start().await;
 
