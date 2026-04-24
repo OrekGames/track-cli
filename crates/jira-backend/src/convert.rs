@@ -1,11 +1,12 @@
 //! Model conversions from Jira types to tracker-core types
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use tracker_core::{
     Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueLink,
-    IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, Tag, UpdateIssue, User,
+    IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag,
+    UpdateIssue, User,
 };
 
 use crate::models::*;
@@ -422,6 +423,40 @@ pub fn merge_fields(
     result
 }
 
+/// Flatten per-issue-type statuses into a single ordered, deduplicated list
+/// for the project's Status custom field.
+pub fn flatten_project_statuses(
+    per_issue_type: &[ProjectIssueTypeStatuses],
+) -> (Vec<String>, Vec<StateValueInfo>) {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut ordered: Vec<&ProjectStatus> = Vec::new();
+
+    for group in per_issue_type {
+        for st in &group.statuses {
+            if seen.insert(st.id.clone()) {
+                ordered.push(st);
+            }
+        }
+    }
+
+    let values = ordered.iter().map(|s| s.name.clone()).collect();
+    let state_values = ordered
+        .iter()
+        .enumerate()
+        .map(|(i, s)| StateValueInfo {
+            name: s.name.clone(),
+            is_resolved: s
+                .status_category
+                .as_ref()
+                .map(|c| c.key == "done")
+                .unwrap_or(false),
+            ordinal: i as i32,
+        })
+        .collect();
+
+    (values, state_values)
+}
+
 /// Build a name → field ID lookup from JiraField metadata.
 pub fn build_field_id_map(fields: &[JiraField]) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -482,6 +517,24 @@ fn custom_field_to_json(
     }
 }
 
+/// Field names that are handled by the strongly-typed JiraFields struct
+/// (priority, assignee, labels, issuetype) OR by the /transitions endpoint
+/// (status/state). They must never be forwarded as "extra" custom fields,
+/// even if a Jira project defines a custom field with the same display name.
+const RESERVED_FIELD_NAMES: &[&str] = &[
+    "priority",
+    "assignee",
+    "status",
+    "state", // alias used by CustomFieldUpdate::State
+    "type",
+    "issuetype",
+    "labels",
+];
+
+fn is_reserved_field(name: &str) -> bool {
+    RESERVED_FIELD_NAMES.contains(&name.to_lowercase().as_str())
+}
+
 /// Resolve custom field updates to Jira extra fields using field metadata.
 /// Returns a map of field_id → JSON value for fields not handled by the standard struct.
 pub fn resolve_extra_fields(
@@ -504,12 +557,10 @@ pub fn resolve_extra_fields(
             CustomFieldUpdate::MultiEnum { name, values } => {
                 // Handle multi-enum specially
                 let joined = values.join(",");
+                if is_reserved_field(name) {
+                    continue;
+                }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-                    // Skip standard fields handled by the struct
-                    match field_id.as_str() {
-                        "priority" | "assignee" | "status" | "issuetype" | "labels" => continue,
-                        _ => {}
-                    }
                     let schema = schema_map.get(field_id.as_str()).copied();
                     extra.insert(
                         field_id.clone(),
@@ -521,13 +572,11 @@ pub fn resolve_extra_fields(
         };
 
         // Skip standard fields handled by the struct
-        let key = name.to_lowercase();
-        match key.as_str() {
-            "priority" | "assignee" | "status" | "type" | "issuetype" | "labels" => continue,
-            _ => {}
+        if is_reserved_field(name) {
+            continue;
         }
 
-        if let Some(field_id) = field_id_map.get(&key) {
+        if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
             let schema = schema_map.get(field_id.as_str()).copied();
             extra.insert(
                 field_id.clone(),
@@ -676,26 +725,44 @@ mod tests {
                 name: "Priority".to_string(),
                 value: "High".to_string(),
             },
+            CustomFieldUpdate::State {
+                name: "State".to_string(),
+                value: "Backlog".to_string(),
+            },
             CustomFieldUpdate::SingleEnum {
                 name: "Story Points".to_string(),
                 value: "3".to_string(),
             },
         ];
 
-        let jira_fields = vec![JiraField {
-            id: "customfield_10016".to_string(),
-            name: "Story Points".to_string(),
-            custom: true,
-            schema: Some(JiraFieldSchema {
-                field_type: "number".to_string(),
-                custom: None,
-                items: None,
-            }),
-        }];
+        let jira_fields = vec![
+            JiraField {
+                id: "customfield_10016".to_string(),
+                name: "Story Points".to_string(),
+                custom: true,
+                schema: Some(JiraFieldSchema {
+                    field_type: "number".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+            JiraField {
+                id: "customfield_11315".to_string(),
+                name: "State".to_string(),
+                custom: true,
+                schema: Some(JiraFieldSchema {
+                    field_type: "option".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+        ];
 
         let extra = resolve_extra_fields(&custom_fields, &jira_fields);
-        // Priority should be skipped (handled by struct), Story Points should be resolved
+        // Priority and State should be skipped (handled by struct/transitions),
+        // Story Points should be resolved
         assert!(!extra.contains_key("priority"));
+        assert!(!extra.contains_key("customfield_11315")); // "State" custom field should be skipped
         assert_eq!(extra["customfield_10016"], serde_json::json!(3.0));
     }
 
@@ -760,5 +827,52 @@ mod tests {
         // Priority should retain the standard version (with enum values)
         let priority = merged.iter().find(|f| f.name == "Priority").unwrap();
         assert!(!priority.values.is_empty());
+    }
+
+    #[test]
+    fn flatten_project_statuses_dedupes_by_id() {
+        let groups = vec![
+            ProjectIssueTypeStatuses {
+                id: "10001".to_string(),
+                name: "Task".to_string(),
+                statuses: vec![
+                    ProjectStatus {
+                        id: "1".to_string(),
+                        name: "Open".to_string(),
+                        status_category: None,
+                    },
+                    ProjectStatus {
+                        id: "3".to_string(),
+                        name: "In Progress".to_string(),
+                        status_category: None,
+                    },
+                ],
+            },
+            ProjectIssueTypeStatuses {
+                id: "10002".to_string(),
+                name: "Bug".to_string(),
+                statuses: vec![
+                    ProjectStatus {
+                        id: "1".to_string(),
+                        name: "Open".to_string(),
+                        status_category: None,
+                    },
+                    ProjectStatus {
+                        id: "10003".to_string(),
+                        name: "Closed".to_string(),
+                        status_category: Some(StatusCategory {
+                            key: "done".to_string(),
+                            name: "Done".to_string(),
+                        }),
+                    },
+                ],
+            },
+        ];
+
+        let (values, state_values) = flatten_project_statuses(&groups);
+        assert_eq!(values, vec!["Open", "In Progress", "Closed"]);
+        assert_eq!(state_values.len(), 3);
+        assert!(state_values[2].is_resolved); // Closed should be resolved
+        assert_eq!(state_values[2].name, "Closed");
     }
 }

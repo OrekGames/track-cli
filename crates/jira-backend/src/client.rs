@@ -506,6 +506,92 @@ impl JiraClient {
         let users: Vec<JiraUser> = response.body_mut().read_json()?;
         Ok(users)
     }
+
+    // ==================== Transition Operations ====================
+
+    /// GET /rest/api/3/issue/{key}/transitions
+    pub fn list_transitions(&self, issue_key: &str) -> Result<Vec<Transition>> {
+        let url = self.api_url(&format!("/issue/{}/transitions", issue_key));
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let resp: TransitionsResponse = response.body_mut().read_json()?;
+        Ok(resp.transitions)
+    }
+
+    /// POST /rest/api/3/issue/{key}/transitions
+    pub fn transition_issue(&self, issue_key: &str, transition_id: &str) -> Result<()> {
+        let url = self.api_url(&format!("/issue/{}/transitions", issue_key));
+        let body = TransitionRequest {
+            transition: TransitionId {
+                id: transition_id.to_string(),
+            },
+        };
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Content-Type", "application/json")
+            .send_json(&body)
+            .map_err(|e| self.handle_error(e))?;
+
+        self.check_response(response)?;
+        Ok(())
+    }
+
+    /// Resolve a user-provided status name (case-insensitive) to a transition id
+    /// available on the issue's current workflow step.
+    pub fn resolve_transition_id(&self, issue_key: &str, target_status: &str) -> Result<String> {
+        let target = target_status.trim().to_lowercase();
+        let transitions = self.list_transitions(issue_key)?;
+
+        // Prefer exact match on the target status name, fall back to transition name.
+        if let Some(t) = transitions
+            .iter()
+            .find(|t| t.to.name.to_lowercase() == target)
+        {
+            return Ok(t.id.clone());
+        }
+        if let Some(t) = transitions.iter().find(|t| t.name.to_lowercase() == target) {
+            return Ok(t.id.clone());
+        }
+
+        let available: Vec<String> = transitions.iter().map(|t| t.to.name.clone()).collect();
+        Err(JiraError::InvalidTransition {
+            requested: target_status.to_string(),
+            available,
+        })
+    }
+
+    // ==================== Project Status Operations ====================
+
+    /// GET /rest/api/3/project/{projectIdOrKey}/statuses
+    pub fn list_project_statuses(
+        &self,
+        project_key: &str,
+    ) -> Result<Vec<ProjectIssueTypeStatuses>> {
+        let url = self.api_url(&format!("/project/{}/statuses", project_key));
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let statuses: Vec<ProjectIssueTypeStatuses> = response.body_mut().read_json()?;
+        Ok(statuses)
+    }
 }
 
 /// Simple base64 encoding function
