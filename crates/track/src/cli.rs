@@ -18,7 +18,7 @@ pub struct Cli {
     #[arg(long, value_enum, global = true, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
 
-    /// Backend to use (youtrack, jira). If not specified, uses config or defaults to YouTrack.
+    /// Backend to use (youtrack, jira, github, gitlab). If not specified, uses config or defaults to YouTrack.
     #[arg(long, short = 'b', value_enum, global = true, env = "TRACKER_BACKEND")]
     pub backend: Option<Backend>,
 
@@ -169,13 +169,13 @@ pub enum Commands {
     ///
     /// Use --skills to install agent skill files globally for Claude, Copilot, Cursor, and Gemini.
     Init {
-        /// Tracker instance URL (e.g., https://youtrack.example.com or https://company.atlassian.net)
+        /// Tracker API URL (e.g., https://youtrack.example.com, https://company.atlassian.net, https://api.github.com, or https://gitlab.com/api/v4)
         #[arg(long, required_unless_present = "skills")]
         url: Option<String>,
-        /// API token (YouTrack permanent token or Jira API token)
+        /// API token for the selected backend
         #[arg(long, required_unless_present = "skills")]
         token: Option<String>,
-        /// Default project ID or shortName (validates against server if provided)
+        /// Project to validate. Required for GitHub as owner/repo and for GitLab as project ID/path.
         #[arg(long, short = 'p')]
         project: Option<String>,
         /// Backend to use. Defaults to youtrack.
@@ -1412,6 +1412,38 @@ mod tests {
                 assert_eq!(token.as_deref(), Some("api-token"));
                 assert!(matches!(backend, Backend::Jira));
                 assert_eq!(email.as_deref(), Some("test@example.com"));
+            }
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn parses_init_command_with_github_project() {
+        let cli = Cli::parse_from([
+            "track",
+            "init",
+            "--url",
+            "https://api.github.com",
+            "--token",
+            "ghp-token",
+            "--backend",
+            "github",
+            "--project",
+            "owner/repo",
+        ]);
+
+        match cli.command {
+            Commands::Init {
+                url,
+                token,
+                backend,
+                project,
+                ..
+            } => {
+                assert_eq!(url.as_deref(), Some("https://api.github.com"));
+                assert_eq!(token.as_deref(), Some("ghp-token"));
+                assert!(matches!(backend, Backend::GitHub));
+                assert_eq!(project.as_deref(), Some("owner/repo"));
             }
             _ => panic!("expected init command"),
         }

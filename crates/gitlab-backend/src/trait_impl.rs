@@ -36,21 +36,47 @@ impl IssueTracker for GitLabClient {
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
         let (search_text, state, labels) = convert_query_to_gitlab_params(query);
-        let page = if limit > 0 { skip / limit + 1 } else { 1 };
         let project_id = self.project_id_str();
 
-        // Use combined methods that read X-Total from the search response itself
-        let (issues, total) = if search_text.is_empty() {
-            self.list_issues_with_total(state.as_deref(), limit, page)?
-        } else {
-            self.search_issues_with_total(
-                &search_text,
-                state.as_deref(),
-                labels.as_deref(),
-                limit,
-                page,
-            )?
-        };
+        if limit == 0 {
+            return Ok(SearchResult::from_items(Vec::new()));
+        }
+
+        let per_page = 100;
+        let mut page = (skip / per_page) + 1;
+        let mut page_offset = skip % per_page;
+        let mut issues = Vec::new();
+        let mut total = None;
+
+        while issues.len() < limit {
+            // Use combined methods that read X-Total from the search response itself
+            let (page_issues, page_total) = if search_text.is_empty() {
+                self.list_issues_with_total(state.as_deref(), per_page, page)?
+            } else {
+                self.search_issues_with_total(
+                    &search_text,
+                    state.as_deref(),
+                    labels.as_deref(),
+                    per_page,
+                    page,
+                )?
+            };
+
+            if total.is_none() {
+                total = page_total;
+            }
+
+            let page_len = page_issues.len();
+            let remaining = limit - issues.len();
+            issues.extend(page_issues.into_iter().skip(page_offset).take(remaining));
+
+            if page_len < per_page {
+                break;
+            }
+
+            page += 1;
+            page_offset = 0;
+        }
 
         let items: Vec<Issue> = issues
             .into_iter()
@@ -302,8 +328,47 @@ impl IssueTracker for GitLabClient {
     }
 
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
+        self.get_comments_page(issue_id, 100, 0)
+    }
+
+    fn get_comments_page(&self, issue_id: &str, limit: usize, skip: usize) -> Result<Vec<Comment>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let iid = parse_issue_iid(issue_id)?;
-        Ok(self.get_notes(iid)?.into_iter().map(Into::into).collect())
+        let per_page = 100;
+        let mut page = 1;
+        let mut remaining_skip = skip;
+        let mut comments = Vec::new();
+
+        while comments.len() < limit {
+            let raw_notes = self.get_notes_page_raw(iid, per_page, page)?;
+            let page_len = raw_notes.len();
+            let visible_notes: Vec<_> = raw_notes.into_iter().filter(|n| !n.system).collect();
+
+            if remaining_skip >= visible_notes.len() {
+                remaining_skip -= visible_notes.len();
+            } else {
+                let remaining = limit - comments.len();
+                comments.extend(
+                    visible_notes
+                        .into_iter()
+                        .skip(remaining_skip)
+                        .take(remaining)
+                        .map(Into::into),
+                );
+                remaining_skip = 0;
+            }
+
+            if page_len < per_page {
+                break;
+            }
+
+            page += 1;
+        }
+
+        Ok(comments)
     }
 }
 

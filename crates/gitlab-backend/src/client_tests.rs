@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::client::GitLabClient;
+    use tracker_core::IssueTracker;
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -125,6 +126,34 @@ mod tests {
 
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].title, "Bug in login");
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_issues_preserves_offset() {
+        let mock_server = MockServer::start().await;
+        let issues: Vec<_> = (1..=50)
+            .map(|iid| mock_gitlab_issue(iid, &format!("Search result {iid}")))
+            .collect();
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-total", "50")
+                    .set_body_json(issues),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = <GitLabClient as IssueTracker>::search_issues(&client, "", 20, 25).unwrap();
+
+        assert_eq!(result.items.len(), 20);
+        assert_eq!(result.items[0].id_readable, "#26");
+        assert_eq!(result.items[19].id_readable, "#45");
     }
 
     #[tokio::test]
@@ -277,6 +306,8 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/projects/123/issues/42/notes"))
             .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 {
                     "id": 501,
@@ -746,6 +777,6 @@ mod tests {
     fn test_resolve_link_type_unknown_falls_through() {
         let client = GitLabClient::new("https://gitlab.com/api/v4", "test-token", Some("123"));
 
-        assert_eq!(client.resolve_link_type("nonexistent"), "relates_to");
+        assert_eq!(client.resolve_link_type("nonexistent"), "nonexistent");
     }
 }

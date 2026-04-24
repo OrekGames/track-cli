@@ -140,24 +140,8 @@ fn run(cli: Cli) -> Result<()> {
             run_with_client(&client, &confluence, &cli, &config)
         }
         Backend::GitHub => {
-            let owner = config
-                .github
-                .owner
-                .as_deref()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "GitHub owner not configured. Set via 'track config set github.owner <OWNER>' or GITHUB_OWNER env var"
-                    )
-                })?;
-            let repo = config
-                .github
-                .repo
-                .as_deref()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "GitHub repo not configured. Set via 'track config set github.repo <REPO>' or GITHUB_REPO env var"
-                    )
-                })?;
+            let owner = config.github.owner.as_deref().unwrap();
+            let repo = config.github.repo.as_deref().unwrap();
             let token = config.token.as_ref().unwrap();
             let client = if let Some(api_url) = config.url.as_deref() {
                 GitHubClient::with_base_url(api_url, owner, repo, token)

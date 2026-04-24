@@ -50,7 +50,7 @@ impl JiraClient {
     }
 
     /// Resolve a canonical link type name to the Jira-native link type name.
-    /// User overrides take precedence, then falls back to built-in defaults.
+    /// User overrides take precedence, then built-in defaults, then pass-through.
     pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
         if let Some(name) = self.link_mappings.get(canonical) {
             return name.clone();
@@ -61,7 +61,7 @@ impl JiraClient {
             "required" => "Blocks",
             "duplicates" => "Duplicate",
             "duplicated-by" => "Duplicate",
-            _ => "Relates",
+            _ => canonical,
         }
         .to_string()
     }
@@ -324,7 +324,22 @@ impl JiraClient {
 
     /// Get comments on an issue
     pub fn get_comments(&self, key: &str) -> Result<Vec<JiraComment>> {
-        let url = self.api_url(&format!("/issue/{}/comment", key));
+        self.get_comments_page(key, 100, 0)
+    }
+
+    /// Get a page of comments on an issue
+    pub fn get_comments_page(
+        &self,
+        key: &str,
+        max_results: usize,
+        start_at: usize,
+    ) -> Result<Vec<JiraComment>> {
+        let url = format!(
+            "{}?startAt={}&maxResults={}",
+            self.api_url(&format!("/issue/{}/comment", key)),
+            start_at,
+            max_results
+        );
 
         let response = self
             .agent

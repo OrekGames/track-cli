@@ -278,6 +278,23 @@ impl Config {
                 "Jira email not configured. Set via JIRA_EMAIL env var or config file"
             ));
         }
+        if backend == Backend::GitHub {
+            if self.github.owner.is_none() {
+                return Err(anyhow!(
+                    "GitHub owner not configured. Set via 'track config set github.owner <OWNER>' or GITHUB_OWNER env var"
+                ));
+            }
+            if self.github.repo.is_none() {
+                return Err(anyhow!(
+                    "GitHub repo not configured. Set via 'track config set github.repo <REPO>' or GITHUB_REPO env var"
+                ));
+            }
+        }
+        if backend == Backend::GitLab && self.gitlab.project_id.is_none() {
+            return Err(anyhow!(
+                "GitLab project_id not configured. Set via 'track config set gitlab.project_id <ID>' or GITLAB_PROJECT_ID env var"
+            ));
+        }
         Ok(())
     }
 
@@ -536,6 +553,56 @@ duplicates = "blocks"
         assert_eq!(
             parsed.jira.link_mappings.get("depends"),
             Some(&"Requires".to_string())
+        );
+    }
+
+    #[test]
+    fn test_validate_github_requires_owner_and_repo() {
+        let config = Config {
+            url: Some("https://api.github.com".to_string()),
+            token: Some("secret".to_string()),
+            github: GitHubConfig {
+                repo: Some("repo".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate(Backend::GitHub).unwrap_err();
+        assert!(
+            err.to_string().contains("GitHub owner not configured"),
+            "expected missing owner error, got: {err}"
+        );
+
+        let config = Config {
+            url: Some("https://api.github.com".to_string()),
+            token: Some("secret".to_string()),
+            github: GitHubConfig {
+                owner: Some("org".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let err = config.validate(Backend::GitHub).unwrap_err();
+        assert!(
+            err.to_string().contains("GitHub repo not configured"),
+            "expected missing repo error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_gitlab_requires_project_id() {
+        let config = Config {
+            url: Some("https://gitlab.com/api/v4".to_string()),
+            token: Some("secret".to_string()),
+            ..Default::default()
+        };
+
+        let err = config.validate(Backend::GitLab).unwrap_err();
+        assert!(
+            err.to_string().contains("GitLab project_id not configured"),
+            "expected missing project_id error, got: {err}"
         );
     }
 }

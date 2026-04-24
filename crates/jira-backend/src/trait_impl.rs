@@ -273,6 +273,14 @@ impl IssueTracker for JiraClient {
             .map(Into::into)
             .collect())
     }
+
+    fn get_comments_page(&self, issue_id: &str, limit: usize, skip: usize) -> Result<Vec<Comment>> {
+        Ok(self
+            .get_comments_page(issue_id, limit, skip)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
 }
 
 /// Convert simple tracker-core query format to JQL

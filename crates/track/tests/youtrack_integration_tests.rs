@@ -1,6 +1,7 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
+use std::fs;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::thread;
@@ -48,6 +49,17 @@ fn start_mock_server(response_body: String) -> (thread::JoinHandle<()>, u16) {
     });
 
     (handle, port)
+}
+
+fn isolated_config_dir(test_name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "track-youtrack-{}-{}",
+        test_name,
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("failed to create isolated config dir");
+    dir
 }
 
 /// Helper to create a mock server that handles multiple sequential requests.
@@ -262,28 +274,46 @@ fn test_project_list_json() {
 
 #[test]
 fn test_missing_url_configuration() {
+    let dir = isolated_config_dir("missing-url");
+
     cargo_bin_cmd!("track")
         .args(["issue", "get", "PROJ-1"])
+        .current_dir(&dir)
+        .env("HOME", &dir)
+        .env("USERPROFILE", &dir)
         .env("TRACKER_TOKEN", "test-token")
         .env_remove("TRACKER_URL")
+        .env_remove("TRACKER_BACKEND")
+        .env_remove("TRACKER_CONFIG")
         .env_remove("YOUTRACK_URL")
         .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("URL not configured"));
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_missing_token_configuration() {
+    let dir = isolated_config_dir("missing-token");
+
     cargo_bin_cmd!("track")
         .args(["issue", "get", "PROJ-1"])
+        .current_dir(&dir)
+        .env("HOME", &dir)
+        .env("USERPROFILE", &dir)
         .env("TRACKER_URL", "https://test.youtrack.cloud")
         .env_remove("TRACKER_TOKEN")
+        .env_remove("TRACKER_BACKEND")
+        .env_remove("TRACKER_CONFIG")
         .env_remove("YOUTRACK_URL")
         .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("token not configured"));
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2301,6 +2331,18 @@ fn mock_link_buckets_response() -> String {
                 "directed": true
             },
             "issues": []
+        },
+        {
+            "id": "103-0b",
+            "direction": "BOTH",
+            "linkType": {
+                "id": "103-0",
+                "name": "clones",
+                "sourceToTarget": "clones",
+                "targetToSource": "is cloned by",
+                "directed": false
+            },
+            "issues": []
         }
     ])
     .to_string()
@@ -2396,10 +2438,9 @@ fn test_youtrack_link_required_uses_inward_direction() {
 #[test]
 fn test_youtrack_link_custom_type_passthrough() {
     // Custom type "clones" gets passed through with BOTH direction.
-    // It resolves to "clones" (unknown → default "Relates" via resolve_link_type).
-    // The mock returns Relates bucket for BOTH direction.
+    // The mock returns a matching "clones" bucket for BOTH direction.
     let responses = vec![
-        mock_link_buckets_response(), // GET links — "Relates" has BOTH direction
+        mock_link_buckets_response(), // GET links — "clones" has BOTH direction
         String::new(),                // POST add issue
     ];
     let (_server, port) = start_mock_server_multi(responses);

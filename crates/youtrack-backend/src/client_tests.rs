@@ -244,6 +244,36 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn test_get_comments_page_uses_pagination_params() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues/PROJ-123/comments"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(query_param("$top", "10"))
+            .and(query_param("$skip", "20"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "comment-1",
+                    "text": "First comment",
+                    "author": {
+                        "login": "user1",
+                        "name": "User One"
+                    },
+                    "created": 1640000000000i64
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let comments = client.get_comments_page("PROJ-123", 10, 20).unwrap();
+
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "First comment");
+    }
+
     // Article API tests
 
     #[tokio::test]
@@ -1740,6 +1770,6 @@ mod tests {
     fn test_resolve_link_type_unknown_falls_through() {
         let client = YouTrackClient::new("https://yt.example.com", "test-token");
 
-        assert_eq!(client.resolve_link_type("nonexistent"), "Relates");
+        assert_eq!(client.resolve_link_type("nonexistent"), "nonexistent");
     }
 }

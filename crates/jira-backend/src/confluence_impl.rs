@@ -20,18 +20,47 @@ impl KnowledgeBase for ConfluenceClient {
         &self,
         project_id: Option<&str>,
         limit: usize,
-        _skip: usize,
+        skip: usize,
     ) -> Result<Vec<Article>> {
-        // Note: Confluence v2 API uses cursor-based pagination, not offset-based
-        // The skip parameter is ignored here
-        self.list_pages(project_id, limit, None)
-            .map(|r| {
-                r.results
-                    .into_iter()
-                    .map(confluence_page_to_article)
-                    .collect()
-            })
-            .map_err(TrackerError::from)
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut articles = Vec::new();
+        let mut remaining_skip = skip;
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let page = self
+                .list_pages(project_id, limit, cursor.as_deref())
+                .map_err(TrackerError::from)?;
+            let page_len = page.results.len();
+
+            if remaining_skip >= page_len {
+                remaining_skip -= page_len;
+            } else {
+                let remaining = limit - articles.len();
+                articles.extend(
+                    page.results
+                        .into_iter()
+                        .skip(remaining_skip)
+                        .take(remaining)
+                        .map(confluence_page_to_article),
+                );
+                remaining_skip = 0;
+            }
+
+            if articles.len() >= limit || page_len == 0 {
+                break;
+            }
+
+            cursor = page.links.as_ref().and_then(extract_next_cursor);
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        Ok(articles)
     }
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
@@ -173,6 +202,22 @@ impl KnowledgeBase for ConfluenceClient {
 // ============================================================================
 // Conversion Functions
 // ============================================================================
+
+fn extract_next_cursor(links: &ConfluencePaginationLinks) -> Option<String> {
+    let next = links.next.as_ref()?;
+    let query = next
+        .split_once('?')
+        .map_or(next.as_str(), |(_, query)| query);
+
+    query.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        if key == "cursor" {
+            urlencoding::decode(value).ok().map(|v| v.into_owned())
+        } else {
+            None
+        }
+    })
+}
 
 fn confluence_page_to_article(page: ConfluencePage) -> Article {
     let content = page.body.as_ref().and_then(|b| {
@@ -391,4 +436,61 @@ fn html_escape(input: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracker_core::KnowledgeBase;
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn page(id: &str, title: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "title": title,
+            "spaceId": "SPACE"
+        })
+    }
+
+    #[tokio::test]
+    async fn list_articles_emulates_offset_with_cursor_pages() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/wiki/api/v2/pages"))
+            .and(query_param("limit", "2"))
+            .and(query_param_is_missing("cursor"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [
+                    page("1", "First"),
+                    page("2", "Second")
+                ],
+                "_links": {
+                    "next": "/wiki/api/v2/pages?cursor=next-page"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/wiki/api/v2/pages"))
+            .and(query_param("limit", "2"))
+            .and(query_param("cursor", "next-page"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [
+                    page("3", "Third"),
+                    page("4", "Fourth")
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        let articles = client.list_articles(None, 2, 2).unwrap();
+
+        assert_eq!(articles.len(), 2);
+        assert_eq!(articles[0].id, "3");
+        assert_eq!(articles[1].id, "4");
+    }
 }

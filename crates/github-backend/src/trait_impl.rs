@@ -54,27 +54,50 @@ impl IssueTracker for GitHubClient {
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
         let github_query = convert_query_to_github(query);
-        let per_page = limit.min(100);
-        let page = if per_page > 0 {
-            (skip / per_page) + 1
-        } else {
-            1
-        };
-
-        let result = self.search_issues(&github_query, per_page, page)?;
-
-        let total = result.total_count;
         let owner = self.owner().to_string();
         let repo = self.repo().to_string();
 
-        let items = result
-            .items
-            .into_iter()
-            .filter(|i| !i.is_pull_request())
-            .map(|i| github_issue_to_core(i, &owner, &repo))
-            .collect();
+        if limit == 0 {
+            return Ok(SearchResult::from_items(Vec::new()));
+        }
 
-        Ok(SearchResult::with_total(items, total))
+        let per_page = 100;
+        let mut page = (skip / per_page) + 1;
+        let mut page_offset = skip % per_page;
+        let mut items = Vec::new();
+        let mut total = None;
+
+        while items.len() < limit {
+            let result = self.search_issues(&github_query, per_page, page)?;
+            if total.is_none() {
+                total = Some(result.total_count);
+            }
+
+            let page_len = result.items.len();
+            let remaining = limit - items.len();
+            items.extend(
+                result
+                    .items
+                    .into_iter()
+                    .filter(|i| !i.is_pull_request())
+                    .skip(page_offset)
+                    .take(remaining)
+                    .map(|i| github_issue_to_core(i, &owner, &repo)),
+            );
+
+            if page_len < per_page {
+                break;
+            }
+
+            page += 1;
+            page_offset = 0;
+        }
+
+        if let Some(total) = total {
+            Ok(SearchResult::with_total(items, total))
+        } else {
+            Ok(SearchResult::from_items(items))
+        }
     }
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
@@ -249,6 +272,41 @@ impl IssueTracker for GitHubClient {
             .into_iter()
             .map(Into::into)
             .collect())
+    }
+
+    fn get_comments_page(&self, issue_id: &str, limit: usize, skip: usize) -> Result<Vec<Comment>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let number = parse_issue_number(issue_id)?;
+        let per_page = 100;
+        let mut page = (skip / per_page) + 1;
+        let mut page_offset = skip % per_page;
+        let mut comments = Vec::new();
+
+        while comments.len() < limit {
+            let page_comments = self.get_comments_page(number, per_page, page)?;
+            let page_len = page_comments.len();
+            let remaining = limit - comments.len();
+
+            comments.extend(
+                page_comments
+                    .into_iter()
+                    .skip(page_offset)
+                    .take(remaining)
+                    .map(Into::into),
+            );
+
+            if page_len < per_page {
+                break;
+            }
+
+            page += 1;
+            page_offset = 0;
+        }
+
+        Ok(comments)
     }
 }
 

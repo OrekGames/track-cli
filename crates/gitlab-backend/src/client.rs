@@ -42,7 +42,7 @@ impl GitLabClient {
     }
 
     /// Resolve a canonical link type name to the GitLab-native link type string.
-    /// User overrides take precedence, then falls back to built-in defaults.
+    /// User overrides take precedence, then built-in defaults, then pass-through.
     pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
         if let Some(name) = self.link_mappings.get(canonical) {
             return name.clone();
@@ -53,7 +53,7 @@ impl GitLabClient {
             "required" => "is_blocked_by",
             "duplicates" => "relates_to",
             "duplicated-by" => "relates_to",
-            _ => "relates_to",
+            _ => canonical,
         }
         .to_string()
     }
@@ -428,7 +428,26 @@ impl GitLabClient {
 
     /// Get notes on an issue, filtering out system-generated notes
     pub fn get_notes(&self, iid: u64) -> Result<Vec<GitLabNote>> {
-        let url = self.project_url(&format!("/issues/{}/notes?per_page=100", iid))?;
+        Ok(self
+            .get_notes_page_raw(iid, 100, 1)?
+            .into_iter()
+            .filter(|n| !n.system)
+            .collect())
+    }
+
+    /// Get a native GitLab notes page on an issue.
+    pub(crate) fn get_notes_page_raw(
+        &self,
+        iid: u64,
+        per_page: usize,
+        page: usize,
+    ) -> Result<Vec<GitLabNote>> {
+        let url = self.project_url(&format!(
+            "/issues/{}/notes?per_page={}&page={}",
+            iid,
+            per_page.min(100),
+            page.max(1)
+        ))?;
 
         let response = self
             .agent
@@ -440,9 +459,7 @@ impl GitLabClient {
 
         let mut response = self.check_response(response)?;
         let notes: Vec<GitLabNote> = response.body_mut().read_json()?;
-
-        // Filter out system-generated notes
-        Ok(notes.into_iter().filter(|n| !n.system).collect())
+        Ok(notes)
     }
 
     // ==================== Link Operations ====================

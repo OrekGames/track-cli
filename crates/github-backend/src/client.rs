@@ -417,9 +417,21 @@ impl GitHubClient {
 
     /// Get comments on an issue
     pub fn get_comments(&self, number: u64) -> Result<Vec<GitHubComment>> {
+        self.get_comments_page(number, 100, 1)
+    }
+
+    /// Get a native GitHub comment page for an issue
+    pub fn get_comments_page(
+        &self,
+        number: u64,
+        per_page: usize,
+        page: usize,
+    ) -> Result<Vec<GitHubComment>> {
         let url = format!(
-            "{}?per_page=100",
-            self.repo_url(&format!("/issues/{}/comments", number))
+            "{}?per_page={}&page={}",
+            self.repo_url(&format!("/issues/{}/comments", number)),
+            per_page.min(100),
+            page.max(1)
         );
 
         let response = self

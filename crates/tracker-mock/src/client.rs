@@ -514,10 +514,6 @@ impl KnowledgeBase for MockClient {
     }
 }
 
-// MockClient is Send + Sync because all mutable state is behind Mutex
-unsafe impl Send for MockClient {}
-unsafe impl Sync for MockClient {}
-
 /// Log a CLI-level command (cache, context) to the call log.
 ///
 /// This allows the evaluator to detect when an agent uses commands like
