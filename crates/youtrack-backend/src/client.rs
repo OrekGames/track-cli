@@ -2,7 +2,9 @@ use crate::error::{Result, YouTrackError};
 use crate::models::*;
 use std::collections::HashMap;
 use std::time::Duration;
+use tracker_core::AttachmentUpload;
 use ureq::Agent;
+use ureq::unversioned::multipart::{Form, Part};
 
 const DEFAULT_ISSUE_FIELDS: &str = "id,idReadable,summary,description,project(id,name,shortName),customFields(name,$type,value(name,login,isResolved,text)),tags(id,name),created,updated";
 const DEFAULT_PROJECT_FIELDS: &str = "id,name,shortName,description";
@@ -909,6 +911,101 @@ impl YouTrackClient {
             .header("Authorization", &self.auth_header())
             .header("Accept", "application/json")
             .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let attachments: Vec<ArticleAttachment> = response.body_mut().read_json()?;
+        Ok(attachments)
+    }
+
+    /// Upload attachments to an article.
+    pub fn add_article_attachments(
+        &self,
+        article_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        if upload.comment.is_some() {
+            return Err(YouTrackError::Api {
+                status: 0,
+                message: "YouTrack article attachment upload does not support --comment"
+                    .to_string(),
+            });
+        }
+        if upload.minor_edit {
+            return Err(YouTrackError::Api {
+                status: 0,
+                message: "YouTrack article attachment upload does not support --minor-edit"
+                    .to_string(),
+            });
+        }
+
+        let mut url = format!(
+            "{}/api/articles/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name)",
+            self.base_url, article_id
+        );
+        if upload.silent {
+            url.push_str("&muteUpdateNotifications=true");
+        }
+
+        self.post_article_attachment_form(&url, upload)
+    }
+
+    /// Upload attachments to an article comment.
+    pub fn add_article_comment_attachments(
+        &self,
+        article_id: &str,
+        comment_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        if upload.comment.is_some() {
+            return Err(YouTrackError::Api {
+                status: 0,
+                message: "YouTrack article comment attachment upload does not support --comment"
+                    .to_string(),
+            });
+        }
+        if upload.minor_edit {
+            return Err(YouTrackError::Api {
+                status: 0,
+                message: "YouTrack article comment attachment upload does not support --minor-edit"
+                    .to_string(),
+            });
+        }
+
+        let mut url = format!(
+            "{}/api/articles/{}/comments/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name)",
+            self.base_url, article_id, comment_id
+        );
+        if upload.silent {
+            url.push_str("&muteUpdateNotifications=true");
+        }
+
+        self.post_article_attachment_form(&url, upload)
+    }
+
+    fn post_article_attachment_form(
+        &self,
+        url: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        let mut form = Form::new();
+        for file in &upload.files {
+            let mut part = Part::file(&file.path)?;
+            if let Some(name) = &file.name {
+                part = part.file_name(name);
+            }
+            if let Some(mime_type) = &file.mime_type {
+                part = part.mime_str(mime_type)?;
+            }
+            form = form.part("upload", part);
+        }
+
+        let response = self
+            .agent
+            .post(url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .send(form)
             .map_err(|e| self.handle_error(e))?;
 
         let mut response = self.check_response(response)?;

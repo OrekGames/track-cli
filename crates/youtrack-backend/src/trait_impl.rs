@@ -7,8 +7,8 @@ use crate::models::{
     CreateCustomFieldRequest, CreateIssueTagRequest, CustomFieldRef, FieldTypeRef, TagColorRequest,
 };
 use tracker_core::{
-    Article, ArticleAttachment, AttachFieldToProject, BundleDefinition, BundleType,
-    BundleValueDefinition, Comment, CreateArticle, CreateBundle, CreateBundleValue,
+    Article, ArticleAttachment, AttachFieldToProject, AttachmentUpload, BundleDefinition,
+    BundleType, BundleValueDefinition, Comment, CreateArticle, CreateBundle, CreateBundleValue,
     CreateCustomField, CreateIssue, CreateProject, CreateTag, CustomFieldDefinition, Issue,
     IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
     Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
@@ -375,6 +375,18 @@ impl KnowledgeBase for YouTrackClient {
             .collect())
     }
 
+    fn add_article_attachment(
+        &self,
+        article_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        Ok(self
+            .add_article_attachments(article_id, upload)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
     fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
         Ok(self
             .get_article_comments(article_id)?
@@ -385,5 +397,20 @@ impl KnowledgeBase for YouTrackClient {
 
     fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment> {
         Ok(self.add_article_comment(article_id, text)?.into())
+    }
+
+    fn add_article_comment_attachment(
+        &self,
+        article_id: &str,
+        text: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Comment> {
+        let comment = self.add_article_comment(article_id, text)?;
+        self.add_article_comment_attachments(article_id, &comment.id, upload)?;
+        Ok(comment.into())
+    }
+
+    fn supports_article_comment_attachments(&self) -> bool {
+        true
     }
 }

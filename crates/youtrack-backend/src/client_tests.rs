@@ -2,7 +2,8 @@
 mod tests {
     use crate::client::YouTrackClient;
     use crate::models::*;
-    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use tracker_core::{AttachmentUpload, AttachmentUploadFile};
+    use wiremock::matchers::{body_json, body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -560,6 +561,55 @@ mod tests {
         assert_eq!(attachments[0].name, "document.pdf");
         assert_eq!(attachments[0].size, 102400);
         assert_eq!(attachments[1].name, "image.png");
+    }
+
+    #[tokio::test]
+    async fn test_add_article_attachment_uses_upload_multipart_field() {
+        let mock_server = MockServer::start().await;
+        let dir = std::env::temp_dir().join(format!(
+            "track-youtrack-article-attachment-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("article.txt");
+        std::fs::write(&file, "attachment body").unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/api/articles/KB-A-1/attachments"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(header("Accept", "application/json"))
+            .and(body_string_contains(
+                "Content-Disposition: form-data; name=\"upload\"; filename=\"article.txt\"",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "att-3",
+                    "name": "article.txt",
+                    "size": 15,
+                    "mimeType": "text/plain",
+                    "created": 1640000000000i64
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let upload = AttachmentUpload {
+            files: vec![AttachmentUploadFile {
+                path: file,
+                name: None,
+                mime_type: Some("text/plain".to_string()),
+            }],
+            comment: None,
+            silent: false,
+            minor_edit: false,
+        };
+
+        let attachments = client.add_article_attachments("KB-A-1", &upload).unwrap();
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].name, "article.txt");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

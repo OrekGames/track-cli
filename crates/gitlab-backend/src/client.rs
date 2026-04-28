@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
+use tracker_core::AttachmentUploadFile;
 use ureq::Agent;
+use ureq::unversioned::multipart::{Form, Part};
 
 use crate::error::{GitLabError, Result};
 use crate::models::*;
@@ -643,5 +645,127 @@ impl GitLabClient {
         let mut response = self.check_response(response)?;
         let members: Vec<GitLabUser> = response.body_mut().read_json()?;
         Ok(members)
+    }
+
+    // ==================== Wiki Operations ====================
+
+    /// List project wiki pages.
+    pub fn list_wiki_pages(&self, with_content: bool) -> Result<Vec<GitLabWikiPage>> {
+        let url = self.project_url(&format!(
+            "/wikis?with_content={}&per_page=100",
+            if with_content { 1 } else { 0 }
+        ))?;
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let pages: Vec<GitLabWikiPage> = response.body_mut().read_json()?;
+        Ok(pages)
+    }
+
+    /// Get a project wiki page by slug.
+    pub fn get_wiki_page(&self, slug: &str) -> Result<GitLabWikiPage> {
+        let url = self.project_url(&format!("/wikis/{}", urlencoding::encode(slug)))?;
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let page: GitLabWikiPage = response.body_mut().read_json()?;
+        Ok(page)
+    }
+
+    /// Create a project wiki page.
+    pub fn create_wiki_page(&self, page: &CreateGitLabWikiPage) -> Result<GitLabWikiPage> {
+        let url = self.project_url("/wikis")?;
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(page)
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let page: GitLabWikiPage = response.body_mut().read_json()?;
+        Ok(page)
+    }
+
+    /// Update a project wiki page.
+    pub fn update_wiki_page(
+        &self,
+        slug: &str,
+        update: &UpdateGitLabWikiPage,
+    ) -> Result<GitLabWikiPage> {
+        let url = self.project_url(&format!("/wikis/{}", urlencoding::encode(slug)))?;
+
+        let response = self
+            .agent
+            .put(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(update)
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let page: GitLabWikiPage = response.body_mut().read_json()?;
+        Ok(page)
+    }
+
+    /// Delete a project wiki page.
+    pub fn delete_wiki_page(&self, slug: &str) -> Result<()> {
+        let url = self.project_url(&format!("/wikis/{}", urlencoding::encode(slug)))?;
+
+        let response = self
+            .agent
+            .delete(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        self.check_response(response)?;
+        Ok(())
+    }
+
+    /// Upload one file to project wiki attachments.
+    pub fn upload_wiki_attachment(
+        &self,
+        file: &AttachmentUploadFile,
+    ) -> Result<GitLabWikiAttachment> {
+        let url = self.project_url("/wikis/attachments")?;
+        let mut part = Part::file(&file.path)?;
+        if let Some(name) = &file.name {
+            part = part.file_name(name);
+        }
+        if let Some(mime_type) = &file.mime_type {
+            part = part.mime_str(mime_type)?;
+        }
+        let form = Form::new().part("file", part);
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+            .send(form)
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let attachment: GitLabWikiAttachment = response.body_mut().read_json()?;
+        Ok(attachment)
     }
 }

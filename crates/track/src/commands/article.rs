@@ -70,14 +70,46 @@ pub fn handle_article(
             handle_move(kb_client, id, parent.as_deref(), format)
         }
         ArticleCommands::Attachments { id } => handle_attachments(kb_client, id, format),
+        ArticleCommands::Attach {
+            id,
+            paths,
+            name,
+            mime_type,
+            comment,
+            silent,
+            minor_edit,
+        } => handle_attach(
+            kb_client,
+            id,
+            paths,
+            name.as_deref(),
+            mime_type.as_deref(),
+            comment.as_deref(),
+            *silent,
+            *minor_edit,
+            format,
+        ),
         ArticleCommands::Comment {
             id,
             text,
             body_file,
+            attach,
+            name,
+            mime_type,
+            silent,
         } => {
             let resolved_text = super::resolve_body(text.as_deref(), body_file.as_deref())?
                 .ok_or_else(|| anyhow!("Comment text is required"))?;
-            handle_comment(kb_client, id, &resolved_text, format)
+            handle_comment(
+                kb_client,
+                id,
+                &resolved_text,
+                attach,
+                name.as_deref(),
+                mime_type.as_deref(),
+                *silent,
+                format,
+            )
         }
         ArticleCommands::Comments { id, limit, all } => {
             handle_comments(kb_client, id, *limit, *all, format)
@@ -318,15 +350,60 @@ fn handle_attachments(client: &dyn KnowledgeBase, id: &str, format: OutputFormat
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn handle_attach(
+    client: &dyn KnowledgeBase,
+    id: &str,
+    paths: &[std::path::PathBuf],
+    name: Option<&str>,
+    mime_type: Option<&str>,
+    comment: Option<&str>,
+    silent: bool,
+    minor_edit: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    let upload = super::attachments::build_attachment_upload(
+        paths, name, mime_type, comment, silent, minor_edit,
+    )?;
+
+    let attachments = client
+        .add_article_attachment(id, &upload)
+        .with_context(|| format!("Failed to upload attachment(s) to article '{}'", id))?;
+
+    output_list(&attachments, format)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_comment(
     client: &dyn KnowledgeBase,
     id: &str,
     text: &str,
+    attach: &[std::path::PathBuf],
+    name: Option<&str>,
+    mime_type: Option<&str>,
+    silent: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    let comment = client
-        .add_article_comment(id, text)
-        .with_context(|| format!("Failed to add comment to article '{}'", id))?;
+    let comment = if attach.is_empty() {
+        client
+            .add_article_comment(id, text)
+            .with_context(|| format!("Failed to add comment to article '{}'", id))?
+    } else {
+        if !client.supports_article_comment_attachments() {
+            return Err(anyhow!(
+                "Article comment attachment upload is not supported by this backend"
+            ));
+        }
+
+        let upload = super::attachments::build_attachment_upload(
+            attach, name, mime_type, None, silent, false,
+        )?;
+
+        client
+            .add_article_comment_attachment(id, text, &upload)
+            .with_context(|| format!("Failed to add comment attachment(s) to article '{}'", id))?
+    };
 
     output_result(&comment, format)?;
     Ok(())

@@ -1,10 +1,10 @@
 //! Implementation of tracker-core traits for GitHubClient
 
 use tracker_core::{
-    Article, ArticleAttachment, ArticleRef, Comment, CommentAuthor, CreateArticle, CreateIssue,
-    CreateProject, CreateTag, Issue, IssueLink, IssueTag, IssueTracker, KnowledgeBase, Project,
-    ProjectCustomField, ProjectRef, Result, SearchResult, Tag, TrackerError, UpdateArticle,
-    UpdateIssue,
+    Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CommentAuthor,
+    CreateArticle, CreateIssue, CreateProject, CreateTag, Issue, IssueLink, IssueTag, IssueTracker,
+    KnowledgeBase, Project, ProjectCustomField, ProjectRef, Result, SearchResult, Tag,
+    TrackerError, UpdateArticle, UpdateIssue,
 };
 
 use crate::client::GitHubClient;
@@ -520,10 +520,40 @@ impl KnowledgeBase for GitHubClient {
         Ok(wiki_page_to_article(page, self.owner(), self.repo()))
     }
 
-    fn list_article_attachments(&self, _article_id: &str) -> Result<Vec<ArticleAttachment>> {
-        // GitHub wikis don't have native attachment support
-        // Could potentially scan for images in the markdown, but for now return empty
-        Ok(Vec::new())
+    fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
+        let wiki = self.wiki();
+        let attachments = wiki.list_attachments(article_id)?;
+        Ok(attachments
+            .into_iter()
+            .map(|attachment| ArticleAttachment {
+                id: attachment.path,
+                name: attachment.name,
+                size: attachment.size,
+                mime_type: attachment.mime_type,
+                url: attachment.url,
+                created: None,
+            })
+            .collect())
+    }
+
+    fn add_article_attachment(
+        &self,
+        article_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        let wiki = self.wiki();
+        let attachments = wiki.add_attachments(article_id, upload)?;
+        Ok(attachments
+            .into_iter()
+            .map(|attachment| ArticleAttachment {
+                id: attachment.path,
+                name: attachment.name,
+                size: attachment.size,
+                mime_type: attachment.mime_type,
+                url: attachment.url,
+                created: None,
+            })
+            .collect())
     }
 
     fn get_article_comments(&self, _article_id: &str) -> Result<Vec<Comment>> {

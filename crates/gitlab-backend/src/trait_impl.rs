@@ -1,9 +1,10 @@
 //! Implementation of tracker-core traits for GitLabClient
 
 use tracker_core::{
-    Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, CreateTag,
-    Issue, IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project,
-    ProjectCustomField, Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
+    Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CreateArticle, CreateIssue,
+    CreateProject, CreateTag, Issue, IssueLink, IssueLinkType, IssueTag, IssueTracker,
+    KnowledgeBase, Project, ProjectCustomField, ProjectRef, Result, SearchResult, TrackerError,
+    UpdateArticle, UpdateIssue, User,
 };
 
 use crate::client::GitLabClient;
@@ -12,9 +13,13 @@ use crate::convert::{
     gitlab_issue_to_core, gitlab_link_to_core,
 };
 use crate::models::{
-    CreateGitLabIssue, CreateGitLabIssueLink, CreateGitLabLabel, UpdateGitLabIssue,
-    UpdateGitLabLabel,
+    CreateGitLabIssue, CreateGitLabIssueLink, CreateGitLabLabel, CreateGitLabWikiPage,
+    GitLabWikiAttachment, GitLabWikiPage, UpdateGitLabIssue, UpdateGitLabLabel,
+    UpdateGitLabWikiPage,
 };
+
+const ATTACHMENT_BLOCK_START: &str = "<!-- track:attachments:start -->";
+const ATTACHMENT_BLOCK_END: &str = "<!-- track:attachments:end -->";
 
 /// Parse an issue IID from a string, stripping an optional leading `#`.
 fn parse_issue_iid(id: &str) -> std::result::Result<u64, TrackerError> {
@@ -372,61 +377,170 @@ impl IssueTracker for GitLabClient {
     }
 }
 
-// ==================== KnowledgeBase stub ====================
-// GitLab does not support a knowledge base through this client.
-// main.rs calls `run_with_client(&client, &client, ...)` so GitLabClient
-// must implement KnowledgeBase.
+// ==================== KnowledgeBase via project wikis ====================
 
 impl KnowledgeBase for GitLabClient {
-    fn get_article(&self, _id: &str) -> Result<Article> {
-        Err(TrackerError::InvalidInput(
-            "GitLab backend does not support articles/knowledge base".to_string(),
+    fn get_article(&self, id: &str) -> Result<Article> {
+        Ok(gitlab_wiki_page_to_article(
+            self.get_wiki_page(id)?,
+            &self.project_id_str(),
         ))
     }
 
     fn list_articles(
         &self,
-        _project_id: Option<&str>,
-        _limit: usize,
-        _skip: usize,
+        project_id: Option<&str>,
+        limit: usize,
+        skip: usize,
     ) -> Result<Vec<Article>> {
-        Ok(Vec::new())
+        if let Some(project) = project_id
+            && project != self.project_id_str()
+        {
+            return Ok(Vec::new());
+        }
+
+        Ok(self
+            .list_wiki_pages(true)?
+            .into_iter()
+            .skip(skip)
+            .take(limit)
+            .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
+            .collect())
     }
 
-    fn search_articles(&self, _query: &str, _limit: usize, _skip: usize) -> Result<Vec<Article>> {
-        Ok(Vec::new())
+    fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
+        let query = query.to_lowercase();
+        Ok(self
+            .list_wiki_pages(true)?
+            .into_iter()
+            .filter(|page| {
+                page.title.to_lowercase().contains(&query)
+                    || page
+                        .content
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .skip(skip)
+            .take(limit)
+            .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
+            .collect())
     }
 
-    fn create_article(&self, _article: &CreateArticle) -> Result<Article> {
-        Err(TrackerError::InvalidInput(
-            "GitLab backend does not support articles/knowledge base".to_string(),
+    fn create_article(&self, article: &CreateArticle) -> Result<Article> {
+        if article.project_id != self.project_id_str() {
+            return Err(TrackerError::InvalidInput(format!(
+                "Project '{}' does not match configured GitLab project '{}'",
+                article.project_id,
+                self.project_id_str()
+            )));
+        }
+
+        let title = if let Some(parent) = &article.parent_article_id {
+            format!("{}/{}", parent.trim_end_matches('/'), article.summary)
+        } else {
+            article.summary.clone()
+        };
+        let page = CreateGitLabWikiPage {
+            title,
+            content: article.content.clone().unwrap_or_default(),
+            format: Some("markdown".to_string()),
+        };
+
+        Ok(gitlab_wiki_page_to_article(
+            self.create_wiki_page(&page)?,
+            &self.project_id_str(),
         ))
     }
 
-    fn update_article(&self, _id: &str, _update: &UpdateArticle) -> Result<Article> {
-        Err(TrackerError::InvalidInput(
-            "GitLab backend does not support articles/knowledge base".to_string(),
+    fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
+        let page = UpdateGitLabWikiPage {
+            title: update.summary.clone(),
+            content: update.content.clone(),
+            format: Some("markdown".to_string()),
+        };
+
+        Ok(gitlab_wiki_page_to_article(
+            self.update_wiki_page(id, &page)?,
+            &self.project_id_str(),
         ))
     }
 
-    fn delete_article(&self, _id: &str) -> Result<()> {
-        Err(TrackerError::InvalidInput(
-            "GitLab backend does not support articles/knowledge base".to_string(),
-        ))
+    fn delete_article(&self, id: &str) -> Result<()> {
+        Ok(self.delete_wiki_page(id)?)
     }
 
-    fn get_child_articles(&self, _parent_id: &str) -> Result<Vec<Article>> {
-        Ok(Vec::new())
+    fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
+        let prefix = format!("{}/", parent_id.trim_end_matches('/'));
+        Ok(self
+            .list_wiki_pages(true)?
+            .into_iter()
+            .filter(|page| page.slug.starts_with(&prefix))
+            .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
+            .collect())
     }
 
     fn move_article(&self, _article_id: &str, _new_parent_id: Option<&str>) -> Result<Article> {
         Err(TrackerError::InvalidInput(
-            "GitLab backend does not support articles/knowledge base".to_string(),
+            "Moving GitLab wiki pages is not supported by this backend".to_string(),
         ))
     }
 
-    fn list_article_attachments(&self, _article_id: &str) -> Result<Vec<ArticleAttachment>> {
-        Ok(Vec::new())
+    fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
+        let page = self.get_wiki_page(article_id)?;
+        Ok(
+            parse_managed_attachment_block(page.content.as_deref().unwrap_or_default())
+                .into_iter()
+                .map(|(name, markdown, url)| ArticleAttachment {
+                    id: markdown,
+                    name,
+                    size: 0,
+                    mime_type: None,
+                    url: Some(url),
+                    created: None,
+                })
+                .collect(),
+        )
+    }
+
+    fn add_article_attachment(
+        &self,
+        article_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        if upload.comment.is_some() {
+            return Err(TrackerError::InvalidInput(
+                "GitLab wiki attachment upload does not support --comment".to_string(),
+            ));
+        }
+
+        let page = self.get_wiki_page(article_id)?;
+        let mut entries =
+            parse_managed_attachment_block(page.content.as_deref().unwrap_or_default());
+        let mut uploaded = Vec::new();
+
+        for file in &upload.files {
+            let attachment = self.upload_wiki_attachment(file)?;
+            entries.retain(|(_, _, url)| url != &attachment.link.url);
+            entries.push((
+                attachment.file_name.clone(),
+                attachment.link.markdown.clone(),
+                attachment.link.url.clone(),
+            ));
+            uploaded.push(gitlab_wiki_attachment_to_article_attachment(attachment));
+        }
+
+        let content =
+            replace_managed_attachment_block(page.content.as_deref().unwrap_or_default(), &entries);
+        let update = UpdateGitLabWikiPage {
+            title: None,
+            content: Some(content),
+            format: Some("markdown".to_string()),
+        };
+        self.update_wiki_page(article_id, &update)?;
+
+        Ok(uploaded)
     }
 
     fn get_article_comments(&self, _article_id: &str) -> Result<Vec<Comment>> {
@@ -435,7 +549,130 @@ impl KnowledgeBase for GitLabClient {
 
     fn add_article_comment(&self, _article_id: &str, _text: &str) -> Result<Comment> {
         Err(TrackerError::InvalidInput(
-            "GitLab backend does not support articles/knowledge base".to_string(),
+            "GitLab wiki pages do not support comments".to_string(),
         ))
     }
+}
+
+fn gitlab_wiki_page_to_article(page: GitLabWikiPage, project_id: &str) -> Article {
+    let parent_article = page.slug.rsplit_once('/').map(|(parent, _)| ArticleRef {
+        id: parent.to_string(),
+        id_readable: Some(parent.to_string()),
+        summary: Some(parent.replace('-', " ")),
+    });
+
+    Article {
+        id: page.slug.clone(),
+        id_readable: page.slug,
+        summary: page.title,
+        content: page.content,
+        project: ProjectRef {
+            id: project_id.to_string(),
+            name: Some(project_id.to_string()),
+            short_name: Some(project_id.to_string()),
+        },
+        parent_article,
+        has_children: false,
+        tags: Vec::new(),
+        created: chrono::Utc::now(),
+        updated: chrono::Utc::now(),
+        reporter: None,
+    }
+}
+
+fn gitlab_wiki_attachment_to_article_attachment(
+    attachment: GitLabWikiAttachment,
+) -> ArticleAttachment {
+    ArticleAttachment {
+        id: attachment.file_path,
+        name: attachment.file_name,
+        size: 0,
+        mime_type: None,
+        url: Some(attachment.link.url),
+        created: None,
+    }
+}
+
+fn parse_managed_attachment_block(content: &str) -> Vec<(String, String, String)> {
+    let mut attachments = Vec::new();
+    let mut in_block = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == ATTACHMENT_BLOCK_START {
+            in_block = true;
+            continue;
+        }
+        if trimmed == ATTACHMENT_BLOCK_END {
+            break;
+        }
+        if !in_block {
+            continue;
+        }
+
+        let markdown = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+        if let Some((name, url)) = parse_markdown_link(markdown) {
+            attachments.push((name, markdown.to_string(), url));
+        }
+    }
+
+    attachments
+}
+
+fn parse_markdown_link(markdown: &str) -> Option<(String, String)> {
+    let rest = markdown
+        .strip_prefix("![")
+        .or_else(|| markdown.strip_prefix('['))?;
+    let (name, rest) = rest.split_once("](")?;
+    let url = rest.strip_suffix(')')?;
+    Some((name.to_string(), url.to_string()))
+}
+
+fn replace_managed_attachment_block(
+    content: &str,
+    attachments: &[(String, String, String)],
+) -> String {
+    let mut output = Vec::new();
+    let mut in_block = false;
+    let mut replaced = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == ATTACHMENT_BLOCK_START {
+            if !replaced {
+                push_managed_attachment_block(&mut output, attachments);
+                replaced = true;
+            }
+            in_block = true;
+            continue;
+        }
+        if trimmed == ATTACHMENT_BLOCK_END {
+            in_block = false;
+            continue;
+        }
+        if !in_block {
+            output.push(line.to_string());
+        }
+    }
+
+    if !replaced {
+        if !output.is_empty() && output.last().is_some_and(|line| !line.is_empty()) {
+            output.push(String::new());
+        }
+        push_managed_attachment_block(&mut output, attachments);
+    }
+
+    output.join("\n")
+}
+
+fn push_managed_attachment_block(
+    output: &mut Vec<String>,
+    attachments: &[(String, String, String)],
+) {
+    output.push(ATTACHMENT_BLOCK_START.to_string());
+    output.push("## Attachments".to_string());
+    for (_, markdown, _) in attachments {
+        output.push(format!("- {}", markdown));
+    }
+    output.push(ATTACHMENT_BLOCK_END.to_string());
 }
