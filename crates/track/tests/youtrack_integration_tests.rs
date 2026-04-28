@@ -983,6 +983,15 @@ fn track_yt_json() -> assert_cmd::Command {
     cmd
 }
 
+fn temp_attachment_file(prefix: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "track-youtrack-{prefix}-{}-attachment.txt",
+        std::process::id()
+    ));
+    fs::write(&path, b"attachment test content").expect("failed to write attachment file");
+    path
+}
+
 // ============================================================================
 // Connection & Configuration
 // ============================================================================
@@ -1157,6 +1166,69 @@ fn test_youtrack_issue_create_and_delete() {
         .args(["issue", "get", issue_id])
         .assert()
         .failure();
+}
+
+#[test]
+#[ignore]
+fn test_youtrack_issue_attachment_upload_and_list() {
+    if !config_exists() {
+        return;
+    }
+
+    let file = temp_attachment_file("issue");
+
+    let create_output = track_yt_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            YOUTRACK_PROJECT,
+            "-s",
+            "Attachment Integration Test Issue - DELETE ME",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let create_str = String::from_utf8(create_output).unwrap();
+    let created: Value = serde_json::from_str(&create_str).unwrap();
+    let issue_id = created["id_readable"].as_str().unwrap();
+
+    let upload_output = track_yt_json()
+        .args(["issue", "attach", issue_id])
+        .arg(&file)
+        .args(["--name", "track-live-youtrack-attachment.txt"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let upload_str = String::from_utf8(upload_output).unwrap();
+    let uploaded: Value = serde_json::from_str(&upload_str).unwrap();
+    assert_eq!(uploaded[0]["name"], "track-live-youtrack-attachment.txt");
+
+    let list_output = track_yt_json()
+        .args(["issue", "attachments", issue_id])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list_str = String::from_utf8(list_output).unwrap();
+    let listed: Value = serde_json::from_str(&list_str).unwrap();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|att| att["name"] == "track-live-youtrack-attachment.txt")
+    );
+
+    let _ = fs::remove_file(&file);
+    let _ = track_yt().args(["issue", "delete", issue_id]).assert();
 }
 
 #[test]

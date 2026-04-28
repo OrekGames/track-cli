@@ -10,8 +10,8 @@ use tracker_core::{
     Article, ArticleAttachment, AttachFieldToProject, AttachmentUpload, BundleDefinition,
     BundleType, BundleValueDefinition, Comment, CreateArticle, CreateBundle, CreateBundleValue,
     CreateCustomField, CreateIssue, CreateProject, CreateTag, CustomFieldDefinition, Issue,
-    IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
-    Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
+    IssueAttachment, IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project,
+    ProjectCustomField, Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 impl IssueTracker for YouTrackClient {
@@ -56,6 +56,26 @@ impl IssueTracker for YouTrackClient {
 
     fn delete_issue(&self, id: &str) -> Result<()> {
         Ok(self.delete_issue(id)?)
+    }
+
+    fn list_issue_attachments(&self, issue_id: &str) -> Result<Vec<IssueAttachment>> {
+        Ok(self
+            .list_issue_attachments(issue_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    fn add_issue_attachment(
+        &self,
+        issue_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        Ok(self
+            .add_issue_attachments(issue_id, upload)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
@@ -174,6 +194,21 @@ impl IssueTracker for YouTrackClient {
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
         Ok(self.add_comment(issue_id, text)?.into())
+    }
+
+    fn add_issue_comment_attachment(
+        &self,
+        issue_id: &str,
+        text: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Comment> {
+        let comment = self.add_comment(issue_id, text)?;
+        self.add_issue_comment_attachments(issue_id, &comment.id, upload)?;
+        Ok(comment.into())
+    }
+
+    fn supports_issue_comment_attachments(&self) -> bool {
+        true
     }
 
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {

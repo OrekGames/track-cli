@@ -299,6 +299,106 @@ impl YouTrackClient {
         Ok(())
     }
 
+    /// List attachments on an issue.
+    pub fn list_issue_attachments(&self, issue_id: &str) -> Result<Vec<IssueAttachment>> {
+        let url = format!(
+            "{}/api/issues/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name),comment(id)",
+            self.base_url, issue_id
+        );
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let attachments: Vec<IssueAttachment> = response.body_mut().read_json()?;
+        Ok(attachments)
+    }
+
+    /// Upload attachments to an issue.
+    pub fn add_issue_attachments(
+        &self,
+        issue_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        if upload.comment.is_some() {
+            return Err(YouTrackError::Api {
+                status: 0,
+                message: "YouTrack issue attachment upload does not support --comment".to_string(),
+            });
+        }
+
+        let mut url = format!(
+            "{}/api/issues/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name),comment(id)",
+            self.base_url, issue_id
+        );
+        if upload.silent {
+            url.push_str("&muteUpdateNotifications=true");
+        }
+
+        self.post_issue_attachment_form(&url, upload)
+    }
+
+    /// Upload attachments to an issue comment.
+    pub fn add_issue_comment_attachments(
+        &self,
+        issue_id: &str,
+        comment_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        if upload.comment.is_some() {
+            return Err(YouTrackError::Api {
+                status: 0,
+                message: "YouTrack issue comment attachment upload does not support --comment"
+                    .to_string(),
+            });
+        }
+
+        let mut url = format!(
+            "{}/api/issues/{}/comments/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name),comment(id)",
+            self.base_url, issue_id, comment_id
+        );
+        if upload.silent {
+            url.push_str("&muteUpdateNotifications=true");
+        }
+
+        self.post_issue_attachment_form(&url, upload)
+    }
+
+    fn post_issue_attachment_form(
+        &self,
+        url: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        let mut form = Form::new();
+        for file in &upload.files {
+            let mut part = Part::file(&file.path)?;
+            if let Some(name) = &file.name {
+                part = part.file_name(name);
+            }
+            if let Some(mime_type) = &file.mime_type {
+                part = part.mime_str(mime_type)?;
+            }
+            form = form.part("upload", part);
+        }
+
+        let response = self
+            .agent
+            .post(url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .send(form)
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let attachments: Vec<IssueAttachment> = response.body_mut().read_json()?;
+        Ok(attachments)
+    }
+
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let url = format!(
             "{}/api/admin/projects?fields={}",

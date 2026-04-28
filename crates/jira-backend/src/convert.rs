@@ -1083,6 +1083,7 @@ mod tests {
                 subtasks: vec![],
                 parent: None,
                 issuelinks: vec![],
+                attachment: vec![],
                 comment: None,
                 extra,
             },
