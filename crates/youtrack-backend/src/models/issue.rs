@@ -259,6 +259,31 @@ pub struct IssueComment {
     pub created: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Issue attachment
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueAttachment {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub size: i64,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default, with = "chrono::serde::ts_milliseconds_option")]
+    pub created: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub author: Option<CommentAuthor>,
+    #[serde(default)]
+    pub comment: Option<IssueCommentRef>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct IssueCommentRef {
+    pub id: String,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CommentAuthor {
     pub login: String,

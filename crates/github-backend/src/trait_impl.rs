@@ -1,10 +1,10 @@
 //! Implementation of tracker-core traits for GitHubClient
 
 use tracker_core::{
-    Article, ArticleAttachment, ArticleRef, Comment, CommentAuthor, CreateArticle, CreateIssue,
-    CreateProject, CreateTag, Issue, IssueLink, IssueTag, IssueTracker, KnowledgeBase, Project,
-    ProjectCustomField, ProjectRef, Result, SearchResult, Tag, TrackerError, UpdateArticle,
-    UpdateIssue,
+    Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CommentAuthor,
+    CreateArticle, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment, IssueLink,
+    IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, ProjectRef, Result,
+    SearchResult, Tag, TrackerError, UpdateArticle, UpdateIssue,
 };
 
 use crate::client::GitHubClient;
@@ -138,6 +138,24 @@ impl IssueTracker for GitHubClient {
         ))
     }
 
+    fn list_issue_attachments(&self, _issue_id: &str) -> Result<Vec<IssueAttachment>> {
+        Err(TrackerError::InvalidInput(
+            "GitHub Issues does not expose a public REST API for listing issue file attachments."
+                .to_string(),
+        ))
+    }
+
+    fn add_issue_attachment(
+        &self,
+        _issue_id: &str,
+        _upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        Err(TrackerError::InvalidInput(
+            "GitHub Issues does not expose a public REST API for uploading issue file attachments."
+                .to_string(),
+        ))
+    }
+
     fn list_projects(&self) -> Result<Vec<Project>> {
         Ok(self.list_repos()?.into_iter().map(Into::into).collect())
     }
@@ -263,6 +281,18 @@ impl IssueTracker for GitHubClient {
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
         let number = parse_issue_number(issue_id)?;
         Ok(self.add_comment(number, text)?.into())
+    }
+
+    fn add_issue_comment_attachment(
+        &self,
+        _issue_id: &str,
+        _text: &str,
+        _upload: &AttachmentUpload,
+    ) -> Result<Comment> {
+        Err(TrackerError::InvalidInput(
+            "GitHub Issues does not expose a public REST API for uploading issue comment file attachments."
+                .to_string(),
+        ))
     }
 
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {

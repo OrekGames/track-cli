@@ -37,6 +37,15 @@ fn config_exists() -> bool {
     jira_config_path().exists()
 }
 
+fn temp_attachment_file(prefix: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "track-jira-{prefix}-{}-attachment.txt",
+        std::process::id()
+    ));
+    std::fs::write(&path, b"attachment test content").expect("failed to write attachment file");
+    path
+}
+
 // ============================================================================
 // Connection & Configuration Tests
 // ============================================================================
@@ -328,6 +337,83 @@ fn test_jira_issue_create_and_delete() {
         .timeout(Duration::from_secs(30))
         .assert()
         .failure();
+}
+
+#[test]
+#[ignore]
+fn test_jira_issue_attachment_upload_and_list() {
+    if !config_exists() {
+        return;
+    }
+
+    let file = temp_attachment_file("issue");
+
+    let create_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args([
+            "issue",
+            "create",
+            "-p",
+            "SMS",
+            "-s",
+            "Attachment Integration Test Issue - DELETE ME",
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let create_str = String::from_utf8(create_output).unwrap();
+    let created: Value = serde_json::from_str(&create_str).unwrap();
+    let issue_key = created["id_readable"].as_str().unwrap();
+
+    let upload_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "attach", issue_key])
+        .arg(&file)
+        .args(["--name", "track-live-jira-attachment.txt"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let upload_str = String::from_utf8(upload_output).unwrap();
+    let uploaded: Value = serde_json::from_str(&upload_str).unwrap();
+    assert_eq!(uploaded[0]["name"], "track-live-jira-attachment.txt");
+
+    let list_output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "attachments", issue_key])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list_str = String::from_utf8(list_output).unwrap();
+    let listed: Value = serde_json::from_str(&list_str).unwrap();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|att| att["name"] == "track-live-jira-attachment.txt")
+    );
+
+    let _ = std::fs::remove_file(&file);
+    let _ = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(jira_config_path())
+        .args(["issue", "delete", issue_key])
+        .timeout(Duration::from_secs(30))
+        .assert();
 }
 
 #[test]

@@ -1,9 +1,10 @@
 //! Implementation of tracker-core traits for GitLabClient
 
 use tracker_core::{
-    Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, CreateTag,
-    Issue, IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project,
-    ProjectCustomField, Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
+    Article, ArticleAttachment, AttachmentUpload, Comment, CreateArticle, CreateIssue,
+    CreateProject, CreateTag, Issue, IssueAttachment, IssueLink, IssueLinkType, IssueTag,
+    IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result, SearchResult, TrackerError,
+    UpdateArticle, UpdateIssue, User,
 };
 
 use crate::client::GitLabClient;
@@ -193,6 +194,65 @@ impl IssueTracker for GitLabClient {
     fn delete_issue(&self, id: &str) -> Result<()> {
         let iid = parse_issue_iid(id)?;
         Ok(self.delete_issue(iid)?)
+    }
+
+    fn add_issue_attachment(
+        &self,
+        issue_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        let iid = parse_issue_iid(issue_id)?;
+        let mut uploaded = Vec::new();
+        let mut note_lines = Vec::new();
+
+        if let Some(comment) = upload.comment.as_deref() {
+            note_lines.push(comment.to_string());
+            note_lines.push(String::new());
+        }
+
+        for file in &upload.files {
+            let project_upload = self.upload_project_file(file)?;
+            note_lines.push(project_upload.markdown.clone());
+            uploaded.push((file, project_upload));
+        }
+
+        let note = self.add_note(iid, &note_lines.join("\n"))?;
+
+        Ok(uploaded
+            .into_iter()
+            .map(|(file, upload)| {
+                let name = file.name.clone().unwrap_or_else(|| upload.alt.clone());
+                let size = file
+                    .path
+                    .metadata()
+                    .map(|metadata| metadata.len() as i64)
+                    .unwrap_or(0);
+                IssueAttachment {
+                    id: upload
+                        .full_path
+                        .clone()
+                        .unwrap_or_else(|| upload.url.clone()),
+                    name,
+                    size,
+                    mime_type: file.mime_type.clone(),
+                    url: Some(upload.url),
+                    created: note
+                        .created_at
+                        .as_deref()
+                        .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok())
+                        .map(|created| created.with_timezone(&chrono::Utc)),
+                    author: note
+                        .author
+                        .clone()
+                        .map(|author| tracker_core::CommentAuthor {
+                            login: author.username,
+                            name: Some(author.name),
+                        }),
+                    comment_id: Some(note.id.to_string()),
+                    markdown: Some(upload.markdown),
+                }
+            })
+            .collect())
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
+use tracker_core::AttachmentUploadFile;
 use ureq::Agent;
+use ureq::unversioned::multipart::{Form, Part};
 
 use crate::error::{GitLabError, Result};
 use crate::models::*;
@@ -298,6 +300,31 @@ impl GitLabClient {
 
         self.check_response(response)?;
         Ok(())
+    }
+
+    /// Upload a file to the project markdown uploads endpoint.
+    pub fn upload_project_file(&self, file: &AttachmentUploadFile) -> Result<GitLabUpload> {
+        let url = self.project_url("/uploads")?;
+        let mut part = Part::file(&file.path)?;
+        if let Some(name) = &file.name {
+            part = part.file_name(name);
+        }
+        if let Some(mime_type) = &file.mime_type {
+            part = part.mime_str(mime_type)?;
+        }
+        let form = Form::new().part("file", part);
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+            .send(form)
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let upload: GitLabUpload = response.body_mut().read_json()?;
+        Ok(upload)
     }
 
     // ==================== Project Operations ====================

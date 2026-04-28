@@ -3,9 +3,21 @@
 #[cfg(test)]
 mod tests {
     use crate::client::GitLabClient;
-    use tracker_core::IssueTracker;
-    use wiremock::matchers::{header, method, path, query_param};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tracker_core::{AttachmentUpload, AttachmentUploadFile, IssueTracker};
+    use wiremock::matchers::{body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("track-gitlab-upload-{nanos}-{name}"));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
 
     /// Helper to create a mock GitLab issue response
     fn mock_gitlab_issue(iid: u64, title: &str) -> serde_json::Value {
@@ -182,6 +194,71 @@ mod tests {
         let issue = client.create_issue(&create).unwrap();
         assert_eq!(issue.iid, 99);
         assert_eq!(issue.title, "New issue");
+    }
+
+    #[tokio::test]
+    async fn test_trait_issue_attachment_upload_creates_issue_note() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        Mock::given(method("POST"))
+            .and(path("/projects/123/uploads"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(body_string_contains("name=\"file\""))
+            .and(body_string_contains("filename=\"custom.txt\""))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "alt": "custom.txt",
+                "url": "/uploads/custom.txt",
+                "full_path": "/group/project/uploads/custom.txt",
+                "markdown": "[custom.txt](/uploads/custom.txt)"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/projects/123/issues/42/notes"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(body_string_contains("supporting material"))
+            .and(body_string_contains("[custom.txt](/uploads/custom.txt)"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": 5001,
+                "body": "supporting material\n\n[custom.txt](/uploads/custom.txt)",
+                "author": {
+                    "id": 7,
+                    "username": "maintainer",
+                    "name": "Maintainer"
+                },
+                "created_at": "2024-01-01T00:00:00.000Z",
+                "updated_at": "2024-01-01T00:00:00.000Z",
+                "system": false
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let upload = AttachmentUpload {
+            files: vec![AttachmentUploadFile {
+                path: upload_path.clone(),
+                name: Some("custom.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+            }],
+            comment: Some("supporting material".to_string()),
+            silent: false,
+            minor_edit: false,
+        };
+
+        let attachments =
+            <GitLabClient as IssueTracker>::add_issue_attachment(&client, "42", &upload)
+                .expect("GitLab fallback attachment upload should succeed");
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].name, "custom.txt");
+        assert_eq!(attachments[0].comment_id.as_deref(), Some("5001"));
+        assert_eq!(
+            attachments[0].markdown.as_deref(),
+            Some("[custom.txt](/uploads/custom.txt)")
+        );
+        let _ = std::fs::remove_file(upload_path);
     }
 
     #[tokio::test]

@@ -2,8 +2,21 @@
 mod tests {
     use crate::client::YouTrackClient;
     use crate::models::*;
-    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tracker_core::{AttachmentUpload, AttachmentUploadFile};
+    use wiremock::matchers::{body_json, body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("track-yt-upload-{nanos}-{name}"));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
 
     #[tokio::test]
     async fn test_get_issue() {
@@ -180,6 +193,49 @@ mod tests {
         let client = YouTrackClient::new(&mock_server.uri(), "test-token");
         let result = client.delete_issue("PROJ-123");
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_issue_attachment_uses_upload_multipart_field() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues/PROJ-123/attachments"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(body_string_contains("name=\"upload\""))
+            .and(body_string_contains("filename=\"custom.txt\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "att-1",
+                    "name": "custom.txt",
+                    "size": 8,
+                    "mimeType": "text/plain",
+                    "url": "https://youtrack.example/attachments/custom.txt"
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let upload = AttachmentUpload {
+            files: vec![AttachmentUploadFile {
+                path: upload_path.clone(),
+                name: Some("custom.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+            }],
+            comment: None,
+            silent: false,
+            minor_edit: false,
+        };
+
+        let attachments = client
+            .add_issue_attachments("PROJ-123", &upload)
+            .expect("issue attachment upload should succeed");
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].name, "custom.txt");
+        let _ = std::fs::remove_file(upload_path);
     }
 
     #[tokio::test]
