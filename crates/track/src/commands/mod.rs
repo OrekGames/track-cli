@@ -1,4 +1,5 @@
 pub mod article;
+pub(crate) mod attachments;
 pub mod bundle;
 pub mod cache;
 pub mod config;
