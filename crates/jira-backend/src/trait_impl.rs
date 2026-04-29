@@ -1,9 +1,9 @@
 //! Implementation of tracker-core traits for JiraClient
 
 use tracker_core::{
-    Comment, CreateIssue, CreateProject, CreateTag, Issue, IssueLink, IssueLinkType, IssueTag,
-    IssueTracker, Project, ProjectCustomField, Result, SearchResult, TrackerError, UpdateIssue,
-    User,
+    AttachmentUpload, Comment, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment,
+    IssueLink, IssueLinkType, IssueTag, IssueTracker, Project, ProjectCustomField, Result,
+    SearchResult, TrackerError, UpdateIssue, User,
 };
 
 use crate::client::JiraClient;
@@ -101,6 +101,28 @@ impl IssueTracker for JiraClient {
 
     fn delete_issue(&self, id: &str) -> Result<()> {
         Ok(self.delete_issue(id)?)
+    }
+
+    fn list_issue_attachments(&self, issue_id: &str) -> Result<Vec<IssueAttachment>> {
+        let issue = self.get_issue(issue_id)?;
+        Ok(issue
+            .fields
+            .attachment
+            .into_iter()
+            .map(jira_attachment_to_core)
+            .collect())
+    }
+
+    fn add_issue_attachment(
+        &self,
+        issue_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        Ok(self
+            .add_issue_attachments(issue_id, upload)?
+            .into_iter()
+            .map(jira_attachment_to_core)
+            .collect())
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
@@ -322,5 +344,35 @@ fn convert_simple_query_to_jql(query: &str) -> String {
         query.to_string()
     } else {
         parts.join(" AND ")
+    }
+}
+
+fn jira_attachment_to_core(attachment: crate::models::JiraAttachment) -> IssueAttachment {
+    let created = attachment
+        .created
+        .as_deref()
+        .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok())
+        .map(|created| created.with_timezone(&chrono::Utc));
+
+    IssueAttachment {
+        id: attachment.id,
+        name: attachment.filename,
+        size: attachment.size,
+        mime_type: attachment.mime_type,
+        url: attachment.content,
+        created,
+        author: attachment.author.map(|author| {
+            let login = author
+                .account_id
+                .clone()
+                .or_else(|| author.display_name.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+            tracker_core::CommentAuthor {
+                login,
+                name: author.display_name,
+            }
+        }),
+        comment_id: None,
+        markdown: None,
     }
 }

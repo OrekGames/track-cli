@@ -31,6 +31,46 @@ pub trait IssueTracker: Send + Sync {
     /// Delete an issue
     fn delete_issue(&self, id: &str) -> Result<()>;
 
+    // ========== Attachment Operations ==========
+
+    /// List attachments on an issue.
+    fn list_issue_attachments(&self, issue_id: &str) -> Result<Vec<IssueAttachment>> {
+        let _ = issue_id;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Issue attachments are not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Upload one or more files to an issue.
+    fn add_issue_attachment(
+        &self,
+        issue_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        let _ = (issue_id, upload);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Issue attachment upload is not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Add a comment with one or more native attachments to an issue.
+    fn add_issue_comment_attachment(
+        &self,
+        issue_id: &str,
+        text: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Comment> {
+        let _ = (issue_id, text, upload);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Issue comment attachment upload is not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Whether this backend supports native attachments on issue comments.
+    fn supports_issue_comment_attachments(&self) -> bool {
+        false
+    }
+
     // ========== Project Operations ==========
 
     /// List all projects
@@ -250,6 +290,18 @@ pub trait KnowledgeBase: Send + Sync {
     /// List attachments on an article
     fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>>;
 
+    /// Upload one or more files to an article.
+    fn add_article_attachment(
+        &self,
+        article_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        let _ = (article_id, upload);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Article attachment upload is not supported by this backend".to_string(),
+        ))
+    }
+
     // ========== Comment Operations ==========
 
     /// Get comments on an article
@@ -257,4 +309,22 @@ pub trait KnowledgeBase: Send + Sync {
 
     /// Add a comment to an article
     fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment>;
+
+    /// Add a comment with one or more native attachments to an article.
+    fn add_article_comment_attachment(
+        &self,
+        article_id: &str,
+        text: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Comment> {
+        let _ = (article_id, text, upload);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Article comment attachment upload is not supported by this backend".to_string(),
+        ))
+    }
+
+    /// Whether this backend supports native attachments on article comments.
+    fn supports_article_comment_attachments(&self) -> bool {
+        false
+    }
 }

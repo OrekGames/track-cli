@@ -131,14 +131,45 @@ pub fn handle_issue(
             handle_search(client, &args, format, default_project)
         }
         IssueCommands::Delete { ids } => handle_delete_batch(client, ids, format),
+        IssueCommands::Attachments { id } => handle_attachments(client, id, format),
+        IssueCommands::Attach {
+            id,
+            paths,
+            name,
+            mime_type,
+            comment,
+            silent,
+        } => handle_attach(
+            client,
+            id,
+            paths,
+            name.as_deref(),
+            mime_type.as_deref(),
+            comment.as_deref(),
+            *silent,
+            format,
+        ),
         IssueCommands::Comment {
             id,
             text,
             body_file,
+            attach,
+            name,
+            mime_type,
+            silent,
         } => {
             let resolved_text = super::resolve_body(text.as_deref(), body_file.as_deref())?
                 .ok_or_else(|| anyhow!("Comment text is required"))?;
-            handle_comment(client, id, &resolved_text, format)
+            handle_comment(
+                client,
+                id,
+                &resolved_text,
+                attach,
+                name.as_deref(),
+                mime_type.as_deref(),
+                *silent,
+                format,
+            )
         }
         IssueCommands::Comments { id, limit, all } => {
             handle_comments(client, id, *limit, *all, format)
@@ -951,15 +982,68 @@ fn handle_delete(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> R
     Ok(())
 }
 
+fn handle_attachments(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> Result<()> {
+    let attachments = client
+        .list_issue_attachments(id)
+        .with_context(|| format!("Failed to list attachments for issue '{}'", id))?;
+
+    output_list(&attachments, format)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_attach(
+    client: &dyn IssueTracker,
+    id: &str,
+    paths: &[std::path::PathBuf],
+    name: Option<&str>,
+    mime_type: Option<&str>,
+    comment: Option<&str>,
+    silent: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    let upload = super::attachments::build_attachment_upload(
+        paths, name, mime_type, comment, silent, false,
+    )?;
+
+    let attachments = client
+        .add_issue_attachment(id, &upload)
+        .with_context(|| format!("Failed to upload attachment(s) to issue '{}'", id))?;
+
+    output_list(&attachments, format)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_comment(
     client: &dyn IssueTracker,
     id: &str,
     text: &str,
+    attach: &[std::path::PathBuf],
+    name: Option<&str>,
+    mime_type: Option<&str>,
+    silent: bool,
     format: OutputFormat,
 ) -> Result<()> {
-    let comment = client
-        .add_comment(id, text)
-        .with_context(|| format!("Failed to add comment to issue '{}'", id))?;
+    let comment = if attach.is_empty() {
+        client
+            .add_comment(id, text)
+            .with_context(|| format!("Failed to add comment to issue '{}'", id))?
+    } else {
+        if !client.supports_issue_comment_attachments() {
+            return Err(anyhow!(
+                "Issue comment attachment upload is not supported by this backend"
+            ));
+        }
+
+        let upload = super::attachments::build_attachment_upload(
+            attach, name, mime_type, None, silent, false,
+        )?;
+
+        client
+            .add_issue_comment_attachment(id, text, &upload)
+            .with_context(|| format!("Failed to add comment attachment(s) to issue '{}'", id))?
+    };
 
     match format {
         OutputFormat::Json => {

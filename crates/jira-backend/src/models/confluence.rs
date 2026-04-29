@@ -236,6 +236,44 @@ pub struct ConfluenceAttachmentList {
     pub links: Option<ConfluencePaginationLinks>,
 }
 
+/// Attachment upload response from the Confluence v1 content API.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfluenceAttachmentUploadResponse {
+    pub results: Vec<ConfluenceAttachmentUpload>,
+}
+
+/// Uploaded attachment entry from the Confluence v1 content API.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfluenceAttachmentUpload {
+    pub id: String,
+    pub title: String,
+    pub metadata: Option<ConfluenceAttachmentUploadMetadata>,
+    pub version: Option<ConfluenceAttachmentUploadVersion>,
+    #[serde(rename = "_links")]
+    pub links: Option<ConfluenceAttachmentLinks>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfluenceAttachmentUploadMetadata {
+    pub media_type: Option<String>,
+    pub media_type_description: Option<String>,
+    pub extensions: Option<ConfluenceAttachmentUploadExtensions>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfluenceAttachmentUploadExtensions {
+    pub file_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConfluenceAttachmentUploadVersion {
+    pub when: Option<String>,
+}
+
 // ============================================================================
 // Search Models (v1 API for CQL search)
 // ============================================================================

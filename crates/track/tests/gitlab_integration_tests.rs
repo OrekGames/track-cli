@@ -39,6 +39,15 @@ fn config_exists() -> bool {
 /// The project identifier for issue creation (project_id from .track.toml)
 const GITLAB_PROJECT: &str = "77945341";
 
+fn temp_attachment_file(prefix: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "track-gitlab-{prefix}-{}-attachment.txt",
+        std::process::id()
+    ));
+    std::fs::write(&path, b"attachment test content").expect("failed to write attachment file");
+    path
+}
+
 /// Helper to build a track command with GitLab backend and config
 fn track_gitlab() -> assert_cmd::Command {
     let mut cmd = cargo_bin_cmd!("track");
@@ -288,6 +297,75 @@ fn test_gitlab_issue_create_and_delete() {
         .args(["issue", "get", issue_iid])
         .assert()
         .failure();
+}
+
+#[test]
+#[ignore]
+fn test_gitlab_issue_attachment_upload_creates_note() {
+    if !config_exists() {
+        return;
+    }
+
+    let file = temp_attachment_file("issue");
+
+    let create_output = track_gitlab_json()
+        .args([
+            "issue",
+            "create",
+            "-p",
+            GITLAB_PROJECT,
+            "-s",
+            "Attachment Integration Test Issue - DELETE ME",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let create_str = String::from_utf8(create_output).unwrap();
+    let created: Value = serde_json::from_str(&create_str).unwrap();
+    let issue_id = created["id_readable"].as_str().unwrap();
+
+    let upload_output = track_gitlab_json()
+        .args(["issue", "attach", issue_id])
+        .arg(&file)
+        .args([
+            "--name",
+            "track-live-gitlab-attachment.txt",
+            "--comment",
+            "attachment fallback note",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let upload_str = String::from_utf8(upload_output).unwrap();
+    let uploaded: Value = serde_json::from_str(&upload_str).unwrap();
+    assert_eq!(uploaded[0]["name"], "track-live-gitlab-attachment.txt");
+    assert!(uploaded[0]["comment_id"].is_string());
+    assert!(uploaded[0]["markdown"].is_string());
+
+    let comments_output = track_gitlab_json()
+        .args(["issue", "comments", issue_id, "--all"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let comments_str = String::from_utf8(comments_output).unwrap();
+    let comments: Value = serde_json::from_str(&comments_str).unwrap();
+    assert!(comments.as_array().unwrap().iter().any(|comment| {
+        comment["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("track-live-gitlab-attachment.txt")
+    }));
+
+    let _ = std::fs::remove_file(&file);
+    let _ = track_gitlab().args(["issue", "delete", issue_id]).assert();
 }
 
 #[test]

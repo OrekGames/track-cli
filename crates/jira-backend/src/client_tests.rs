@@ -4,8 +4,21 @@
 mod tests {
     use crate::client::JiraClient;
     use crate::models::*;
-    use wiremock::matchers::{header, method, path, query_param};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tracker_core::{AttachmentUpload, AttachmentUploadFile};
+    use wiremock::matchers::{body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("track-jira-upload-{nanos}-{name}"));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
 
     fn base64_encode_for_test(input: &str) -> String {
         const ALPHABET: &[u8; 64] =
@@ -192,6 +205,59 @@ mod tests {
         assert_eq!(issue.fields.summary, "Test issue");
         assert_eq!(issue.fields.status.name, "Open");
         assert_eq!(issue.fields.labels, vec!["bug", "urgent"]);
+    }
+
+    #[tokio::test]
+    async fn test_add_issue_attachment_uses_file_field_and_xsrf_header() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue/TEST-123/attachments"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .and(header("X-Atlassian-Token", "no-check"))
+            .and(body_string_contains("name=\"file\""))
+            .and(body_string_contains("filename=\"custom.txt\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "10001",
+                    "filename": "custom.txt",
+                    "size": 8,
+                    "mimeType": "text/plain",
+                    "content": "https://test.atlassian.net/attachment/content/10001",
+                    "author": {
+                        "accountId": "abc123",
+                        "displayName": "Test User",
+                        "emailAddress": "test@example.com",
+                        "active": true
+                    }
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let upload = AttachmentUpload {
+            files: vec![AttachmentUploadFile {
+                path: upload_path.clone(),
+                name: Some("custom.txt".to_string()),
+                mime_type: Some("text/plain".to_string()),
+            }],
+            comment: None,
+            silent: false,
+            minor_edit: false,
+        };
+
+        let attachments = client
+            .add_issue_attachments("TEST-123", &upload)
+            .expect("issue attachment upload should succeed");
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].filename, "custom.txt");
+        let _ = std::fs::remove_file(upload_path);
     }
 
     #[tokio::test]

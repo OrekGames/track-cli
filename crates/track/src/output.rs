@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use tracker_core::{
     Article, ArticleAttachment, BundleDefinition, Comment, CustomField, CustomFieldDefinition,
-    Issue, IssueTag, Project, ProjectCustomField,
+    Issue, IssueAttachment, IssueTag, Project, ProjectCustomField,
 };
 
 pub fn output_json<T: Serialize + ?Sized>(value: &T) -> anyhow::Result<()> {
@@ -549,6 +549,39 @@ impl Displayable for ArticleAttachment {
             self.mime_type.as_deref().unwrap_or("unknown").dimmed(),
             size_str.dimmed()
         )
+    }
+}
+
+impl Displayable for IssueAttachment {
+    fn display(&self) -> String {
+        let size_str = if self.size > 1024 * 1024 {
+            format!("{:.1} MB", self.size as f64 / (1024.0 * 1024.0))
+        } else if self.size > 1024 {
+            format!("{:.1} KB", self.size as f64 / 1024.0)
+        } else {
+            format!("{} bytes", self.size)
+        };
+
+        let mut output = format!(
+            "{} ({}) - {}",
+            self.name.white().bold(),
+            self.mime_type.as_deref().unwrap_or("unknown").dimmed(),
+            size_str.dimmed()
+        );
+
+        if let Some(comment_id) = &self.comment_id {
+            output.push_str(&format!("\n  {}: {}", "Comment".dimmed(), comment_id));
+        }
+
+        if let Some(url) = &self.url {
+            output.push_str(&format!("\n  {}: {}", "URL".dimmed(), url));
+        }
+
+        if let Some(markdown) = &self.markdown {
+            output.push_str(&format!("\n  {}: {}", "Markdown".dimmed(), markdown));
+        }
+
+        output
     }
 }
 

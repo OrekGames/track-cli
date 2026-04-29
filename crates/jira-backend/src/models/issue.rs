@@ -58,6 +58,9 @@ pub struct JiraIssueFields {
     pub issuelinks: Vec<JiraIssueLink>,
     /// Comments (only included when expanded)
     pub comment: Option<JiraCommentsContainer>,
+    /// Attachments on this issue.
+    #[serde(default)]
+    pub attachment: Vec<JiraAttachment>,
     /// Extra/custom fields not captured by the named fields above.
     /// Keys are field IDs like "customfield_10016".
     #[serde(flatten)]
@@ -71,6 +74,24 @@ pub struct JiraCommentsContainer {
     pub comments: Vec<JiraComment>,
     #[serde(default)]
     pub total: usize,
+}
+
+/// Jira issue attachment.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraAttachment {
+    pub id: String,
+    pub filename: String,
+    #[serde(default)]
+    pub size: i64,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub created: Option<String>,
+    #[serde(default)]
+    pub author: Option<JiraUser>,
 }
 
 /// Issue reference (used in subtasks, parent, links)

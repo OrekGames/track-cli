@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use tracker_core::{
-    Article, ArticleAttachment, ArticleRef, Comment, CommentAuthor, CreateArticle, KnowledgeBase,
-    ProjectRef, Result, TrackerError, UpdateArticle,
+    Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CommentAuthor,
+    CreateArticle, KnowledgeBase, ProjectRef, Result, TrackerError, UpdateArticle,
 };
 
 use crate::confluence::ConfluenceClient;
@@ -181,6 +181,21 @@ impl KnowledgeBase for ConfluenceClient {
             .map_err(TrackerError::from)
     }
 
+    fn add_article_attachment(
+        &self,
+        article_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        self.add_content_attachments(article_id, upload)
+            .map(|attachments| {
+                attachments
+                    .into_iter()
+                    .map(confluence_uploaded_attachment_to_article_attachment)
+                    .collect()
+            })
+            .map_err(TrackerError::from)
+    }
+
     fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
         self.get_page_comments(article_id, 100)
             .map(|r| {
@@ -196,6 +211,24 @@ impl KnowledgeBase for ConfluenceClient {
         self.add_page_comment(article_id, text)
             .map(confluence_comment_to_comment)
             .map_err(TrackerError::from)
+    }
+
+    fn add_article_comment_attachment(
+        &self,
+        article_id: &str,
+        text: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Comment> {
+        let comment = self
+            .add_page_comment(article_id, text)
+            .map_err(TrackerError::from)?;
+        self.add_content_attachments(&comment.id, upload)
+            .map_err(TrackerError::from)?;
+        Ok(confluence_comment_to_comment(comment))
+    }
+
+    fn supports_article_comment_attachments(&self) -> bool {
+        true
     }
 }
 
@@ -306,6 +339,39 @@ fn confluence_attachment_to_article_attachment(att: ConfluenceAttachment) -> Art
         name: att.title,
         size: att.file_size.unwrap_or(0),
         mime_type: att.media_type,
+        url: att.links.and_then(|l| l.download),
+        created,
+    }
+}
+
+fn confluence_uploaded_attachment_to_article_attachment(
+    att: ConfluenceAttachmentUpload,
+) -> ArticleAttachment {
+    let created = att
+        .version
+        .as_ref()
+        .and_then(|v| v.when.as_ref())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc));
+
+    let (mime_type, size) = att
+        .metadata
+        .map(|metadata| {
+            (
+                metadata.media_type,
+                metadata
+                    .extensions
+                    .and_then(|extensions| extensions.file_size)
+                    .unwrap_or(0),
+            )
+        })
+        .unwrap_or((None, 0));
+
+    ArticleAttachment {
+        id: att.id,
+        name: att.title,
+        size,
+        mime_type,
         url: att.links.and_then(|l| l.download),
         created,
     }
