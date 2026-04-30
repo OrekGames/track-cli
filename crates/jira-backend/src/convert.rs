@@ -10,6 +10,9 @@ use tracker_core::{
     UpdateIssue, User,
 };
 
+use crate::markdown::adf::{
+    adf_to_text as adf_document_to_text, markdown_to_adf as markdown_to_adf_document,
+};
 use crate::models::*;
 
 /// Convert a Jira issue to a tracker-core Issue.
@@ -22,7 +25,7 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
         .fields
         .description
         .as_ref()
-        .map(adf_to_text)
+        .map(adf_document_to_text)
         .filter(|s| !s.is_empty());
 
     let is_resolved = j
@@ -278,7 +281,7 @@ impl From<JiraComment> for Comment {
     fn from(c: JiraComment) -> Self {
         Self {
             id: c.id,
-            text: adf_to_text(&c.body),
+            text: adf_document_to_text(&c.body),
             author: c.author.map(|u| CommentAuthor {
                 login: u.account_id.unwrap_or_default(),
                 name: u.display_name,
@@ -359,7 +362,10 @@ impl From<JiraIssueLink> for IssueLink {
 /// When `jira_fields` is provided, custom field updates are resolved to Jira field IDs
 /// and included in the request. Without it, only standard fields (priority, type, labels) are sent.
 pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> CreateJiraIssue {
-    let description = issue.description.as_ref().map(|d| markdown_to_adf(d));
+    let description = issue
+        .description
+        .as_ref()
+        .map(|d| markdown_to_adf_document(d));
 
     // Extract priority from custom fields if provided
     let priority = issue.custom_fields.iter().find_map(|cf| match cf {
@@ -419,7 +425,10 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
 /// When `jira_fields` is provided, custom field updates are resolved to Jira field IDs
 /// and included in the request. Without it, only standard fields (priority, labels) are sent.
 pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> UpdateJiraIssue {
-    let description = update.description.as_ref().map(|d| markdown_to_adf(d));
+    let description = update
+        .description
+        .as_ref()
+        .map(|d| markdown_to_adf_document(d));
 
     let priority = update.custom_fields.iter().find_map(|cf| match cf {
         CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
