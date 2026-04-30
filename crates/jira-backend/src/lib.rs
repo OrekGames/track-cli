@@ -3,6 +3,7 @@ pub mod confluence;
 mod confluence_impl;
 mod convert;
 pub mod error;
+mod markdown;
 pub mod models;
 mod trait_impl;
 
