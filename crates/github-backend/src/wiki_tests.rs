@@ -7,6 +7,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
+    use tracker_core::{AttachmentUpload, AttachmentUploadFile};
 
     fn commit_all(repo: &Repository, message: &str) -> git2::Oid {
         let mut index = repo.index().expect("index");
@@ -335,5 +336,43 @@ mod tests {
 
         let children = wiki.get_child_pages("Home").expect("children");
         assert!(children.is_empty());
+    }
+
+    #[test]
+    fn managed_attachments_are_added_and_listed() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, cache_dir) = setup_wiki(&temp);
+        let source = temp.path().join("diagram.png");
+        fs::write(&source, b"png body").expect("write attachment");
+
+        let upload = AttachmentUpload {
+            files: vec![AttachmentUploadFile {
+                path: source,
+                name: Some("diagram.png".to_string()),
+                mime_type: Some("image/png".to_string()),
+            }],
+            comment: None,
+            silent: false,
+            minor_edit: true,
+        };
+
+        let uploaded = wiki.add_attachments("Home", &upload).expect("upload");
+        assert_eq!(uploaded.len(), 1);
+        assert_eq!(uploaded[0].name, "diagram.png");
+        assert_eq!(uploaded[0].mime_type.as_deref(), Some("image/png"));
+
+        let copied = cache_dir.join(".track-attachments/Home/diagram.png");
+        assert!(copied.exists(), "attachment should be copied into wiki");
+
+        let page = wiki.get_page("Home").expect("get page");
+        assert!(page.content.contains("track:attachments:start"));
+        assert!(
+            page.content
+                .contains("[diagram.png](.track-attachments/Home/diagram.png)")
+        );
+
+        let listed = wiki.list_attachments("Home").expect("list attachments");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "diagram.png");
     }
 }

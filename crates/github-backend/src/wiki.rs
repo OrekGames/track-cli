@@ -5,7 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tracker_core::AttachmentUpload;
 use walkdir::WalkDir;
+
+const ATTACHMENT_ROOT: &str = ".track-attachments";
+const ATTACHMENT_BLOCK_START: &str = "<!-- track:attachments:start -->";
+const ATTACHMENT_BLOCK_END: &str = "<!-- track:attachments:end -->";
 
 /// YAML front matter for wiki pages
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -35,6 +40,17 @@ pub struct WikiPage {
     pub updated: DateTime<Utc>,
     /// Author (from last commit)
     pub author: Option<String>,
+}
+
+/// Attachment managed in a wiki repository.
+#[derive(Debug, Clone)]
+pub struct WikiAttachment {
+    pub name: String,
+    pub path: String,
+    pub size: i64,
+    pub mime_type: Option<String>,
+    pub url: Option<String>,
+    pub markdown: String,
 }
 
 /// Validate a slug to prevent path traversal attacks
@@ -281,6 +297,12 @@ impl WikiManager {
             }
         }
 
+        if path_str.contains(&format!("/{}/", ATTACHMENT_ROOT))
+            || path_str.ends_with(&format!("/{}", ATTACHMENT_ROOT))
+        {
+            return true;
+        }
+
         false
     }
 
@@ -507,6 +529,106 @@ impl WikiManager {
         Ok(())
     }
 
+    /// List attachments from the managed markdown block on a page.
+    pub fn list_attachments(&self, slug: &str) -> Result<Vec<WikiAttachment>> {
+        let page = self.get_page(slug)?;
+        Ok(parse_attachment_block(&page.content)
+            .into_iter()
+            .map(|(name, path)| {
+                let disk_path = self.cache_dir.join(&path);
+                let size = disk_path
+                    .metadata()
+                    .map(|metadata| metadata.len() as i64)
+                    .unwrap_or(0);
+                WikiAttachment {
+                    mime_type: guess_mime_type(&path),
+                    markdown: format!("[{}]({})", name, path),
+                    name,
+                    path: path.clone(),
+                    size,
+                    url: Some(path),
+                }
+            })
+            .collect())
+    }
+
+    /// Copy files into the wiki repository and update the page's managed attachment block.
+    pub fn add_attachments(
+        &self,
+        slug: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<WikiAttachment>> {
+        if upload.comment.is_some() {
+            return Err(GitHubError::Wiki(
+                "GitHub wiki attachment fallback does not support --comment".to_string(),
+            ));
+        }
+
+        validate_slug(slug)?;
+        self.ensure_initialized()?;
+
+        let page_path = self.cache_dir.join(format!("{}.md", slug));
+        if !page_path.exists() {
+            return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
+        }
+
+        let page = self.read_page(&page_path)?;
+        let mut existing = parse_attachment_block(&page.content);
+        let mut uploaded = Vec::new();
+        let mut changed_paths = Vec::new();
+
+        for file in &upload.files {
+            let name = attachment_file_name(file)?;
+            let relative_path = attachment_relative_path(slug, &name);
+            let destination = self.cache_dir.join(&relative_path);
+
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    GitHubError::Wiki(format!("Failed to create attachment directory: {}", e))
+                })?;
+            }
+
+            fs::copy(&file.path, &destination)
+                .map_err(|e| GitHubError::Wiki(format!("Failed to copy attachment: {}", e)))?;
+
+            let path = relative_path.to_string_lossy().replace('\\', "/");
+            existing.retain(|(_, existing_path)| existing_path != &path);
+            existing.push((name.clone(), path.clone()));
+
+            let size = destination
+                .metadata()
+                .map(|metadata| metadata.len() as i64)
+                .unwrap_or(0);
+            let mime_type = file.mime_type.clone().or_else(|| guess_mime_type(&path));
+            let markdown = format!("[{}]({})", name, path);
+
+            uploaded.push(WikiAttachment {
+                name,
+                path: path.clone(),
+                size,
+                mime_type,
+                url: Some(path),
+                markdown,
+            });
+            changed_paths.push(destination);
+        }
+
+        let updated_content = replace_attachment_block(&page.content, &existing);
+        let markdown =
+            self.generate_markdown_with_frontmatter(&page.title, &updated_content, &page.tags);
+        fs::write(&page_path, markdown)
+            .map_err(|e| GitHubError::Wiki(format!("Failed to update page: {}", e)))?;
+        changed_paths.push(page_path);
+
+        let changed_refs: Vec<&Path> = changed_paths.iter().map(PathBuf::as_path).collect();
+        self.commit_and_push(
+            &format!("Attach files to {}", slug),
+            changed_refs.as_slice(),
+        )?;
+
+        Ok(uploaded)
+    }
+
     /// Move a page to a new location
     pub fn move_page(&self, slug: &str, new_parent: Option<&str>) -> Result<WikiPage> {
         validate_slug(slug)?;
@@ -692,5 +814,124 @@ impl WikiManager {
             .collect();
 
         Ok(children)
+    }
+}
+
+fn attachment_file_name(file: &tracker_core::AttachmentUploadFile) -> Result<String> {
+    let name = file
+        .name
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| {
+            file.path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .ok_or_else(|| GitHubError::Wiki("Attachment file name is required".to_string()))?;
+
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains('\0')
+        || name.trim().is_empty()
+    {
+        return Err(GitHubError::Wiki(format!(
+            "Invalid attachment file name '{}'",
+            name
+        )));
+    }
+
+    Ok(name)
+}
+
+fn attachment_relative_path(slug: &str, name: &str) -> PathBuf {
+    Path::new(ATTACHMENT_ROOT).join(slug).join(name)
+}
+
+fn parse_attachment_block(content: &str) -> Vec<(String, String)> {
+    let mut attachments = Vec::new();
+    let mut in_block = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == ATTACHMENT_BLOCK_START {
+            in_block = true;
+            continue;
+        }
+        if trimmed == ATTACHMENT_BLOCK_END {
+            break;
+        }
+        if !in_block || !trimmed.starts_with("- [") {
+            continue;
+        }
+
+        if let Some((name, path)) = parse_markdown_link_line(trimmed) {
+            attachments.push((name, path));
+        }
+    }
+
+    attachments
+}
+
+fn parse_markdown_link_line(line: &str) -> Option<(String, String)> {
+    let rest = line.strip_prefix("- [")?;
+    let (name, rest) = rest.split_once("](")?;
+    let path = rest.strip_suffix(')')?;
+    Some((name.to_string(), path.to_string()))
+}
+
+fn replace_attachment_block(content: &str, attachments: &[(String, String)]) -> String {
+    let mut output = Vec::new();
+    let mut in_block = false;
+    let mut replaced = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == ATTACHMENT_BLOCK_START {
+            if !replaced {
+                push_attachment_block(&mut output, attachments);
+                replaced = true;
+            }
+            in_block = true;
+            continue;
+        }
+        if trimmed == ATTACHMENT_BLOCK_END {
+            in_block = false;
+            continue;
+        }
+        if !in_block {
+            output.push(line.to_string());
+        }
+    }
+
+    if !replaced {
+        if !output.is_empty() && output.last().is_some_and(|line| !line.is_empty()) {
+            output.push(String::new());
+        }
+        push_attachment_block(&mut output, attachments);
+    }
+
+    output.join("\n")
+}
+
+fn push_attachment_block(output: &mut Vec<String>, attachments: &[(String, String)]) {
+    output.push(ATTACHMENT_BLOCK_START.to_string());
+    output.push("## Attachments".to_string());
+    for (name, path) in attachments {
+        output.push(format!("- [{}]({})", name, path));
+    }
+    output.push(ATTACHMENT_BLOCK_END.to_string());
+}
+
+fn guess_mime_type(path: &str) -> Option<String> {
+    match Path::new(path).extension().and_then(|ext| ext.to_str()) {
+        Some("gif") => Some("image/gif".to_string()),
+        Some("jpg" | "jpeg") => Some("image/jpeg".to_string()),
+        Some("md") => Some("text/markdown".to_string()),
+        Some("pdf") => Some("application/pdf".to_string()),
+        Some("png") => Some("image/png".to_string()),
+        Some("txt") => Some("text/plain".to_string()),
+        Some("webp") => Some("image/webp".to_string()),
+        _ => None,
     }
 }

@@ -477,6 +477,31 @@ pub enum IssueCommands {
         #[arg(value_delimiter = ',')]
         ids: Vec<String>,
     },
+    /// List attachments on an issue
+    Attachments {
+        /// Issue ID (e.g., PROJ-123)
+        id: String,
+    },
+    /// Upload attachment(s) to an issue
+    Attach {
+        /// Issue ID (e.g., PROJ-123)
+        id: String,
+        /// File path(s) to upload
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+        /// Override the uploaded filename; only valid with one file
+        #[arg(long)]
+        name: Option<String>,
+        /// Override the uploaded MIME type; only valid with one file
+        #[arg(long = "mime-type")]
+        mime_type: Option<String>,
+        /// Backend attachment comment, where supported
+        #[arg(long)]
+        comment: Option<String>,
+        /// Suppress notifications where the backend supports it
+        #[arg(long)]
+        silent: bool,
+    },
     /// Add a comment to an issue
     #[command(visible_alias = "cmt")]
     Comment {
@@ -488,6 +513,18 @@ pub enum IssueCommands {
         /// Read comment text from a file ("-" for stdin)
         #[arg(long, value_name = "PATH", conflicts_with = "text")]
         body_file: Option<PathBuf>,
+        /// File path(s) to attach to this comment
+        #[arg(long = "attach", value_name = "PATH")]
+        attach: Vec<PathBuf>,
+        /// Override the uploaded filename; only valid with one attached file
+        #[arg(long)]
+        name: Option<String>,
+        /// Override the uploaded MIME type; only valid with one attached file
+        #[arg(long = "mime-type")]
+        mime_type: Option<String>,
+        /// Suppress notifications where the backend supports it
+        #[arg(long)]
+        silent: bool,
     },
     /// List comments on an issue
     Comments {
@@ -829,6 +866,29 @@ pub enum ArticleCommands {
         /// Article ID
         id: String,
     },
+    /// Upload attachment(s) to an article
+    Attach {
+        /// Article ID
+        id: String,
+        /// File path(s) to upload
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<PathBuf>,
+        /// Override the uploaded filename; only valid with one file
+        #[arg(long)]
+        name: Option<String>,
+        /// Override the uploaded MIME type; only valid with one file
+        #[arg(long = "mime-type")]
+        mime_type: Option<String>,
+        /// Backend attachment comment, where supported
+        #[arg(long)]
+        comment: Option<String>,
+        /// Suppress notifications where the backend supports it
+        #[arg(long)]
+        silent: bool,
+        /// Mark the article/wiki attachment update as minor where supported
+        #[arg(long)]
+        minor_edit: bool,
+    },
     /// Add a comment to an article
     #[command(visible_alias = "cmt")]
     Comment {
@@ -840,6 +900,18 @@ pub enum ArticleCommands {
         /// Read comment text from a file ("-" for stdin)
         #[arg(long, value_name = "PATH", conflicts_with = "text")]
         body_file: Option<PathBuf>,
+        /// File path(s) to attach to this comment
+        #[arg(long = "attach", value_name = "PATH")]
+        attach: Vec<PathBuf>,
+        /// Override the uploaded filename; only valid with one attached file
+        #[arg(long)]
+        name: Option<String>,
+        /// Override the uploaded MIME type; only valid with one attached file
+        #[arg(long = "mime-type")]
+        mime_type: Option<String>,
+        /// Suppress notifications where the backend supports it
+        #[arg(long)]
+        silent: bool,
     },
     /// List comments on an article
     Comments {
@@ -979,6 +1051,102 @@ mod tests {
             },
             _ => panic!("expected issue command"),
         }
+    }
+
+    #[test]
+    fn parses_article_attach_with_options() {
+        let cli = Cli::parse_from([
+            "track",
+            "article",
+            "attach",
+            "KB-A-1",
+            "image.png",
+            "--name",
+            "diagram.png",
+            "--mime-type",
+            "image/png",
+            "--comment",
+            "reference image",
+            "--silent",
+            "--minor-edit",
+        ]);
+
+        match cli.command {
+            Commands::Article { action } => match action {
+                ArticleCommands::Attach {
+                    id,
+                    paths,
+                    name,
+                    mime_type,
+                    comment,
+                    silent,
+                    minor_edit,
+                } => {
+                    assert_eq!(id, "KB-A-1");
+                    assert_eq!(paths, vec![PathBuf::from("image.png")]);
+                    assert_eq!(name.as_deref(), Some("diagram.png"));
+                    assert_eq!(mime_type.as_deref(), Some("image/png"));
+                    assert_eq!(comment.as_deref(), Some("reference image"));
+                    assert!(silent);
+                    assert!(minor_edit);
+                }
+                _ => panic!("expected article attach"),
+            },
+            _ => panic!("expected article command"),
+        }
+    }
+
+    #[test]
+    fn parses_article_comment_with_attach() {
+        let cli = Cli::parse_from([
+            "track",
+            "article",
+            "comment",
+            "KB-A-1",
+            "-m",
+            "See attached",
+            "--attach",
+            "image.png",
+            "--name",
+            "diagram.png",
+            "--mime-type",
+            "image/png",
+        ]);
+
+        match cli.command {
+            Commands::Article { action } => match action {
+                ArticleCommands::Comment {
+                    id,
+                    text,
+                    attach,
+                    name,
+                    mime_type,
+                    ..
+                } => {
+                    assert_eq!(id, "KB-A-1");
+                    assert_eq!(text.as_deref(), Some("See attached"));
+                    assert_eq!(attach, vec![PathBuf::from("image.png")]);
+                    assert_eq!(name.as_deref(), Some("diagram.png"));
+                    assert_eq!(mime_type.as_deref(), Some("image/png"));
+                }
+                _ => panic!("expected article comment"),
+            },
+            _ => panic!("expected article command"),
+        }
+    }
+
+    #[test]
+    fn rejects_article_comment_attach_without_text() {
+        let result = Cli::try_parse_from([
+            "track",
+            "article",
+            "comment",
+            "KB-A-1",
+            "--attach",
+            "image.png",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1160,6 +1328,119 @@ mod tests {
             },
             _ => panic!("expected issue command"),
         }
+    }
+
+    #[test]
+    fn parses_issue_attachments_command() {
+        let cli = Cli::parse_from(["track", "issue", "attachments", "PROJ-123"]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Attachments { id } => {
+                    assert_eq!(id, "PROJ-123");
+                }
+                _ => panic!("expected issue attachments"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_issue_attach_command() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "attach",
+            "PROJ-123",
+            "report.txt",
+            "--name",
+            "custom.txt",
+            "--mime-type",
+            "text/plain",
+            "--comment",
+            "supporting material",
+            "--silent",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Attach {
+                    id,
+                    paths,
+                    name,
+                    mime_type,
+                    comment,
+                    silent,
+                } => {
+                    assert_eq!(id, "PROJ-123");
+                    assert_eq!(paths, vec![PathBuf::from("report.txt")]);
+                    assert_eq!(name.as_deref(), Some("custom.txt"));
+                    assert_eq!(mime_type.as_deref(), Some("text/plain"));
+                    assert_eq!(comment.as_deref(), Some("supporting material"));
+                    assert!(silent);
+                }
+                _ => panic!("expected issue attach"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_issue_comment_with_attachment() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "comment",
+            "PROJ-123",
+            "-m",
+            "See attached",
+            "--attach",
+            "evidence.log",
+            "--name",
+            "evidence.txt",
+            "--mime-type",
+            "text/plain",
+            "--silent",
+        ]);
+
+        match cli.command {
+            Commands::Issue { action } => match action {
+                IssueCommands::Comment {
+                    id,
+                    text,
+                    attach,
+                    name,
+                    mime_type,
+                    silent,
+                    ..
+                } => {
+                    assert_eq!(id, "PROJ-123");
+                    assert_eq!(text.as_deref(), Some("See attached"));
+                    assert_eq!(attach, vec![PathBuf::from("evidence.log")]);
+                    assert_eq!(name.as_deref(), Some("evidence.txt"));
+                    assert_eq!(mime_type.as_deref(), Some("text/plain"));
+                    assert!(silent);
+                }
+                _ => panic!("expected issue comment"),
+            },
+            _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn rejects_issue_comment_attachment_without_message_or_body_file() {
+        let result = Cli::try_parse_from([
+            "track",
+            "issue",
+            "comment",
+            "PROJ-123",
+            "--attach",
+            "evidence.log",
+        ]);
+        assert!(
+            result.is_err(),
+            "comment attachments still require comment text"
+        );
     }
 
     #[test]
@@ -2179,6 +2460,7 @@ mod tests {
                     id,
                     text,
                     body_file,
+                    ..
                 } => {
                     assert_eq!(id, "PROJ-1");
                     assert!(text.is_none());
@@ -2408,6 +2690,7 @@ mod tests {
                     id,
                     text,
                     body_file,
+                    ..
                 } => {
                     assert_eq!(id, "ART-1");
                     assert!(text.is_none());

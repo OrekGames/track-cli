@@ -39,6 +39,15 @@ fn config_exists() -> bool {
 /// The project identifier for issue creation (owner/repo from .track.toml)
 const GITHUB_PROJECT: &str = "OrekGames/track-cli";
 
+fn temp_attachment_file(prefix: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "track-github-{prefix}-{}-attachment.txt",
+        std::process::id()
+    ));
+    std::fs::write(&path, b"attachment test content").expect("failed to write attachment file");
+    path
+}
+
 /// Helper to build a track command with GitHub backend and config
 fn track_github() -> assert_cmd::Command {
     let mut cmd = cargo_bin_cmd!("track");
@@ -1125,6 +1134,27 @@ fn test_github_delete_issue_not_supported() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not support").or(predicate::str::contains("close")));
+}
+
+#[test]
+#[ignore]
+fn test_github_issue_attachment_upload_not_supported() {
+    if !config_exists() {
+        return;
+    }
+
+    let file = temp_attachment_file("issue");
+
+    track_github()
+        .args(["issue", "attach", "1"])
+        .arg(&file)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "does not expose a public REST API for uploading issue file attachments",
+        ));
+
+    let _ = std::fs::remove_file(&file);
 }
 
 // ============================================================================

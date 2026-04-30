@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Common issue representation across all backends
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +197,37 @@ pub struct Comment {
 pub struct CommentAuthor {
     pub login: String,
     pub name: Option<String>,
+}
+
+/// Upload request shared by issue and article attachment commands.
+#[derive(Debug, Clone)]
+pub struct AttachmentUpload {
+    pub files: Vec<AttachmentUploadFile>,
+    pub comment: Option<String>,
+    pub silent: bool,
+    pub minor_edit: bool,
+}
+
+/// One local file selected for attachment upload.
+#[derive(Debug, Clone)]
+pub struct AttachmentUploadFile {
+    pub path: PathBuf,
+    pub name: Option<String>,
+    pub mime_type: Option<String>,
+}
+
+/// Attachment on an issue or issue comment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueAttachment {
+    pub id: String,
+    pub name: String,
+    pub size: i64,
+    pub mime_type: Option<String>,
+    pub url: Option<String>,
+    pub created: Option<DateTime<Utc>>,
+    pub author: Option<CommentAuthor>,
+    pub comment_id: Option<String>,
+    pub markdown: Option<String>,
 }
 
 /// Data for creating a new issue

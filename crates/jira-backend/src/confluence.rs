@@ -1,7 +1,9 @@
 //! Confluence REST API v2 client
 
 use std::time::Duration;
+use tracker_core::AttachmentUpload;
 use ureq::Agent;
+use ureq::unversioned::multipart::{Form, Part};
 
 use crate::error::{JiraError, Result};
 use crate::models::confluence::*;
@@ -394,6 +396,48 @@ impl ConfluenceClient {
         let mut response = self.check_response(response)?;
         let attachments: ConfluenceAttachmentList = response.body_mut().read_json()?;
         Ok(attachments)
+    }
+
+    /// Upload attachments to any Confluence content entity (page or comment).
+    pub fn add_content_attachments(
+        &self,
+        content_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ConfluenceAttachmentUpload>> {
+        let url = self.api_v1_url(&format!("/content/{}/child/attachment", content_id));
+
+        let mut form = Form::new();
+        for file in &upload.files {
+            let mut part = Part::file(&file.path)?;
+            if let Some(name) = &file.name {
+                part = part.file_name(name);
+            }
+            if let Some(mime_type) = &file.mime_type {
+                part = part.mime_str(mime_type)?;
+            }
+            form = form.part("file", part);
+        }
+
+        if let Some(comment) = upload.comment.as_deref() {
+            form = form.text("comment", comment);
+        }
+
+        if upload.minor_edit {
+            form = form.text("minorEdit", "true");
+        }
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .header("X-Atlassian-Token", "nocheck")
+            .send(form)
+            .map_err(JiraError::from)?;
+
+        let mut response = self.check_response(response)?;
+        let uploaded: ConfluenceAttachmentUploadResponse = response.body_mut().read_json()?;
+        Ok(uploaded.results)
     }
 }
 

@@ -220,6 +220,26 @@ impl From<yt::IssueComment> for core::Comment {
     }
 }
 
+/// Convert YouTrack IssueAttachment to tracker-core IssueAttachment
+impl From<yt::IssueAttachment> for core::IssueAttachment {
+    fn from(attachment: yt::IssueAttachment) -> Self {
+        Self {
+            id: attachment.id,
+            name: attachment.name,
+            size: attachment.size,
+            mime_type: attachment.mime_type,
+            url: attachment.url,
+            created: attachment.created,
+            author: attachment.author.map(|a| core::CommentAuthor {
+                login: a.login,
+                name: a.name,
+            }),
+            comment_id: attachment.comment.map(|comment| comment.id),
+            markdown: None,
+        }
+    }
+}
+
 /// Convert tracker-core CreateIssue to YouTrack CreateIssue
 impl From<&core::CreateIssue> for yt::CreateIssue {
     fn from(create: &core::CreateIssue) -> Self {

@@ -1,10 +1,10 @@
 //! Implementation of tracker-core traits for GitHubClient
 
 use tracker_core::{
-    Article, ArticleAttachment, ArticleRef, Comment, CommentAuthor, CreateArticle, CreateIssue,
-    CreateProject, CreateTag, Issue, IssueLink, IssueTag, IssueTracker, KnowledgeBase, Project,
-    ProjectCustomField, ProjectRef, Result, SearchResult, Tag, TrackerError, UpdateArticle,
-    UpdateIssue,
+    Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CommentAuthor,
+    CreateArticle, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment, IssueLink,
+    IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, ProjectRef, Result,
+    SearchResult, Tag, TrackerError, UpdateArticle, UpdateIssue,
 };
 
 use crate::client::GitHubClient;
@@ -138,6 +138,24 @@ impl IssueTracker for GitHubClient {
         ))
     }
 
+    fn list_issue_attachments(&self, _issue_id: &str) -> Result<Vec<IssueAttachment>> {
+        Err(TrackerError::InvalidInput(
+            "GitHub Issues does not expose a public REST API for listing issue file attachments."
+                .to_string(),
+        ))
+    }
+
+    fn add_issue_attachment(
+        &self,
+        _issue_id: &str,
+        _upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        Err(TrackerError::InvalidInput(
+            "GitHub Issues does not expose a public REST API for uploading issue file attachments."
+                .to_string(),
+        ))
+    }
+
     fn list_projects(&self) -> Result<Vec<Project>> {
         Ok(self.list_repos()?.into_iter().map(Into::into).collect())
     }
@@ -263,6 +281,18 @@ impl IssueTracker for GitHubClient {
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
         let number = parse_issue_number(issue_id)?;
         Ok(self.add_comment(number, text)?.into())
+    }
+
+    fn add_issue_comment_attachment(
+        &self,
+        _issue_id: &str,
+        _text: &str,
+        _upload: &AttachmentUpload,
+    ) -> Result<Comment> {
+        Err(TrackerError::InvalidInput(
+            "GitHub Issues does not expose a public REST API for uploading issue comment file attachments."
+                .to_string(),
+        ))
     }
 
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
@@ -520,10 +550,40 @@ impl KnowledgeBase for GitHubClient {
         Ok(wiki_page_to_article(page, self.owner(), self.repo()))
     }
 
-    fn list_article_attachments(&self, _article_id: &str) -> Result<Vec<ArticleAttachment>> {
-        // GitHub wikis don't have native attachment support
-        // Could potentially scan for images in the markdown, but for now return empty
-        Ok(Vec::new())
+    fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
+        let wiki = self.wiki();
+        let attachments = wiki.list_attachments(article_id)?;
+        Ok(attachments
+            .into_iter()
+            .map(|attachment| ArticleAttachment {
+                id: attachment.path,
+                name: attachment.name,
+                size: attachment.size,
+                mime_type: attachment.mime_type,
+                url: attachment.url,
+                created: None,
+            })
+            .collect())
+    }
+
+    fn add_article_attachment(
+        &self,
+        article_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        let wiki = self.wiki();
+        let attachments = wiki.add_attachments(article_id, upload)?;
+        Ok(attachments
+            .into_iter()
+            .map(|attachment| ArticleAttachment {
+                id: attachment.path,
+                name: attachment.name,
+                size: attachment.size,
+                mime_type: attachment.mime_type,
+                url: attachment.url,
+                created: None,
+            })
+            .collect())
     }
 
     fn get_article_comments(&self, _article_id: &str) -> Result<Vec<Comment>> {

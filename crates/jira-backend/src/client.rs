@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
+use tracker_core::AttachmentUpload;
 use ureq::Agent;
+use ureq::unversioned::multipart::{Form, Part};
 
 use crate::error::{JiraError, Result};
 use crate::models::*;
@@ -262,6 +264,47 @@ impl JiraClient {
 
         self.check_response(response)?;
         Ok(())
+    }
+
+    /// Upload attachments to an issue.
+    pub fn add_issue_attachments(
+        &self,
+        key: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<JiraAttachment>> {
+        if upload.comment.is_some() {
+            return Err(JiraError::Api {
+                status: 0,
+                message: "Jira issue attachment upload does not support --comment".to_string(),
+            });
+        }
+
+        let url = self.api_url(&format!("/issue/{}/attachments", key));
+
+        let mut form = Form::new();
+        for file in &upload.files {
+            let mut part = Part::file(&file.path)?;
+            if let Some(name) = &file.name {
+                part = part.file_name(name);
+            }
+            if let Some(mime_type) = &file.mime_type {
+                part = part.mime_str(mime_type)?;
+            }
+            form = form.part("file", part);
+        }
+
+        let response = self
+            .agent
+            .post(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .header("X-Atlassian-Token", "no-check")
+            .send(form)
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let attachments: Vec<JiraAttachment> = response.body_mut().read_json()?;
+        Ok(attachments)
     }
 
     // ==================== Project Operations ====================
