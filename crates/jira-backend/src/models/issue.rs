@@ -390,6 +390,20 @@ pub fn markdown_to_adf(text: &str) -> serde_json::Value {
         }
     };
 
+    let flush_list_item_inline_as_paragraph =
+        |inline_buf: &mut Vec<Value>, block_stack: &mut Vec<(String, Vec<Value>)>| {
+            if inline_buf.is_empty() {
+                return;
+            }
+
+            if let Some((key, content)) = block_stack.last_mut() {
+                if key == "listItem" {
+                    let nodes = std::mem::take(inline_buf);
+                    content.push(json!({ "type": "paragraph", "content": nodes }));
+                }
+            }
+        };
+
     for event in parser {
         match event {
             // ── Block opens ──────────────────────────────────────────────
@@ -451,6 +465,7 @@ pub fn markdown_to_adf(text: &str) -> serde_json::Value {
             }
 
             Event::Start(Tag::List(None)) => {
+                flush_list_item_inline_as_paragraph(&mut inline_buf, &mut block_stack);
                 block_stack.push(("bulletList".to_string(), Vec::new()));
             }
             Event::End(TagEnd::List(false)) => {
@@ -469,6 +484,7 @@ pub fn markdown_to_adf(text: &str) -> serde_json::Value {
             }
 
             Event::Start(Tag::List(Some(start))) => {
+                flush_list_item_inline_as_paragraph(&mut inline_buf, &mut block_stack);
                 block_stack.push((format!("orderedList:{start}"), Vec::new()));
             }
             Event::End(TagEnd::List(true)) => {
@@ -999,6 +1015,91 @@ mod tests {
             .find(|n| n["type"] == "bulletList")
             .expect("nested bulletList not found");
         assert_eq!(nested["content"][0]["type"], "listItem");
+    }
+
+    #[test]
+    fn nested_bullet_list_preserves_parent_text_as_paragraph() {
+        // Arrange
+        let md = "- Re-verify consumers:\n  - `grep -rn \"foo\" src/`\n  - `grep -rn \"bar\" src/`";
+
+        // Act
+        let adf = markdown_to_adf(md);
+
+        // Assert
+        let outer_item = &first_block(&adf)["content"][0];
+        assert_eq!(outer_item["type"], "listItem");
+        assert_eq!(outer_item["content"][0]["type"], "paragraph");
+        assert_eq!(
+            outer_item["content"][0]["content"][0]["text"],
+            "Re-verify consumers:"
+        );
+        assert_eq!(outer_item["content"][1]["type"], "bulletList");
+
+        let child_item = &outer_item["content"][1]["content"][0];
+        let child_paragraph = &child_item["content"][0];
+        assert_eq!(child_paragraph["type"], "paragraph");
+        assert_eq!(
+            child_paragraph["content"][0]["text"],
+            "grep -rn \"foo\" src/"
+        );
+        assert_eq!(child_paragraph["content"][0]["marks"][0]["type"], "code");
+
+        let child_text = child_paragraph["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|node| node["text"].as_str())
+            .collect::<String>();
+        assert!(
+            !child_text.contains("Re-verify consumers:"),
+            "child item text should not contain parent item text"
+        );
+    }
+
+    #[test]
+    fn nested_ordered_list_preserves_parent_text_as_paragraph() {
+        // Arrange
+        let md = "1. Prepare release:\n   1. Build artifacts\n   2. Upload artifacts";
+
+        // Act
+        let adf = markdown_to_adf(md);
+
+        // Assert
+        let outer_item = &first_block(&adf)["content"][0];
+        assert_eq!(outer_item["type"], "listItem");
+        assert_eq!(outer_item["content"][0]["type"], "paragraph");
+        assert_eq!(
+            outer_item["content"][0]["content"][0]["text"],
+            "Prepare release:"
+        );
+        assert_eq!(outer_item["content"][1]["type"], "orderedList");
+
+        let child_paragraph = &outer_item["content"][1]["content"][0]["content"][0];
+        assert_eq!(child_paragraph["type"], "paragraph");
+        assert_eq!(child_paragraph["content"][0]["text"], "Build artifacts");
+    }
+
+    #[test]
+    fn nested_mixed_list_preserves_parent_text_as_paragraph() {
+        // Arrange
+        let md = "- Release checklist:\n  1. Build artifacts\n  2. Upload artifacts";
+
+        // Act
+        let adf = markdown_to_adf(md);
+
+        // Assert
+        let outer_item = &first_block(&adf)["content"][0];
+        assert_eq!(outer_item["type"], "listItem");
+        assert_eq!(outer_item["content"][0]["type"], "paragraph");
+        assert_eq!(
+            outer_item["content"][0]["content"][0]["text"],
+            "Release checklist:"
+        );
+        assert_eq!(outer_item["content"][1]["type"], "orderedList");
+
+        let child_paragraph = &outer_item["content"][1]["content"][0]["content"][0];
+        assert_eq!(child_paragraph["type"], "paragraph");
+        assert_eq!(child_paragraph["content"][0]["text"], "Build artifacts");
     }
 
     #[test]
