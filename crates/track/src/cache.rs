@@ -646,6 +646,15 @@ impl TrackerCache {
         {
             let mut file = File::create(&temp_path)
                 .with_context(|| format!("Failed to create temp file: {}", temp_path.display()))?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = file.metadata()?.permissions();
+                perms.set_mode(0o600);
+                file.set_permissions(perms)?;
+            }
+
             file.write_all(content).with_context(|| {
                 format!("Failed to write to temp file: {}", temp_path.display())
             })?;
