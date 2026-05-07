@@ -733,9 +733,9 @@ pub fn resolve_extra_fields(
                     continue;
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-            let schema = schema_map.get(*field_id).copied();
+                    let schema = schema_map.get(*field_id).copied();
                     extra.insert(
-                field_id.to_string(),
+                        field_id.to_string(),
                         custom_field_to_json(field_id, &joined, schema),
                     );
                 }
