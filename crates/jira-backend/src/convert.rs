@@ -749,11 +749,37 @@ pub fn resolve_extra_fields(
         }
 
         if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-            let schema = schema_map.get(field_id.as_str()).copied();
-            extra.insert(
-                field_id.clone(),
-                custom_field_to_json(field_id, value, schema),
-            );
+            match field_id.as_str() {
+                "timeoriginalestimate" => {
+                    let entry = extra
+                        .entry("timetracking".into())
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(map) = entry.as_object_mut() {
+                        map.insert(
+                            "originalEstimate".into(),
+                            serde_json::Value::String(value.into()),
+                        );
+                    }
+                }
+                "timeestimate" => {
+                    let entry = extra
+                        .entry("timetracking".into())
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(map) = entry.as_object_mut() {
+                        map.insert(
+                            "remainingEstimate".into(),
+                            serde_json::Value::String(value.into()),
+                        );
+                    }
+                }
+                _ => {
+                    let schema = schema_map.get(field_id.as_str()).copied();
+                    extra.insert(
+                        field_id.clone(),
+                        custom_field_to_json(field_id, value, schema),
+                    );
+                }
+            }
         }
     }
 
@@ -888,6 +914,53 @@ mod tests {
         let jira = update_issue_to_jira(&update, &fields);
         let json = serde_json::to_value(&jira).unwrap();
         assert_eq!(json["fields"]["customfield_10016"], 8.0);
+    }
+
+    #[test]
+    fn resolve_extra_fields_redirects_timetracking() {
+        let custom_fields = vec![
+            CustomFieldUpdate::SingleEnum {
+                name: "Original Estimate".to_string(),
+                value: "4h".to_string(),
+            },
+            CustomFieldUpdate::SingleEnum {
+                name: "Remaining Estimate".to_string(),
+                value: "2h".to_string(),
+            },
+        ];
+
+        let jira_fields = vec![
+            JiraField {
+                id: "timeoriginalestimate".to_string(),
+                name: "Original Estimate".to_string(),
+                custom: false,
+                schema: Some(JiraFieldSchema {
+                    field_type: "number".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+            JiraField {
+                id: "timeestimate".to_string(),
+                name: "Remaining Estimate".to_string(),
+                custom: false,
+                schema: Some(JiraFieldSchema {
+                    field_type: "number".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+        ];
+
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields);
+
+        assert!(!extra.contains_key("timeoriginalestimate"));
+        assert!(!extra.contains_key("timeestimate"));
+        assert!(extra.contains_key("timetracking"));
+
+        let timetracking = extra.get("timetracking").unwrap();
+        assert_eq!(timetracking["originalEstimate"], serde_json::json!("4h"));
+        assert_eq!(timetracking["remainingEstimate"], serde_json::json!("2h"));
     }
 
     #[test]
