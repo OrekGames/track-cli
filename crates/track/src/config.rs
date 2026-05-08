@@ -6,7 +6,8 @@ use figment::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Main configuration structure supporting multiple backends
@@ -302,7 +303,16 @@ impl Config {
     pub fn save(&self, path: &Path) -> Result<()> {
         let toml_string = toml::to_string_pretty(self)
             .map_err(|e| anyhow!("Failed to serialize config: {}", e))?;
-        fs::write(path, toml_string).map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        let mut file = options.open(path).map_err(|e| anyhow!("Failed to open config file for writing: {}", e))?;
+        file.write_all(toml_string.as_bytes()).map_err(|e| anyhow!("Failed to write config file: {}", e))?;
         Ok(())
     }
 
