@@ -311,8 +311,11 @@ impl Config {
             options.mode(0o600);
         }
 
-        let mut file = options.open(path).map_err(|e| anyhow!("Failed to open config file for writing: {}", e))?;
-        file.write_all(toml_string.as_bytes()).map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+        let mut file = options
+            .open(path)
+            .map_err(|e| anyhow!("Failed to open config file for writing: {}", e))?;
+        file.write_all(toml_string.as_bytes())
+            .map_err(|e| anyhow!("Failed to write config file: {}", e))?;
         Ok(())
     }
 

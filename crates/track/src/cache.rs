@@ -11,7 +11,6 @@ const CACHE_DIR_NAME: &str = ".tracker-cache";
 const CACHE_VERSION: u32 = 2;
 const MAX_RECENT_ISSUES: usize = 50;
 
-
 #[cfg(unix)]
 fn ensure_dir_secure(path: &Path) -> Result<()> {
     let mut builder = std::fs::DirBuilder::new();
@@ -670,7 +669,8 @@ impl TrackerCache {
                 options.mode(0o600);
             }
 
-            let mut file = options.open(&temp_path)
+            let mut file = options
+                .open(&temp_path)
                 .with_context(|| format!("Failed to create temp file: {}", temp_path.display()))?;
             file.write_all(content).with_context(|| {
                 format!("Failed to write to temp file: {}", temp_path.display())
