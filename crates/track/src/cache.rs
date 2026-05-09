@@ -664,7 +664,8 @@ impl TrackerCache {
             #[cfg(unix)]
             options.mode(0o600);
 
-            let mut file = options.open(&temp_path)
+            let mut file = options
+                .open(&temp_path)
                 .with_context(|| format!("Failed to create temp file: {}", temp_path.display()))?;
 
             file.write_all(content).with_context(|| {

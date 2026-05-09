@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::io::Write;
 
 /// Main configuration structure supporting multiple backends
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
@@ -312,8 +312,11 @@ impl Config {
         #[cfg(unix)]
         options.mode(0o600);
 
-        let mut file = options.open(path).map_err(|e| anyhow!("Failed to open config file: {}", e))?;
-        file.write_all(toml_string.as_bytes()).map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+        let mut file = options
+            .open(path)
+            .map_err(|e| anyhow!("Failed to open config file: {}", e))?;
+        file.write_all(toml_string.as_bytes())
+            .map_err(|e| anyhow!("Failed to write config file: {}", e))?;
 
         Ok(())
     }
@@ -444,7 +447,8 @@ pub fn global_config_path_ensure() -> Result<PathBuf> {
             use std::os::unix::fs::DirBuilderExt;
             builder.mode(0o700);
         }
-        builder.create(parent)
+        builder
+            .create(parent)
             .map_err(|e| anyhow!("Failed to create directory {}: {}", parent.display(), e))?;
     }
     Ok(path)
