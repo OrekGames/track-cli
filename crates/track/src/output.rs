@@ -418,7 +418,7 @@ impl Displayable for CustomField {
 }
 
 fn colorize_priority(field_name: &str, value: &str) -> String {
-    if field_name.to_lowercase() == "priority" {
+    if field_name.eq_ignore_ascii_case("priority") {
         match value.to_lowercase().as_str() {
             "critical" | "show-stopper" => value.red().bold().to_string(),
             "major" | "high" => value.red().to_string(),
