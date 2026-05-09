@@ -588,7 +588,10 @@ pub fn merge_fields(
     let existing_names: Vec<String> = result.iter().map(|f| f.name.clone()).collect();
 
     for field in instance {
-        if !existing_names.iter().any(|n| n.eq_ignore_ascii_case(&field.name)) {
+        if !existing_names
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(&field.name))
+        {
             result.push(field);
         }
     }
