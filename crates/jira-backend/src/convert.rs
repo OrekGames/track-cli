@@ -369,7 +369,7 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
 
     // Extract priority from custom fields if provided
     let priority = issue.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),
@@ -384,7 +384,7 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
         .iter()
         .find_map(|cf| match cf {
             CustomFieldUpdate::SingleEnum { name, value }
-                if name.to_lowercase() == "type" || name.to_lowercase() == "issuetype" =>
+                if name.eq_ignore_ascii_case("type") || name.eq_ignore_ascii_case("issuetype") =>
             {
                 Some(value.clone())
             }
@@ -431,7 +431,7 @@ pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> 
         .map(|d| markdown_to_adf_document(d));
 
     let priority = update.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),
@@ -585,10 +585,10 @@ pub fn merge_fields(
     instance: Vec<ProjectCustomField>,
 ) -> Vec<ProjectCustomField> {
     let mut result = standard;
-    let existing_names: Vec<String> = result.iter().map(|f| f.name.to_lowercase()).collect();
+    let existing_names: Vec<String> = result.iter().map(|f| f.name.clone()).collect();
 
     for field in instance {
-        if !existing_names.contains(&field.name.to_lowercase()) {
+        if !existing_names.iter().any(|n| n.eq_ignore_ascii_case(&field.name)) {
             result.push(field);
         }
     }
