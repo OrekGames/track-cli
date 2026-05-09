@@ -1,0 +1,1 @@
+- Added explicit file permissions logic for .tracker-cache and config files, preventing tokens from leaking on Unix multi-user systems. It's important to use std::os::unix::fs::DirBuilderExt instead of standard create_dir_all for creating directories atomically to avoid TOCTOU.
