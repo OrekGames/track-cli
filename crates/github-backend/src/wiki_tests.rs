@@ -311,6 +311,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn list_pages_skips_ignored_files() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, cache_dir) = setup_wiki(&temp);
+
+        // Add non-markdown file
+        let txt_path = cache_dir.join("document.txt");
+        fs::write(&txt_path, "Some text content").expect("write");
+
+        // Add file in .track-attachments
+        let attachment_dir = cache_dir.join(".track-attachments");
+        fs::create_dir_all(&attachment_dir).expect("mkdir");
+        let attachment_path = attachment_dir.join("attachment.md");
+        fs::write(&attachment_path, "Attachment content").expect("write");
+
+        // Add file in .git (simulated, since git operations might overwrite,
+        // we just create a file in the existing .git dir)
+        let git_dir = cache_dir.join(".git").join("custom_dir");
+        fs::create_dir_all(&git_dir).expect("mkdir");
+        let git_file_path = git_dir.join("git_internal.md");
+        fs::write(&git_file_path, "Git internal content").expect("write");
+
+        // Add a markdown file that will fail to read (e.g. no read permissions)
+        // Note: setting permissions to 000 is OS-dependent and might not work everywhere.
+        // Instead, we verify that list_pages handles it by not including it or failing softly.
+        // Actually, wiki.rs ignores files that `read_page` fails on: `if ... && let Ok(page) = self.read_page(path)`.
+        // If we can't easily make read_page fail cross-platform, we at least test the above ignores.
+
+        let pages = wiki.list_pages().expect("list pages");
+
+        let slugs: Vec<String> = pages.into_iter().map(|p| p.slug).collect();
+
+        assert!(slugs.iter().any(|s| s == "Home"), "Home should be present");
+        assert!(!slugs.iter().any(|s| s == "document"), "document.txt should be skipped");
+        assert!(!slugs.iter().any(|s| s.contains(".track-attachments")), "attachment.md should be skipped");
+        assert!(!slugs.iter().any(|s| s.contains("git_internal")), "git_internal.md should be skipped");
+    }
+
     // ====================================================================
     // has_children via parent field
     // ====================================================================
