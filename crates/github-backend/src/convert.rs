@@ -120,7 +120,9 @@ pub fn create_issue_from_core(issue: &CreateIssue) -> CreateGitHubIssue {
         .custom_fields
         .iter()
         .filter_map(|cf| match cf {
-            CustomFieldUpdate::SingleUser { name, login } if name.eq_ignore_ascii_case("assignee") => {
+            CustomFieldUpdate::SingleUser { name, login }
+                if name.eq_ignore_ascii_case("assignee") =>
+            {
                 Some(login.clone())
             }
             _ => None,
@@ -167,7 +169,9 @@ pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
         .custom_fields
         .iter()
         .filter_map(|cf| match cf {
-            CustomFieldUpdate::SingleUser { name, login } if name.eq_ignore_ascii_case("assignee") => {
+            CustomFieldUpdate::SingleUser { name, login }
+                if name.eq_ignore_ascii_case("assignee") =>
+            {
                 Some(login.clone())
             }
             _ => None,
