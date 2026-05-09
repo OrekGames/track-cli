@@ -282,7 +282,7 @@ impl WikiManager {
 
     /// Check if path should be skipped
     fn should_skip_path(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
+        let path_str = path.to_string_lossy().replace('\\', "/");
 
         // Skip .git directory
         if path_str.contains("/.git/") || path_str.ends_with("/.git") {

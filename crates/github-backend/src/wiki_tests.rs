@@ -344,9 +344,18 @@ mod tests {
         let slugs: Vec<String> = pages.into_iter().map(|p| p.slug).collect();
 
         assert!(slugs.iter().any(|s| s == "Home"), "Home should be present");
-        assert!(!slugs.iter().any(|s| s == "document"), "document.txt should be skipped");
-        assert!(!slugs.iter().any(|s| s.contains(".track-attachments")), "attachment.md should be skipped");
-        assert!(!slugs.iter().any(|s| s.contains("git_internal")), "git_internal.md should be skipped");
+        assert!(
+            !slugs.iter().any(|s| s == "document"),
+            "document.txt should be skipped"
+        );
+        assert!(
+            !slugs.iter().any(|s| s.contains(".track-attachments")),
+            "attachment.md should be skipped"
+        );
+        assert!(
+            !slugs.iter().any(|s| s.contains("git_internal")),
+            "git_internal.md should be skipped"
+        );
     }
 
     // ====================================================================
