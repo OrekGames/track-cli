@@ -303,7 +303,8 @@ impl Config {
         let toml_string = toml::to_string_pretty(self)
             .map_err(|e| anyhow!("Failed to serialize config: {}", e))?;
 
-        fs::write(path, toml_string.as_bytes()).map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+        fs::write(path, toml_string.as_bytes())
+            .map_err(|e| anyhow!("Failed to write config file: {}", e))?;
 
         #[cfg(unix)]
         {

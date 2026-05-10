@@ -652,7 +652,10 @@ impl TrackerCache {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(path.parent().unwrap_or(path), fs::Permissions::from_mode(0o700));
+            let _ = fs::set_permissions(
+                path.parent().unwrap_or(path),
+                fs::Permissions::from_mode(0o700),
+            );
         }
 
         {
