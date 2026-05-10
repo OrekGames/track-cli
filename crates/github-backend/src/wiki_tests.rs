@@ -333,29 +333,27 @@ mod tests {
         let git_file_path = git_dir.join("git_internal.md");
         fs::write(&git_file_path, "Git internal content").expect("write");
 
-        // Add a markdown file that will fail to read (e.g. no read permissions)
-        // Note: setting permissions to 000 is OS-dependent and might not work everywhere.
-        // Instead, we verify that list_pages handles it by not including it or failing softly.
-        // Actually, wiki.rs ignores files that `read_page` fails on: `if ... && let Ok(page) = self.read_page(path)`.
-        // If we can't easily make read_page fail cross-platform, we at least test the above ignores.
-
         let pages = wiki.list_pages().expect("list pages");
 
-        let slugs: Vec<String> = pages.into_iter().map(|p| p.slug).collect();
+        let mut slugs: Vec<String> = pages.into_iter().map(|p| p.slug).collect();
+        slugs.sort();
 
-        assert!(slugs.iter().any(|s| s == "Home"), "Home should be present");
-        assert!(
-            !slugs.iter().any(|s| s == "document"),
-            "document.txt should be skipped"
-        );
-        assert!(
-            !slugs.iter().any(|s| s.contains(".track-attachments")),
-            "attachment.md should be skipped"
-        );
-        assert!(
-            !slugs.iter().any(|s| s.contains("git_internal")),
-            "git_internal.md should be skipped"
-        );
+        assert_eq!(slugs, vec!["Home", "Tutorials/Getting-Started"]);
+    }
+
+    #[test]
+    fn should_skip_path_normalizes_windows_paths() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, _) = setup_wiki(&temp);
+
+        let p1 = Path::new(r"C:\foo\.git\bar.md");
+        assert!(wiki.should_skip_path(p1));
+
+        let p2 = Path::new(r"C:\foo\.track-attachments\img.png");
+        assert!(wiki.should_skip_path(p2));
+
+        let p3 = Path::new(r"C:\foo\normal_page.md");
+        assert!(!wiki.should_skip_path(p3));
     }
 
     // ====================================================================
