@@ -585,13 +585,10 @@ pub fn merge_fields(
     instance: Vec<ProjectCustomField>,
 ) -> Vec<ProjectCustomField> {
     let mut result = standard;
-    let existing_names: Vec<String> = result.iter().map(|f| f.name.clone()).collect();
+    let existing_names: Vec<String> = result.iter().map(|f| f.name.to_lowercase()).collect();
 
     for field in instance {
-        if !existing_names
-            .iter()
-            .any(|n| n.eq_ignore_ascii_case(&field.name))
-        {
+        if !existing_names.contains(&field.name.to_lowercase()) {
             result.push(field);
         }
     }
@@ -633,17 +630,17 @@ pub fn flatten_project_statuses(
 }
 
 /// Build a name → field ID lookup from JiraField metadata.
-pub fn build_field_id_map(fields: &[JiraField]) -> HashMap<String, &str> {
-    let mut map = HashMap::with_capacity(fields.len() + 5);
+pub fn build_field_id_map(fields: &[JiraField]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
     for field in fields {
-        map.insert(field.name.to_lowercase(), field.id.as_str());
+        map.insert(field.name.to_lowercase(), field.id.clone());
     }
     // Also insert known standard field name mappings
-    map.insert("priority".to_string(), "priority");
-    map.insert("assignee".to_string(), "assignee");
-    map.insert("status".to_string(), "status");
-    map.insert("type".to_string(), "issuetype");
-    map.insert("labels".to_string(), "labels");
+    map.insert("priority".to_string(), "priority".to_string());
+    map.insert("assignee".to_string(), "assignee".to_string());
+    map.insert("status".to_string(), "status".to_string());
+    map.insert("type".to_string(), "issuetype".to_string());
+    map.insert("labels".to_string(), "labels".to_string());
     map
 }
 
@@ -736,9 +733,9 @@ pub fn resolve_extra_fields(
                     continue;
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-                    let schema = schema_map.get(*field_id).copied();
+                    let schema = schema_map.get(field_id.as_str()).copied();
                     extra.insert(
-                        field_id.to_string(),
+                        field_id.clone(),
                         custom_field_to_json(field_id, &joined, schema),
                     );
                 }
@@ -752,9 +749,9 @@ pub fn resolve_extra_fields(
         }
 
         if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-            let schema = schema_map.get(*field_id).copied();
+            let schema = schema_map.get(field_id.as_str()).copied();
             extra.insert(
-                field_id.to_string(),
+                field_id.clone(),
                 custom_field_to_json(field_id, value, schema),
             );
         }
