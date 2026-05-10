@@ -369,7 +369,7 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
 
     // Extract priority from custom fields if provided
     let priority = issue.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),
@@ -384,7 +384,7 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
         .iter()
         .find_map(|cf| match cf {
             CustomFieldUpdate::SingleEnum { name, value }
-                if name.eq_ignore_ascii_case("type") || name.eq_ignore_ascii_case("issuetype") =>
+                if name.to_lowercase() == "type" || name.to_lowercase() == "issuetype" =>
             {
                 Some(value.clone())
             }
@@ -431,7 +431,7 @@ pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> 
         .map(|d| markdown_to_adf_document(d));
 
     let priority = update.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),

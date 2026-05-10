@@ -1356,8 +1356,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cache_save_uses_0700_permissions_for_dirs() {
-        use std::os::unix::fs::PermissionsExt;
         use crate::cli::Backend;
+        use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::TempDir::new().unwrap();
         let cache_dir = dir.path().join("cache");

@@ -139,9 +139,9 @@ impl IssueTracker for GitLabClient {
         // Check for state changes in custom_fields
         let state_event = update.custom_fields.iter().find_map(|cf| match cf {
             tracker_core::CustomFieldUpdate::State { name, value }
-                if name.eq_ignore_ascii_case("status")
-                    || name.eq_ignore_ascii_case("state")
-                    || name.eq_ignore_ascii_case("stage") =>
+                if name.to_lowercase() == "status"
+                    || name.to_lowercase() == "state"
+                    || name.to_lowercase() == "stage" =>
             {
                 match value.to_lowercase().as_str() {
                     "closed" | "resolved" | "done" | "completed" => Some("close".to_string()),
