@@ -450,6 +450,11 @@ pub fn global_config_path_ensure() -> Result<PathBuf> {
         builder
             .create(parent)
             .map_err(|e| anyhow!("Failed to create directory {}: {}", parent.display(), e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
     }
     Ok(path)
 }
@@ -486,6 +491,17 @@ pub fn resolve_backend() -> Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn config_save_uses_0600_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.toml");
+        Config::default().save(&path).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 
     #[test]
     fn test_config_with_link_mappings() {

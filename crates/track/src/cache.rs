@@ -19,6 +19,11 @@ fn create_dir_all_secure(path: &Path) -> Result<()> {
     #[cfg(unix)]
     builder.mode(0o700);
     builder.create(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+    }
     Ok(())
 }
 
@@ -1347,6 +1352,31 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_save_uses_0700_permissions_for_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        use crate::cli::Backend;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let mut cache = TrackerCache::default();
+        cache.backend_metadata = Some(CachedBackendMetadata {
+            backend_type: Backend::YouTrack.to_string(),
+            base_url: "https://example.com".to_string(),
+        });
+
+        cache.save(Some(cache_dir.clone())).unwrap();
+
+        let root = TrackerCache::cache_dir_path(Some(cache_dir)).unwrap();
+        let mode = fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+
+        let backend_dir = root.join("backend");
+        let mode = fs::metadata(&backend_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
 
     #[test]
     fn test_parse_duration_hours() {
