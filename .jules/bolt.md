@@ -1,1 +1,0 @@
-- **HashMap Pre-allocation and Borrowing:** Avoided cloning strings and reallocations in `build_field_id_map` by preallocating the map with `HashMap::with_capacity(fields.len() + 5)` and borrowing standard fields with `&str`. This prevents allocating new strings during metadata evaluation in the `resolve_extra_fields` hot path, while still passing correctness checks.
