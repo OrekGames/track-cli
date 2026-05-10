@@ -369,7 +369,7 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
 
     // Extract priority from custom fields if provided
     let priority = issue.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),
@@ -384,7 +384,7 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
         .iter()
         .find_map(|cf| match cf {
             CustomFieldUpdate::SingleEnum { name, value }
-                if name.to_lowercase() == "type" || name.to_lowercase() == "issuetype" =>
+                if name.eq_ignore_ascii_case("type") || name.eq_ignore_ascii_case("issuetype") =>
             {
                 Some(value.clone())
             }
@@ -431,7 +431,7 @@ pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> 
         .map(|d| markdown_to_adf_document(d));
 
     let priority = update.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),
@@ -630,17 +630,17 @@ pub fn flatten_project_statuses(
 }
 
 /// Build a name → field ID lookup from JiraField metadata.
-pub fn build_field_id_map(fields: &[JiraField]) -> HashMap<String, &str> {
-    let mut map = HashMap::with_capacity(fields.len() + 5);
+pub fn build_field_id_map(fields: &[JiraField]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
     for field in fields {
-        map.insert(field.name.to_lowercase(), field.id.as_str());
+        map.insert(field.name.to_lowercase(), field.id.clone());
     }
     // Also insert known standard field name mappings
-    map.insert("priority".to_string(), "priority");
-    map.insert("assignee".to_string(), "assignee");
-    map.insert("status".to_string(), "status");
-    map.insert("type".to_string(), "issuetype");
-    map.insert("labels".to_string(), "labels");
+    map.insert("priority".to_string(), "priority".to_string());
+    map.insert("assignee".to_string(), "assignee".to_string());
+    map.insert("status".to_string(), "status".to_string());
+    map.insert("type".to_string(), "issuetype".to_string());
+    map.insert("labels".to_string(), "labels".to_string());
     map
 }
 
@@ -733,9 +733,9 @@ pub fn resolve_extra_fields(
                     continue;
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-                    let schema = schema_map.get(*field_id).copied();
+                    let schema = schema_map.get(field_id.as_str()).copied();
                     extra.insert(
-                        field_id.to_string(),
+                        field_id.clone(),
                         custom_field_to_json(field_id, &joined, schema),
                     );
                 }
@@ -749,9 +749,9 @@ pub fn resolve_extra_fields(
         }
 
         if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-            let schema = schema_map.get(*field_id).copied();
+            let schema = schema_map.get(field_id.as_str()).copied();
             extra.insert(
-                field_id.to_string(),
+                field_id.clone(),
                 custom_field_to_json(field_id, value, schema),
             );
         }
