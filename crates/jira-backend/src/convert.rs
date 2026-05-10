@@ -842,7 +842,7 @@ mod tests {
             parent: Some("PROJ-100".to_string()),
         };
 
-        let jira = create_issue_to_jira(&issue, &[]);
+        let jira = create_issue_to_jira(&issue, &[]).unwrap();
         let parent = jira.fields.parent.expect("parent should be set");
         assert_eq!(parent.key.as_deref(), Some("PROJ-100"));
         assert!(parent.id.is_none());
@@ -859,7 +859,7 @@ mod tests {
             parent: None,
         };
 
-        let jira = create_issue_to_jira(&issue, &[]);
+        let jira = create_issue_to_jira(&issue, &[]).unwrap();
         assert!(jira.fields.parent.is_none());
     }
 
@@ -878,7 +878,7 @@ mod tests {
             custom: false,
             schema: None,
         }];
-        let jira = update_issue_to_jira(&update, &fields);
+        let jira = update_issue_to_jira(&update, &fields).unwrap();
         let json = serde_json::to_value(&jira).unwrap();
         assert_eq!(json["fields"]["timetracking"]["originalEstimate"], "4h");
         assert!(json["fields"].get("timeoriginalestimate").is_none());
@@ -894,7 +894,7 @@ mod tests {
             parent: Some("PROJ-200".to_string()),
         };
 
-        let jira = update_issue_to_jira(&update, &[]);
+        let jira = update_issue_to_jira(&update, &[]).unwrap();
         let parent = jira.fields.parent.expect("parent should be set");
         assert_eq!(parent.key.as_deref(), Some("PROJ-200"));
     }
@@ -909,7 +909,7 @@ mod tests {
             parent: Some("DS-100".to_string()),
         };
 
-        let jira = update_issue_to_jira(&update, &[]);
+        let jira = update_issue_to_jira(&update, &[]).unwrap();
         let json = serde_json::to_value(&jira).unwrap();
 
         // parent.key should be present, parent.id should be omitted
@@ -943,7 +943,7 @@ mod tests {
             }),
         }];
 
-        let jira = create_issue_to_jira(&issue, &fields);
+        let jira = create_issue_to_jira(&issue, &fields).unwrap();
         let json = serde_json::to_value(&jira).unwrap();
         assert_eq!(json["fields"]["customfield_10016"], 5.0);
     }
@@ -972,7 +972,7 @@ mod tests {
             }),
         }];
 
-        let jira = update_issue_to_jira(&update, &fields);
+        let jira = update_issue_to_jira(&update, &fields).unwrap();
         let json = serde_json::to_value(&jira).unwrap();
         assert_eq!(json["fields"]["customfield_10016"], 8.0);
     }
@@ -1013,7 +1013,7 @@ mod tests {
             },
         ];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields);
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
 
         assert!(!extra.contains_key("timeoriginalestimate"));
         assert!(!extra.contains_key("timeestimate"));
@@ -1042,7 +1042,7 @@ mod tests {
             }),
         }];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields);
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
 
         assert!(!extra.contains_key("timeoriginalestimate"));
         assert!(extra.contains_key("timetracking"));
@@ -1092,7 +1092,7 @@ mod tests {
             },
         ];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields);
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
         // Priority and State should be skipped (handled by struct/transitions),
         // Story Points should be resolved
         assert!(!extra.contains_key("priority"));
