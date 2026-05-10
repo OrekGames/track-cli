@@ -393,7 +393,10 @@ impl From<JiraIssueLink> for IssueLink {
 /// Convert CreateIssue to Jira format.
 /// When `jira_fields` is provided, custom field updates are resolved to Jira field IDs
 /// and included in the request. Without it, only standard fields (priority, type, labels) are sent.
-pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> tracker_core::Result<CreateJiraIssue> {
+pub fn create_issue_to_jira(
+    issue: &CreateIssue,
+    jira_fields: &[JiraField],
+) -> tracker_core::Result<CreateJiraIssue> {
     let description = issue
         .description
         .as_ref()
@@ -456,7 +459,10 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> t
 /// Convert UpdateIssue to Jira format.
 /// When `jira_fields` is provided, custom field updates are resolved to Jira field IDs
 /// and included in the request. Without it, only standard fields (priority, labels) are sent.
-pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> tracker_core::Result<UpdateJiraIssue> {
+pub fn update_issue_to_jira(
+    update: &UpdateIssue,
+    jira_fields: &[JiraField],
+) -> tracker_core::Result<UpdateJiraIssue> {
     let description = update
         .description
         .as_ref()
