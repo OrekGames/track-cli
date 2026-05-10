@@ -393,7 +393,7 @@ impl From<JiraIssueLink> for IssueLink {
 /// Convert CreateIssue to Jira format.
 /// When `jira_fields` is provided, custom field updates are resolved to Jira field IDs
 /// and included in the request. Without it, only standard fields (priority, type, labels) are sent.
-pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> CreateJiraIssue {
+pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> tracker_core::Result<CreateJiraIssue> {
     let description = issue
         .description
         .as_ref()
@@ -424,9 +424,9 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
         })
         .unwrap_or_else(|| "Task".to_string());
 
-    let extra = resolve_extra_fields(&issue.custom_fields, jira_fields);
+    let extra = resolve_extra_fields(&issue.custom_fields, jira_fields)?;
 
-    CreateJiraIssue {
+    Ok(CreateJiraIssue {
         fields: CreateJiraIssueFields {
             project: ProjectId {
                 id: None,
@@ -450,13 +450,13 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
             }),
             extra,
         },
-    }
+    })
 }
 
 /// Convert UpdateIssue to Jira format.
 /// When `jira_fields` is provided, custom field updates are resolved to Jira field IDs
 /// and included in the request. Without it, only standard fields (priority, labels) are sent.
-pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> UpdateJiraIssue {
+pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> tracker_core::Result<UpdateJiraIssue> {
     let description = update
         .description
         .as_ref()
@@ -472,9 +472,9 @@ pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> 
         _ => None,
     });
 
-    let extra = resolve_extra_fields(&update.custom_fields, jira_fields);
+    let extra = resolve_extra_fields(&update.custom_fields, jira_fields)?;
 
-    UpdateJiraIssue {
+    Ok(UpdateJiraIssue {
         fields: UpdateJiraIssueFields {
             summary: update.summary.clone(),
             description,
@@ -490,7 +490,7 @@ pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> 
             }),
             extra,
         },
-    }
+    })
 }
 
 /// Parse Jira datetime string to chrono DateTime
@@ -746,7 +746,7 @@ fn insert_resolved_field(
     field_id: &str,
     value: &str,
     schema: Option<&JiraFieldSchema>,
-) {
+) -> tracker_core::Result<()> {
     match field_id {
         "timeoriginalestimate" => {
             let entry = extra
@@ -771,8 +771,9 @@ fn insert_resolved_field(
             }
         }
         "timespent" | "timetracking" => {
-            // Silently reject unsupported/read-only time tracking fields
-            // (Jira typically throws a 400 API error if we send these anyway)
+            return Err(tracker_core::TrackerError::InvalidInput(
+                "Time Spent and Time Tracking are read-only via --field. Use `track issue worklog add` for logged time, or `--field 'Original Estimate' / 'Remaining Estimate'` for estimates.".to_string(),
+            ));
         }
         _ => {
             extra.insert(
@@ -781,12 +782,13 @@ fn insert_resolved_field(
             );
         }
     }
+    Ok(())
 }
 
 pub fn resolve_extra_fields(
     custom_fields: &[CustomFieldUpdate],
     jira_fields: &[JiraField],
-) -> HashMap<String, serde_json::Value> {
+) -> tracker_core::Result<HashMap<String, serde_json::Value>> {
     let field_id_map = build_field_id_map(jira_fields);
     let schema_map: HashMap<&str, &JiraFieldSchema> = jira_fields
         .iter()
@@ -805,7 +807,7 @@ pub fn resolve_extra_fields(
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
                     let schema = schema_map.get(field_id.as_str()).copied();
-                    insert_resolved_field(&mut extra, field_id, value, schema);
+                    insert_resolved_field(&mut extra, field_id, value, schema)?;
                 }
             }
             CustomFieldUpdate::MultiEnum { name, values } => {
@@ -815,13 +817,13 @@ pub fn resolve_extra_fields(
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
                     let schema = schema_map.get(field_id.as_str()).copied();
-                    insert_resolved_field(&mut extra, field_id, &joined, schema);
+                    insert_resolved_field(&mut extra, field_id, &joined, schema)?;
                 }
             }
         }
     }
 
-    extra
+    Ok(extra)
 }
 
 #[cfg(test)]
