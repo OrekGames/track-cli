@@ -862,6 +862,27 @@ mod tests {
     }
 
     #[test]
+    fn update_issue_to_jira_redirects_estimate_to_timetracking() {
+        let update = UpdateIssue {
+            custom_fields: vec![CustomFieldUpdate::SingleEnum {
+                name: "Original Estimate".to_string(),
+                value: "4h".to_string(),
+            }],
+            ..Default::default()
+        };
+        let fields = vec![JiraField {
+            id: "timeoriginalestimate".to_string(),
+            name: "Original Estimate".to_string(),
+            custom: false,
+            schema: None,
+        }];
+        let jira = update_issue_to_jira(&update, &fields);
+        let json = serde_json::to_value(&jira).unwrap();
+        assert_eq!(json["fields"]["timetracking"]["originalEstimate"], "4h");
+        assert!(json["fields"].get("timeoriginalestimate").is_none());
+    }
+
+    #[test]
     fn update_issue_to_jira_maps_parent() {
         let update = UpdateIssue {
             summary: None,
