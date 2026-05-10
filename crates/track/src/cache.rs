@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracker_core::{IssueTracker, KnowledgeBase};
@@ -11,24 +11,7 @@ const CACHE_DIR_NAME: &str = ".tracker-cache";
 const CACHE_VERSION: u32 = 2;
 const MAX_RECENT_ISSUES: usize = 50;
 
-#[cfg(unix)]
-fn ensure_dir_secure(path: &Path) -> Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    use std::os::unix::fs::DirBuilderExt;
-    builder.mode(0o700);
-    builder.create(path)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_dir_secure(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path)?;
-    Ok(())
-}
-
 /// Cached tracker context for AI assistants
-
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct TrackerCache {
     /// Timestamp of last cache update
@@ -293,7 +276,7 @@ impl TrackerCache {
     /// Save cache in sharded directory layout
     pub fn save(&self, cache_dir: Option<PathBuf>) -> Result<()> {
         let root = Self::cache_dir_path(cache_dir.clone())?;
-        ensure_dir_secure(&root)?;
+        fs::create_dir_all(&root)?;
 
         // 1. Save index.json
         let index = CacheIndexV2 {
@@ -313,7 +296,7 @@ impl TrackerCache {
 
         // 2. Save backend shards
         let backend_dir = root.join("backend");
-        ensure_dir_secure(&backend_dir)?;
+        fs::create_dir_all(&backend_dir)?;
 
         Self::atomic_write(
             &backend_dir.join("tags.json"),
@@ -330,12 +313,12 @@ impl TrackerCache {
 
         // 3. Save project shards
         let projects_dir = root.join("projects");
-        ensure_dir_secure(&projects_dir)?;
+        fs::create_dir_all(&projects_dir)?;
 
         for project in &self.projects {
             let project_key = &project.short_name;
             let project_dir = projects_dir.join(project_key);
-            ensure_dir_secure(&project_dir)?;
+            fs::create_dir_all(&project_dir)?;
 
             let meta = ProjectShardMeta {
                 id: project.id.clone(),
@@ -396,7 +379,7 @@ impl TrackerCache {
 
         // 4. Save kb shards
         let kb_dir = root.join("kb");
-        ensure_dir_secure(&kb_dir)?;
+        fs::create_dir_all(&kb_dir)?;
         Self::atomic_write(
             &kb_dir.join("articles.json"),
             serde_json::to_string_pretty(&self.articles)?.as_bytes(),
@@ -408,7 +391,7 @@ impl TrackerCache {
 
         // 5. Save runtime shards
         let runtime_dir = root.join("runtime");
-        ensure_dir_secure(&runtime_dir)?;
+        fs::create_dir_all(&runtime_dir)?;
         Self::atomic_write(
             &runtime_dir.join("recent_issues.json"),
             serde_json::to_string_pretty(&self.recent_issues)?.as_bytes(),
@@ -422,7 +405,7 @@ impl TrackerCache {
     pub fn save_runtime(&self, cache_dir: Option<PathBuf>) -> Result<()> {
         let root = Self::cache_dir_path(cache_dir)?;
         let runtime_dir = root.join("runtime");
-        ensure_dir_secure(&runtime_dir)?;
+        fs::create_dir_all(&runtime_dir)?;
         Self::atomic_write(
             &runtime_dir.join("recent_issues.json"),
             serde_json::to_string_pretty(&self.recent_issues)?.as_bytes(),
@@ -657,20 +640,11 @@ impl TrackerCache {
 
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
-            ensure_dir_secure(parent)?;
+            fs::create_dir_all(parent)?;
         }
 
         {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-
-            let mut file = options
-                .open(&temp_path)
+            let mut file = File::create(&temp_path)
                 .with_context(|| format!("Failed to create temp file: {}", temp_path.display()))?;
             file.write_all(content).with_context(|| {
                 format!("Failed to write to temp file: {}", temp_path.display())
