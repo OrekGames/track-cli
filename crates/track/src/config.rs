@@ -302,7 +302,15 @@ impl Config {
     pub fn save(&self, path: &Path) -> Result<()> {
         let toml_string = toml::to_string_pretty(self)
             .map_err(|e| anyhow!("Failed to serialize config: {}", e))?;
-        fs::write(path, toml_string).map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+
+        fs::write(path, toml_string.as_bytes()).map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+
         Ok(())
     }
 
