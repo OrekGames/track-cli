@@ -393,6 +393,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_issue_with_time_tracking() {
+        let mock_server = MockServer::start().await;
+
+        // First mock: update returns 204 No Content and asserts body format
+        Mock::given(method("PUT"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "fields": {
+                    "timetracking": {
+                        "originalEstimate": "4h"
+                    }
+                }
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        // Second mock: get issue to fetch updated details
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(mock_jira_issue("TEST-123", "Summary")),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("timetracking".to_string(), serde_json::json!({
+            "originalEstimate": "4h"
+        }));
+
+        let update = UpdateJiraIssue {
+            fields: UpdateJiraIssueFields {
+                summary: None,
+                description: None,
+                priority: None,
+                labels: None,
+                parent: None,
+                extra,
+            },
+        };
+
+        let _issue = client.update_issue("TEST-123", &update).unwrap();
+    }
+
+    #[tokio::test]
     async fn test_delete_issue() {
         let mock_server = MockServer::start().await;
 

@@ -709,6 +709,44 @@ fn is_reserved_field(name: &str) -> bool {
 
 /// Resolve custom field updates to Jira extra fields using field metadata.
 /// Returns a map of field_id → JSON value for fields not handled by the standard struct.
+fn insert_resolved_field(
+    extra: &mut HashMap<String, serde_json::Value>,
+    field_id: &str,
+    value: &str,
+    schema: Option<&JiraFieldSchema>,
+) {
+    match field_id {
+        "timeoriginalestimate" => {
+            let entry = extra
+                .entry("timetracking".into())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(map) = entry.as_object_mut() {
+                map.insert(
+                    "originalEstimate".into(),
+                    serde_json::Value::String(value.into()),
+                );
+            }
+        }
+        "timeestimate" => {
+            let entry = extra
+                .entry("timetracking".into())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(map) = entry.as_object_mut() {
+                map.insert(
+                    "remainingEstimate".into(),
+                    serde_json::Value::String(value.into()),
+                );
+            }
+        }
+        _ => {
+            extra.insert(
+                field_id.to_string(),
+                custom_field_to_json(field_id, value, schema),
+            );
+        }
+    }
+}
+
 pub fn resolve_extra_fields(
     custom_fields: &[CustomFieldUpdate],
     jira_fields: &[JiraField],
@@ -722,62 +760,26 @@ pub fn resolve_extra_fields(
     let mut extra = HashMap::new();
 
     for cf in custom_fields {
-        let (name, value) = match cf {
-            CustomFieldUpdate::SingleEnum { name, value } => (name.as_str(), value.as_str()),
-            CustomFieldUpdate::State { name, value } => (name.as_str(), value.as_str()),
-            CustomFieldUpdate::SingleUser { name, login } => (name.as_str(), login.as_str()),
+        match cf {
+            CustomFieldUpdate::SingleEnum { name, value }
+            | CustomFieldUpdate::State { name, value }
+            | CustomFieldUpdate::SingleUser { name, login: value } => {
+                if is_reserved_field(name) {
+                    continue;
+                }
+                if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
+                    let schema = schema_map.get(field_id.as_str()).copied();
+                    insert_resolved_field(&mut extra, field_id, value, schema);
+                }
+            }
             CustomFieldUpdate::MultiEnum { name, values } => {
-                // Handle multi-enum specially
                 let joined = values.join(",");
                 if is_reserved_field(name) {
                     continue;
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
                     let schema = schema_map.get(field_id.as_str()).copied();
-                    extra.insert(
-                        field_id.clone(),
-                        custom_field_to_json(field_id, &joined, schema),
-                    );
-                }
-                continue;
-            }
-        };
-
-        // Skip standard fields handled by the struct
-        if is_reserved_field(name) {
-            continue;
-        }
-
-        if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-            match field_id.as_str() {
-                "timeoriginalestimate" => {
-                    let entry = extra
-                        .entry("timetracking".into())
-                        .or_insert_with(|| serde_json::json!({}));
-                    if let Some(map) = entry.as_object_mut() {
-                        map.insert(
-                            "originalEstimate".into(),
-                            serde_json::Value::String(value.into()),
-                        );
-                    }
-                }
-                "timeestimate" => {
-                    let entry = extra
-                        .entry("timetracking".into())
-                        .or_insert_with(|| serde_json::json!({}));
-                    if let Some(map) = entry.as_object_mut() {
-                        map.insert(
-                            "remainingEstimate".into(),
-                            serde_json::Value::String(value.into()),
-                        );
-                    }
-                }
-                _ => {
-                    let schema = schema_map.get(field_id.as_str()).copied();
-                    extra.insert(
-                        field_id.clone(),
-                        custom_field_to_json(field_id, value, schema),
-                    );
+                    insert_resolved_field(&mut extra, field_id, &joined, schema);
                 }
             }
         }
@@ -961,6 +963,38 @@ mod tests {
         let timetracking = extra.get("timetracking").unwrap();
         assert_eq!(timetracking["originalEstimate"], serde_json::json!("4h"));
         assert_eq!(timetracking["remainingEstimate"], serde_json::json!("2h"));
+    }
+
+    #[test]
+    fn resolve_extra_fields_redirects_partial_timetracking() {
+        let custom_fields = vec![
+            CustomFieldUpdate::SingleEnum {
+                name: "Original Estimate".to_string(),
+                value: "4h".to_string(),
+            },
+        ];
+
+        let jira_fields = vec![
+            JiraField {
+                id: "timeoriginalestimate".to_string(),
+                name: "Original Estimate".to_string(),
+                custom: false,
+                schema: Some(JiraFieldSchema {
+                    field_type: "number".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+        ];
+
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields);
+
+        assert!(!extra.contains_key("timeoriginalestimate"));
+        assert!(extra.contains_key("timetracking"));
+
+        let timetracking = extra.get("timetracking").unwrap();
+        assert_eq!(timetracking["originalEstimate"], serde_json::json!("4h"));
+        assert_eq!(timetracking.get("remainingEstimate"), None);
     }
 
     #[test]
