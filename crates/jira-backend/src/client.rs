@@ -577,17 +577,18 @@ impl JiraClient {
     /// Resolve a user-provided status name (case-insensitive) to a transition id
     /// available on the issue's current workflow step.
     pub fn resolve_transition_id(&self, issue_key: &str, target_status: &str) -> Result<String> {
-        let target = target_status.trim().to_lowercase();
+        let target = target_status.trim();
         let transitions = self.list_transitions(issue_key)?;
 
+        // PERF: Using `eq_ignore_ascii_case` avoids unnecessary String allocations in the loop.
         // Prefer exact match on the target status name, fall back to transition name.
         if let Some(t) = transitions
             .iter()
-            .find(|t| t.to.name.to_lowercase() == target)
+            .find(|t| t.to.name.eq_ignore_ascii_case(target))
         {
             return Ok(t.id.clone());
         }
-        if let Some(t) = transitions.iter().find(|t| t.name.to_lowercase() == target) {
+        if let Some(t) = transitions.iter().find(|t| t.name.eq_ignore_ascii_case(target)) {
             return Ok(t.id.clone());
         }
 
