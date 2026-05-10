@@ -588,7 +588,10 @@ impl JiraClient {
         {
             return Ok(t.id.clone());
         }
-        if let Some(t) = transitions.iter().find(|t| t.name.eq_ignore_ascii_case(target)) {
+        if let Some(t) = transitions
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(target))
+        {
             return Ok(t.id.clone());
         }
 
