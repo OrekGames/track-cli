@@ -967,25 +967,21 @@ mod tests {
 
     #[test]
     fn resolve_extra_fields_redirects_partial_timetracking() {
-        let custom_fields = vec![
-            CustomFieldUpdate::SingleEnum {
-                name: "Original Estimate".to_string(),
-                value: "4h".to_string(),
-            },
-        ];
+        let custom_fields = vec![CustomFieldUpdate::SingleEnum {
+            name: "Original Estimate".to_string(),
+            value: "4h".to_string(),
+        }];
 
-        let jira_fields = vec![
-            JiraField {
-                id: "timeoriginalestimate".to_string(),
-                name: "Original Estimate".to_string(),
-                custom: false,
-                schema: Some(JiraFieldSchema {
-                    field_type: "number".to_string(),
-                    custom: None,
-                    items: None,
-                }),
-            },
-        ];
+        let jira_fields = vec![JiraField {
+            id: "timeoriginalestimate".to_string(),
+            name: "Original Estimate".to_string(),
+            custom: false,
+            schema: Some(JiraFieldSchema {
+                field_type: "number".to_string(),
+                custom: None,
+                items: None,
+            }),
+        }];
 
         let extra = resolve_extra_fields(&custom_fields, &jira_fields);
 

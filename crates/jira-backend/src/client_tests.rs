@@ -414,8 +414,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/rest/api/3/issue/TEST-123"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(mock_jira_issue("TEST-123", "Summary")),
+                ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "Summary")),
             )
             .mount(&mock_server)
             .await;
@@ -423,9 +422,12 @@ mod tests {
         let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
 
         let mut extra = std::collections::HashMap::new();
-        extra.insert("timetracking".to_string(), serde_json::json!({
-            "originalEstimate": "4h"
-        }));
+        extra.insert(
+            "timetracking".to_string(),
+            serde_json::json!({
+                "originalEstimate": "4h"
+            }),
+        );
 
         let update = UpdateJiraIssue {
             fields: UpdateJiraIssueFields {
