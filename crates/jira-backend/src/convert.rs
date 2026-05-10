@@ -85,7 +85,11 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
         .collect();
 
     for (key, value) in &j.fields.extra {
-        if !key.starts_with("customfield_") {
+        if !key.starts_with("customfield_")
+            && key != "timeoriginalestimate"
+            && key != "timeestimate"
+            && key != "timetracking"
+        {
             continue;
         }
         if value.is_null() {
@@ -96,8 +100,32 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
             .map(|n| n.to_string())
             .unwrap_or_else(|| key.clone());
         let schema = id_to_schema.get(key.as_str()).copied();
-        if let Some(cf) = json_value_to_custom_field(name, value, schema) {
-            custom_fields.push(cf);
+
+        if key == "timetracking" {
+            if let Some(obj) = value.as_object() {
+                if let Some(orig) = obj.get("originalEstimate") {
+                    if let Some(cf) = json_value_to_custom_field("Original Estimate".to_string(), orig, None) {
+                        custom_fields.push(cf);
+                    }
+                }
+                if let Some(rem) = obj.get("remainingEstimate") {
+                    if let Some(cf) = json_value_to_custom_field("Remaining Estimate".to_string(), rem, None) {
+                        custom_fields.push(cf);
+                    }
+                }
+            }
+        } else if key == "timeoriginalestimate" {
+             if let Some(cf) = json_value_to_custom_field("Original Estimate".to_string(), value, None) {
+                 custom_fields.push(cf);
+             }
+        } else if key == "timeestimate" {
+             if let Some(cf) = json_value_to_custom_field("Remaining Estimate".to_string(), value, None) {
+                 custom_fields.push(cf);
+             }
+        } else {
+             if let Some(cf) = json_value_to_custom_field(name, value, schema) {
+                 custom_fields.push(cf);
+             }
         }
     }
 
@@ -737,6 +765,10 @@ fn insert_resolved_field(
                     serde_json::Value::String(value.into()),
                 );
             }
+        }
+        "timespent" | "timetracking" => {
+             // Silently reject unsupported/read-only time tracking fields
+             // (Jira typically throws a 400 API error if we send these anyway)
         }
         _ => {
             extra.insert(
