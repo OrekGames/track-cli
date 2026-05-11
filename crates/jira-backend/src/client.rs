@@ -583,11 +583,11 @@ impl JiraClient {
         // Prefer exact match on the target status name, fall back to transition name.
         if let Some(t) = transitions
             .iter()
-            .find(|t| t.to.name.to_lowercase() == target)
+            .find(|t| t.to.name.eq_ignore_ascii_case(&target))
         {
             return Ok(t.id.clone());
         }
-        if let Some(t) = transitions.iter().find(|t| t.name.to_lowercase() == target) {
+        if let Some(t) = transitions.iter().find(|t| t.name.eq_ignore_ascii_case(&target)) {
             return Ok(t.id.clone());
         }
 

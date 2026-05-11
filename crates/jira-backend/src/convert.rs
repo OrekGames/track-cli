@@ -404,7 +404,7 @@ pub fn create_issue_to_jira(
 
     // Extract priority from custom fields if provided
     let priority = issue.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),
@@ -419,7 +419,7 @@ pub fn create_issue_to_jira(
         .iter()
         .find_map(|cf| match cf {
             CustomFieldUpdate::SingleEnum { name, value }
-                if name.to_lowercase() == "type" || name.to_lowercase() == "issuetype" =>
+                if name.eq_ignore_ascii_case("type") || name.eq_ignore_ascii_case("issuetype") =>
             {
                 Some(value.clone())
             }
@@ -469,7 +469,7 @@ pub fn update_issue_to_jira(
         .map(|d| markdown_to_adf_document(d));
 
     let priority = update.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),
