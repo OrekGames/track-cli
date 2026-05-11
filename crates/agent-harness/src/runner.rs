@@ -186,12 +186,9 @@ impl SessionRunner {
                                         if is_error {
                                             println!("{}: {}", "Error".red(), output.trim());
                                         } else {
-                                            // Truncate long output in verbose mode
-                                            let display_output = if output.len() > 500 {
-                                                format!("{}...", &output[..500])
-                                            } else {
-                                                output.clone()
-                                            };
+                                            // Truncate long output in verbose mode.
+                                            let display_output =
+                                                crate::text::truncate_for_display(&output, 500);
                                             println!(
                                                 "{}: {}",
                                                 "Output".dimmed(),

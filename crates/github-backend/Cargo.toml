@@ -15,6 +15,7 @@ urlencoding = "2.1"
 git2 = { version = "0.20", features = ["vendored-openssl"] }
 walkdir = "2"
 serde_yaml = "0.9"
+deunicode = "1"
 
 [dev-dependencies]
 wiremock = { workspace = true }

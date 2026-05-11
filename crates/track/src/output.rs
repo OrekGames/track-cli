@@ -5,7 +5,8 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use tracker_core::{
     Article, ArticleAttachment, BundleDefinition, Comment, CustomField, CustomFieldDefinition,
-    Issue, IssueAttachment, IssueTag, Project, ProjectCustomField,
+    Issue, IssueAttachment, IssueTag, Project, ProjectCustomField, case_key,
+    unicode_eq_ignore_case,
 };
 
 pub fn output_json<T: Serialize + ?Sized>(value: &T) -> anyhow::Result<()> {
@@ -84,48 +85,46 @@ pub fn output_change_summary(
 
     println!("{}", "--- Change Summary ---".bright_black());
 
-    // 1. Identify which fields were requested
+    // 1. Identify which fields were requested. Keys are Unicode-folded via
+    // `case_key` so non-ASCII custom field names match consistently with
+    // `unicode_eq_ignore_case` used by `find_field_value`.
     let mut requested_fields: HashSet<String> = HashSet::new();
     if let Some(u) = update {
         if u.summary.is_some() {
-            requested_fields.insert("Summary".to_string().to_lowercase());
+            requested_fields.insert(case_key("Summary"));
         }
         if u.description.is_some() {
-            requested_fields.insert("Description".to_string().to_lowercase());
+            requested_fields.insert(case_key("Description"));
         }
         if u.parent.is_some() {
-            requested_fields.insert("Parent".to_string().to_lowercase());
+            requested_fields.insert(case_key("Parent"));
         }
         for f in &u.custom_fields {
-            requested_fields.insert(
-                match f {
-                    tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
-                    tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
-                    tracker_core::CustomFieldUpdate::State { name, .. } => name,
-                    tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
-                }
-                .to_lowercase(),
-            );
+            let name = match f {
+                tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
+                tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
+                tracker_core::CustomFieldUpdate::State { name, .. } => name,
+                tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
+            };
+            requested_fields.insert(case_key(name));
         }
     }
     if let Some(c) = create {
-        requested_fields.insert("Summary".to_string().to_lowercase());
+        requested_fields.insert(case_key("Summary"));
         if c.description.is_some() {
-            requested_fields.insert("Description".to_string().to_lowercase());
+            requested_fields.insert(case_key("Description"));
         }
         if c.parent.is_some() {
-            requested_fields.insert("Parent".to_string().to_lowercase());
+            requested_fields.insert(case_key("Parent"));
         }
         for f in &c.custom_fields {
-            requested_fields.insert(
-                match f {
-                    tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
-                    tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
-                    tracker_core::CustomFieldUpdate::State { name, .. } => name,
-                    tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
-                }
-                .to_lowercase(),
-            );
+            let name = match f {
+                tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
+                tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
+                tracker_core::CustomFieldUpdate::State { name, .. } => name,
+                tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
+            };
+            requested_fields.insert(case_key(name));
         }
     }
 
@@ -154,6 +153,12 @@ pub fn output_change_summary(
     }
     displayed_fields.insert("description".to_string());
 
+    // Parent relationships aren't carried on the core Issue struct (they live
+    // in custom_fields or links, backend-specific), so we can't diff them here.
+    // Mark "parent" as considered so a request for `--parent X` doesn't get
+    // misreported as "Ignored" when the underlying API call actually succeeded.
+    displayed_fields.insert(case_key("Parent"));
+
     // Check Custom Fields
     for new_cf in &new.custom_fields {
         let name = match new_cf {
@@ -176,7 +181,7 @@ pub fn output_change_summary(
                 &requested_fields,
             );
         }
-        displayed_fields.insert(name.to_lowercase());
+        displayed_fields.insert(case_key(name));
     }
 
     // Check for ignored fields (requested but not in new or not changed)
@@ -190,7 +195,7 @@ pub fn output_change_summary(
 
 fn display_change(name: &str, old: Option<&str>, new: Option<&str>, requested: &HashSet<String>) {
     use colored::Colorize;
-    let is_requested = requested.contains(&name.to_lowercase());
+    let is_requested = requested.contains(&case_key(name));
     let prefix = if is_requested { "" } else { "(Side Effect) " };
     let label = if is_requested {
         name.bold()
@@ -229,12 +234,12 @@ fn find_field_value(issue: &Issue, name: &str) -> Option<String> {
         .custom_fields
         .iter()
         .find(|f| match f {
-            CustomField::SingleEnum { name: n, .. } => n.eq_ignore_ascii_case(name),
-            CustomField::State { name: n, .. } => n.eq_ignore_ascii_case(name),
-            CustomField::SingleUser { name: n, .. } => n.eq_ignore_ascii_case(name),
-            CustomField::Text { name: n, .. } => n.eq_ignore_ascii_case(name),
-            CustomField::MultiEnum { name: n, .. } => n.eq_ignore_ascii_case(name),
-            CustomField::Unknown { name: n, .. } => n.eq_ignore_ascii_case(name),
+            CustomField::SingleEnum { name: n, .. } => unicode_eq_ignore_case(n, name),
+            CustomField::State { name: n, .. } => unicode_eq_ignore_case(n, name),
+            CustomField::SingleUser { name: n, .. } => unicode_eq_ignore_case(n, name),
+            CustomField::Text { name: n, .. } => unicode_eq_ignore_case(n, name),
+            CustomField::MultiEnum { name: n, .. } => unicode_eq_ignore_case(n, name),
+            CustomField::Unknown { name: n, .. } => unicode_eq_ignore_case(n, name),
         })
         .and_then(|f| match f {
             CustomField::SingleEnum { value, .. } => value.clone(),
@@ -394,8 +399,6 @@ impl Displayable for CustomField {
                 let val = value.as_deref().unwrap_or("None");
                 let colored_val = if *is_resolved {
                     val.green().to_string()
-                } else if val.to_lowercase().contains("progress") {
-                    val.yellow().to_string()
                 } else {
                     val.to_string()
                 };
@@ -671,5 +674,49 @@ mod tests {
     fn page_hint_with_cached_total() {
         // Verify it doesn't panic with a cached total
         output_page_hint(20, 20, 0, Some((847, "2h ago")), OutputFormat::Text);
+    }
+
+    fn issue_with_field(field_name: &str, value: &str) -> Issue {
+        Issue {
+            id: "1".into(),
+            id_readable: "PROJ-1".into(),
+            summary: "test".into(),
+            description: None,
+            project: tracker_core::ProjectRef {
+                id: "p1".into(),
+                name: Some("Project".into()),
+                short_name: Some("PROJ".into()),
+            },
+            custom_fields: vec![CustomField::Text {
+                name: field_name.into(),
+                value: Some(value.into()),
+            }],
+            tags: vec![],
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn find_field_value_matches_non_ascii_case_insensitively() {
+        let issue = issue_with_field("Geöffnet", "value");
+        assert_eq!(
+            find_field_value(&issue, "GEÖFFNET"),
+            Some("value".to_string())
+        );
+        assert_eq!(
+            find_field_value(&issue, "geöffnet"),
+            Some("value".to_string())
+        );
+        assert_eq!(
+            find_field_value(&issue, "Geöffnet"),
+            Some("value".to_string())
+        );
+    }
+
+    #[test]
+    fn find_field_value_misses_when_truly_different() {
+        let issue = issue_with_field("Geöffnet", "value");
+        assert_eq!(find_field_value(&issue, "Geschlossen"), None);
     }
 }

@@ -8,6 +8,7 @@ mod claude_code;
 mod copilot_cli;
 mod gemini_runner;
 mod runner;
+mod text;
 mod tools;
 
 use anyhow::Result;

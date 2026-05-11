@@ -260,7 +260,7 @@ pub fn handle_init(
                 .find(|p| {
                     p.short_name.eq_ignore_ascii_case(proj)
                         || p.id == proj
-                        || p.name.eq_ignore_ascii_case(proj)
+                        || tracker_core::unicode_eq_ignore_case(&p.name, proj)
                 })
                 .ok_or_else(|| anyhow::anyhow!("Project '{}' not found on server", proj))?;
 

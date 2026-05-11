@@ -346,9 +346,19 @@ impl IssueTracker for GitHubClient {
 
 use std::collections::HashSet;
 
-/// Generate a URL-safe slug from text
+/// Generate a URL-safe slug from text.
+///
+/// Non-ASCII characters are transliterated to ASCII via `deunicode` so that
+/// non-English titles produce meaningful, distinct slugs:
+/// - `"Café au lait"` → `"cafe-au-lait"`
+/// - `"はじめに"` → `"hajimeni"`
+/// - `"Открыто"` → `"otkryto"`
+///
+/// Pure ASCII titles produce identical slugs to a no-transliteration pass, so
+/// existing wikis don't churn.
 fn slugify(text: &str) -> String {
-    let slug: String = text
+    let ascii = deunicode::deunicode(text);
+    let slug: String = ascii
         .chars()
         .flat_map(|c| c.to_lowercase())
         .map(|c| {
@@ -596,5 +606,70 @@ impl KnowledgeBase for GitHubClient {
         Err(TrackerError::InvalidInput(
             "GitHub wikis do not support comments".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod slugify_tests {
+    use super::slugify;
+
+    #[test]
+    fn ascii_titles_unchanged() {
+        assert_eq!(slugify("Getting Started"), "getting-started");
+        assert_eq!(slugify("API Reference"), "api-reference");
+        assert_eq!(slugify("Hello World"), "hello-world");
+    }
+
+    #[test]
+    fn collapses_consecutive_separators() {
+        assert_eq!(slugify("Hello  -  World"), "hello-world");
+        assert_eq!(slugify("--Hello--"), "hello");
+    }
+
+    #[test]
+    fn preserves_path_separator() {
+        assert_eq!(slugify("Parent/Child"), "parent/child");
+    }
+
+    #[test]
+    fn accented_latin_transliterates() {
+        assert_eq!(slugify("Café au lait"), "cafe-au-lait");
+        assert_eq!(slugify("Crème brûlée"), "creme-brulee");
+        assert_eq!(slugify("Geöffnet"), "geoffnet");
+    }
+
+    #[test]
+    fn cyrillic_transliterates() {
+        assert_eq!(slugify("Открыто"), "otkryto");
+        assert_eq!(slugify("В работе"), "v-rabote");
+    }
+
+    #[test]
+    fn cjk_transliterates_to_romaji_or_pinyin() {
+        // deunicode's CJK output is approximate but produces stable,
+        // distinct, ASCII strings — which is what slugs need.
+        let hajimeni = slugify("はじめに");
+        assert!(!hajimeni.is_empty(), "CJK slug should not be empty");
+        assert!(
+            hajimeni.chars().all(|c| c.is_ascii()),
+            "slug should be all ASCII: {hajimeni:?}"
+        );
+
+        let kanryo = slugify("完了");
+        assert!(!kanryo.is_empty(), "CJK slug should not be empty");
+
+        // Distinct titles produce distinct slugs.
+        assert_ne!(hajimeni, kanryo);
+    }
+
+    #[test]
+    fn distinct_non_ascii_titles_no_longer_collapse() {
+        // Before deunicode: both became "----" / similar.
+        let a = slugify("はじめに");
+        let b = slugify("使い方");
+        let c = slugify("完了");
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
     }
 }
