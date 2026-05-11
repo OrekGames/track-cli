@@ -715,7 +715,7 @@ pub fn handle_config(
                 .find(|p| {
                     p.short_name.eq_ignore_ascii_case(id)
                         || p.id == *id
-                        || p.name.eq_ignore_ascii_case(id)
+                        || tracker_core::unicode_eq_ignore_case(&p.name, id)
                 })
                 .ok_or_else(|| anyhow::anyhow!("Project '{}' not found", id))?;
 

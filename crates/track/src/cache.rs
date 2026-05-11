@@ -1093,7 +1093,7 @@ impl TrackerCache {
     pub fn get_tag_id(&self, name: &str) -> Option<&str> {
         self.tags
             .iter()
-            .find(|t| t.name.eq_ignore_ascii_case(name))
+            .find(|t| tracker_core::unicode_eq_ignore_case(&t.name, name))
             .map(|t| t.id.as_str())
     }
 
@@ -1188,7 +1188,7 @@ impl TrackerCache {
             .find(|c| {
                 c.project_short_name
                     .eq_ignore_ascii_case(project_short_name)
-                    && c.template_name.eq_ignore_ascii_case(template_name)
+                    && tracker_core::unicode_eq_ignore_case(&c.template_name, template_name)
             })
             .map(|c| c.count)
     }
@@ -1198,7 +1198,7 @@ impl TrackerCache {
     pub fn get_link_type(&self, name: &str) -> Option<&CachedLinkType> {
         self.link_types
             .iter()
-            .find(|lt| lt.name.eq_ignore_ascii_case(name))
+            .find(|lt| tracker_core::unicode_eq_ignore_case(&lt.name, name))
     }
 
     /// Get recent issues (from cache)

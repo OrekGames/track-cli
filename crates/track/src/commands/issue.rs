@@ -5,7 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use tracker_core::{
     CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
-    fetch_all_pages,
+    fetch_all_pages, unicode_eq_ignore_case,
 };
 
 /// Shared fields for create, update, and batch-update commands.
@@ -536,8 +536,8 @@ fn build_custom_fields(
     for field in fields {
         let (name, value) = parse_field_value(field)?;
 
-        let matched_field =
-            project_fields.and_then(|pf| pf.iter().find(|f| f.name.eq_ignore_ascii_case(&name)));
+        let matched_field = project_fields
+            .and_then(|pf| pf.iter().find(|f| unicode_eq_ignore_case(&f.name, &name)));
 
         if matched_field.is_none() && project_fields.is_some() {
             eprintln!(
@@ -618,7 +618,7 @@ fn validate_custom_fields(
         // Find the field definition
         let field_def = project_fields
             .iter()
-            .find(|f| f.name.eq_ignore_ascii_case(field_name));
+            .find(|f| unicode_eq_ignore_case(&f.name, field_name));
 
         match field_def {
             Some(def) => {
@@ -634,7 +634,7 @@ fn validate_custom_fields(
                     };
 
                     for val in &values_to_check {
-                        let value_valid = def.values.iter().any(|v| v.eq_ignore_ascii_case(val));
+                        let value_valid = def.values.iter().any(|v| unicode_eq_ignore_case(v, val));
                         if !value_valid {
                             return Err(anyhow!(
                                 "Invalid value '{}' for field '{}'. Valid values: {}",
@@ -1616,12 +1616,12 @@ fn verify_field_match(
     };
 
     let actual = actual_fields.iter().find(|f| match f {
-        CustomField::SingleEnum { name, .. } => name.eq_ignore_ascii_case(req_name),
-        CustomField::State { name, .. } => name.eq_ignore_ascii_case(req_name),
-        CustomField::SingleUser { name, .. } => name.eq_ignore_ascii_case(req_name),
-        CustomField::Text { name, .. } => name.eq_ignore_ascii_case(req_name),
-        CustomField::MultiEnum { name, .. } => name.eq_ignore_ascii_case(req_name),
-        CustomField::Unknown { name } => name.eq_ignore_ascii_case(req_name),
+        CustomField::SingleEnum { name, .. } => unicode_eq_ignore_case(name, req_name),
+        CustomField::State { name, .. } => unicode_eq_ignore_case(name, req_name),
+        CustomField::SingleUser { name, .. } => unicode_eq_ignore_case(name, req_name),
+        CustomField::Text { name, .. } => unicode_eq_ignore_case(name, req_name),
+        CustomField::MultiEnum { name, .. } => unicode_eq_ignore_case(name, req_name),
+        CustomField::Unknown { name } => unicode_eq_ignore_case(name, req_name),
     });
 
     match (requested, actual) {
