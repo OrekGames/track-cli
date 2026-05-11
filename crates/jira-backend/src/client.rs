@@ -581,6 +581,7 @@ impl JiraClient {
         let transitions = self.list_transitions(issue_key)?;
 
         // PERF: Using `eq_ignore_ascii_case` avoids unnecessary String allocations in the loop.
+        // ASCII-only case fold; sufficient for default Jira workflows and English status names.
         // Prefer exact match on the target status name, fall back to transition name.
         if let Some(t) = transitions
             .iter()
