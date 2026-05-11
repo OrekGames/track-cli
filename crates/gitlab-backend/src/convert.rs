@@ -440,7 +440,10 @@ mod tests {
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "123");
         assert_eq!(core_link.issues[0].id_readable, Some("#456".to_string()));
-        assert_eq!(core_link.issues[0].summary, Some("Blocking Issue".to_string()));
+        assert_eq!(
+            core_link.issues[0].summary,
+            Some("Blocking Issue".to_string())
+        );
     }
 
     #[test]
@@ -463,7 +466,10 @@ mod tests {
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "124");
         assert_eq!(core_link.issues[0].id_readable, Some("#457".to_string()));
-        assert_eq!(core_link.issues[0].summary, Some("Blocked Issue".to_string()));
+        assert_eq!(
+            core_link.issues[0].summary,
+            Some("Blocked Issue".to_string())
+        );
     }
 
     #[test]
@@ -486,7 +492,10 @@ mod tests {
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "125");
         assert_eq!(core_link.issues[0].id_readable, Some("#458".to_string()));
-        assert_eq!(core_link.issues[0].summary, Some("Related Issue".to_string()));
+        assert_eq!(
+            core_link.issues[0].summary,
+            Some("Related Issue".to_string())
+        );
     }
 
     #[test]
@@ -510,6 +519,9 @@ mod tests {
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "126");
         assert_eq!(core_link.issues[0].id_readable, Some("#459".to_string()));
-        assert_eq!(core_link.issues[0].summary, Some("Unknown Link Type Issue".to_string()));
+        assert_eq!(
+            core_link.issues[0].summary,
+            Some("Unknown Link Type Issue".to_string())
+        );
     }
 }
