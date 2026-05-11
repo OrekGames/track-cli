@@ -311,6 +311,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn list_pages_skips_ignored_files() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, cache_dir) = setup_wiki(&temp);
+
+        // Add non-markdown file
+        let txt_path = cache_dir.join("document.txt");
+        fs::write(&txt_path, "Some text content").expect("write");
+
+        // Add file in .track-attachments
+        let attachment_dir = cache_dir.join(".track-attachments");
+        fs::create_dir_all(&attachment_dir).expect("mkdir");
+        let attachment_path = attachment_dir.join("attachment.md");
+        fs::write(&attachment_path, "Attachment content").expect("write");
+
+        // Add file in .git (simulated, since git operations might overwrite,
+        // we just create a file in the existing .git dir)
+        let git_dir = cache_dir.join(".git").join("custom_dir");
+        fs::create_dir_all(&git_dir).expect("mkdir");
+        let git_file_path = git_dir.join("git_internal.md");
+        fs::write(&git_file_path, "Git internal content").expect("write");
+
+        let pages = wiki.list_pages().expect("list pages");
+
+        let mut slugs: Vec<String> = pages.into_iter().map(|p| p.slug).collect();
+        slugs.sort();
+
+        assert_eq!(slugs, vec!["Home", "Tutorials/Getting-Started"]);
+    }
+
+    #[test]
+    fn should_skip_path_normalizes_windows_paths() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, _) = setup_wiki(&temp);
+
+        let p1 = Path::new(r"C:\foo\.git\bar.md");
+        assert!(wiki.should_skip_path(p1));
+
+        let p2 = Path::new(r"C:\foo\.track-attachments\img.png");
+        assert!(wiki.should_skip_path(p2));
+
+        let p3 = Path::new(r"C:\foo\normal_page.md");
+        assert!(!wiki.should_skip_path(p3));
+    }
+
     // ====================================================================
     // has_children via parent field
     // ====================================================================

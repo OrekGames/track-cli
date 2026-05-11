@@ -50,7 +50,7 @@ impl IssueTracker for JiraClient {
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
         let fields = self.get_fields_cached();
-        let jira_issue = create_issue_to_jira(issue, &fields);
+        let jira_issue = create_issue_to_jira(issue, &fields)?;
         let created = self.create_issue(&jira_issue)?;
         Ok(jira_issue_to_core(created, &fields))
     }
@@ -85,7 +85,7 @@ impl IssueTracker for JiraClient {
             || stripped.parent.is_some();
 
         if has_field_updates {
-            let jira_update = update_issue_to_jira(&stripped, &fields);
+            let jira_update = update_issue_to_jira(&stripped, &fields)?;
             self.update_issue(id, &jira_update)?;
         }
 

@@ -85,7 +85,11 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
         .collect();
 
     for (key, value) in &j.fields.extra {
-        if !key.starts_with("customfield_") {
+        if !key.starts_with("customfield_")
+            && key != "timeoriginalestimate"
+            && key != "timeestimate"
+            && key != "timetracking"
+        {
             continue;
         }
         if value.is_null() {
@@ -96,7 +100,35 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
             .map(|n| n.to_string())
             .unwrap_or_else(|| key.clone());
         let schema = id_to_schema.get(key.as_str()).copied();
-        if let Some(cf) = json_value_to_custom_field(name, value, schema) {
+
+        if key == "timetracking" {
+            if let Some(obj) = value.as_object() {
+                if let Some(orig) = obj.get("originalEstimate")
+                    && let Some(cf) =
+                        json_value_to_custom_field("Original Estimate".to_string(), orig, None)
+                {
+                    custom_fields.push(cf);
+                }
+                if let Some(rem) = obj.get("remainingEstimate")
+                    && let Some(cf) =
+                        json_value_to_custom_field("Remaining Estimate".to_string(), rem, None)
+                {
+                    custom_fields.push(cf);
+                }
+            }
+        } else if key == "timeoriginalestimate" {
+            if let Some(cf) =
+                json_value_to_custom_field("Original Estimate".to_string(), value, None)
+            {
+                custom_fields.push(cf);
+            }
+        } else if key == "timeestimate" {
+            if let Some(cf) =
+                json_value_to_custom_field("Remaining Estimate".to_string(), value, None)
+            {
+                custom_fields.push(cf);
+            }
+        } else if let Some(cf) = json_value_to_custom_field(name, value, schema) {
             custom_fields.push(cf);
         }
     }
@@ -361,7 +393,10 @@ impl From<JiraIssueLink> for IssueLink {
 /// Convert CreateIssue to Jira format.
 /// When `jira_fields` is provided, custom field updates are resolved to Jira field IDs
 /// and included in the request. Without it, only standard fields (priority, type, labels) are sent.
-pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> CreateJiraIssue {
+pub fn create_issue_to_jira(
+    issue: &CreateIssue,
+    jira_fields: &[JiraField],
+) -> tracker_core::Result<CreateJiraIssue> {
     let description = issue
         .description
         .as_ref()
@@ -392,9 +427,9 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
         })
         .unwrap_or_else(|| "Task".to_string());
 
-    let extra = resolve_extra_fields(&issue.custom_fields, jira_fields);
+    let extra = resolve_extra_fields(&issue.custom_fields, jira_fields)?;
 
-    CreateJiraIssue {
+    Ok(CreateJiraIssue {
         fields: CreateJiraIssueFields {
             project: ProjectId {
                 id: None,
@@ -418,13 +453,16 @@ pub fn create_issue_to_jira(issue: &CreateIssue, jira_fields: &[JiraField]) -> C
             }),
             extra,
         },
-    }
+    })
 }
 
 /// Convert UpdateIssue to Jira format.
 /// When `jira_fields` is provided, custom field updates are resolved to Jira field IDs
 /// and included in the request. Without it, only standard fields (priority, labels) are sent.
-pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> UpdateJiraIssue {
+pub fn update_issue_to_jira(
+    update: &UpdateIssue,
+    jira_fields: &[JiraField],
+) -> tracker_core::Result<UpdateJiraIssue> {
     let description = update
         .description
         .as_ref()
@@ -440,9 +478,9 @@ pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> 
         _ => None,
     });
 
-    let extra = resolve_extra_fields(&update.custom_fields, jira_fields);
+    let extra = resolve_extra_fields(&update.custom_fields, jira_fields)?;
 
-    UpdateJiraIssue {
+    Ok(UpdateJiraIssue {
         fields: UpdateJiraIssueFields {
             summary: update.summary.clone(),
             description,
@@ -458,7 +496,7 @@ pub fn update_issue_to_jira(update: &UpdateIssue, jira_fields: &[JiraField]) -> 
             }),
             extra,
         },
-    }
+    })
 }
 
 /// Parse Jira datetime string to chrono DateTime
@@ -709,10 +747,54 @@ fn is_reserved_field(name: &str) -> bool {
 
 /// Resolve custom field updates to Jira extra fields using field metadata.
 /// Returns a map of field_id → JSON value for fields not handled by the standard struct.
+fn insert_resolved_field(
+    extra: &mut HashMap<String, serde_json::Value>,
+    field_id: &str,
+    value: &str,
+    schema: Option<&JiraFieldSchema>,
+) -> tracker_core::Result<()> {
+    match field_id {
+        "timeoriginalestimate" => {
+            let entry = extra
+                .entry("timetracking".into())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(map) = entry.as_object_mut() {
+                map.insert(
+                    "originalEstimate".into(),
+                    serde_json::Value::String(value.into()),
+                );
+            }
+        }
+        "timeestimate" => {
+            let entry = extra
+                .entry("timetracking".into())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(map) = entry.as_object_mut() {
+                map.insert(
+                    "remainingEstimate".into(),
+                    serde_json::Value::String(value.into()),
+                );
+            }
+        }
+        "timespent" | "timetracking" => {
+            return Err(tracker_core::TrackerError::InvalidInput(
+                "Time Spent and Time Tracking are read-only via --field. Use `track issue worklog add` for logged time, or `--field 'Original Estimate' / 'Remaining Estimate'` for estimates.".to_string(),
+            ));
+        }
+        _ => {
+            extra.insert(
+                field_id.to_string(),
+                custom_field_to_json(field_id, value, schema),
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn resolve_extra_fields(
     custom_fields: &[CustomFieldUpdate],
     jira_fields: &[JiraField],
-) -> HashMap<String, serde_json::Value> {
+) -> tracker_core::Result<HashMap<String, serde_json::Value>> {
     let field_id_map = build_field_id_map(jira_fields);
     let schema_map: HashMap<&str, &JiraFieldSchema> = jira_fields
         .iter()
@@ -722,42 +804,32 @@ pub fn resolve_extra_fields(
     let mut extra = HashMap::new();
 
     for cf in custom_fields {
-        let (name, value) = match cf {
-            CustomFieldUpdate::SingleEnum { name, value } => (name.as_str(), value.as_str()),
-            CustomFieldUpdate::State { name, value } => (name.as_str(), value.as_str()),
-            CustomFieldUpdate::SingleUser { name, login } => (name.as_str(), login.as_str()),
+        match cf {
+            CustomFieldUpdate::SingleEnum { name, value }
+            | CustomFieldUpdate::State { name, value }
+            | CustomFieldUpdate::SingleUser { name, login: value } => {
+                if is_reserved_field(name) {
+                    continue;
+                }
+                if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
+                    let schema = schema_map.get(field_id.as_str()).copied();
+                    insert_resolved_field(&mut extra, field_id, value, schema)?;
+                }
+            }
             CustomFieldUpdate::MultiEnum { name, values } => {
-                // Handle multi-enum specially
                 let joined = values.join(",");
                 if is_reserved_field(name) {
                     continue;
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
                     let schema = schema_map.get(field_id.as_str()).copied();
-                    extra.insert(
-                        field_id.clone(),
-                        custom_field_to_json(field_id, &joined, schema),
-                    );
+                    insert_resolved_field(&mut extra, field_id, &joined, schema)?;
                 }
-                continue;
             }
-        };
-
-        // Skip standard fields handled by the struct
-        if is_reserved_field(name) {
-            continue;
-        }
-
-        if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-            let schema = schema_map.get(field_id.as_str()).copied();
-            extra.insert(
-                field_id.clone(),
-                custom_field_to_json(field_id, value, schema),
-            );
         }
     }
 
-    extra
+    Ok(extra)
 }
 
 #[cfg(test)]
@@ -776,7 +848,7 @@ mod tests {
             parent: Some("PROJ-100".to_string()),
         };
 
-        let jira = create_issue_to_jira(&issue, &[]);
+        let jira = create_issue_to_jira(&issue, &[]).unwrap();
         let parent = jira.fields.parent.expect("parent should be set");
         assert_eq!(parent.key.as_deref(), Some("PROJ-100"));
         assert!(parent.id.is_none());
@@ -793,8 +865,29 @@ mod tests {
             parent: None,
         };
 
-        let jira = create_issue_to_jira(&issue, &[]);
+        let jira = create_issue_to_jira(&issue, &[]).unwrap();
         assert!(jira.fields.parent.is_none());
+    }
+
+    #[test]
+    fn update_issue_to_jira_redirects_estimate_to_timetracking() {
+        let update = UpdateIssue {
+            custom_fields: vec![CustomFieldUpdate::SingleEnum {
+                name: "Original Estimate".to_string(),
+                value: "4h".to_string(),
+            }],
+            ..Default::default()
+        };
+        let fields = vec![JiraField {
+            id: "timeoriginalestimate".to_string(),
+            name: "Original Estimate".to_string(),
+            custom: false,
+            schema: None,
+        }];
+        let jira = update_issue_to_jira(&update, &fields).unwrap();
+        let json = serde_json::to_value(&jira).unwrap();
+        assert_eq!(json["fields"]["timetracking"]["originalEstimate"], "4h");
+        assert!(json["fields"].get("timeoriginalestimate").is_none());
     }
 
     #[test]
@@ -807,7 +900,7 @@ mod tests {
             parent: Some("PROJ-200".to_string()),
         };
 
-        let jira = update_issue_to_jira(&update, &[]);
+        let jira = update_issue_to_jira(&update, &[]).unwrap();
         let parent = jira.fields.parent.expect("parent should be set");
         assert_eq!(parent.key.as_deref(), Some("PROJ-200"));
     }
@@ -822,7 +915,7 @@ mod tests {
             parent: Some("DS-100".to_string()),
         };
 
-        let jira = update_issue_to_jira(&update, &[]);
+        let jira = update_issue_to_jira(&update, &[]).unwrap();
         let json = serde_json::to_value(&jira).unwrap();
 
         // parent.key should be present, parent.id should be omitted
@@ -856,7 +949,7 @@ mod tests {
             }),
         }];
 
-        let jira = create_issue_to_jira(&issue, &fields);
+        let jira = create_issue_to_jira(&issue, &fields).unwrap();
         let json = serde_json::to_value(&jira).unwrap();
         assert_eq!(json["fields"]["customfield_10016"], 5.0);
     }
@@ -885,9 +978,84 @@ mod tests {
             }),
         }];
 
-        let jira = update_issue_to_jira(&update, &fields);
+        let jira = update_issue_to_jira(&update, &fields).unwrap();
         let json = serde_json::to_value(&jira).unwrap();
         assert_eq!(json["fields"]["customfield_10016"], 8.0);
+    }
+
+    #[test]
+    fn resolve_extra_fields_redirects_timetracking() {
+        let custom_fields = vec![
+            CustomFieldUpdate::SingleEnum {
+                name: "Original Estimate".to_string(),
+                value: "4h".to_string(),
+            },
+            CustomFieldUpdate::SingleEnum {
+                name: "Remaining Estimate".to_string(),
+                value: "2h".to_string(),
+            },
+        ];
+
+        let jira_fields = vec![
+            JiraField {
+                id: "timeoriginalestimate".to_string(),
+                name: "Original Estimate".to_string(),
+                custom: false,
+                schema: Some(JiraFieldSchema {
+                    field_type: "number".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+            JiraField {
+                id: "timeestimate".to_string(),
+                name: "Remaining Estimate".to_string(),
+                custom: false,
+                schema: Some(JiraFieldSchema {
+                    field_type: "number".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+        ];
+
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
+
+        assert!(!extra.contains_key("timeoriginalestimate"));
+        assert!(!extra.contains_key("timeestimate"));
+        assert!(extra.contains_key("timetracking"));
+
+        let timetracking = extra.get("timetracking").unwrap();
+        assert_eq!(timetracking["originalEstimate"], serde_json::json!("4h"));
+        assert_eq!(timetracking["remainingEstimate"], serde_json::json!("2h"));
+    }
+
+    #[test]
+    fn resolve_extra_fields_redirects_partial_timetracking() {
+        let custom_fields = vec![CustomFieldUpdate::SingleEnum {
+            name: "Original Estimate".to_string(),
+            value: "4h".to_string(),
+        }];
+
+        let jira_fields = vec![JiraField {
+            id: "timeoriginalestimate".to_string(),
+            name: "Original Estimate".to_string(),
+            custom: false,
+            schema: Some(JiraFieldSchema {
+                field_type: "number".to_string(),
+                custom: None,
+                items: None,
+            }),
+        }];
+
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
+
+        assert!(!extra.contains_key("timeoriginalestimate"));
+        assert!(extra.contains_key("timetracking"));
+
+        let timetracking = extra.get("timetracking").unwrap();
+        assert_eq!(timetracking["originalEstimate"], serde_json::json!("4h"));
+        assert_eq!(timetracking.get("remainingEstimate"), None);
     }
 
     #[test]
@@ -930,7 +1098,7 @@ mod tests {
             },
         ];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields);
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
         // Priority and State should be skipped (handled by struct/transitions),
         // Story Points should be resolved
         assert!(!extra.contains_key("priority"));
