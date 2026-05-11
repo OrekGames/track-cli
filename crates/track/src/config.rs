@@ -6,8 +6,12 @@ use figment::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
+
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 /// Main configuration structure supporting multiple backends
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
@@ -302,7 +306,18 @@ impl Config {
     pub fn save(&self, path: &Path) -> Result<()> {
         let toml_string = toml::to_string_pretty(self)
             .map_err(|e| anyhow!("Failed to serialize config: {}", e))?;
-        fs::write(path, toml_string).map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+
+        let mut file = options
+            .open(path)
+            .map_err(|e| anyhow!("Failed to open config file: {}", e))?;
+        file.write_all(toml_string.as_bytes())
+            .map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+
         Ok(())
     }
 
@@ -425,8 +440,21 @@ pub fn global_config_path_ensure() -> Result<PathBuf> {
     let path = global_config_path()
         .ok_or_else(|| anyhow!("Could not determine home directory for global config"))?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(parent)
             .map_err(|e| anyhow!("Failed to create directory {}: {}", parent.display(), e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
     }
     Ok(path)
 }
@@ -463,6 +491,17 @@ pub fn resolve_backend() -> Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn config_save_uses_0600_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.toml");
+        Config::default().save(&path).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 
     #[test]
     fn test_config_with_link_mappings() {
