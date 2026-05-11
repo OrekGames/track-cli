@@ -153,6 +153,12 @@ pub fn output_change_summary(
     }
     displayed_fields.insert("description".to_string());
 
+    // Parent relationships aren't carried on the core Issue struct (they live
+    // in custom_fields or links, backend-specific), so we can't diff them here.
+    // Mark "parent" as considered so a request for `--parent X` doesn't get
+    // misreported as "Ignored" when the underlying API call actually succeeded.
+    displayed_fields.insert(case_key("Parent"));
+
     // Check Custom Fields
     for new_cf in &new.custom_fields {
         let name = match new_cf {

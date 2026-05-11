@@ -897,7 +897,7 @@ fn try_cached_count(query: &str, skip: usize) -> Option<(u64, String)> {
     for project in &cache.projects {
         for template in &cache.query_templates {
             let expanded = template.query.replace("{PROJECT}", &project.short_name);
-            if expanded.eq_ignore_ascii_case(query)
+            if unicode_eq_ignore_case(&expanded, query)
                 && let Some(count) = cache.get_issue_count(&project.short_name, &template.name)
             {
                 return Some((count, age));
@@ -926,7 +926,7 @@ fn resolve_search_query(
             let template_def = cache
                 .query_templates
                 .iter()
-                .find(|qt| qt.name.eq_ignore_ascii_case(tmpl))
+                .find(|qt| unicode_eq_ignore_case(&qt.name, tmpl))
                 .ok_or_else(|| {
                     let available: Vec<&str> = cache
                         .query_templates
