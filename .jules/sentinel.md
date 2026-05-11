@@ -1,0 +1,1 @@
+When applying Unix-specific security configurations like file permissions (`std::os::unix::fs::PermissionsExt`), always use `#[cfg(unix)]` to maintain Windows compatibility, and consider swallowing non-critical permission errors (e.g., `let _ = fs::set_permissions(...)`) to prevent application failure on unsupported file systems.
