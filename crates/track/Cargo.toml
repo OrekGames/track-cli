@@ -32,3 +32,4 @@ open = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 serial_test = "3.1"
+tempfile = "3.27.0"
