@@ -353,6 +353,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "deunicode"
+version = "1.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
+
+[[package]]
 name = "difflib"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -625,6 +631,7 @@ name = "github-backend"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "deunicode",
  "git2",
  "serde",
  "serde_json",
@@ -1518,9 +1525,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.9"
+version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7df23109aa6c1567d1c575b9952556388da57401e4ace1d15f79eedad0d8f53"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -1975,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "track"
-version = "1.9.2"
+version = "1.9.4"
 dependencies = [
  "anyhow",
  "assert_cmd",

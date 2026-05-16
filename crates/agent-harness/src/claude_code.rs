@@ -414,12 +414,8 @@ fn print_event(event: &ClaudeCodeEvent) {
                         } else {
                             "Output".dimmed()
                         };
-                        // Truncate long output
-                        let display = if content.len() > 300 {
-                            format!("{}...", &content[..300])
-                        } else {
-                            content.clone()
-                        };
+                        // Truncate long output.
+                        let display = crate::text::truncate_for_display(content, 300);
                         println!("{}: {}", label, display.trim());
                     }
                 }

@@ -2,7 +2,7 @@ use crate::error::{Result, YouTrackError};
 use crate::models::*;
 use std::collections::HashMap;
 use std::time::Duration;
-use tracker_core::AttachmentUpload;
+use tracker_core::{AttachmentUpload, unicode_eq_ignore_case};
 use ureq::Agent;
 use ureq::unversioned::multipart::{Form, Part};
 
@@ -695,7 +695,7 @@ impl YouTrackClient {
         let links = self.get_issue_links(issue_id)?;
 
         for link in links {
-            if link.link_type.name.eq_ignore_ascii_case(link_type_name)
+            if unicode_eq_ignore_case(&link.link_type.name, link_type_name)
                 && let Some(dir) = &link.direction
                 && dir.eq_ignore_ascii_case(direction)
             {

@@ -317,7 +317,7 @@ impl IssueTracker for MockClient {
             .find(|p| {
                 p.short_name.eq_ignore_ascii_case(identifier)
                     || p.id == identifier
-                    || p.name.eq_ignore_ascii_case(identifier)
+                    || tracker_core::unicode_eq_ignore_case(&p.name, identifier)
             })
             .map(|p| p.id.clone())
             .ok_or_else(|| TrackerError::ProjectNotFound(identifier.to_string()))
