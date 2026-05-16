@@ -16,7 +16,10 @@ mod tests {
             ("#resolved", "is:closed is:issue"),
             ("#bug", "label:bug is:issue"),
             ("bug #open", "bug is:open is:issue"),
-            ("some term #feature #open", "some term label:feature is:open is:issue"),
+            (
+                "some term #feature #open",
+                "some term label:feature is:open is:issue",
+            ),
         ];
 
         for (input, expected) in cases {
