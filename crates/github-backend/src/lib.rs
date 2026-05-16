@@ -8,6 +8,8 @@ pub(crate) mod wiki;
 #[cfg(test)]
 mod client_tests;
 #[cfg(test)]
+mod convert_tests;
+#[cfg(test)]
 mod wiki_tests;
 
 pub use client::GitHubClient;
