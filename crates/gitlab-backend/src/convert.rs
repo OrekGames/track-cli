@@ -317,9 +317,14 @@ fn parse_token_query(query: &str) -> (String, Option<String>, Option<String>) {
     let tokens: Vec<&str> = query.split_whitespace().collect();
     for token in &tokens {
         if let Some(hash_tag) = token.strip_prefix('#') {
-            if hash_tag.eq_ignore_ascii_case("unresolved") || hash_tag.eq_ignore_ascii_case("open") || hash_tag.eq_ignore_ascii_case("opened") {
+            if hash_tag.eq_ignore_ascii_case("unresolved")
+                || hash_tag.eq_ignore_ascii_case("open")
+                || hash_tag.eq_ignore_ascii_case("opened")
+            {
                 state = Some("opened".to_string());
-            } else if hash_tag.eq_ignore_ascii_case("resolved") || hash_tag.eq_ignore_ascii_case("closed") {
+            } else if hash_tag.eq_ignore_ascii_case("resolved")
+                || hash_tag.eq_ignore_ascii_case("closed")
+            {
                 state = Some("closed".to_string());
             } else {
                 search_parts.push(*token);

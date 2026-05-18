@@ -620,7 +620,10 @@ pub fn merge_fields(
 ) -> Vec<ProjectCustomField> {
     let mut result = standard;
     for field in instance {
-        if !result.iter().any(|f| f.name.eq_ignore_ascii_case(&field.name)) {
+        if !result
+            .iter()
+            .any(|f| f.name.eq_ignore_ascii_case(&field.name))
+        {
             result.push(field);
         }
     }
@@ -736,7 +739,9 @@ const RESERVED_FIELD_NAMES: &[&str] = &[
 ];
 
 fn is_reserved_field(name: &str) -> bool {
-    RESERVED_FIELD_NAMES.iter().any(|&r| r.eq_ignore_ascii_case(name))
+    RESERVED_FIELD_NAMES
+        .iter()
+        .any(|&r| r.eq_ignore_ascii_case(name))
 }
 
 /// Resolve custom field updates to Jira extra fields using field metadata.

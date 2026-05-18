@@ -337,7 +337,9 @@ fn convert_simple_query_to_jql(query: &str) -> String {
                 parts.push("status = Closed".to_string());
             } else if state.eq_ignore_ascii_case("done") {
                 parts.push("status = Done".to_string());
-            } else if state.eq_ignore_ascii_case("inprogress") || state.eq_ignore_ascii_case("in-progress") {
+            } else if state.eq_ignore_ascii_case("inprogress")
+                || state.eq_ignore_ascii_case("in-progress")
+            {
                 parts.push("status = \"In Progress\"".to_string());
             } else {
                 parts.push(format!("status = \"{}\"", state));

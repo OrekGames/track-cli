@@ -120,7 +120,9 @@ pub fn create_issue_from_core(issue: &CreateIssue) -> CreateGitHubIssue {
         .custom_fields
         .iter()
         .filter_map(|cf| match cf {
-            CustomFieldUpdate::SingleUser { name, login } if name.eq_ignore_ascii_case("assignee") => {
+            CustomFieldUpdate::SingleUser { name, login }
+                if name.eq_ignore_ascii_case("assignee") =>
+            {
                 Some(login.clone())
             }
             _ => None,
@@ -167,7 +169,9 @@ pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
         .custom_fields
         .iter()
         .filter_map(|cf| match cf {
-            CustomFieldUpdate::SingleUser { name, login } if name.eq_ignore_ascii_case("assignee") => {
+            CustomFieldUpdate::SingleUser { name, login }
+                if name.eq_ignore_ascii_case("assignee") =>
+            {
                 Some(login.clone())
             }
             _ => None,
@@ -212,7 +216,8 @@ pub fn convert_query_to_github(query: &str) -> String {
         if let Some(state) = token.strip_prefix('#') {
             if state.eq_ignore_ascii_case("unresolved") || state.eq_ignore_ascii_case("open") {
                 parts.push("is:open".to_string());
-            } else if state.eq_ignore_ascii_case("resolved") || state.eq_ignore_ascii_case("closed") {
+            } else if state.eq_ignore_ascii_case("resolved") || state.eq_ignore_ascii_case("closed")
+            {
                 parts.push("is:closed".to_string());
             } else {
                 parts.push(format!("label:{}", state));
