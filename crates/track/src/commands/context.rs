@@ -56,36 +56,31 @@ pub struct IssueSummary {
 
 impl From<&Issue> for IssueSummary {
     fn from(issue: &Issue) -> Self {
-        // Extract state from custom fields
-        let state = issue.custom_fields.iter().find_map(|cf| {
-            if let tracker_core::CustomField::State { value, .. } = cf {
-                value.clone()
-            } else {
-                None
-            }
-        });
+        // Extract fields from custom fields in a single pass
+        let mut state = None;
+        let mut priority = None;
+        let mut assignee = None;
 
-        // Extract priority from custom fields
-        let priority = issue.custom_fields.iter().find_map(|cf| {
-            if let tracker_core::CustomField::SingleEnum { name, value } = cf {
-                if name.to_lowercase() == "priority" {
-                    value.clone()
-                } else {
-                    None
+        for cf in &issue.custom_fields {
+            match cf {
+                tracker_core::CustomField::State { value, .. } if state.is_none() => {
+                    state = value.clone();
                 }
-            } else {
-                None
+                tracker_core::CustomField::SingleEnum { name, value }
+                    if priority.is_none() && name.eq_ignore_ascii_case("priority") =>
+                {
+                    priority = value.clone();
+                }
+                tracker_core::CustomField::SingleUser { login, .. } if assignee.is_none() => {
+                    assignee = login.clone();
+                }
+                _ => {}
             }
-        });
 
-        // Extract assignee from custom fields
-        let assignee = issue.custom_fields.iter().find_map(|cf| {
-            if let tracker_core::CustomField::SingleUser { login, .. } = cf {
-                login.clone()
-            } else {
-                None
+            if state.is_some() && priority.is_some() && assignee.is_some() {
+                break;
             }
-        });
+        }
 
         IssueSummary {
             id: issue.id.clone(),
