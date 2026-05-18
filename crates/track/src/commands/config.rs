@@ -28,10 +28,15 @@ enum ConfigKey {
     GitLabUrl,
     GitLabProjectId,
     GitLabNamespace,
+    LinearToken,
+    LinearApiUrl,
+    LinearUrl,
+    LinearDefaultTeam,
+    LinearDefaultProject,
 }
 
 impl ConfigKey {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 23] = [
         Self::Backend,
         Self::Url,
         Self::Token,
@@ -50,6 +55,11 @@ impl ConfigKey {
         Self::GitLabUrl,
         Self::GitLabProjectId,
         Self::GitLabNamespace,
+        Self::LinearToken,
+        Self::LinearApiUrl,
+        Self::LinearUrl,
+        Self::LinearDefaultTeam,
+        Self::LinearDefaultProject,
     ];
 
     fn parse(key: &str) -> Option<Self> {
@@ -79,12 +89,17 @@ impl ConfigKey {
             Self::GitLabUrl => "gitlab.url",
             Self::GitLabProjectId => "gitlab.project_id",
             Self::GitLabNamespace => "gitlab.namespace",
+            Self::LinearToken => "linear.token",
+            Self::LinearApiUrl => "linear.api_url",
+            Self::LinearUrl => "linear.url",
+            Self::LinearDefaultTeam => "linear.default_team",
+            Self::LinearDefaultProject => "linear.default_linear_project",
         }
     }
 
     fn value_type(self) -> &'static str {
         match self {
-            Self::Backend => "youtrack | jira | github | gitlab",
+            Self::Backend => "youtrack | jira | github | gitlab | linear",
             _ => "string",
         }
     }
@@ -93,7 +108,7 @@ impl ConfigKey {
         match self {
             Self::Backend => "Default backend to use",
             Self::Url => "Tracker instance URL",
-            Self::Token => "API token (YouTrack permanent token or Jira API token)",
+            Self::Token => "API token",
             Self::Email => "Email for authentication (required for Jira)",
             Self::DefaultProject => "Default project shortName (e.g., \"PROJ\")",
             Self::YouTrackUrl => "YouTrack-specific URL (overrides 'url' when backend=youtrack)",
@@ -109,6 +124,13 @@ impl ConfigKey {
             Self::GitLabUrl => "GitLab instance URL (e.g., https://gitlab.com)",
             Self::GitLabProjectId => "GitLab numeric project ID",
             Self::GitLabNamespace => "GitLab namespace/group path",
+            Self::LinearToken => "Linear personal API key",
+            Self::LinearApiUrl => {
+                "Linear GraphQL API URL (defaults to https://api.linear.app/graphql)"
+            }
+            Self::LinearUrl => "Linear workspace URL used by 'track open'",
+            Self::LinearDefaultTeam => "Default Linear team key/name/id",
+            Self::LinearDefaultProject => "Default Linear project association for issue create",
         }
     }
 
@@ -120,6 +142,7 @@ impl ConfigKey {
                 | Self::JiraToken
                 | Self::GitHubToken
                 | Self::GitLabToken
+                | Self::LinearToken
         )
     }
 
@@ -128,7 +151,7 @@ impl ConfigKey {
             Self::Backend => {
                 let backend = Backend::from_str(value, true).map_err(|_| {
                     anyhow::anyhow!(
-                        "Invalid backend '{}'. Valid: youtrack (yt), jira (j), github (gh), gitlab (gl)",
+                        "Invalid backend '{}'. Valid: youtrack (yt), jira (j), github (gh), gitlab (gl), linear (lin)",
                         value
                     )
                 })?;
@@ -151,6 +174,13 @@ impl ConfigKey {
             Self::GitLabUrl => cfg.gitlab.url = Some(value.to_string()),
             Self::GitLabProjectId => cfg.gitlab.project_id = Some(value.to_string()),
             Self::GitLabNamespace => cfg.gitlab.namespace = Some(value.to_string()),
+            Self::LinearToken => cfg.linear.token = Some(value.to_string()),
+            Self::LinearApiUrl => cfg.linear.api_url = Some(value.to_string()),
+            Self::LinearUrl => cfg.linear.url = Some(value.to_string()),
+            Self::LinearDefaultTeam => cfg.linear.default_team = Some(value.to_string()),
+            Self::LinearDefaultProject => {
+                cfg.linear.default_linear_project = Some(value.to_string())
+            }
         }
         Ok(())
     }
@@ -175,6 +205,11 @@ impl ConfigKey {
             Self::GitLabUrl => cfg.gitlab.url.clone(),
             Self::GitLabProjectId => cfg.gitlab.project_id.clone(),
             Self::GitLabNamespace => cfg.gitlab.namespace.clone(),
+            Self::LinearToken => cfg.linear.token.clone(),
+            Self::LinearApiUrl => cfg.linear.api_url.clone(),
+            Self::LinearUrl => cfg.linear.url.clone(),
+            Self::LinearDefaultTeam => cfg.linear.default_team.clone(),
+            Self::LinearDefaultProject => cfg.linear.default_linear_project.clone(),
         }
     }
 }
@@ -258,6 +293,12 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
   url = "https://company.atlassian.net"
   email = "user@company.com"
   token = "api-token"
+
+  # Linear-specific settings (used when backend = "linear")
+  [linear]
+  token = "lin_api_xxx"
+  url = "https://linear.app/company"
+  default_team = "PROJ"
 "#
                     );
                     println!("{}:", "Usage".white().bold());
@@ -594,6 +635,41 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
                                 "namespace",
                                 &global_cfg.gitlab.namespace,
                                 &project_cfg.gitlab.namespace,
+                                false,
+                            ),
+                        ],
+                    );
+                    show_backend_section(
+                        "linear",
+                        vec![
+                            (
+                                "token",
+                                &global_cfg.linear.token,
+                                &project_cfg.linear.token,
+                                true,
+                            ),
+                            (
+                                "api_url",
+                                &global_cfg.linear.api_url,
+                                &project_cfg.linear.api_url,
+                                false,
+                            ),
+                            (
+                                "url",
+                                &global_cfg.linear.url,
+                                &project_cfg.linear.url,
+                                false,
+                            ),
+                            (
+                                "default_team",
+                                &global_cfg.linear.default_team,
+                                &project_cfg.linear.default_team,
+                                false,
+                            ),
+                            (
+                                "default_linear_project",
+                                &global_cfg.linear.default_linear_project,
+                                &project_cfg.linear.default_linear_project,
                                 false,
                             ),
                         ],

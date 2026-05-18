@@ -1081,6 +1081,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "linear-backend"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracker-core",
+ "ureq",
+ "wiremock",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1995,6 +2009,7 @@ dependencies = [
  "github-backend",
  "gitlab-backend",
  "jira-backend",
+ "linear-backend",
  "open",
  "predicates",
  "serde",
