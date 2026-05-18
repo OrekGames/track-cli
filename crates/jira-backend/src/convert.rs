@@ -408,13 +408,13 @@ pub fn create_issue_to_jira(
 
     for cf in &issue.custom_fields {
         if let CustomFieldUpdate::SingleEnum { name, value } = cf {
-            if priority.is_none() && name.to_lowercase() == "priority" {
+            if priority.is_none() && name.eq_ignore_ascii_case("priority") {
                 priority = Some(PriorityId {
                     id: None,
                     name: Some(value.clone()),
                 });
             } else if issue_type_opt.is_none()
-                && (name.to_lowercase() == "type" || name.to_lowercase() == "issuetype")
+                && (name.eq_ignore_ascii_case("type") || name.eq_ignore_ascii_case("issuetype"))
             {
                 issue_type_opt = Some(value.clone());
             }
@@ -465,7 +465,7 @@ pub fn update_issue_to_jira(
         .map(|d| markdown_to_adf_document(d));
 
     let priority = update.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),
@@ -619,10 +619,8 @@ pub fn merge_fields(
     instance: Vec<ProjectCustomField>,
 ) -> Vec<ProjectCustomField> {
     let mut result = standard;
-    let existing_names: Vec<String> = result.iter().map(|f| f.name.to_lowercase()).collect();
-
     for field in instance {
-        if !existing_names.contains(&field.name.to_lowercase()) {
+        if !result.iter().any(|f| f.name.eq_ignore_ascii_case(&field.name)) {
             result.push(field);
         }
     }
@@ -738,7 +736,7 @@ const RESERVED_FIELD_NAMES: &[&str] = &[
 ];
 
 fn is_reserved_field(name: &str) -> bool {
-    RESERVED_FIELD_NAMES.contains(&name.to_lowercase().as_str())
+    RESERVED_FIELD_NAMES.iter().any(|&r| r.eq_ignore_ascii_case(name))
 }
 
 /// Resolve custom field updates to Jira extra fields using field metadata.
