@@ -415,4 +415,113 @@ mod tests {
         assert_eq!(state, None);
         assert_eq!(labels, None);
     }
+
+    // gitlab_link_to_core tests
+
+    use crate::models::issue::GitLabIssueLink;
+
+    #[test]
+    fn test_gitlab_link_to_core_blocks() {
+        let link = GitLabIssueLink {
+            id: 123,
+            iid: 456,
+            title: "Blocking Issue".to_string(),
+            issue_link_id: 789,
+            link_type: "blocks".to_string(),
+        };
+
+        let core_link = gitlab_link_to_core(link, 100);
+
+        assert_eq!(core_link.id, "789");
+        assert_eq!(core_link.direction, Some("outward".to_string()));
+        assert_eq!(core_link.link_type.id, "blocks");
+        assert_eq!(core_link.link_type.name, "Blocks");
+        assert_eq!(core_link.link_type.directed, true);
+        assert_eq!(core_link.issues.len(), 1);
+        assert_eq!(core_link.issues[0].id, "123");
+        assert_eq!(core_link.issues[0].id_readable, Some("#456".to_string()));
+        assert_eq!(
+            core_link.issues[0].summary,
+            Some("Blocking Issue".to_string())
+        );
+    }
+
+    #[test]
+    fn test_gitlab_link_to_core_is_blocked_by() {
+        let link = GitLabIssueLink {
+            id: 124,
+            iid: 457,
+            title: "Blocked Issue".to_string(),
+            issue_link_id: 790,
+            link_type: "is_blocked_by".to_string(),
+        };
+
+        let core_link = gitlab_link_to_core(link, 100);
+
+        assert_eq!(core_link.id, "790");
+        assert_eq!(core_link.direction, Some("inward".to_string()));
+        assert_eq!(core_link.link_type.id, "is_blocked_by");
+        assert_eq!(core_link.link_type.name, "Is Blocked By");
+        assert_eq!(core_link.link_type.directed, true);
+        assert_eq!(core_link.issues.len(), 1);
+        assert_eq!(core_link.issues[0].id, "124");
+        assert_eq!(core_link.issues[0].id_readable, Some("#457".to_string()));
+        assert_eq!(
+            core_link.issues[0].summary,
+            Some("Blocked Issue".to_string())
+        );
+    }
+
+    #[test]
+    fn test_gitlab_link_to_core_relates_to() {
+        let link = GitLabIssueLink {
+            id: 125,
+            iid: 458,
+            title: "Related Issue".to_string(),
+            issue_link_id: 791,
+            link_type: "relates_to".to_string(),
+        };
+
+        let core_link = gitlab_link_to_core(link, 100);
+
+        assert_eq!(core_link.id, "791");
+        assert_eq!(core_link.direction, Some("both".to_string()));
+        assert_eq!(core_link.link_type.id, "relates_to");
+        assert_eq!(core_link.link_type.name, "Relates");
+        assert_eq!(core_link.link_type.directed, false);
+        assert_eq!(core_link.issues.len(), 1);
+        assert_eq!(core_link.issues[0].id, "125");
+        assert_eq!(core_link.issues[0].id_readable, Some("#458".to_string()));
+        assert_eq!(
+            core_link.issues[0].summary,
+            Some("Related Issue".to_string())
+        );
+    }
+
+    #[test]
+    fn test_gitlab_link_to_core_unknown() {
+        let link = GitLabIssueLink {
+            id: 126,
+            iid: 459,
+            title: "Unknown Link Type Issue".to_string(),
+            issue_link_id: 792,
+            link_type: "unknown_type".to_string(),
+        };
+
+        let core_link = gitlab_link_to_core(link, 100);
+
+        // Unknown link types default to "relates_to"
+        assert_eq!(core_link.id, "792");
+        assert_eq!(core_link.direction, Some("both".to_string()));
+        assert_eq!(core_link.link_type.id, "relates_to");
+        assert_eq!(core_link.link_type.name, "Relates");
+        assert_eq!(core_link.link_type.directed, false);
+        assert_eq!(core_link.issues.len(), 1);
+        assert_eq!(core_link.issues[0].id, "126");
+        assert_eq!(core_link.issues[0].id_readable, Some("#459".to_string()));
+        assert_eq!(
+            core_link.issues[0].summary,
+            Some("Unknown Link Type Issue".to_string())
+        );
+    }
 }
