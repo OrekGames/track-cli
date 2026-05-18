@@ -318,6 +318,12 @@ impl Config {
         file.write_all(toml_string.as_bytes())
             .map_err(|e| anyhow!("Failed to write config file: {}", e))?;
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+
         Ok(())
     }
 
