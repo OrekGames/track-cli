@@ -1011,6 +1011,38 @@ impl TrackerCache {
                     backend: "gitlab".to_string(),
                 },
             ],
+            "linear" => vec![
+                CachedQueryTemplate {
+                    name: "unresolved".to_string(),
+                    description: "All unresolved issues in team".to_string(),
+                    query: "project: {PROJECT} #Unresolved".to_string(),
+                    backend: "linear".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "my_issues".to_string(),
+                    description: "Issues assigned to current user".to_string(),
+                    query: "project: {PROJECT} assignee: me #Unresolved".to_string(),
+                    backend: "linear".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "in_progress".to_string(),
+                    description: "Issues currently in progress".to_string(),
+                    query: "project: {PROJECT} state: started".to_string(),
+                    backend: "linear".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "bugs".to_string(),
+                    description: "Bug issues".to_string(),
+                    query: "project: {PROJECT} label: Bug #Unresolved".to_string(),
+                    backend: "linear".to_string(),
+                },
+                CachedQueryTemplate {
+                    name: "high_priority".to_string(),
+                    description: "Urgent and high priority unresolved issues".to_string(),
+                    query: "project: {PROJECT} priority: High #Unresolved".to_string(),
+                    backend: "linear".to_string(),
+                },
+            ],
             _ => Vec::new(),
         }
     }
@@ -1361,11 +1393,13 @@ mod tests {
 
         let dir = tempfile::TempDir::new().unwrap();
         let cache_dir = dir.path().join("cache");
-        let mut cache = TrackerCache::default();
-        cache.backend_metadata = Some(CachedBackendMetadata {
-            backend_type: Backend::YouTrack.to_string(),
-            base_url: "https://example.com".to_string(),
-        });
+        let cache = TrackerCache {
+            backend_metadata: Some(CachedBackendMetadata {
+                backend_type: Backend::YouTrack.to_string(),
+                base_url: "https://example.com".to_string(),
+            }),
+            ..Default::default()
+        };
 
         cache.save(Some(cache_dir.clone())).unwrap();
 

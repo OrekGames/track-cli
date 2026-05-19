@@ -5,11 +5,11 @@
 [![Homebrew](https://img.shields.io/badge/homebrew-OrekGames%2Ftap-orange)](https://github.com/OrekGames/homebrew-tap)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A command-line interface for issue tracking systems, built with Rust. Supports **YouTrack**, **Jira**, **GitHub**, and **GitLab** with a unified command interface.
+A command-line interface for issue tracking systems, built with Rust. Supports **YouTrack**, **Jira**, **GitHub**, **GitLab**, and **Linear** with a unified command interface.
 
 ## Features
 
-- **Multi-Backend**: YouTrack, Jira, GitHub, and GitLab with the same commands
+- **Multi-Backend**: YouTrack, Jira, GitHub, GitLab, and Linear with the same commands
 - **Issue Management**: Get, create, update, delete, search issues
 - **Batch Operations**: Update, delete, or complete multiple issues at once
 - **Transparent Pagination**: `--all` flag auto-paginates to fetch every result
@@ -54,6 +54,9 @@ track init --url https://youtrack.example.com --token YOUR_TOKEN
 
 # Or initialize with Jira
 track init --url https://your-domain.atlassian.net --token YOUR_TOKEN --backend jira --email you@example.com
+
+# Or initialize with Linear (URL is the Linear workspace URL used by `track open`)
+track init --url https://linear.app/your-workspace --token YOUR_LINEAR_API_KEY --backend linear --project PROJ
 ```
 
 ### 2. Set Default Project (Optional)
@@ -116,9 +119,24 @@ email = "you@example.com"
 token = "your-api-token"
 ```
 
+#### Linear Configuration
+
+```toml
+# .track.toml
+backend = "linear"
+default_project = "PROJ" # Linear team key/name/id
+
+[linear]
+token = "lin_api_xxxxxxxxxxxx"
+url = "https://linear.app/your-workspace" # for `track open`
+# api_url = "https://api.linear.app/graphql" # default
+# default_team = "PROJ" # optional alias for default_project
+# default_linear_project = "Track CLI" # optional issue Project association
+```
+
 #### Multi-Backend Configuration
 
-You can configure both backends in a single config file and switch between them:
+You can configure multiple backends in a single config file and switch between them:
 
 ```toml
 # .track.toml
@@ -141,15 +159,16 @@ token = "your-api-token"
 # depends = "Requires"
 ```
 
-With this setup, you can use the default backend (YouTrack) or switch to Jira:
+With this setup, you can use the default backend (YouTrack) or switch to another backend:
 
 ```bash
 track PROJ-123                  # Uses YouTrack (default)
 track -b jira PROJ-123          # Uses Jira
+track -b lin ORE-123            # Uses Linear
 
 # Or switch the default backend
 track config backend jira       # Set Jira as default
-track PROJ-123                  # Now uses Jira by default
+track config backend linear     # Set Linear as default
 ```
 
 ### Environment Variables
@@ -170,6 +189,23 @@ export YOUTRACK_TOKEN=YOUR_TOKEN
 export JIRA_URL=https://your-domain.atlassian.net
 export JIRA_EMAIL=you@example.com
 export JIRA_TOKEN=your-api-token
+
+# GitHub-specific
+export GITHUB_TOKEN=ghp_xxx
+export GITHUB_OWNER=your-org
+export GITHUB_REPO=your-repo
+
+# GitLab-specific
+export GITLAB_TOKEN=glpat_xxx
+export GITLAB_URL=https://gitlab.com/api/v4
+export GITLAB_PROJECT_ID=12345
+
+# Linear-specific
+export LINEAR_TOKEN=lin_api_xxx
+export LINEAR_URL=https://linear.app/your-workspace
+export LINEAR_DEFAULT_TEAM=PROJ
+# export LINEAR_API_URL=https://api.linear.app/graphql
+# export LINEAR_DEFAULT_PROJECT="Track CLI"
 ```
 
 ## Backend Selection
@@ -180,7 +216,7 @@ Default backend is YouTrack. You can specify which backend to use in three ways:
 
 ```toml
 # .track.toml
-backend = "youtrack"  # or "jira"
+backend = "youtrack"  # or "jira", "github", "gitlab", "linear"
 ```
 
 Or use the CLI to set it:
@@ -188,6 +224,7 @@ Or use the CLI to set it:
 ```bash
 track config backend youtrack
 track config backend jira
+track config backend linear
 ```
 
 ### 2. Environment Variable
@@ -202,10 +239,12 @@ track PROJ-123              # Uses Jira
 ```bash
 track -b jira PROJ-123      # Use Jira for this command
 track -b youtrack PROJ-123  # Use YouTrack
+track -b linear PROJ-123    # Use Linear
 
 # Short aliases
 track -b j PROJ-123         # Jira
 track -b yt PROJ-123        # YouTrack
+track -b lin PROJ-123       # Linear
 ```
 
 **Priority**: CLI flag > Environment variable > Config file > Default (YouTrack)
@@ -274,6 +313,7 @@ track issue link PROJ-1 PROJ-2 -t clones    # Custom/admin-defined type
 track issue unlink PROJ-1 "142-3t/PROJ-2"   # YouTrack (composite ID)
 track -b j issue unlink PROJ-1 12345         # Jira (numeric link ID)
 track -b gl issue unlink 42 789              # GitLab (numeric link ID)
+track -b lin issue unlink ORE-1 <link-id>    # Linear (relation ID or linear-parent/child ID)
 ```
 
 **Built-in link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent`
@@ -297,6 +337,10 @@ depends = "Is required for"
 # Override GitLab's default mapping
 [gitlab.link_mappings]
 depends = "is_blocked_by"
+
+# Override Linear's default mapping
+[linear.link_mappings]
+relates = "similar"
 ```
 
 This is useful when your instance has custom or renamed link types.
@@ -479,6 +523,16 @@ track -b gitlab i s "performance" --labels "priority::high"
 
 GitLab uses project-scoped search with filter parameters.
 
+### Linear
+
+```bash
+track -b linear i s "project: ORE #Unresolved"
+track -b linear i s "team: ORE state: {In Progress}"
+track -b linear i s "project: ORE label: Bug assignee: me"
+```
+
+Linear exposes teams as `track` projects. The `Project` field on issues maps to Linear's native project association (`--field "Project=Track CLI"`).
+
 ## Output Formats
 
 ```bash
@@ -519,6 +573,14 @@ track --format json p ls    # JSON
 - **API Version**: Uses GitLab REST API v4 (with GraphQL for parent-child)
 - **Subtasks**: Supported via the GraphQL API (`--parent`, `issue link -t subtask/parent`)
 
+### Linear
+- **Scope**: Team-scoped for CLI projects (`-p ORE` maps to a Linear team)
+- **API**: Uses Linear GraphQL with personal API keys (`Authorization: <API_KEY>`)
+- **Projects**: Linear projects are issue associations, set with `--field "Project=Track CLI"` or `linear.default_linear_project`
+- **Labels**: Map to tags; unknown labels on create/update are rejected
+- **Subtasks and Links**: Parent-child uses `parentId`; relation links support `related`, `blocks`, `duplicate`, and `similar`
+- **Knowledge Base**: Article commands are not supported
+
 ## Architecture
 
 ```
@@ -528,6 +590,7 @@ crates/
 ├── jira-backend/       # Jira API client
 ├── github-backend/     # GitHub API client
 ├── gitlab-backend/     # GitLab API client
+├── linear-backend/     # Linear GraphQL client
 ├── tracker-mock/       # Mock system for testing
 ├── agent-harness/      # AI agent evaluation harness
 └── track/              # CLI binary
@@ -538,6 +601,7 @@ crates/
 - **jira-backend**: Jira Cloud REST API v3 with Basic Auth
 - **github-backend**: GitHub REST API with token auth
 - **gitlab-backend**: GitLab REST API v4 with Private-Token auth
+- **linear-backend**: Linear GraphQL API with personal API key auth
 - **tracker-mock**: Mock backend for testing and evaluation
 - **agent-harness**: AI agent testing and evaluation tool
 - **track**: CLI with clap, figment config, text/JSON output
@@ -556,12 +620,14 @@ cargo test --package youtrack-backend
 cargo test --package jira-backend
 cargo test --package github-backend
 cargo test --package gitlab-backend
+cargo test --package linear-backend
 
 # Run live integration tests (requires .track.toml with valid credentials)
 cargo test --package track --test youtrack_integration_tests -- --ignored
 cargo test --package track --test jira_integration_tests -- --ignored
 cargo test --package track --test github_integration_tests -- --ignored
 cargo test --package track --test gitlab_integration_tests -- --ignored
+cargo test --package track --test linear_integration_tests -- --ignored
 
 # Run without installing
 cargo run -- PROJ-123

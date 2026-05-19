@@ -6,6 +6,7 @@ use crate::output::output_json;
 use github_backend::GitHubClient;
 use gitlab_backend::GitLabClient;
 use jira_backend::JiraClient;
+use linear_backend::LinearClient;
 use tracker_core::IssueTracker;
 use youtrack_backend::YouTrackClient;
 
@@ -176,7 +177,9 @@ pub fn handle_init(
                     })?,
             )
         }
-        Backend::YouTrack | Backend::GitHub | Backend::GitLab => email.map(|e| e.to_string()),
+        Backend::YouTrack | Backend::GitHub | Backend::GitLab | Backend::Linear => {
+            email.map(|e| e.to_string())
+        }
     };
 
     let validated_project: Option<InitProject> = match backend {
@@ -216,6 +219,44 @@ pub fn handle_init(
                 display_name,
             })
         }
+        Backend::Linear => {
+            let Some(proj) = project else {
+                return create_config_and_finish(
+                    url,
+                    token,
+                    effective_email,
+                    format,
+                    backend,
+                    skills,
+                    global,
+                    config_path,
+                    None,
+                );
+            };
+
+            let api_url = std::env::var("LINEAR_API_URL")
+                .unwrap_or_else(|_| "https://api.linear.app/graphql".to_string());
+            let client = LinearClient::with_base_url(&api_url, token);
+            let projects = client.list_projects().map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to connect to Linear or list teams: {}\nCheck your token and LINEAR_API_URL.",
+                    e
+                )
+            })?;
+
+            let matched = projects
+                .iter()
+                .find(|p| {
+                    p.short_name.eq_ignore_ascii_case(proj)
+                        || p.id == proj
+                        || tracker_core::unicode_eq_ignore_case(&p.name, proj)
+                })
+                .ok_or_else(|| anyhow::anyhow!("Linear team '{}' not found", proj))?;
+
+            Some(InitProject::Default {
+                short_name: matched.short_name.clone(),
+            })
+        }
         Backend::YouTrack | Backend::Jira => {
             let Some(proj) = project else {
                 return create_config_and_finish(
@@ -252,7 +293,9 @@ pub fn handle_init(
                         )
                     })?
                 }
-                Backend::GitHub | Backend::GitLab => unreachable!("handled above"),
+                Backend::GitHub | Backend::GitLab | Backend::Linear => {
+                    unreachable!("handled above")
+                }
             };
 
             let matched = projects
@@ -310,6 +353,7 @@ fn create_config_and_finish(
         jira: Default::default(),
         github: Default::default(),
         gitlab: Default::default(),
+        linear: Default::default(),
     };
 
     match &validated_project {
@@ -328,7 +372,20 @@ fn create_config_and_finish(
             config.gitlab.token = Some(token.to_string());
             config.gitlab.project_id = Some(id.clone());
         }
+        Some(InitProject::Default { short_name }) if backend == Backend::Linear => {
+            config.url = None;
+            config.token = None;
+            config.linear.url = Some(url.to_string());
+            config.linear.token = Some(token.to_string());
+            config.linear.default_team = Some(short_name.clone());
+        }
         Some(InitProject::Default { .. }) => {}
+        None if backend == Backend::Linear => {
+            config.url = None;
+            config.token = None;
+            config.linear.url = Some(url.to_string());
+            config.linear.token = Some(token.to_string());
+        }
         None => {}
     }
 

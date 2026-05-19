@@ -59,6 +59,11 @@ fn track_in(dir: &Path) -> assert_cmd::Command {
         .env_remove("GITLAB_URL")
         .env_remove("GITLAB_PROJECT_ID")
         .env_remove("GITLAB_NAMESPACE")
+        .env_remove("LINEAR_TOKEN")
+        .env_remove("LINEAR_API_URL")
+        .env_remove("LINEAR_URL")
+        .env_remove("LINEAR_DEFAULT_TEAM")
+        .env_remove("LINEAR_DEFAULT_PROJECT")
         .env_remove("TRACK_MOCK_DIR");
     cmd
 }
@@ -187,7 +192,51 @@ fn test_config_keys_text_output() {
         .stdout(predicate::str::contains("youtrack.url"))
         .stdout(predicate::str::contains("jira.url"))
         .stdout(predicate::str::contains("github.token"))
-        .stdout(predicate::str::contains("gitlab.token"));
+        .stdout(predicate::str::contains("gitlab.token"))
+        .stdout(predicate::str::contains("linear.token"))
+        .stdout(predicate::str::contains("linear.default_linear_project"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_config_backend_accepts_linear_alias() {
+    let dir = temp_dir();
+    write_config(&dir, "backend = \"youtrack\"\n");
+
+    track_in(&dir)
+        .args(["config", "backend", "lin"])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(dir.join(".track.toml")).unwrap();
+    assert!(content.contains("backend = \"linear\""));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_linear_init_writes_backend_specific_config_without_api_validation() {
+    let dir = temp_dir();
+
+    track_in(&dir)
+        .args([
+            "init",
+            "-b",
+            "linear",
+            "--url",
+            "https://linear.app/acme",
+            "--token",
+            "lin-token",
+        ])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(dir.join(".track.toml")).unwrap();
+    assert!(content.contains("backend = \"linear\""));
+    assert!(content.contains("[linear]"));
+    assert!(content.contains("url = \"https://linear.app/acme\""));
+    assert!(content.contains("token = \"lin-token\""));
 
     let _ = fs::remove_dir_all(&dir);
 }
