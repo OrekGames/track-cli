@@ -1,20 +1,20 @@
 ---
 name: track
-description: Reference for the `track` CLI issue tracker tool (YouTrack, Jira, GitHub, GitLab). Command aliases, search syntax, pagination, workflows, and AI-optimized features.
+description: Reference for the `track` CLI issue tracker tool (YouTrack, Jira, GitHub, GitLab, Linear). Command aliases, search syntax, pagination, workflows, and AI-optimized features.
 user-invokable: true
 disable-model-invocation: false
 ---
 
 # Track CLI - Agent Reference
 
-> Quick reference for programmatic issue tracking via the `track` CLI. Supports **YouTrack**, **Jira**, **GitHub**, and **GitLab**.
+> Quick reference for programmatic issue tracking via the `track` CLI. Supports **YouTrack**, **Jira**, **GitHub**, **GitLab**, and **Linear**.
 
 ## Quick Context
 
 | Aspect | Details |
 |--------|---------|
 | **Binary** | `track` (or `target/release/track` if not installed) |
-| **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`) |
+| **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`), Linear (`-b linear`/`-b lin`) |
 | **Output** | Text (default) or JSON (`-o json`) |
 | **Config** | `.track.toml` (local), `~/.tracker-cli/.track.toml` (global), env vars, or CLI flags |
 | **Cache** | `.tracker-cache/` (project) or `~/.tracker-cli/cache/` (global) - run `track cache refresh` for context |
@@ -22,16 +22,16 @@ disable-model-invocation: false
 
 ## Backend Comparison
 
-| Feature | YouTrack | Jira | GitHub | GitLab |
-|---------|----------|------|--------|--------|
-| **Flag** | `-b youtrack` / `-b yt` (default) | `-b jira` / `-b j` | `-b github` / `-b gh` | `-b gitlab` / `-b gl` |
-| **Auth** | Bearer token | Basic Auth (email + API token) | Bearer token (PAT) | Private token |
-| **Query** | `project: PROJ #Unresolved` | JQL: `project = PROJ AND resolution IS EMPTY` | `is:open label:bug` | `state=opened&labels=bug` |
-| **Knowledge Base** | Yes (`article` commands) | Yes via Confluence | No | No |
-| **Project Creation** | Yes | No | No | No |
-| **Issue Delete** | Yes | Yes | No (close instead) | Yes |
-| **Issue Links** | Yes | Yes | No (use `#number` references) | Yes |
-| **Subtasks** | Yes | Yes | Yes (sub-issues API) | Yes (GraphQL API) |
+| Feature | YouTrack | Jira | GitHub | GitLab | Linear |
+|---------|----------|------|--------|--------|--------|
+| **Flag** | `-b youtrack` / `-b yt` (default) | `-b jira` / `-b j` | `-b github` / `-b gh` | `-b gitlab` / `-b gl` | `-b linear` / `-b lin` |
+| **Auth** | Bearer token | Basic Auth (email + API token) | Bearer token (PAT) | Private token | Personal API key |
+| **Query** | `project: PROJ #Unresolved` | JQL: `project = PROJ AND resolution IS EMPTY` | `is:open label:bug` | `state=opened&labels=bug` | `project: ORE #Unresolved` |
+| **Knowledge Base** | Yes (`article` commands) | Yes via Confluence | No | No | No |
+| **Project Creation** | Yes | No | No | No | No (teams are projects) |
+| **Issue Delete** | Yes | Yes | No (close instead) | Yes | Yes |
+| **Issue Links** | Yes | Yes | No (use `#number` references) | Yes | Yes |
+| **Subtasks** | Yes | Yes | Yes (sub-issues API) | Yes (GraphQL API) | Yes (`parentId`) |
 
 ## Configuration
 
@@ -79,6 +79,18 @@ project_id = "12345"
 # namespace = "your-group"
 ```
 
+**Linear**:
+```toml
+backend = "linear"
+default_project = "ORE" # Linear team key/name/id
+
+[linear]
+token = "lin_api_xxxxxxxxxxxx"
+url = "https://linear.app/your-workspace" # used by track open
+# api_url = "https://api.linear.app/graphql"
+# default_linear_project = "Track CLI"
+```
+
 ### Quick Setup with `track init`
 
 `track init` creates a `.track.toml` in the current directory:
@@ -88,6 +100,7 @@ track init --url https://youtrack.example.com --token YOUR_TOKEN --project PROJ
 track init --url https://company.atlassian.net --token API_TOKEN --backend jira --email you@example.com
 track init --url https://api.github.com --token ghp_TOKEN --backend github
 track init --url https://gitlab.com/api/v4 --token glpat-TOKEN --backend gitlab
+track init --url https://linear.app/your-workspace --token lin_api_TOKEN --backend linear --project ORE
 ```
 
 ### Install Agent Skills
@@ -106,6 +119,7 @@ Can be combined: `track init --url ... --token ... --skills`
 | Jira | `JIRA_URL`, `JIRA_EMAIL`, `JIRA_TOKEN` |
 | GitHub | `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_API_URL` |
 | GitLab | `GITLAB_TOKEN`, `GITLAB_URL`, `GITLAB_PROJECT_ID`, `GITLAB_NAMESPACE` |
+| Linear | `LINEAR_TOKEN`, `LINEAR_API_URL`, `LINEAR_URL`, `LINEAR_DEFAULT_TEAM`, `LINEAR_DEFAULT_PROJECT` |
 
 **Priority** (highest wins): CLI flags → env vars → local `.track.toml` → global `~/.tracker-cli/.track.toml`
 
@@ -120,7 +134,7 @@ track config set <key> <value> # Set a value
 track config get <key>         # Get a value
 ```
 
-**Config keys**: `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `youtrack.link_mappings`, `jira.url`, `jira.email`, `jira.token`, `jira.link_mappings`, `github.token`, `github.owner`, `github.repo`, `github.api_url`, `gitlab.token`, `gitlab.url`, `gitlab.project_id`, `gitlab.namespace`, `gitlab.link_mappings`
+**Config keys**: `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `youtrack.link_mappings`, `jira.url`, `jira.email`, `jira.token`, `jira.link_mappings`, `github.token`, `github.owner`, `github.repo`, `github.api_url`, `gitlab.token`, `gitlab.url`, `gitlab.project_id`, `gitlab.namespace`, `gitlab.link_mappings`, `linear.token`, `linear.api_url`, `linear.url`, `linear.default_team`, `linear.default_linear_project`
 
 ---
 
@@ -148,6 +162,11 @@ track config get <key>         # Get a value
 - GitHub: no delete (close with `--state closed`), links only for subtask/parent (reference via `#42` in comments for other relationships)
 - GitHub/GitLab: project is implicit from config (`owner/repo` or `project_id`)
 - All backends support `--parent` on create/update and `issue link -t subtask/parent`
+
+**Linear notes**:
+- Use readable identifiers like `ORE-123`; teams are exposed as `track` projects.
+- Native Linear Project is set with `--field "Project=Track CLI"` or `linear.default_linear_project`.
+- Unknown labels on create/update are rejected; inspect valid values with `track p f ORE`.
 
 ### Project Operations
 
@@ -329,6 +348,15 @@ track -b gl i s "assignee_username=username"
 track -b gl i s "state=opened&labels=bug,critical"
 ```
 
+### Linear
+
+```bash
+track -b lin i s "project: ORE #Unresolved"
+track -b lin i s "team: ORE state: {In Progress}"
+track -b lin i s "project: ORE label: Bug assignee: me"
+track -b lin i s "project: ORE priority: High"
+```
+
 ### Syntax Comparison
 
 | Concept | YouTrack | Jira JQL | GitHub Search | GitLab Filters |
@@ -455,7 +483,7 @@ track cache status        # Age, freshness, data counts
 ## Important Notes
 
 1. **Persistent backend**: `track config backend github` sets default permanently
-2. **Backend override**: `-b github`/`-b gh` or `-b gitlab`/`-b gl` overrides per-command
+2. **Backend override**: `-b github`/`-b gh`, `-b gitlab`/`-b gl`, or `-b linear`/`-b lin` overrides per-command
 3. **JSON output**: Always use `-o json` for programmatic parsing
 4. **Issue shortcut**: `track PROJ-123` = `track issue get PROJ-123`
 5. **Default project**: `track config set default_project PROJ` to skip `-p` flag
@@ -465,11 +493,12 @@ track cache status        # Age, freshness, data counts
 9. **Pagination**: Use `--all` to fetch all results; `--limit`/`--skip` for manual paging. Safety cap at 1000 (override with `TRACK_MAX_RESULTS`)
 10. **GitHub limitations**: No issue delete (close instead), no general issue links (only subtask/parent; use `#N` references for others), no knowledge base
 11. **GitLab limitations**: No project creation, no knowledge base
-12. **Jira limitations**: No project creation, no custom field admin
-13. **Confluence IDs**: Numeric page IDs and space IDs, not project keys
-14. **GitHub issue IDs**: Use numeric IDs (e.g., `42`), not project-prefixed keys
-15. **GitLab IIDs**: Project-scoped issue numbers; the client strips `#` prefix automatically
-16. **Link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent` (unrecognized types pass through as-is)
-17. **Link type mappings**: Override default canonical-to-native mappings via `[backend.link_mappings]` in config (e.g., `[jira.link_mappings] depends = "Requires"`)
-18. **Error handling**: Check `track config test` first; common issues are expired tokens and wrong URLs
-19. **Agent skills**: `track init --skills` installs this skill file globally for Claude, Copilot, Cursor, and Gemini
+12. **Linear limitations**: No team creation, no knowledge base; native Linear Project is a field/association, not the CLI project
+13. **Jira limitations**: No project creation, no custom field admin
+14. **Confluence IDs**: Numeric page IDs and space IDs, not project keys
+15. **GitHub issue IDs**: Use numeric IDs (e.g., `42`), not project-prefixed keys
+16. **GitLab IIDs**: Project-scoped issue numbers; the client strips `#` prefix automatically
+17. **Link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent` (unrecognized types pass through as-is)
+18. **Link type mappings**: Override default canonical-to-native mappings via `[backend.link_mappings]` in config (e.g., `[jira.link_mappings] depends = "Requires"`)
+19. **Error handling**: Check `track config test` first; common issues are expired tokens and wrong URLs
+20. **Agent skills**: `track init --skills` installs this skill file globally for Claude, Copilot, Cursor, and Gemini
