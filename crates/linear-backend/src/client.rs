@@ -456,7 +456,7 @@ impl LinearClient {
             issues: LinearConnection<LinearIssue>,
         }
 
-        let first = first.min(100).max(1);
+        let first = first.clamp(1, 100);
         if let Some(term) = term
             && !term.trim().is_empty()
         {
@@ -661,7 +661,7 @@ impl LinearClient {
             query,
             json!({
                 "id": issue_id,
-                "first": first.min(100).max(1),
+                "first": first.clamp(1, 100),
                 "after": after,
             }),
         )?;

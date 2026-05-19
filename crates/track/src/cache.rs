@@ -1393,11 +1393,13 @@ mod tests {
 
         let dir = tempfile::TempDir::new().unwrap();
         let cache_dir = dir.path().join("cache");
-        let mut cache = TrackerCache::default();
-        cache.backend_metadata = Some(CachedBackendMetadata {
-            backend_type: Backend::YouTrack.to_string(),
-            base_url: "https://example.com".to_string(),
-        });
+        let cache = TrackerCache {
+            backend_metadata: Some(CachedBackendMetadata {
+                backend_type: Backend::YouTrack.to_string(),
+                base_url: "https://example.com".to_string(),
+            }),
+            ..Default::default()
+        };
 
         cache.save(Some(cache_dir.clone())).unwrap();
 
