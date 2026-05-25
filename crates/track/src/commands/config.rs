@@ -373,13 +373,18 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
 
             match format {
                 cli::OutputFormat::Json => {
+                    let display_val = if config_key.is_secret() {
+                        effective_val.as_ref().map(|_| "(set - hidden)".to_string())
+                    } else {
+                        effective_val.clone()
+                    };
                     output_json(&serde_json::json!({
                         "key": config_key.as_str(),
-                        "value": effective_val,
+                        "value": display_val,
                         "source": if source.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(source.to_string()) },
                         "is_set": effective_val.is_some(),
-                        "global_value": global_val,
-                        "project_value": project_val,
+                        "global_value": if config_key.is_secret() { global_val.as_ref().map(|_| "(set - hidden)".to_string()) } else { global_val },
+                        "project_value": if config_key.is_secret() { project_val.as_ref().map(|_| "(set - hidden)".to_string()) } else { project_val },
                     }))?;
                 }
                 cli::OutputFormat::Text => {

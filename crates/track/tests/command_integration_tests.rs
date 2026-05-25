@@ -446,14 +446,14 @@ fn test_config_get_shows_token_in_json() {
     let dir = temp_dir();
     write_config(&dir, "token = \"super-secret-token\"\n");
 
-    // JSON output should include the actual value
+    // JSON output should mask the actual value
     let output = track_in(&dir)
         .args(["-o", "json", "config", "get", "token"])
         .output()
         .unwrap();
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["value"], "super-secret-token");
+    assert_eq!(json["value"], "(set - hidden)");
 
     let _ = fs::remove_dir_all(&dir);
 }
