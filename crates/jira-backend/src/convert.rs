@@ -408,13 +408,13 @@ pub fn create_issue_to_jira(
 
     for cf in &issue.custom_fields {
         if let CustomFieldUpdate::SingleEnum { name, value } = cf {
-            if priority.is_none() && name.to_lowercase() == "priority" {
+            if priority.is_none() && name.eq_ignore_ascii_case("priority") {
                 priority = Some(PriorityId {
                     id: None,
                     name: Some(value.clone()),
                 });
             } else if issue_type_opt.is_none()
-                && (name.to_lowercase() == "type" || name.to_lowercase() == "issuetype")
+                && (name.eq_ignore_ascii_case("type") || name.eq_ignore_ascii_case("issuetype"))
             {
                 issue_type_opt = Some(value.clone());
             }
@@ -465,7 +465,7 @@ pub fn update_issue_to_jira(
         .map(|d| markdown_to_adf_document(d));
 
     let priority = update.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
+        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
             Some(PriorityId {
                 id: None,
                 name: Some(value.clone()),

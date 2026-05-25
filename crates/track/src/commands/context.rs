@@ -68,7 +68,7 @@ impl From<&Issue> for IssueSummary {
         // Extract priority from custom fields
         let priority = issue.custom_fields.iter().find_map(|cf| {
             if let tracker_core::CustomField::SingleEnum { name, value } = cf {
-                if name.to_lowercase() == "priority" {
+                if name.eq_ignore_ascii_case("priority") {
                     value.clone()
                 } else {
                     None
