@@ -18,7 +18,7 @@ pub struct Cli {
     #[arg(long, value_enum, global = true, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
 
-    /// Backend to use (youtrack, jira, github, gitlab). If not specified, uses config or defaults to YouTrack.
+    /// Backend to use (youtrack, jira, github, gitlab, linear). If not specified, uses config or defaults to YouTrack.
     #[arg(long, short = 'b', value_enum, global = true, env = "TRACKER_BACKEND")]
     pub backend: Option<Backend>,
 
@@ -54,6 +54,9 @@ pub enum Backend {
     /// GitLab issue tracker
     #[value(name = "gitlab", alias = "gl")]
     GitLab,
+    /// Linear issue tracker
+    #[value(name = "linear", alias = "lin")]
+    Linear,
 }
 
 impl std::fmt::Display for Backend {
@@ -63,6 +66,7 @@ impl std::fmt::Display for Backend {
             Backend::Jira => write!(f, "jira"),
             Backend::GitHub => write!(f, "github"),
             Backend::GitLab => write!(f, "gitlab"),
+            Backend::Linear => write!(f, "linear"),
         }
     }
 }
@@ -169,13 +173,13 @@ pub enum Commands {
     ///
     /// Use --skills to install agent skill files globally for Claude, Copilot, Cursor, and Gemini.
     Init {
-        /// Tracker API URL (e.g., https://youtrack.example.com, https://company.atlassian.net, https://api.github.com, or https://gitlab.com/api/v4)
+        /// Tracker URL (e.g., https://youtrack.example.com, https://company.atlassian.net, https://api.github.com, https://gitlab.com/api/v4, or https://linear.app/workspace)
         #[arg(long, required_unless_present = "skills")]
         url: Option<String>,
         /// API token for the selected backend
         #[arg(long, required_unless_present = "skills")]
         token: Option<String>,
-        /// Project to validate. Required for GitHub as owner/repo and for GitLab as project ID/path.
+        /// Project to validate. Required for GitHub as owner/repo and for GitLab as project ID/path. For Linear, this is a team key/name/id.
         #[arg(long, short = 'p')]
         project: Option<String>,
         /// Backend to use. Defaults to youtrack.
@@ -232,9 +236,9 @@ pub enum ConfigCommands {
         /// Project ID or shortName (e.g., "OGIT" or "0-2")
         id: String,
     },
-    /// Set the default backend (youtrack or jira)
+    /// Set the default backend
     Backend {
-        /// Backend name: youtrack (or yt), jira (or j)
+        /// Backend name
         #[arg(value_enum)]
         backend: Backend,
     },

@@ -1843,6 +1843,108 @@ mod tests {
         assert_eq!(flattened[0].id, "142-3t/2-100");
     }
 
+    #[test]
+    fn test_flatten_youtrack_link_empty_issues() {
+        use crate::convert::flatten_youtrack_link;
+
+        let link = IssueLink {
+            id: "142-3t".to_string(),
+            direction: Some("OUTWARD".to_string()),
+            link_type: IssueLinkType {
+                id: "lt-1".to_string(),
+                name: "Relates".to_string(),
+                source_to_target: Some("relates to".to_string()),
+                target_to_source: Some("relates to".to_string()),
+                directed: false,
+            },
+            issues: vec![],
+        };
+
+        let flattened = flatten_youtrack_link(link);
+        assert!(flattened.is_empty());
+    }
+
+    #[test]
+    fn test_flatten_youtrack_link_missing_direction() {
+        use crate::convert::flatten_youtrack_link;
+
+        let link = IssueLink {
+            id: "142-4t".to_string(),
+            direction: None,
+            link_type: IssueLinkType {
+                id: "lt-1".to_string(),
+                name: "Relates".to_string(),
+                source_to_target: Some("relates to".to_string()),
+                target_to_source: Some("relates to".to_string()),
+                directed: false,
+            },
+            issues: vec![LinkedIssue {
+                id: "2-101".to_string(),
+                id_readable: Some("PROJ-101".to_string()),
+                summary: Some("Target".to_string()),
+            }],
+        };
+
+        let flattened = flatten_youtrack_link(link);
+        assert_eq!(flattened.len(), 1);
+        assert_eq!(flattened[0].id, "142-4t/PROJ-101");
+        assert_eq!(flattened[0].direction, None);
+    }
+
+    #[test]
+    fn test_flatten_youtrack_link_inward_direction() {
+        use crate::convert::flatten_youtrack_link;
+
+        let link = IssueLink {
+            id: "142-5t".to_string(),
+            direction: Some("INWARD".to_string()),
+            link_type: IssueLinkType {
+                id: "lt-2".to_string(),
+                name: "Depends".to_string(),
+                source_to_target: Some("depends on".to_string()),
+                target_to_source: Some("is required for".to_string()),
+                directed: true,
+            },
+            issues: vec![LinkedIssue {
+                id: "2-102".to_string(),
+                id_readable: Some("PROJ-102".to_string()),
+                summary: Some("Target".to_string()),
+            }],
+        };
+
+        let flattened = flatten_youtrack_link(link);
+        assert_eq!(flattened.len(), 1);
+        assert_eq!(flattened[0].id, "142-5t/PROJ-102");
+        assert_eq!(flattened[0].direction, Some("INWARD".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_youtrack_link_both_direction() {
+        use crate::convert::flatten_youtrack_link;
+
+        let link = IssueLink {
+            id: "142-6t".to_string(),
+            direction: Some("BOTH".to_string()),
+            link_type: IssueLinkType {
+                id: "lt-3".to_string(),
+                name: "Duplicates".to_string(),
+                source_to_target: Some("duplicates".to_string()),
+                target_to_source: Some("is duplicated by".to_string()),
+                directed: true,
+            },
+            issues: vec![LinkedIssue {
+                id: "2-103".to_string(),
+                id_readable: Some("PROJ-103".to_string()),
+                summary: Some("Target".to_string()),
+            }],
+        };
+
+        let flattened = flatten_youtrack_link(link);
+        assert_eq!(flattened.len(), 1);
+        assert_eq!(flattened[0].id, "142-6t/PROJ-103");
+        assert_eq!(flattened[0].direction, Some("BOTH".to_string()));
+    }
+
     // ==================== Link Type Resolution Tests ====================
 
     #[test]

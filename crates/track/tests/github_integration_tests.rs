@@ -53,6 +53,10 @@ fn track_github() -> assert_cmd::Command {
     let mut cmd = cargo_bin_cmd!("track");
     cmd.args(["-b", "github", "--config"])
         .arg(config_path())
+        .env_remove("TRACKER_URL")
+        .env_remove("TRACKER_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GITHUB_API_URL")
         .timeout(Duration::from_secs(30));
     cmd
 }
@@ -62,6 +66,10 @@ fn track_github_json() -> assert_cmd::Command {
     let mut cmd = cargo_bin_cmd!("track");
     cmd.args(["-b", "github", "-o", "json", "--config"])
         .arg(config_path())
+        .env_remove("TRACKER_URL")
+        .env_remove("TRACKER_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GITHUB_API_URL")
         .timeout(Duration::from_secs(30));
     cmd
 }
@@ -1687,6 +1695,10 @@ fn test_github_pagination_hint_on_full_page() {
     let output = cargo_bin_cmd!("track")
         .args(["-b", "github", "--config"])
         .arg(&cfg)
+        .env_remove("TRACKER_URL")
+        .env_remove("TRACKER_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GITHUB_API_URL")
         .args(["issue", "search", "is:open", "--limit", "2"])
         .timeout(Duration::from_secs(5))
         .assert()
@@ -1720,6 +1732,10 @@ fn test_github_no_hint_on_partial_page() {
     let output = cargo_bin_cmd!("track")
         .args(["-b", "github", "--config"])
         .arg(&cfg)
+        .env_remove("TRACKER_URL")
+        .env_remove("TRACKER_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GITHUB_API_URL")
         .args(["issue", "search", "is:open", "--limit", "10"])
         .timeout(Duration::from_secs(5))
         .assert()

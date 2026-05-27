@@ -16,7 +16,7 @@ use std::os::unix::fs::OpenOptionsExt;
 /// Main configuration structure supporting multiple backends
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct Config {
-    /// Default backend to use (youtrack, jira, github, or gitlab)
+    /// Default backend to use (youtrack, jira, github, gitlab, or linear)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<Backend>,
     /// Global URL override (applies to any backend)
@@ -43,6 +43,9 @@ pub struct Config {
     /// GitLab-specific configuration
     #[serde(default, skip_serializing_if = "GitLabConfig::is_empty")]
     pub gitlab: GitLabConfig,
+    /// Linear-specific configuration
+    #[serde(default, skip_serializing_if = "LinearConfig::is_empty")]
+    pub linear: LinearConfig,
 }
 
 /// Backend-specific configuration
@@ -132,6 +135,86 @@ impl GitLabConfig {
     }
 }
 
+/// Linear-specific configuration
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+pub struct LinearConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Linear GraphQL API URL (defaults to https://api.linear.app/graphql)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
+    /// Linear workspace/web URL used by `track open` (e.g. https://linear.app/acme)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Default Linear team key/name/id. Falls back to top-level default_project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_team: Option<String>,
+    /// Default Linear project association for issue creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_linear_project: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub link_mappings: HashMap<String, String>,
+}
+
+impl LinearConfig {
+    pub fn is_empty(&self) -> bool {
+        self.token.is_none()
+            && self.api_url.is_none()
+            && self.url.is_none()
+            && self.default_team.is_none()
+            && self.default_linear_project.is_none()
+            && self.link_mappings.is_empty()
+    }
+}
+
+fn map_youtrack_env_key(key: &str) -> Option<&'static str> {
+    match key.to_ascii_lowercase().as_str() {
+        "url" => Some("youtrack.url"),
+        "token" => Some("youtrack.token"),
+        _ => None,
+    }
+}
+
+fn map_jira_env_key(key: &str) -> Option<&'static str> {
+    match key.to_ascii_lowercase().as_str() {
+        "url" => Some("jira.url"),
+        "email" => Some("jira.email"),
+        "token" => Some("jira.token"),
+        _ => None,
+    }
+}
+
+fn map_github_env_key(key: &str) -> Option<&'static str> {
+    match key.to_ascii_lowercase().as_str() {
+        "token" => Some("github.token"),
+        "owner" => Some("github.owner"),
+        "repo" => Some("github.repo"),
+        "api_url" => Some("github.api_url"),
+        _ => None,
+    }
+}
+
+fn map_gitlab_env_key(key: &str) -> Option<&'static str> {
+    match key.to_ascii_lowercase().as_str() {
+        "token" => Some("gitlab.token"),
+        "url" => Some("gitlab.url"),
+        "project_id" => Some("gitlab.project_id"),
+        "namespace" => Some("gitlab.namespace"),
+        _ => None,
+    }
+}
+
+fn map_linear_env_key(key: &str) -> Option<&'static str> {
+    match key.to_ascii_lowercase().as_str() {
+        "token" => Some("linear.token"),
+        "api_url" => Some("linear.api_url"),
+        "url" => Some("linear.url"),
+        "default_team" => Some("linear.default_team"),
+        "default_project" => Some("linear.default_linear_project"),
+        _ => None,
+    }
+}
+
 impl Config {
     pub fn load(config_path: Option<PathBuf>, backend: Backend) -> Result<Self> {
         let mut figment = Figment::new().merge(Serialized::defaults(Config::default()));
@@ -154,34 +237,40 @@ impl Config {
             .merge(Env::prefixed("TRACKER_"))
             .merge(Env::prefixed("YOUTRACK_").map(|key| {
                 // Map YOUTRACK_URL -> youtrack.url for nested config
-                match key.as_str() {
-                    "url" => "youtrack.url".into(),
-                    "token" => "youtrack.token".into(),
-                    _ => key.into(),
+                if let Some(mapped) = map_youtrack_env_key(key.as_str()) {
+                    mapped.into()
+                } else {
+                    key.into()
                 }
             }))
             .merge(Env::prefixed("JIRA_").map(|key| {
                 // Map JIRA_URL -> jira.url for nested config
-                match key.as_str() {
-                    "url" => "jira.url".into(),
-                    "email" => "jira.email".into(),
-                    "token" => "jira.token".into(),
-                    _ => key.into(),
+                if let Some(mapped) = map_jira_env_key(key.as_str()) {
+                    mapped.into()
+                } else {
+                    key.into()
                 }
             }))
-            .merge(Env::prefixed("GITHUB_").map(|key| match key.as_str() {
-                "token" => "github.token".into(),
-                "owner" => "github.owner".into(),
-                "repo" => "github.repo".into(),
-                "api_url" => "github.api_url".into(),
-                _ => key.into(),
+            .merge(Env::prefixed("GITHUB_").map(|key| {
+                if let Some(mapped) = map_github_env_key(key.as_str()) {
+                    mapped.into()
+                } else {
+                    key.into()
+                }
             }))
-            .merge(Env::prefixed("GITLAB_").map(|key| match key.as_str() {
-                "token" => "gitlab.token".into(),
-                "url" => "gitlab.url".into(),
-                "project_id" => "gitlab.project_id".into(),
-                "namespace" => "gitlab.namespace".into(),
-                _ => key.into(),
+            .merge(Env::prefixed("GITLAB_").map(|key| {
+                if let Some(mapped) = map_gitlab_env_key(key.as_str()) {
+                    mapped.into()
+                } else {
+                    key.into()
+                }
+            }))
+            .merge(Env::prefixed("LINEAR_").map(|key| {
+                if let Some(mapped) = map_linear_env_key(key.as_str()) {
+                    mapped.into()
+                } else {
+                    key.into()
+                }
             }));
 
         let mut config: Config = figment
@@ -244,6 +333,27 @@ impl Config {
                     self.token = Some(t);
                 }
             }
+            Backend::Linear => {
+                if let Some(u) = self.linear.url.take() {
+                    self.url = Some(u);
+                } else {
+                    let is_linear_url = self
+                        .url
+                        .as_deref()
+                        .is_some_and(|u| u.to_lowercase().contains("linear"));
+                    if !is_linear_url {
+                        self.url = None;
+                    }
+                }
+                if let Some(t) = self.linear.token.take() {
+                    self.token = Some(t);
+                }
+                if self.default_project.is_none()
+                    && let Some(team) = self.linear.default_team.clone()
+                {
+                    self.default_project = Some(team);
+                }
+            }
         }
     }
 
@@ -262,9 +372,10 @@ impl Config {
             Backend::Jira => "Jira",
             Backend::GitHub => "GitHub",
             Backend::GitLab => "GitLab",
+            Backend::Linear => "Linear",
         };
 
-        if self.url.is_none() {
+        if backend != Backend::Linear && self.url.is_none() {
             return Err(anyhow!(
                 "{} URL not configured. Set via --url, TRACKER_URL env var, or config file",
                 backend_name
@@ -593,6 +704,27 @@ duplicates = "blocks"
             parsed.jira.link_mappings.get("depends"),
             Some(&"Requires".to_string())
         );
+    }
+
+    #[test]
+    fn test_backend_env_key_mappers_are_case_insensitive() {
+        assert_eq!(map_youtrack_env_key("URL"), Some("youtrack.url"));
+        assert_eq!(map_youtrack_env_key("Token"), Some("youtrack.token"));
+        assert_eq!(map_jira_env_key("EMAIL"), Some("jira.email"));
+        assert_eq!(map_github_env_key("OWNER"), Some("github.owner"));
+        assert_eq!(map_github_env_key("API_URL"), Some("github.api_url"));
+        assert_eq!(map_gitlab_env_key("PROJECT_ID"), Some("gitlab.project_id"));
+        assert_eq!(map_linear_env_key("TOKEN"), Some("linear.token"));
+        assert_eq!(map_linear_env_key("API_URL"), Some("linear.api_url"));
+        assert_eq!(
+            map_linear_env_key("DEFAULT_TEAM"),
+            Some("linear.default_team")
+        );
+        assert_eq!(
+            map_linear_env_key("DEFAULT_PROJECT"),
+            Some("linear.default_linear_project")
+        );
+        assert_eq!(map_linear_env_key("UNKNOWN"), None);
     }
 
     #[test]

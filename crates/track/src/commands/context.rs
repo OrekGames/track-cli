@@ -185,6 +185,7 @@ pub fn handle_context(
                 "jira" => format!("project = {} AND resolution IS EMPTY", proj),
                 "github" => format!("repo:{} is:issue state:open", proj),
                 "gitlab" => "state=opened".to_string(),
+                "linear" => format!("project: {} #Unresolved", proj),
                 _ => format!("project: {} #Unresolved", proj), // YouTrack default
             };
 

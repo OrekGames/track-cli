@@ -402,30 +402,26 @@ pub fn create_issue_to_jira(
         .as_ref()
         .map(|d| markdown_to_adf_document(d));
 
-    // Extract priority from custom fields if provided
-    let priority = issue.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.to_lowercase() == "priority" => {
-            Some(PriorityId {
-                id: None,
-                name: Some(value.clone()),
-            })
-        }
-        _ => None,
-    });
+    // Extract priority and issue type from custom fields in a single pass
+    let mut priority = None;
+    let mut issue_type_opt = None;
 
-    // Get issue type from custom fields, default to "Task"
-    let issue_type = issue
-        .custom_fields
-        .iter()
-        .find_map(|cf| match cf {
-            CustomFieldUpdate::SingleEnum { name, value }
-                if name.to_lowercase() == "type" || name.to_lowercase() == "issuetype" =>
+    for cf in &issue.custom_fields {
+        if let CustomFieldUpdate::SingleEnum { name, value } = cf {
+            if priority.is_none() && name.to_lowercase() == "priority" {
+                priority = Some(PriorityId {
+                    id: None,
+                    name: Some(value.clone()),
+                });
+            } else if issue_type_opt.is_none()
+                && (name.to_lowercase() == "type" || name.to_lowercase() == "issuetype")
             {
-                Some(value.clone())
+                issue_type_opt = Some(value.clone());
             }
-            _ => None,
-        })
-        .unwrap_or_else(|| "Task".to_string());
+        }
+    }
+
+    let issue_type = issue_type_opt.unwrap_or_else(|| "Task".to_string());
 
     let extra = resolve_extra_fields(&issue.custom_fields, jira_fields)?;
 

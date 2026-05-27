@@ -12,6 +12,7 @@ use config::Config;
 use github_backend::GitHubClient;
 use gitlab_backend::GitLabClient;
 use jira_backend::{ConfluenceClient, JiraClient};
+use linear_backend::LinearClient;
 use output::output_error;
 use std::process::ExitCode;
 use tracker_core::{IssueTracker, KnowledgeBase};
@@ -156,6 +157,23 @@ fn run(cli: Cli) -> Result<()> {
             let project_id = config.gitlab.project_id.as_deref();
             let client = GitLabClient::new(base_url, token, project_id)
                 .with_link_mappings(config.gitlab.link_mappings.clone());
+            run_with_client(&client, &client, &cli, &config)
+        }
+        Backend::Linear => {
+            let token = config.token.as_ref().unwrap();
+            let api_url = config
+                .linear
+                .api_url
+                .as_deref()
+                .unwrap_or("https://api.linear.app/graphql");
+            let default_team = config
+                .linear
+                .default_team
+                .clone()
+                .or_else(|| config.default_project.clone());
+            let client = LinearClient::with_base_url(api_url, token)
+                .with_defaults(default_team, config.linear.default_linear_project.clone())
+                .with_link_mappings(config.linear.link_mappings.clone());
             run_with_client(&client, &client, &cli, &config)
         }
     }
