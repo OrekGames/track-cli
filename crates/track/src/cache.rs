@@ -298,6 +298,12 @@ impl TrackerCache {
         let root = Self::cache_dir_path(cache_dir.clone())?;
         create_dir_all_secure(&root)?;
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&root, fs::Permissions::from_mode(0o700));
+        }
+
         // 1. Save index.json
         let index = CacheIndexV2 {
             version: CACHE_VERSION,
@@ -663,6 +669,15 @@ impl TrackerCache {
             create_dir_all_secure(parent)?;
         }
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(
+                path.parent().unwrap_or(path),
+                fs::Permissions::from_mode(0o700),
+            );
+        }
+
         {
             let mut options = OpenOptions::new();
             options.write(true).create(true).truncate(true);
@@ -678,6 +693,12 @@ impl TrackerCache {
             })?;
             file.sync_all()
                 .with_context(|| format!("Failed to sync temp file: {}", temp_path.display()))?;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600));
         }
 
         fs::rename(&temp_path, path).with_context(|| {
