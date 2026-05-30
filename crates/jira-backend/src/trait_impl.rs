@@ -327,14 +327,22 @@ fn convert_simple_query_to_jql(query: &str) -> String {
     let tokens: Vec<&str> = remaining.split_whitespace().collect();
     for token in tokens {
         if let Some(state) = token.strip_prefix('#') {
-            match state.to_lowercase().as_str() {
-                "unresolved" => parts.push("resolution IS EMPTY".to_string()),
-                "resolved" => parts.push("resolution IS NOT EMPTY".to_string()),
-                "open" => parts.push("status = Open".to_string()),
-                "closed" => parts.push("status = Closed".to_string()),
-                "done" => parts.push("status = Done".to_string()),
-                "inprogress" | "in-progress" => parts.push("status = \"In Progress\"".to_string()),
-                _ => parts.push(format!("status = \"{}\"", state)),
+            if state.eq_ignore_ascii_case("unresolved") {
+                parts.push("resolution IS EMPTY".to_string());
+            } else if state.eq_ignore_ascii_case("resolved") {
+                parts.push("resolution IS NOT EMPTY".to_string());
+            } else if state.eq_ignore_ascii_case("open") {
+                parts.push("status = Open".to_string());
+            } else if state.eq_ignore_ascii_case("closed") {
+                parts.push("status = Closed".to_string());
+            } else if state.eq_ignore_ascii_case("done") {
+                parts.push("status = Done".to_string());
+            } else if state.eq_ignore_ascii_case("inprogress")
+                || state.eq_ignore_ascii_case("in-progress")
+            {
+                parts.push("status = \"In Progress\"".to_string());
+            } else {
+                parts.push(format!("status = \"{}\"", state));
             }
         }
     }

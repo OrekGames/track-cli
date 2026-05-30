@@ -120,7 +120,9 @@ pub fn create_issue_from_core(issue: &CreateIssue) -> CreateGitHubIssue {
         .custom_fields
         .iter()
         .filter_map(|cf| match cf {
-            CustomFieldUpdate::SingleUser { name, login } if name.to_lowercase() == "assignee" => {
+            CustomFieldUpdate::SingleUser { name, login }
+                if name.eq_ignore_ascii_case("assignee") =>
+            {
                 Some(login.clone())
             }
             _ => None,
@@ -149,9 +151,9 @@ pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
     // Extract state from custom fields (CLI sends "State" or "Stage", backends may use "Status")
     let state = update.custom_fields.iter().find_map(|cf| match cf {
         CustomFieldUpdate::State { name, value }
-            if name.to_lowercase() == "status"
-                || name.to_lowercase() == "state"
-                || name.to_lowercase() == "stage" =>
+            if name.eq_ignore_ascii_case("status")
+                || name.eq_ignore_ascii_case("state")
+                || name.eq_ignore_ascii_case("stage") =>
         {
             let mapped_value = match value.to_lowercase().as_str() {
                 "done" | "resolved" | "closed" | "completed" => "closed",
@@ -167,7 +169,9 @@ pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
         .custom_fields
         .iter()
         .filter_map(|cf| match cf {
-            CustomFieldUpdate::SingleUser { name, login } if name.to_lowercase() == "assignee" => {
+            CustomFieldUpdate::SingleUser { name, login }
+                if name.eq_ignore_ascii_case("assignee") =>
+            {
                 Some(login.clone())
             }
             _ => None,
@@ -210,10 +214,13 @@ pub fn convert_query_to_github(query: &str) -> String {
     let tokens: Vec<&str> = remaining.split_whitespace().collect();
     for token in tokens {
         if let Some(state) = token.strip_prefix('#') {
-            match state.to_lowercase().as_str() {
-                "unresolved" | "open" => parts.push("is:open".to_string()),
-                "resolved" | "closed" => parts.push("is:closed".to_string()),
-                _ => parts.push(format!("label:{}", state)),
+            if state.eq_ignore_ascii_case("unresolved") || state.eq_ignore_ascii_case("open") {
+                parts.push("is:open".to_string());
+            } else if state.eq_ignore_ascii_case("resolved") || state.eq_ignore_ascii_case("closed")
+            {
+                parts.push("is:closed".to_string());
+            } else {
+                parts.push(format!("label:{}", state));
             }
         } else {
             parts.push(token.to_string());
