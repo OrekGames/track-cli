@@ -30,10 +30,7 @@ pub(crate) fn storage_to_text(storage: &str) -> String {
     while i < chars.len() {
         if in_cdata {
             // Check if we are at the end of CDATA: "]]>"
-            if i + 2 < chars.len()
-                && chars[i] == ']'
-                && chars[i + 1] == ']'
-                && chars[i + 2] == '>'
+            if i + 2 < chars.len() && chars[i] == ']' && chars[i + 1] == ']' && chars[i + 2] == '>'
             {
                 in_cdata = false;
                 i += 3;

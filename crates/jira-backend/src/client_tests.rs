@@ -778,7 +778,10 @@ mod tests {
         });
 
         let text = adf_to_text(&adf);
-        assert_eq!(text, "First paragraph\n\nSecond paragraph\n\n- Item A\n- Item B");
+        assert_eq!(
+            text,
+            "First paragraph\n\nSecond paragraph\n\n- Item A\n- Item B"
+        );
     }
 
     #[tokio::test]

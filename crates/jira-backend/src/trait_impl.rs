@@ -389,7 +389,10 @@ mod tests {
         // Test 1: Mixed query preserves keywords under text operator
         let query = "project:PROJ #unresolved bug";
         let jql = convert_simple_query_to_jql(query);
-        assert_eq!(jql, "project = PROJ AND resolution IS EMPTY AND text ~ \"bug\"");
+        assert_eq!(
+            jql,
+            "project = PROJ AND resolution IS EMPTY AND text ~ \"bug\""
+        );
 
         // Test 2: Pure keyword query converts cleanly to text operator JQL
         let pure_keyword = "bug fixing";

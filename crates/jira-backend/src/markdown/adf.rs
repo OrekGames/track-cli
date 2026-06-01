@@ -466,14 +466,14 @@ pub(crate) fn adf_to_text(adf: &serde_json::Value) -> String {
         match value {
             serde_json::Value::Object(obj) => {
                 let node_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                
+
                 match node_type {
-                    "text" => {
-                        obj.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string()
-                    }
-                    "hardBreak" => {
-                        "\n".to_string()
-                    }
+                    "text" => obj
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    "hardBreak" => "\n".to_string(),
                     "paragraph" | "heading" | "codeBlock" | "blockquote" => {
                         let inner = obj.get("content").map(extract_text).unwrap_or_default();
                         format!("{}\n\n", inner.trim())
