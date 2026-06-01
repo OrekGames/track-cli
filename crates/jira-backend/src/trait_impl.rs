@@ -308,25 +308,14 @@ impl IssueTracker for JiraClient {
 /// Convert simple tracker-core query format to JQL
 fn convert_simple_query_to_jql(query: &str) -> String {
     let mut parts = Vec::new();
-    let mut remaining = query.trim();
+    let mut keywords = Vec::new();
 
-    // Handle project: syntax
-    if let Some(rest) = remaining.strip_prefix("project:") {
-        let rest = rest.trim_start();
-        if let Some(space_pos) = rest.find(' ') {
-            let project = rest[..space_pos].trim();
-            parts.push(format!("project = {}", project));
-            remaining = &rest[space_pos..];
-        } else {
-            parts.push(format!("project = {}", rest.trim()));
-            remaining = "";
-        }
-    }
-
-    // Handle #hashtag syntax (states)
-    let tokens: Vec<&str> = remaining.split_whitespace().collect();
-    for token in tokens {
-        if let Some(state) = token.strip_prefix('#') {
+    for token in query.split_whitespace() {
+        if let Some(project) = token.strip_prefix("project:") {
+            if !project.is_empty() {
+                parts.push(format!("project = {}", project));
+            }
+        } else if let Some(state) = token.strip_prefix('#') {
             if state.eq_ignore_ascii_case("unresolved") {
                 parts.push("resolution IS EMPTY".to_string());
             } else if state.eq_ignore_ascii_case("resolved") {
@@ -344,12 +333,18 @@ fn convert_simple_query_to_jql(query: &str) -> String {
             } else {
                 parts.push(format!("status = \"{}\"", state));
             }
+        } else {
+            keywords.push(token);
         }
     }
 
+    if !keywords.is_empty() {
+        let joined_keywords = keywords.join(" ");
+        parts.push(format!("text ~ \"{}\"", joined_keywords));
+    }
+
     if parts.is_empty() {
-        // If no conversion happened, use the query as-is (might be valid JQL)
-        query.to_string()
+        String::new()
     } else {
         parts.join(" AND ")
     }
@@ -382,5 +377,23 @@ fn jira_attachment_to_core(attachment: crate::models::JiraAttachment) -> IssueAt
         }),
         comment_id: None,
         markdown: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_convert_simple_query_to_jql_correct() {
+        // Test 1: Mixed query preserves keywords under text operator
+        let query = "project:PROJ #unresolved bug";
+        let jql = convert_simple_query_to_jql(query);
+        assert_eq!(jql, "project = PROJ AND resolution IS EMPTY AND text ~ \"bug\"");
+
+        // Test 2: Pure keyword query converts cleanly to text operator JQL
+        let pure_keyword = "bug fixing";
+        let jql_pure_keyword = convert_simple_query_to_jql(pure_keyword);
+        assert_eq!(jql_pure_keyword, "text ~ \"bug fixing\"");
     }
 }

@@ -465,13 +465,43 @@ pub(crate) fn adf_to_text(adf: &serde_json::Value) -> String {
     fn extract_text(value: &serde_json::Value) -> String {
         match value {
             serde_json::Value::Object(obj) => {
-                if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
-                    return text.to_string();
+                let node_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                
+                match node_type {
+                    "text" => {
+                        obj.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string()
+                    }
+                    "hardBreak" => {
+                        "\n".to_string()
+                    }
+                    "paragraph" | "heading" | "codeBlock" | "blockquote" => {
+                        let inner = obj.get("content").map(extract_text).unwrap_or_default();
+                        format!("{}\n\n", inner.trim())
+                    }
+                    "listItem" | "taskItem" => {
+                        let inner = obj.get("content").map(extract_text).unwrap_or_default();
+                        format!("- {}\n", inner.trim())
+                    }
+                    "bulletList" | "orderedList" | "taskList" => {
+                        let inner = obj.get("content").map(extract_text).unwrap_or_default();
+                        format!("{}\n", inner.trim())
+                    }
+                    "tableRow" => {
+                        let inner = obj.get("content").map(extract_text).unwrap_or_default();
+                        format!("{}\n", inner.trim())
+                    }
+                    "tableHeader" | "tableCell" => {
+                        let inner = obj.get("content").map(extract_text).unwrap_or_default();
+                        format!("| {} ", inner.trim())
+                    }
+                    _ => {
+                        if let Some(content) = obj.get("content") {
+                            extract_text(content)
+                        } else {
+                            String::new()
+                        }
+                    }
                 }
-                if let Some(content) = obj.get("content") {
-                    return extract_text(content);
-                }
-                String::new()
             }
             serde_json::Value::Array(arr) => {
                 arr.iter().map(extract_text).collect::<Vec<_>>().join("")
@@ -479,7 +509,7 @@ pub(crate) fn adf_to_text(adf: &serde_json::Value) -> String {
             _ => String::new(),
         }
     }
-    extract_text(adf)
+    extract_text(adf).trim().to_string()
 }
 
 #[cfg(test)]
