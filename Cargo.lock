@@ -978,7 +978,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "jira-backend"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "pulldown-cmark",
@@ -1996,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "track"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
