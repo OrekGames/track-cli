@@ -727,6 +727,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_adf_text_extraction_multiline() {
+        // Test that block nodes like paragraphs and list items preserve newlines and bullets
+        let adf = serde_json::json!({
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "First paragraph"
+                        }
+                    ]
+                },
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Second paragraph"
+                        }
+                    ]
+                },
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Item A"
+                                }
+                            ]
+                        },
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Item B"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let text = adf_to_text(&adf);
+        assert_eq!(
+            text,
+            "First paragraph\n\nSecond paragraph\n\n- Item A\n- Item B"
+        );
+    }
+
+    #[tokio::test]
     async fn test_markdown_to_adf_conversion() {
         // Test that plain text produces a valid ADF doc
         let adf = markdown_to_adf("Hello World");

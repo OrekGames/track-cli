@@ -4,7 +4,6 @@
 
 /// Convert Confluence storage format (XHTML) to plain text
 pub(crate) fn storage_to_text(storage: &str) -> String {
-    // Simple HTML tag stripping - a full implementation would use an HTML parser
     let mut result = storage.to_string();
 
     // Replace common block elements with newlines
@@ -21,16 +20,51 @@ pub(crate) fn storage_to_text(storage: &str) -> String {
     result = result.replace("</h5>", "\n");
     result = result.replace("</h6>", "\n");
 
-    // Strip all remaining HTML tags
-    let mut in_tag = false;
+    // Strip HTML tags while fully preserving CDATA contents
+    let chars: Vec<char> = result.chars().collect();
     let mut output = String::new();
-    for c in result.chars() {
-        if c == '<' {
-            in_tag = true;
-        } else if c == '>' {
-            in_tag = false;
-        } else if !in_tag {
-            output.push(c);
+    let mut i = 0;
+    let mut in_tag = false;
+    let mut in_cdata = false;
+
+    while i < chars.len() {
+        if in_cdata {
+            // Check if we are at the end of CDATA: "]]>"
+            if i + 2 < chars.len() && chars[i] == ']' && chars[i + 1] == ']' && chars[i + 2] == '>'
+            {
+                in_cdata = false;
+                i += 3;
+            } else {
+                output.push(chars[i]);
+                i += 1;
+            }
+        } else if in_tag {
+            if chars[i] == '>' {
+                in_tag = false;
+            }
+            i += 1;
+        } else {
+            // Check for CDATA start: "<![CDATA["
+            if chars[i] == '<'
+                && i + 8 < chars.len()
+                && chars[i + 1] == '!'
+                && chars[i + 2] == '['
+                && chars[i + 3] == 'C'
+                && chars[i + 4] == 'D'
+                && chars[i + 5] == 'A'
+                && chars[i + 6] == 'T'
+                && chars[i + 7] == 'A'
+                && chars[i + 8] == '['
+            {
+                in_cdata = true;
+                i += 9;
+            } else if chars[i] == '<' {
+                in_tag = true;
+                i += 1;
+            } else {
+                output.push(chars[i]);
+                i += 1;
+            }
         }
     }
 
@@ -366,5 +400,13 @@ echo hi
             !storage.contains("Prepare release:<ol><li>Prepare release:"),
             "child item text should remain independent, got: {storage}"
         );
+    }
+
+    #[test]
+    fn test_storage_to_text_correct() {
+        // Test: CDATA blocks are completely preserved, even if they contain comparative operators
+        let storage_xml = "<ac:structured-macro ac:name=\"code\"><ac:plain-text-body><![CDATA[if x < 5 && y > 3 { println!(\"hi\"); }]]></ac:plain-text-body></ac:structured-macro>";
+        let plain_text = storage_to_text(storage_xml);
+        assert_eq!(plain_text, "if x < 5 && y > 3 { println!(\"hi\"); }");
     }
 }
