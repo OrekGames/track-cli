@@ -57,30 +57,7 @@ pub struct IssueSummary {
 impl From<&Issue> for IssueSummary {
     fn from(issue: &Issue) -> Self {
         // Extract fields from custom fields in a single pass
-        let mut state = None;
-        let mut priority = None;
-        let mut assignee = None;
-
-        for cf in &issue.custom_fields {
-            match cf {
-                tracker_core::CustomField::State { value, .. } if state.is_none() => {
-                    state = value.clone();
-                }
-                tracker_core::CustomField::SingleEnum { name, value }
-                    if priority.is_none() && name.eq_ignore_ascii_case("priority") =>
-                {
-                    priority = value.clone();
-                }
-                tracker_core::CustomField::SingleUser { login, .. } if assignee.is_none() => {
-                    assignee = login.clone();
-                }
-                _ => {}
-            }
-
-            if state.is_some() && priority.is_some() && assignee.is_some() {
-                break;
-            }
-        }
+        let common = issue.common_fields();
 
         IssueSummary {
             id: issue.id.clone(),
@@ -91,9 +68,9 @@ impl From<&Issue> for IssueSummary {
                 .short_name
                 .clone()
                 .unwrap_or_else(|| issue.project.id.clone()),
-            state,
-            priority,
-            assignee,
+            state: common.state.map(|s| s.to_string()),
+            priority: common.priority.map(|s| s.to_string()),
+            assignee: common.assignee.map(|s| s.to_string()),
         }
     }
 }

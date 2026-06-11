@@ -1196,13 +1196,7 @@ impl TrackerCache {
             .unwrap_or_else(|| "UNKNOWN".to_string());
 
         // Extract state from custom fields
-        let state = issue.custom_fields.iter().find_map(|cf| {
-            if let tracker_core::CustomField::State { value, .. } = cf {
-                value.clone()
-            } else {
-                None
-            }
-        });
+        let state = issue.common_fields().state.map(String::from);
 
         let recent = CachedRecentIssue {
             id: issue.id.clone(),
