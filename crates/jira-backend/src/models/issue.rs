@@ -195,14 +195,23 @@ pub struct JiraIssueLinkType {
 
 /// Search result response from `/search/jql` endpoint.
 ///
-/// The new Jira Cloud search endpoint returns `isLast` instead of `total`.
-/// It does not provide a total count of matching issues.
+/// The new Jira Cloud search endpoint is cursor-based: it pages via
+/// `nextPageToken` and does not provide a total count of matching issues.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JiraSearchResult {
-    /// Issues in this page
+    /// Issues in this page (the API marks the field optional, so default
+    /// to empty rather than failing deserialization)
+    #[serde(default)]
     pub issues: Vec<JiraIssue>,
-    /// Whether this is the last page of results
+    /// Continuation token for the next page. Absent (or null) on the last
+    /// page — this is the authoritative last-page signal. Tokens expire
+    /// after 7 days.
+    #[serde(default)]
+    pub next_page_token: Option<String>,
+    /// Whether this is the last page. Not reliably present in live
+    /// responses; `false` may mean "unknown". Only trust `true` — never use
+    /// `false` as a signal that more pages exist.
     #[serde(default)]
     pub is_last: bool,
 }

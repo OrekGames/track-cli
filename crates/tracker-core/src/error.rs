@@ -27,6 +27,9 @@ pub enum TrackerError {
     #[error("Parse error: {0}")]
     Parse(String),
 
+    #[error("Pagination stalled: {0}")]
+    PaginationStalled(String),
+
     #[error("IO error: {0}")]
     Io(String),
 }
