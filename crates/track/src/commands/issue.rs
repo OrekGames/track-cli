@@ -5,7 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use tracker_core::{
     CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
-    fetch_all_pages, unicode_eq_ignore_case,
+    fetch_all_pages, get_max_results, unicode_eq_ignore_case,
 };
 
 /// Shared fields for create, update, and batch-update commands.
@@ -839,17 +839,11 @@ fn handle_search(
         resolve_search_query(args.query, args.template, args.project, default_project)?;
 
     let (issues, inline_total) = if args.all {
-        // Auto-paginate using the helper; default page size 100
-        let page_size = 100usize;
-        let res = fetch_all_pages(
-            |offset, page_limit| {
-                client
-                    .search_issues(&actual_query, page_limit, offset)
-                    .map(|r| r.items)
-            },
-            page_size,
-        )
-        .context("Failed to search issues (pagination)")?;
+        // Auto-paginate; backends with cursor-based search override
+        // search_all_issues with a native cursor walk.
+        let res = client
+            .search_all_issues(&actual_query, get_max_results())
+            .context("Failed to search issues (pagination)")?;
         output_progress(&format!("Fetched {} issues", res.len()), format);
         (res, None)
     } else {

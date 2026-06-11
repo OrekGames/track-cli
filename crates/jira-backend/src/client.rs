@@ -173,23 +173,33 @@ impl JiraClient {
         Ok(issue)
     }
 
-    /// Search issues using JQL
+    /// Search issues using JQL.
+    ///
+    /// `/search/jql` is cursor-based: pass `next_page_token = None` for the
+    /// first page, then the token from the previous response's
+    /// `next_page_token` for each subsequent page. The endpoint does not
+    /// support offset pagination (`startAt` is silently ignored), and the
+    /// server may cap or shrink pages below `max_results`.
     pub fn search_issues(
         &self,
         jql: &str,
         max_results: usize,
-        start_at: usize,
+        next_page_token: Option<&str>,
     ) -> Result<JiraSearchResult> {
         // Jira Cloud uses GET /search/jql (the old POST /search was removed).
         // `fields=*all` is required — without it the endpoint returns only issue IDs.
         let jql_encoded = urlencoding::encode(jql);
-        let url = format!(
-            "{}?jql={}&startAt={}&maxResults={}&fields=*all",
+        let mut url = format!(
+            "{}?jql={}&maxResults={}&fields=*all",
             self.api_url("/search/jql"),
             jql_encoded,
-            start_at,
             max_results,
         );
+        if let Some(token) = next_page_token {
+            // The token is an opaque server string; percent-encode it.
+            url.push_str("&nextPageToken=");
+            url.push_str(&urlencoding::encode(token));
+        }
 
         let response = self
             .agent

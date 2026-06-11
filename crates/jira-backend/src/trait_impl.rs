@@ -24,21 +24,76 @@ impl IssueTracker for JiraClient {
     }
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
-        // If query looks like JQL, use it directly; otherwise, try simple conversion
-        let jql = if query.contains('=') || query.contains(" AND ") || query.contains(" OR ") {
-            query.to_string()
-        } else {
-            // Try to convert simple tracker-core query format to JQL
-            convert_simple_query_to_jql(query)
-        };
+        if limit == 0 {
+            return Ok(SearchResult::from_items(Vec::new()));
+        }
 
-        let r = self.search_issues(&jql, limit, skip)?;
+        let jql = to_jql(query);
         let fields = self.get_fields_cached();
-        let items = r
-            .issues
-            .into_iter()
-            .map(|i| jira_issue_to_core(i, &fields))
-            .collect();
+
+        // /search/jql is cursor-based (`startAt` is silently ignored), so an
+        // offset window has to be emulated: walk the token chain, discard
+        // `skip` issues, then collect up to `limit`.
+        let mut items: Vec<Issue> = Vec::new();
+        let mut remaining_skip = skip;
+        let mut token: Option<String> = None;
+        let mut no_progress_pages = 0usize;
+
+        loop {
+            // Ask for exactly what's still needed; the server caps page
+            // sizes (~100 with fields=*all) and may return fewer.
+            let page_size = remaining_skip.saturating_add(limit - items.len()).min(100);
+
+            let r = self.search_issues(&jql, page_size, token.as_deref())?;
+            let page_len = r.issues.len();
+
+            if remaining_skip >= page_len {
+                remaining_skip -= page_len;
+            } else {
+                let need = limit - items.len();
+                items.extend(
+                    r.issues
+                        .into_iter()
+                        .skip(remaining_skip)
+                        .take(need)
+                        .map(|i| jira_issue_to_core(i, &fields)),
+                );
+                remaining_skip = 0;
+            }
+
+            // A short (even empty) page is NOT a stop condition: the server
+            // legitimately returns fewer than `maxResults` rows mid-stream.
+            // Token absence is the authoritative last-page signal; `is_last`
+            // is only trustworthy when true.
+            if items.len() >= limit || r.is_last {
+                break;
+            }
+            match r.next_page_token {
+                None => break,
+                Some(t) if token.as_deref() == Some(t.as_str()) => {
+                    return Err(TrackerError::PaginationStalled(
+                        "server returned the same nextPageToken twice".to_string(),
+                    ));
+                }
+                Some(t) => {
+                    // Non-empty pages always make progress (toward skip or
+                    // items); only a run of empty pages can walk in circles.
+                    if page_len == 0 {
+                        no_progress_pages += 1;
+                        if no_progress_pages >= MAX_NO_PROGRESS_PAGES {
+                            return Err(TrackerError::PaginationStalled(
+                                "server keeps returning empty pages with fresh page tokens"
+                                    .to_string(),
+                            ));
+                        }
+                    } else {
+                        no_progress_pages = 0;
+                    }
+                    token = Some(t);
+                }
+            }
+        }
+
         Ok(SearchResult::from_items(items))
     }
 
@@ -46,6 +101,72 @@ impl IssueTracker for JiraClient {
         // The new /search/jql endpoint does not return a total count,
         // and there is no separate count endpoint on Jira Cloud.
         Ok(None)
+    }
+
+    fn search_all_issues(&self, query: &str, max_results: usize) -> Result<Vec<Issue>> {
+        let jql = to_jql(query);
+        let fields = self.get_fields_cached();
+
+        // Native cursor walk: O(pages) requests, unlike the default
+        // implementation which would re-walk the token chain from page 1
+        // for every offset window.
+        let mut all: Vec<Issue> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut token: Option<String> = None;
+        let mut no_progress_pages = 0usize;
+
+        loop {
+            let remaining = max_results.saturating_sub(all.len());
+            if remaining == 0 {
+                break;
+            }
+
+            // /search/jql hard-caps maxResults at 100 for full-field requests
+            let page_size = remaining.min(100);
+            let r = self.search_issues(&jql, page_size, token.as_deref())?;
+
+            let before = all.len();
+            for ji in r.issues {
+                let issue = jira_issue_to_core(ji, &fields);
+                if seen.insert(issue.id.clone()) {
+                    all.push(issue);
+                }
+            }
+
+            // Termination first (a fully-duplicate or empty FINAL page is a
+            // legitimate end, not a stall), then anomaly detection.
+            if r.is_last {
+                break;
+            }
+            match r.next_page_token {
+                // Absent token = authoritative last page
+                None => break,
+                Some(t) if token.as_deref() == Some(t.as_str()) => {
+                    return Err(TrackerError::PaginationStalled(
+                        "server returned the same nextPageToken twice".to_string(),
+                    ));
+                }
+                Some(t) => {
+                    // Empty or fully-duplicate pages can occur mid-stream;
+                    // keep following fresh tokens, but fail loudly if the
+                    // cursor stops yielding new issues altogether rather
+                    // than returning a silently incomplete result set.
+                    if all.len() == before {
+                        no_progress_pages += 1;
+                        if no_progress_pages >= MAX_NO_PROGRESS_PAGES {
+                            return Err(TrackerError::PaginationStalled(
+                                "cursor pages stopped yielding new issues".to_string(),
+                            ));
+                        }
+                    } else {
+                        no_progress_pages = 0;
+                    }
+                    token = Some(t);
+                }
+            }
+        }
+
+        Ok(all)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
@@ -302,6 +423,22 @@ impl IssueTracker for JiraClient {
             .into_iter()
             .map(Into::into)
             .collect())
+    }
+}
+
+/// Give up after this many consecutive cursor pages that yield no new
+/// issues. Mid-stream pages may legitimately come back empty (or fully
+/// filtered), but an unbounded run of them means the server is walking us
+/// in circles — fail loudly instead of looping or silently truncating.
+const MAX_NO_PROGRESS_PAGES: usize = 5;
+
+/// If the query already looks like JQL, use it directly; otherwise convert
+/// from the simple tracker-core query format.
+fn to_jql(query: &str) -> String {
+    if query.contains('=') || query.contains(" AND ") || query.contains(" OR ") {
+        query.to_string()
+    } else {
+        convert_simple_query_to_jql(query)
     }
 }
 

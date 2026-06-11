@@ -7,7 +7,9 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tracker_core::{AttachmentUpload, AttachmentUploadFile};
-    use wiremock::matchers::{body_string_contains, header, method, path, query_param};
+    use wiremock::matchers::{
+        body_string_contains, header, method, path, query_param, query_param_is_missing,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
@@ -53,8 +55,14 @@ mod tests {
 
     /// Helper to create a mock Jira issue response
     fn mock_jira_issue(key: &str, summary: &str) -> serde_json::Value {
+        mock_jira_issue_with_id("10001", key, summary)
+    }
+
+    /// Like `mock_jira_issue`, but with a distinct internal id — needed by
+    /// tests that exercise dedup-by-id pagination.
+    fn mock_jira_issue_with_id(id: &str, key: &str, summary: &str) -> serde_json::Value {
         serde_json::json!({
-            "id": "10001",
+            "id": id,
             "key": key,
             "self": format!("https://test.atlassian.net/rest/api/3/issue/{}", key),
             "fields": {
@@ -264,13 +272,16 @@ mod tests {
     async fn test_search_issues() {
         let mock_server = MockServer::start().await;
 
-        // The new Jira API uses GET /search/jql with query parameters
+        // The new Jira API uses GET /search/jql with cursor-based pagination
         Mock::given(method("GET"))
             .and(path("/rest/api/3/search/jql"))
             .and(header(
                 "Authorization",
                 "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
             ))
+            .and(query_param("maxResults", "20"))
+            .and(query_param_is_missing("startAt"))
+            .and(query_param_is_missing("nextPageToken"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "issues": [
                     mock_jira_issue("TEST-123", "First issue"),
@@ -282,9 +293,10 @@ mod tests {
             .await;
 
         let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
-        let result = client.search_issues("project = TEST", 20, 0).unwrap();
+        let result = client.search_issues("project = TEST", 20, None).unwrap();
 
         assert!(result.is_last);
+        assert!(result.next_page_token.is_none());
         assert_eq!(result.issues.len(), 2);
         assert_eq!(result.issues[0].key, "TEST-123");
         assert_eq!(result.issues[1].key, "TEST-124");
@@ -798,27 +810,544 @@ mod tests {
     async fn test_search_with_pagination() {
         let mock_server = MockServer::start().await;
 
-        // The new Jira API uses GET /search/jql with query parameters
+        // Client-level token round-trip: the first page hands back a token,
+        // and the next request must carry it (and never a startAt offset).
         Mock::given(method("GET"))
             .and(path("/rest/api/3/search/jql"))
+            .and(query_param_is_missing("nextPageToken"))
+            .and(query_param_is_missing("startAt"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "issues": [
                     mock_jira_issue("TEST-11", "Issue 11"),
-                    mock_jira_issue("TEST-12", "Issue 12"),
-                    mock_jira_issue("TEST-13", "Issue 13"),
-                    mock_jira_issue("TEST-14", "Issue 14"),
-                    mock_jira_issue("TEST-15", "Issue 15")
+                    mock_jira_issue("TEST-12", "Issue 12")
                 ],
+                "nextPageToken": "tok-1",
                 "isLast": false
             })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("nextPageToken", "tok-1"))
+            .and(query_param_is_missing("startAt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue("TEST-13", "Issue 13")
+                ],
+                "isLast": true
+            })))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
         let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
-        let result = client.search_issues("project = TEST", 5, 10).unwrap();
 
-        assert!(!result.is_last);
-        assert_eq!(result.issues.len(), 5);
+        let page1 = client.search_issues("project = TEST", 2, None).unwrap();
+        assert_eq!(page1.next_page_token.as_deref(), Some("tok-1"));
+        assert_eq!(page1.issues.len(), 2);
+
+        let page2 = client
+            .search_issues("project = TEST", 2, page1.next_page_token.as_deref())
+            .unwrap();
+        assert!(page2.next_page_token.is_none());
+        assert!(page2.is_last);
+        assert_eq!(page2.issues[0].key, "TEST-13");
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_walks_token_chain() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("maxResults", "4"))
+            .and(query_param_is_missing("nextPageToken"))
+            .and(query_param_is_missing("startAt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue("TEST-1", "Issue 1"),
+                    mock_jira_issue("TEST-2", "Issue 2")
+                ],
+                "nextPageToken": "t2"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("maxResults", "2"))
+            .and(query_param("nextPageToken", "t2"))
+            .and(query_param_is_missing("startAt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue("TEST-3", "Issue 3"),
+                    mock_jira_issue("TEST-4", "Issue 4")
+                ]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::IssueTracker;
+        let result = IssueTracker::search_issues(&client, "project = TEST", 4, 0).unwrap();
+
+        let keys: Vec<&str> = result
+            .items
+            .iter()
+            .map(|i| i.id_readable.as_str())
+            .collect();
+        assert_eq!(keys, vec!["TEST-1", "TEST-2", "TEST-3", "TEST-4"]);
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_skip_across_page_boundary() {
+        let mock_server = MockServer::start().await;
+
+        // skip=4, limit=2 over pages of 3+3: the entire first page is
+        // discarded, the remaining skip of 1 applies within page 2.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param_is_missing("nextPageToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue("TEST-1", "Issue 1"),
+                    mock_jira_issue("TEST-2", "Issue 2"),
+                    mock_jira_issue("TEST-3", "Issue 3")
+                ],
+                "nextPageToken": "t2"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("nextPageToken", "t2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue("TEST-4", "Issue 4"),
+                    mock_jira_issue("TEST-5", "Issue 5"),
+                    mock_jira_issue("TEST-6", "Issue 6")
+                ]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::IssueTracker;
+        let result = IssueTracker::search_issues(&client, "project = TEST", 2, 4).unwrap();
+
+        let keys: Vec<&str> = result
+            .items
+            .iter()
+            .map(|i| i.id_readable.as_str())
+            .collect();
+        assert_eq!(keys, vec!["TEST-5", "TEST-6"]);
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_terminates_on_missing_token() {
+        let mock_server = MockServer::start().await;
+
+        // No nextPageToken and no isLast in the response (serde defaults):
+        // token absence alone must terminate the walk after one request.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue("TEST-1", "Issue 1"),
+                    mock_jira_issue("TEST-2", "Issue 2"),
+                    mock_jira_issue("TEST-3", "Issue 3")
+                ]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::IssueTracker;
+        let result = IssueTracker::search_issues(&client, "project = TEST", 50, 0).unwrap();
+        assert_eq!(result.items.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_limit_over_100_accumulates() {
+        let mock_server = MockServer::start().await;
+
+        let page1: Vec<serde_json::Value> = (1..=100)
+            .map(|i| mock_jira_issue_with_id(&i.to_string(), &format!("TEST-{i}"), "Issue"))
+            .collect();
+        let page2: Vec<serde_json::Value> = (101..=150)
+            .map(|i| mock_jira_issue_with_id(&i.to_string(), &format!("TEST-{i}"), "Issue"))
+            .collect();
+
+        // Requests are clamped to the server's 100 cap, then shrink to the
+        // remainder.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("maxResults", "100"))
+            .and(query_param_is_missing("nextPageToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": page1,
+                "nextPageToken": "t2"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("maxResults", "50"))
+            .and(query_param("nextPageToken", "t2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": page2
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::IssueTracker;
+        let result = IssueTracker::search_issues(&client, "project = TEST", 150, 0).unwrap();
+        assert_eq!(result.items.len(), 150);
+        assert_eq!(result.items[0].id_readable, "TEST-1");
+        assert_eq!(result.items[149].id_readable, "TEST-150");
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_errors_on_repeated_token() {
+        let mock_server = MockServer::start().await;
+
+        // A server that echoes the same token forever must not hang the
+        // walk or silently emit duplicate rows: the second response repeats
+        // the token just used, so the walk fails loudly after exactly two
+        // requests.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [mock_jira_issue("TEST-1", "Issue 1")],
+                "nextPageToken": "same"
+            })))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::{IssueTracker, TrackerError};
+        let result = IssueTracker::search_issues(&client, "project = TEST", 10, 0);
+        assert!(matches!(result, Err(TrackerError::PaginationStalled(_))));
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_continues_past_empty_page_with_fresh_token() {
+        let mock_server = MockServer::start().await;
+
+        // An empty page with a fresh token is NOT the end of results
+        // (token absence is the only authoritative last-page signal).
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param_is_missing("nextPageToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue("TEST-1", "Issue 1"),
+                    mock_jira_issue("TEST-2", "Issue 2")
+                ],
+                "nextPageToken": "t2"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("nextPageToken", "t2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [],
+                "nextPageToken": "t3"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("nextPageToken", "t3"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue("TEST-3", "Issue 3"),
+                    mock_jira_issue("TEST-4", "Issue 4")
+                ]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::IssueTracker;
+        let result = IssueTracker::search_issues(&client, "project = TEST", 4, 0).unwrap();
+
+        let keys: Vec<&str> = result
+            .items
+            .iter()
+            .map(|i| i.id_readable.as_str())
+            .collect();
+        assert_eq!(keys, vec!["TEST-1", "TEST-2", "TEST-3", "TEST-4"]);
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_skip_beyond_end_returns_empty() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue("TEST-1", "Issue 1"),
+                    mock_jira_issue("TEST-2", "Issue 2"),
+                    mock_jira_issue("TEST-3", "Issue 3")
+                ]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::IssueTracker;
+        let result = IssueTracker::search_issues(&client, "project = TEST", 5, 10).unwrap();
+        assert!(result.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_limit_zero_makes_no_requests() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": []
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::IssueTracker;
+        let result = IssueTracker::search_issues(&client, "project = TEST", 0, 0).unwrap();
+        assert!(result.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_issues_percent_encodes_token() {
+        let mock_server = MockServer::start().await;
+
+        // Tokens are opaque server strings; characters like '+', '/', '=',
+        // '&' must survive the URL round-trip. wiremock decodes the query
+        // string, so this matcher only matches if the client encoded it.
+        let raw_token = "tok+1/x=&y";
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("nextPageToken", raw_token))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [mock_jira_issue("TEST-1", "Issue 1")]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let result = client
+            .search_issues("project = TEST", 5, Some(raw_token))
+            .unwrap();
+        assert_eq!(result.issues.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_search_all_issues_walks_token_chain_with_short_page() {
+        let mock_server = MockServer::start().await;
+
+        // Three pages; the middle one is deliberately short (1 issue) —
+        // per the API contract a short page must NOT terminate the walk,
+        // only token absence does.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param_is_missing("nextPageToken"))
+            .and(query_param_is_missing("startAt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("1", "TEST-1", "Issue 1"),
+                    mock_jira_issue_with_id("2", "TEST-2", "Issue 2")
+                ],
+                "nextPageToken": "t2"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("nextPageToken", "t2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("3", "TEST-3", "Issue 3")
+                ],
+                "nextPageToken": "t3"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("nextPageToken", "t3"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("4", "TEST-4", "Issue 4"),
+                    mock_jira_issue_with_id("5", "TEST-5", "Issue 5")
+                ]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::IssueTracker;
+        let result = IssueTracker::search_all_issues(&client, "project = TEST", 1000).unwrap();
+
+        let keys: Vec<&str> = result.iter().map(|i| i.id_readable.as_str()).collect();
+        assert_eq!(keys, vec!["TEST-1", "TEST-2", "TEST-3", "TEST-4", "TEST-5"]);
+    }
+
+    #[tokio::test]
+    async fn test_search_all_issues_errors_on_repeated_token() {
+        let mock_server = MockServer::start().await;
+
+        // The second response echoes back the token that was just used:
+        // the cursor is not advancing. Must fail loudly instead of looping.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param_is_missing("nextPageToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("1", "TEST-1", "Issue 1"),
+                    mock_jira_issue_with_id("2", "TEST-2", "Issue 2")
+                ],
+                "nextPageToken": "t2"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("nextPageToken", "t2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("1", "TEST-1", "Issue 1"),
+                    mock_jira_issue_with_id("2", "TEST-2", "Issue 2")
+                ],
+                "nextPageToken": "t2"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::{IssueTracker, TrackerError};
+        let result = IssueTracker::search_all_issues(&client, "project = TEST", 1000);
+        assert!(matches!(result, Err(TrackerError::PaginationStalled(_))));
+    }
+
+    #[tokio::test]
+    async fn test_search_all_issues_errors_after_no_progress_run() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Always returns the same single issue but a fresh token on every
+        /// request — the cursor "advances" without ever yielding new data.
+        struct FreshTokenSamePage(AtomicUsize);
+        impl wiremock::Respond for FreshTokenSamePage {
+            fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+                let n = self.0.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "issues": [mock_jira_issue_with_id("1", "TEST-1", "Issue 1")],
+                    "nextPageToken": format!("t{}", n + 1)
+                }))
+            }
+        }
+
+        let mock_server = MockServer::start().await;
+
+        // Request 1 makes progress (1 new issue); requests 2..=6 each yield
+        // zero new issues with a fresh token, exhausting the no-progress
+        // budget of 5 and failing loudly.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .respond_with(FreshTokenSamePage(AtomicUsize::new(0)))
+            .expect(6)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::{IssueTracker, TrackerError};
+        let result = IssueTracker::search_all_issues(&client, "project = TEST", 1000);
+        assert!(matches!(result, Err(TrackerError::PaginationStalled(_))));
+    }
+
+    #[tokio::test]
+    async fn test_search_all_issues_respects_max_results() {
+        let mock_server = MockServer::start().await;
+
+        // max_results = 3: the first request asks for 3, the second for the
+        // remaining 1, and the walk stops without following the last token.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("maxResults", "3"))
+            .and(query_param_is_missing("nextPageToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("1", "TEST-1", "Issue 1"),
+                    mock_jira_issue_with_id("2", "TEST-2", "Issue 2")
+                ],
+                "nextPageToken": "t2"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/search/jql"))
+            .and(query_param("maxResults", "1"))
+            .and(query_param("nextPageToken", "t2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("3", "TEST-3", "Issue 3")
+                ],
+                "nextPageToken": "t3"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::IssueTracker;
+        let result = IssueTracker::search_all_issues(&client, "project = TEST", 3).unwrap();
+        assert_eq!(result.len(), 3);
     }
 
     #[tokio::test]
