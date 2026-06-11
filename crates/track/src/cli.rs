@@ -564,7 +564,7 @@ pub enum IssueCommands {
         /// Issue ID(s) - comma-separated for batch (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
         #[arg(value_delimiter = ',')]
         ids: Vec<String>,
-        /// State field name (default: "Stage")
+        /// State field name; "State"/"Stage"/"Status" route to workflow transitions (default: "Stage")
         #[arg(long, default_value = "Stage")]
         field: String,
         /// State value for in-progress (default: "Develop")
@@ -577,7 +577,7 @@ pub enum IssueCommands {
         /// Issue ID(s) - comma-separated for batch (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
         #[arg(value_delimiter = ',')]
         ids: Vec<String>,
-        /// State field name (default: "Stage")
+        /// State field name; "State"/"Stage"/"Status" route to workflow transitions (default: "Stage")
         #[arg(long, default_value = "Stage")]
         field: String,
         /// State value for done (default: "Done")

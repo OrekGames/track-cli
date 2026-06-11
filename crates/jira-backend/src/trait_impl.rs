@@ -188,10 +188,23 @@ impl IssueTracker for JiraClient {
             .cloned()
             .partition(|cf| matches!(cf, CustomFieldUpdate::State { .. }));
 
-        let status_target = status_update.into_iter().next().and_then(|cf| match cf {
-            CustomFieldUpdate::State { value, .. } => Some(value),
-            _ => None,
-        });
+        let mut status_targets: Vec<String> = status_update
+            .into_iter()
+            .filter_map(|cf| match cf {
+                CustomFieldUpdate::State { value, .. } => Some(value),
+                _ => None,
+            })
+            .collect();
+        status_targets.sort();
+        status_targets.dedup();
+        if status_targets.len() > 1 {
+            return Err(TrackerError::InvalidInput(format!(
+                "Conflicting status values requested in one update ({}). \
+                 Jira supports a single status transition per update.",
+                status_targets.join(", ")
+            )));
+        }
+        let status_target = status_targets.pop();
 
         let stripped = UpdateIssue {
             custom_fields: other_fields,

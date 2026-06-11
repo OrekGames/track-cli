@@ -1825,4 +1825,92 @@ mod tests {
         let result = client.link_issues("PROJ-1", "PROJ-2", "depends", "OUTWARD");
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn test_update_issue_rejects_conflicting_status_values() {
+        // No mocks needed: the conflict is detected before any request is sent
+        // (the /field metadata fetch degrades gracefully to an empty list).
+        let mock_server = MockServer::start().await;
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::{CustomFieldUpdate, IssueTracker, TrackerError, UpdateIssue};
+        let update = UpdateIssue {
+            custom_fields: vec![
+                CustomFieldUpdate::State {
+                    name: "State".to_string(),
+                    value: "Done".to_string(),
+                },
+                CustomFieldUpdate::State {
+                    name: "Status".to_string(),
+                    value: "In Progress".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let err = IssueTracker::update_issue(&client, "TEST-1", &update).unwrap_err();
+        match err {
+            TrackerError::InvalidInput(msg) => {
+                assert!(
+                    msg.contains("Done") && msg.contains("In Progress"),
+                    "{}",
+                    msg
+                );
+            }
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_issue_collapses_duplicate_status_values() {
+        // Two State updates carrying the same value are not a conflict:
+        // exactly one transition must fire.
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-1/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    { "id": "31", "name": "Done", "to": { "id": "3", "name": "Done" } }
+                ]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue/TEST-1/transitions"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-1"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-1", "Test")),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+
+        use tracker_core::{CustomFieldUpdate, IssueTracker, UpdateIssue};
+        let update = UpdateIssue {
+            custom_fields: vec![
+                CustomFieldUpdate::State {
+                    name: "State".to_string(),
+                    value: "Done".to_string(),
+                },
+                CustomFieldUpdate::State {
+                    name: "Status".to_string(),
+                    value: "Done".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let issue = IssueTracker::update_issue(&client, "TEST-1", &update).unwrap();
+        assert_eq!(issue.id_readable, "TEST-1");
+    }
 }

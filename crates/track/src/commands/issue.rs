@@ -1229,6 +1229,28 @@ fn handle_unlink(
     Ok(())
 }
 
+/// Build the custom field update for a state transition (`issue start`/`issue complete`).
+///
+/// State-typed field names get the State variant so backends route them to their
+/// workflow-transition machinery: "State"/"Stage" (YouTrack), "Status" (Jira).
+/// Anything else falls back to SingleEnum.
+fn build_state_field_update(field: &str, state: &str) -> CustomFieldUpdate {
+    if field.eq_ignore_ascii_case("State")
+        || field.eq_ignore_ascii_case("Stage")
+        || field.eq_ignore_ascii_case("Status")
+    {
+        CustomFieldUpdate::State {
+            name: field.to_string(),
+            value: state.to_string(),
+        }
+    } else {
+        CustomFieldUpdate::SingleEnum {
+            name: field.to_string(),
+            value: state.to_string(),
+        }
+    }
+}
+
 fn handle_state_transition(
     client: &dyn IssueTracker,
     id: &str,
@@ -1237,25 +1259,10 @@ fn handle_state_transition(
     action: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    // Build the custom field update based on field name
-    let custom_field = if field.eq_ignore_ascii_case("State") || field.eq_ignore_ascii_case("Stage")
-    {
-        CustomFieldUpdate::State {
-            name: field.to_string(),
-            value: state.to_string(),
-        }
-    } else {
-        // For non-State fields, treat as SingleEnum
-        CustomFieldUpdate::SingleEnum {
-            name: field.to_string(),
-            value: state.to_string(),
-        }
-    };
-
     let update = UpdateIssue {
         summary: None,
         description: None,
-        custom_fields: vec![custom_field],
+        custom_fields: vec![build_state_field_update(field, state)],
         tags: vec![],
         parent: None,
     };
@@ -1263,6 +1270,9 @@ fn handle_state_transition(
     let issue = client
         .update_issue(id, &update)
         .with_context(|| format!("Failed to update issue '{}' state to '{}'", id, state))?;
+
+    let warnings = verify_issue_update(&update, &issue);
+    crate::output::output_verification_warnings(&warnings, format);
 
     match format {
         OutputFormat::Json => {
@@ -1330,7 +1340,7 @@ fn handle_update_batch(
                 .and_then(|update| validate_update(client, id, &update))
                 .map(|_| None)
         } else {
-            handle_update_single(client, id, args).map(Some)
+            handle_update_single(client, id, args, format).map(Some)
         };
 
         match result {
@@ -1363,6 +1373,7 @@ fn handle_update_single(
     client: &dyn IssueTracker,
     id: &str,
     args: &IssueFieldArgs,
+    format: OutputFormat,
 ) -> Result<Issue> {
     let update = build_update(client, id, args)?;
 
@@ -1374,7 +1385,18 @@ fn handle_update_single(
         .update_issue(id, &update)
         .with_context(|| format!("Failed to update issue '{}'", id))?;
 
+    let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
+    crate::output::output_verification_warnings(&warnings, format);
+
     Ok(issue)
+}
+
+/// Prefix verification warnings with the issue ID so batch output stays attributable.
+fn prefix_warnings(id: &str, warnings: Vec<String>) -> Vec<String> {
+    warnings
+        .into_iter()
+        .map(|w| format!("{}: {}", id, w))
+        .collect()
 }
 
 fn handle_delete_batch(
@@ -1430,24 +1452,10 @@ fn handle_state_transition_batch(
         return handle_state_transition(client, &ids[0], field, state, action, format);
     }
 
-    // Build the custom field update
-    let custom_field = if field.eq_ignore_ascii_case("State") || field.eq_ignore_ascii_case("Stage")
-    {
-        CustomFieldUpdate::State {
-            name: field.to_string(),
-            value: state.to_string(),
-        }
-    } else {
-        CustomFieldUpdate::SingleEnum {
-            name: field.to_string(),
-            value: state.to_string(),
-        }
-    };
-
     let update = UpdateIssue {
         summary: None,
         description: None,
-        custom_fields: vec![custom_field],
+        custom_fields: vec![build_state_field_update(field, state)],
         tags: vec![],
         parent: None,
     };
@@ -1460,6 +1468,8 @@ fn handle_state_transition_batch(
 
         match result {
             Ok(issue) => {
+                let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
+                crate::output::output_verification_warnings(&warnings, format);
                 results.push(BatchResult {
                     id: id.clone(),
                     success: true,
@@ -1618,6 +1628,21 @@ fn verify_field_match(
         CustomField::Unknown { name } => unicode_eq_ignore_case(name, req_name),
     });
 
+    // A State update targets the tracker's workflow state field whatever the backend
+    // names it (YouTrack "State"/"Stage", Jira "Status"). When the requested name has
+    // no match, fall back to the result's State-typed field — but only when there is
+    // exactly one, so we never verify against the wrong field.
+    let actual = actual.or_else(|| {
+        if !matches!(requested, CustomFieldUpdate::State { .. }) {
+            return None;
+        }
+        let mut states = actual_fields
+            .iter()
+            .filter(|f| matches!(f, CustomField::State { .. }));
+        let first = states.next();
+        if states.next().is_none() { first } else { None }
+    });
+
     match (requested, actual) {
         (
             CustomFieldUpdate::SingleEnum { name, value },
@@ -1655,15 +1680,17 @@ fn verify_field_match(
             }
         }
         (
-            CustomFieldUpdate::State { name, value },
+            CustomFieldUpdate::State { value, .. },
             Some(CustomField::State {
-                value: actual_val, ..
+                name: actual_name,
+                value: actual_val,
+                ..
             }),
         ) => {
             if actual_val.as_deref().unwrap_or("") != value {
                 Some(format!(
                     "Field '{}': expected '{}', got '{}'",
-                    name,
+                    actual_name,
                     value,
                     actual_val.as_deref().unwrap_or("None")
                 ))
@@ -2007,5 +2034,108 @@ mod tests {
         assert_eq!(warnings.len(), 2);
         assert!(warnings[0].contains("Summary"));
         assert!(warnings[1].contains("State"));
+    }
+
+    #[test]
+    fn state_field_update_routes_status_state_and_stage_to_state_variant() {
+        for field in ["Status", "status", "State", "Stage", "STAGE"] {
+            assert!(
+                matches!(
+                    build_state_field_update(field, "Done"),
+                    CustomFieldUpdate::State { .. }
+                ),
+                "'{}' should build a State update",
+                field
+            );
+        }
+        assert!(matches!(
+            build_state_field_update("Backlog", "Done"),
+            CustomFieldUpdate::SingleEnum { .. }
+        ));
+    }
+
+    #[test]
+    fn verifies_state_update_against_renamed_state_field() {
+        use tracker_core::CustomField;
+
+        // Jira: the CLI requests "State", the converted issue names the field "Status"
+        let requested = CustomFieldUpdate::State {
+            name: "State".to_string(),
+            value: "Done".to_string(),
+        };
+        let actual = vec![CustomField::State {
+            name: "Status".to_string(),
+            value: Some("Done".to_string()),
+            is_resolved: true,
+        }];
+
+        assert!(verify_field_match(&requested, &actual).is_none());
+    }
+
+    #[test]
+    fn detects_state_mismatch_against_renamed_state_field() {
+        use tracker_core::CustomField;
+
+        let requested = CustomFieldUpdate::State {
+            name: "State".to_string(),
+            value: "Done".to_string(),
+        };
+        let actual = vec![CustomField::State {
+            name: "Status".to_string(),
+            value: Some("New".to_string()),
+            is_resolved: false,
+        }];
+
+        let warning = verify_field_match(&requested, &actual).expect("mismatch must warn");
+        assert!(
+            warning.contains("Status"),
+            "warning should name the actual field: {}",
+            warning
+        );
+        assert!(warning.contains("Done") && warning.contains("New"));
+    }
+
+    #[test]
+    fn state_fallback_requires_unique_state_field() {
+        use tracker_core::CustomField;
+
+        let requested = CustomFieldUpdate::State {
+            name: "Phase".to_string(),
+            value: "Done".to_string(),
+        };
+        let actual = vec![
+            CustomField::State {
+                name: "State".to_string(),
+                value: Some("Done".to_string()),
+                is_resolved: true,
+            },
+            CustomField::State {
+                name: "Stage".to_string(),
+                value: Some("Develop".to_string()),
+                is_resolved: false,
+            },
+        ];
+
+        // Two state fields and no name match: never guess, report as ignored
+        let warning = verify_field_match(&requested, &actual).expect("ambiguity must warn");
+        assert!(warning.contains("ignored"));
+    }
+
+    #[test]
+    fn non_state_updates_do_not_fall_back_to_state_field() {
+        use tracker_core::CustomField;
+
+        let requested = CustomFieldUpdate::SingleEnum {
+            name: "Component".to_string(),
+            value: "UI".to_string(),
+        };
+        let actual = vec![CustomField::State {
+            name: "Status".to_string(),
+            value: Some("Done".to_string()),
+            is_resolved: true,
+        }];
+
+        let warning = verify_field_match(&requested, &actual).expect("missing field must warn");
+        assert!(warning.contains("ignored"));
     }
 }
