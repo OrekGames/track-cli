@@ -48,6 +48,9 @@ pub struct JiraIssueFields {
     pub created: Option<String>,
     /// Last update timestamp
     pub updated: Option<String>,
+    /// Resolution timestamp (Jira sends this field as all-lowercase)
+    #[serde(rename = "resolutiondate", default)]
+    pub resolution_date: Option<String>,
     /// Subtasks
     #[serde(default)]
     pub subtasks: Vec<JiraIssueRef>,

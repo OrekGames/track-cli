@@ -355,6 +355,14 @@ impl Displayable for Issue {
                 .dimmed()
         );
 
+        if let Some(resolved) = &self.resolved {
+            output.push_str(&format!(
+                "\n  {}: {}",
+                "Resolved".dimmed(),
+                resolved.format("%Y-%m-%d %H:%M:%S").to_string().dimmed()
+            ));
+        }
+
         if let Some(desc) = &self.description {
             output.push_str(&format!("\n  {}: {}", "Description".dimmed(), desc));
         }
@@ -694,6 +702,7 @@ mod tests {
             tags: vec![],
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
+            resolved: None,
         }
     }
 

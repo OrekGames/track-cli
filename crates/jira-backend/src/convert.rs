@@ -151,6 +151,7 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
             .collect(),
         created: parse_jira_datetime(&j.fields.created).unwrap_or_else(Utc::now),
         updated: parse_jira_datetime(&j.fields.updated).unwrap_or_else(Utc::now),
+        resolved: parse_jira_datetime(&j.fields.resolution_date),
     }
 }
 
@@ -495,10 +496,14 @@ pub fn update_issue_to_jira(
     })
 }
 
-/// Parse Jira datetime string to chrono DateTime
-fn parse_jira_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
+/// Parse an Atlassian (Jira/Confluence) datetime string to chrono DateTime
+///
+/// Jira Cloud emits offsets without a colon (`2024-01-15T10:00:00.000+0000`),
+/// which strict RFC 3339 parsing rejects, so fall back to a `%z`-based format.
+pub(crate) fn parse_jira_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
     dt.as_ref().and_then(|s| {
         chrono::DateTime::parse_from_rfc3339(s)
+            .or_else(|_| chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%z"))
             .ok()
             .map(|d| d.with_timezone(&Utc))
     })
@@ -1256,6 +1261,7 @@ mod tests {
                 labels: vec![],
                 created: Some("2024-01-15T10:00:00.000+0000".to_string()),
                 updated: Some("2024-01-15T12:00:00.000+0000".to_string()),
+                resolution_date: None,
                 subtasks: vec![],
                 parent: None,
                 issuelinks: vec![],
@@ -1293,6 +1299,65 @@ mod tests {
         assert!(
             matches!(priority, CustomField::SingleEnum { value: Some(v), .. } if v == "Medium")
         );
+
+        // Real dates from the fixture, not marshal time (regression for the
+        // strict-RFC3339 bug that stamped every issue with Utc::now())
+        use chrono::TimeZone;
+        assert_eq!(
+            core.created,
+            Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap()
+        );
+        assert_eq!(
+            core.updated,
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap()
+        );
+        assert_eq!(core.resolved, None);
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_resolution_date() {
+        use chrono::TimeZone;
+        let mut issue = mock_jira_issue_for_conversion(Default::default());
+        issue.fields.resolution_date = Some("2024-02-01T08:30:00.000+0000".to_string());
+
+        let core = jira_issue_to_core(issue, &[]);
+        assert_eq!(
+            core.resolved,
+            Some(Utc.with_ymd_and_hms(2024, 2, 1, 8, 30, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_jira_datetime_handles_jira_cloud_offsets() {
+        use chrono::TimeZone;
+        // Jira Cloud emits colon-less offsets, which strict RFC 3339 rejects
+        assert_eq!(
+            parse_jira_datetime(&Some("2024-01-15T10:00:00.000+0000".to_string())),
+            Some(Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap())
+        );
+        assert_eq!(
+            parse_jira_datetime(&Some("2024-01-15T10:00:00.000-0500".to_string())),
+            Some(Utc.with_ymd_and_hms(2024, 1, 15, 15, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_jira_datetime_handles_rfc3339() {
+        use chrono::TimeZone;
+        assert_eq!(
+            parse_jira_datetime(&Some("2024-01-15T10:00:00Z".to_string())),
+            Some(Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap())
+        );
+        assert_eq!(
+            parse_jira_datetime(&Some("2024-01-15T10:00:00.000+00:00".to_string())),
+            Some(Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_jira_datetime_rejects_invalid() {
+        assert_eq!(parse_jira_datetime(&Some("not a date".to_string())), None);
+        assert_eq!(parse_jira_datetime(&None), None);
     }
 
     #[test]

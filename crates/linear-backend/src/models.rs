@@ -99,6 +99,10 @@ pub struct LinearIssue {
     pub url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub canceled_at: Option<DateTime<Utc>>,
     pub team: LinearTeam,
     pub state: Option<LinearWorkflowState>,
     pub assignee: Option<LinearUser>,

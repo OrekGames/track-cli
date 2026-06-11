@@ -9,7 +9,7 @@ use tracker_core::{
 use crate::client::JiraClient;
 use crate::convert::{
     create_issue_to_jira, get_standard_custom_fields, jira_field_to_project_custom_field,
-    jira_issue_to_core, merge_fields, update_issue_to_jira,
+    jira_issue_to_core, merge_fields, parse_jira_datetime, update_issue_to_jira,
 };
 use crate::models::{
     CreateJiraIssueLink, IssueKeyRef, IssueLinkTypeName, ParentId, UpdateJiraIssue,
@@ -488,11 +488,7 @@ fn convert_simple_query_to_jql(query: &str) -> String {
 }
 
 fn jira_attachment_to_core(attachment: crate::models::JiraAttachment) -> IssueAttachment {
-    let created = attachment
-        .created
-        .as_deref()
-        .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok())
-        .map(|created| created.with_timezone(&chrono::Utc));
+    let created = parse_jira_datetime(&attachment.created);
 
     IssueAttachment {
         id: attachment.id,
@@ -535,5 +531,25 @@ mod tests {
         let pure_keyword = "bug fixing";
         let jql_pure_keyword = convert_simple_query_to_jql(pure_keyword);
         assert_eq!(jql_pure_keyword, "text ~ \"bug fixing\"");
+    }
+
+    #[test]
+    fn attachment_created_parses_jira_cloud_offset() {
+        use chrono::TimeZone;
+        let attachment = crate::models::JiraAttachment {
+            id: "10000".to_string(),
+            filename: "log.txt".to_string(),
+            size: 42,
+            mime_type: None,
+            content: None,
+            created: Some("2024-01-15T10:00:00.000+0000".to_string()),
+            author: None,
+        };
+
+        let core = jira_attachment_to_core(attachment);
+        assert_eq!(
+            core.created,
+            Some(chrono::Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap())
+        );
     }
 }

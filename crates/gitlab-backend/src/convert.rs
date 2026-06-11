@@ -61,6 +61,7 @@ pub fn gitlab_issue_to_core(issue: GitLabIssue, project_id: &str) -> tracker_cor
         tags,
         created: parse_gitlab_datetime(&issue.created_at).unwrap_or_else(Utc::now),
         updated: parse_gitlab_datetime(&issue.updated_at).unwrap_or_else(Utc::now),
+        resolved: parse_gitlab_datetime(&issue.closed_at),
     }
 }
 

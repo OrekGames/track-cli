@@ -1961,6 +1961,7 @@ mod tests {
             tags: vec![],
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
+            resolved: None,
         };
 
         let warnings = verify_issue_update(&requested, &result);
@@ -1999,6 +2000,7 @@ mod tests {
             tags: vec![],
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
+            resolved: None,
         };
 
         let warnings = verify_issue_update(&requested, &result);

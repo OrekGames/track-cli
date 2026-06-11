@@ -19,6 +19,8 @@ const ISSUE_FIELDS: &str = r#"
     url
     createdAt
     updatedAt
+    completedAt
+    canceledAt
     team { id key name description }
     state { id name type position }
     assignee { id name displayName email }
