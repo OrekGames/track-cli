@@ -71,6 +71,7 @@ pub fn github_issue_to_core(issue: GitHubIssue, owner: &str, repo: &str) -> Issu
         tags,
         created: parse_github_datetime(&issue.created_at).unwrap_or_else(Utc::now),
         updated: parse_github_datetime(&issue.updated_at).unwrap_or_else(Utc::now),
+        resolved: issue.closed_at.as_deref().and_then(parse_github_datetime),
     }
 }
 

@@ -86,6 +86,7 @@ pub fn linear_issue_to_core(issue: LinearIssue) -> Issue {
         tags,
         created: issue.created_at,
         updated: issue.updated_at,
+        resolved: issue.completed_at.or(issue.canceled_at),
     }
 }
 

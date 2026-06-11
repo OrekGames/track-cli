@@ -368,6 +368,7 @@ mod tests {
             tags: Vec::new(),
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
+            resolved: None,
         }
     }
 

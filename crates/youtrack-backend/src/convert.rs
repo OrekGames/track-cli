@@ -20,6 +20,7 @@ impl From<yt::Issue> for core::Issue {
             tags: issue.tags.into_iter().map(Into::into).collect(),
             created: issue.created,
             updated: issue.updated,
+            resolved: issue.resolved,
         }
     }
 }
