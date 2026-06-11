@@ -23,7 +23,11 @@ pub struct Issue {
     pub created: DateTime<Utc>,
     /// Last update timestamp
     pub updated: DateTime<Utc>,
-    /// Resolution timestamp (None if unresolved)
+    /// Resolution timestamp. This is when the backend recorded a resolution,
+    /// not a general "is closed" flag — an issue can sit in a resolved/done
+    /// state with no resolution date set (e.g. a Jira workflow without a
+    /// "Set Resolution" post-function). Use the State custom field's
+    /// `is_resolved` to test closedness.
     #[serde(default)]
     pub resolved: Option<DateTime<Utc>>,
 }

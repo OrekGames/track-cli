@@ -496,11 +496,11 @@ pub fn update_issue_to_jira(
     })
 }
 
-/// Parse Jira datetime string to chrono DateTime
+/// Parse an Atlassian (Jira/Confluence) datetime string to chrono DateTime
 ///
 /// Jira Cloud emits offsets without a colon (`2024-01-15T10:00:00.000+0000`),
 /// which strict RFC 3339 parsing rejects, so fall back to a `%z`-based format.
-fn parse_jira_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_jira_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
     dt.as_ref().and_then(|s| {
         chrono::DateTime::parse_from_rfc3339(s)
             .or_else(|_| chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%z"))
