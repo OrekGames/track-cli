@@ -776,7 +776,7 @@ fn dropped_reserved_field_warning(name: &str, silently_handled: &[&str]) -> Opti
         ""
     };
     Some(format!(
-        "Field '{}' was not applied: it is reserved on Jira and cannot be set through a field edit.{}",
+        "Field '{}' was not applied: the Jira backend does not set it through field edits.{}",
         name, hint
     ))
 }

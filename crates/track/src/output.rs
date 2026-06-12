@@ -818,6 +818,28 @@ mod tests {
     }
 
     #[test]
+    fn change_summary_with_renamed_state_field_smoke() {
+        // Jira shape: `--state Done` requests "State", the issue carries "Status".
+        // Exercises the full summary path (display assertions aren't capturable here;
+        // the name resolution itself is covered by the tests above).
+        let old = issue_with_custom_fields(vec![CustomField::State {
+            name: "Status".into(),
+            value: Some("New".into()),
+            is_resolved: false,
+        }]);
+        let new = issue_with_custom_fields(vec![CustomField::State {
+            name: "Status".into(),
+            value: Some("Done".into()),
+            is_resolved: true,
+        }]);
+        let update = tracker_core::UpdateIssue {
+            custom_fields: vec![state_update("State")],
+            ..Default::default()
+        };
+        output_change_summary(Some(&old), &new, Some(&update), None, OutputFormat::Text);
+    }
+
+    #[test]
     fn non_state_request_never_resolves_to_state_field() {
         let issue = issue_with_custom_fields(vec![CustomField::State {
             name: "Status".into(),
