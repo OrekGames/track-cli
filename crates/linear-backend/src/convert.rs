@@ -2,8 +2,9 @@
 
 use serde_json::{Value, json};
 use tracker_core::{
-    Comment, CommentAuthor, CustomField, Issue, IssueLink, IssueLinkType, IssueTag, LinkedIssue,
-    Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag, TagColor, User,
+    Comment, CommentAuthor, CustomField, Issue, IssueHistoryEvent, IssueLink, IssueLinkType,
+    IssueTag, LinkedIssue, Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag, TagColor,
+    User, canonical_field_name,
 };
 
 use crate::client::{LinearIssueRelations, add_filter_condition, filter_with_team};
@@ -138,6 +139,89 @@ impl From<LinearComment> for Comment {
             created: Some(comment.created_at),
         }
     }
+}
+
+/// Convert Linear issue-history nodes into core history events, newest-first.
+///
+/// Linear models history as nodes that may each carry several independent
+/// transitions (state, assignee, priority, title), so every populated
+/// transition is **decomposed** into its own [`IssueHistoryEvent`], all sharing
+/// the node's `createdAt` and `actor`. Nodes whose timestamp is missing are
+/// skipped rather than fabricated. The state field is canonicalized so Linear's
+/// workflow "state" folds onto the portable "status" token. `from`/`to` are
+/// `None` when the corresponding source field is null.
+///
+/// Label history (`addedLabelIds`/`removedLabelIds`) is intentionally not
+/// emitted here — see the TODO below.
+pub fn linear_history_to_events(nodes: Vec<LinearIssueHistory>) -> Vec<IssueHistoryEvent> {
+    let mut events = Vec::new();
+    for node in nodes {
+        // A node without a timestamp can't be placed on the timeline; skip it
+        // rather than stamping a fabricated `at`.
+        let Some(at) = node.created_at else {
+            continue;
+        };
+        let author = node.actor.as_ref().map(|user| CommentAuthor {
+            login: linear_user_login(user),
+            name: Some(linear_user_display_name(user)),
+        });
+
+        // State transition -> canonical "status".
+        if let Some(to_state) = &node.to_state {
+            events.push(IssueHistoryEvent {
+                at,
+                author: author.clone(),
+                field: canonical_field_name("state"),
+                from: node.from_state.as_ref().map(|s| s.name.clone()),
+                to: Some(to_state.name.clone()),
+            });
+        }
+
+        // Assignee transition (only when something actually changed).
+        let from_assignee = node.from_assignee.as_ref().map(linear_user_display_name);
+        let to_assignee = node.to_assignee.as_ref().map(linear_user_display_name);
+        if (from_assignee.is_some() || to_assignee.is_some()) && from_assignee != to_assignee {
+            events.push(IssueHistoryEvent {
+                at,
+                author: author.clone(),
+                field: "assignee".to_string(),
+                from: from_assignee,
+                to: to_assignee,
+            });
+        }
+
+        // Priority transition (only when the value actually changed).
+        if node.to_priority.is_some() && node.to_priority != node.from_priority {
+            events.push(IssueHistoryEvent {
+                at,
+                author: author.clone(),
+                field: "priority".to_string(),
+                from: node.from_priority.map(|p| priority_label(p).to_string()),
+                to: node.to_priority.map(|p| priority_label(p).to_string()),
+            });
+        }
+
+        // Title transition.
+        if node.to_title.is_some() {
+            events.push(IssueHistoryEvent {
+                at,
+                author: author.clone(),
+                field: "title".to_string(),
+                from: node.from_title.clone(),
+                to: node.to_title.clone(),
+            });
+        }
+
+        // TODO: label history (addedLabelIds/removedLabelIds) is deferred —
+        // those carry only label *ids*, which require a separate name lookup to
+        // render portably. Documented follow-up.
+    }
+
+    // Linear returns history newest-first; re-sort defensively. `sort_by` is a
+    // stable sort, so the per-node transition order (state, assignee, priority,
+    // title) is preserved among events sharing a timestamp.
+    events.sort_by(|a, b| b.at.cmp(&a.at));
+    events
 }
 
 pub fn team_details_custom_fields(
@@ -607,6 +691,146 @@ fn tokenize_query(query: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn history_from_json(value: serde_json::Value) -> Vec<LinearIssueHistory> {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn linear_history_decomposes_multi_change_node() {
+        // One node carrying state + assignee + priority transitions must yield
+        // three events, all sharing the node's timestamp and actor, in
+        // per-node order (state, assignee, priority).
+        let nodes = history_from_json(serde_json::json!([
+            {
+                "createdAt": "2024-01-15T10:00:00Z",
+                "actor": { "id": "u-alice", "name": "alice", "displayName": "Alice", "email": "alice@example.com" },
+                "fromState": { "name": "Todo" },
+                "toState": { "name": "In Progress" },
+                "fromAssignee": null,
+                "toAssignee": { "id": "u-bob", "name": "bob", "displayName": "Bob", "email": "bob@example.com" },
+                "fromPriority": 3,
+                "toPriority": 1,
+                "fromTitle": null,
+                "toTitle": null
+            }
+        ]));
+
+        let events = linear_history_to_events(nodes);
+        assert_eq!(events.len(), 3);
+
+        // State -> canonical "status".
+        assert_eq!(events[0].field, "status");
+        assert_eq!(events[0].from.as_deref(), Some("Todo"));
+        assert_eq!(events[0].to.as_deref(), Some("In Progress"));
+
+        // Assignee uses display name; a null `from` side maps to None.
+        assert_eq!(events[1].field, "assignee");
+        assert_eq!(events[1].from, None);
+        assert_eq!(events[1].to.as_deref(), Some("Bob"));
+
+        // Priority maps numeric codes through priority_label.
+        assert_eq!(events[2].field, "priority");
+        assert_eq!(events[2].from.as_deref(), Some("Medium"));
+        assert_eq!(events[2].to.as_deref(), Some("Urgent"));
+
+        // Author is shared across all three events.
+        for event in &events {
+            assert_eq!(
+                event.author.as_ref().map(|a| a.login.as_str()),
+                Some("alice@example.com")
+            );
+            assert_eq!(
+                event.author.as_ref().and_then(|a| a.name.as_deref()),
+                Some("Alice")
+            );
+        }
+    }
+
+    #[test]
+    fn linear_history_null_actor_yields_no_author() {
+        // A system change carries no actor; the event's author must be None.
+        let nodes = history_from_json(serde_json::json!([
+            {
+                "createdAt": "2024-01-15T10:00:00Z",
+                "actor": null,
+                "fromState": { "name": "Backlog" },
+                "toState": { "name": "Todo" }
+            }
+        ]));
+
+        let events = linear_history_to_events(nodes);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].author.is_none());
+        assert_eq!(events[0].field, "status");
+    }
+
+    #[test]
+    fn linear_history_title_only_node() {
+        // A node with only a title transition produces exactly one title event,
+        // and no spurious state/assignee/priority events.
+        let nodes = history_from_json(serde_json::json!([
+            {
+                "createdAt": "2024-01-15T10:00:00Z",
+                "actor": { "id": "u-carol", "name": "carol", "displayName": "Carol" },
+                "fromTitle": "Old title",
+                "toTitle": "New title"
+            }
+        ]));
+
+        let events = linear_history_to_events(nodes);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field, "title");
+        assert_eq!(events[0].from.as_deref(), Some("Old title"));
+        assert_eq!(events[0].to.as_deref(), Some("New title"));
+    }
+
+    #[test]
+    fn linear_history_sorts_newest_first() {
+        // Two nodes arrive oldest-first; output must be newest-first.
+        let nodes = history_from_json(serde_json::json!([
+            {
+                "createdAt": "2024-01-10T09:00:00Z",
+                "fromState": { "name": "Todo" },
+                "toState": { "name": "In Progress" }
+            },
+            {
+                "createdAt": "2024-01-15T14:30:00Z",
+                "fromState": { "name": "In Progress" },
+                "toState": { "name": "Done" }
+            }
+        ]));
+
+        let events = linear_history_to_events(nodes);
+        assert_eq!(events.len(), 2);
+        // Newest (Done) first.
+        assert_eq!(events[0].to.as_deref(), Some("Done"));
+        assert_eq!(events[1].to.as_deref(), Some("In Progress"));
+    }
+
+    #[test]
+    fn linear_history_skips_missing_timestamp_and_unchanged_fields() {
+        let nodes = history_from_json(serde_json::json!([
+            {
+                // No createdAt -> skipped rather than fabricated.
+                "toState": { "name": "Done" }
+            },
+            {
+                "createdAt": "2024-02-01T00:00:00Z",
+                // Priority present but unchanged -> no priority event.
+                "fromPriority": 2,
+                "toPriority": 2,
+                // Assignee present but unchanged -> no assignee event.
+                "fromAssignee": { "id": "u-dan", "name": "dan", "displayName": "Dan" },
+                "toAssignee": { "id": "u-dan", "name": "dan", "displayName": "Dan" }
+            }
+        ]));
+
+        let events = linear_history_to_events(nodes);
+        // The timestamp-less node is dropped, and the second node has nothing
+        // that actually changed.
+        assert!(events.is_empty());
+    }
 
     #[test]
     fn parses_linear_query_tokens() {

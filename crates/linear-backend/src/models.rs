@@ -127,6 +127,38 @@ pub struct LinearComment {
     pub user: Option<LinearUser>,
 }
 
+/// A workflow state reference as it appears in an issue-history transition.
+///
+/// History nodes only need the state's display `name`; the full
+/// [`LinearWorkflowState`] is overkill (and its `type`/`position` fields are not
+/// requested on the history query).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LinearHistoryState {
+    pub name: String,
+}
+
+/// One entry in an issue's change history (`Issue.history` connection).
+///
+/// A single node may carry several independent transitions (state, assignee,
+/// priority, title, ...); each populated transition is decomposed into its own
+/// [`tracker_core::IssueHistoryEvent`] by the converter, all sharing this
+/// node's `created_at` and `actor`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearIssueHistory {
+    #[serde(default)]
+    pub created_at: Option<DateTime<Utc>>,
+    pub actor: Option<LinearUser>,
+    pub from_state: Option<LinearHistoryState>,
+    pub to_state: Option<LinearHistoryState>,
+    pub from_assignee: Option<LinearUser>,
+    pub to_assignee: Option<LinearUser>,
+    pub from_priority: Option<i64>,
+    pub to_priority: Option<i64>,
+    pub from_title: Option<String>,
+    pub to_title: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinearIssueRelation {
