@@ -424,7 +424,7 @@ pub fn create_issue_to_jira(
 
     let issue_type = issue_type_opt.unwrap_or_else(|| "Task".to_string());
 
-    let extra = resolve_extra_fields(&issue.custom_fields, jira_fields)?;
+    let extra = resolve_extra_fields(&issue.custom_fields, jira_fields, CREATE_HANDLED_FIELDS)?;
 
     Ok(CreateJiraIssue {
         fields: CreateJiraIssueFields {
@@ -475,7 +475,7 @@ pub fn update_issue_to_jira(
         _ => None,
     });
 
-    let extra = resolve_extra_fields(&update.custom_fields, jira_fields)?;
+    let extra = resolve_extra_fields(&update.custom_fields, jira_fields, UPDATE_HANDLED_FIELDS)?;
 
     Ok(UpdateJiraIssue {
         fields: UpdateJiraIssueFields {
@@ -749,6 +749,38 @@ fn is_reserved_field(name: &str) -> bool {
         .any(|&r| r.eq_ignore_ascii_case(name))
 }
 
+/// Reserved fields the create path consumes through the typed request struct;
+/// dropping them from "extra" is expected and must stay silent.
+const CREATE_HANDLED_FIELDS: &[&str] = &["priority", "type", "issuetype"];
+
+/// Reserved fields the update path consumes through the typed request struct.
+/// Status/state never legitimately reach `resolve_extra_fields` on this path:
+/// `CustomFieldUpdate::State` is partitioned out upstream and routed to the
+/// /transitions endpoint, so a status-named field seen here was mistyped
+/// (e.g. SingleEnum) and is about to be dropped.
+const UPDATE_HANDLED_FIELDS: &[&str] = &["priority"];
+
+/// Warning for a reserved-name field that is about to be silently dropped, or
+/// None when the caller's typed struct already carries it.
+fn dropped_reserved_field_warning(name: &str, silently_handled: &[&str]) -> Option<String> {
+    if silently_handled
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
+    let hint = if name.eq_ignore_ascii_case("status") || name.eq_ignore_ascii_case("state") {
+        " Jira changes status through workflow transitions, not field edits: \
+         use `issue update --state <value>` or `issue start`/`issue complete`."
+    } else {
+        ""
+    };
+    Some(format!(
+        "Field '{}' was not applied: the Jira backend does not set it through field edits.{}",
+        name, hint
+    ))
+}
+
 /// Resolve custom field updates to Jira extra fields using field metadata.
 /// Returns a map of field_id → JSON value for fields not handled by the standard struct.
 fn insert_resolved_field(
@@ -798,6 +830,7 @@ fn insert_resolved_field(
 pub fn resolve_extra_fields(
     custom_fields: &[CustomFieldUpdate],
     jira_fields: &[JiraField],
+    silently_handled: &[&str],
 ) -> tracker_core::Result<HashMap<String, serde_json::Value>> {
     let field_id_map = build_field_id_map(jira_fields);
     let schema_map: HashMap<&str, &JiraFieldSchema> = jira_fields
@@ -813,6 +846,9 @@ pub fn resolve_extra_fields(
             | CustomFieldUpdate::State { name, value }
             | CustomFieldUpdate::SingleUser { name, login: value } => {
                 if is_reserved_field(name) {
+                    if let Some(msg) = dropped_reserved_field_warning(name, silently_handled) {
+                        eprintln!("Warning: {}", msg);
+                    }
                     continue;
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
@@ -823,6 +859,9 @@ pub fn resolve_extra_fields(
             CustomFieldUpdate::MultiEnum { name, values } => {
                 let joined = values.join(",");
                 if is_reserved_field(name) {
+                    if let Some(msg) = dropped_reserved_field_warning(name, silently_handled) {
+                        eprintln!("Warning: {}", msg);
+                    }
                     continue;
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
@@ -1023,7 +1062,8 @@ mod tests {
             },
         ];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
+        let extra =
+            resolve_extra_fields(&custom_fields, &jira_fields, UPDATE_HANDLED_FIELDS).unwrap();
 
         assert!(!extra.contains_key("timeoriginalestimate"));
         assert!(!extra.contains_key("timeestimate"));
@@ -1052,7 +1092,8 @@ mod tests {
             }),
         }];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
+        let extra =
+            resolve_extra_fields(&custom_fields, &jira_fields, UPDATE_HANDLED_FIELDS).unwrap();
 
         assert!(!extra.contains_key("timeoriginalestimate"));
         assert!(extra.contains_key("timetracking"));
@@ -1102,12 +1143,44 @@ mod tests {
             },
         ];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
+        let extra =
+            resolve_extra_fields(&custom_fields, &jira_fields, UPDATE_HANDLED_FIELDS).unwrap();
         // Priority and State should be skipped (handled by struct/transitions),
         // Story Points should be resolved
         assert!(!extra.contains_key("priority"));
         assert!(!extra.contains_key("customfield_11315")); // "State" custom field should be skipped
         assert_eq!(extra["customfield_10016"], serde_json::json!(3.0));
+    }
+
+    #[test]
+    fn dropped_status_field_warns_on_update_with_transition_hint() {
+        let msg = dropped_reserved_field_warning("Status", UPDATE_HANDLED_FIELDS)
+            .expect("dropping a status field edit must warn");
+        assert!(msg.contains("Status"));
+        assert!(msg.contains("transition"));
+        // "state" alias gets the same treatment, in any case
+        assert!(dropped_reserved_field_warning("STATE", UPDATE_HANDLED_FIELDS).is_some());
+    }
+
+    #[test]
+    fn typed_struct_fields_drop_silently_per_call_site() {
+        // priority is consumed by the typed struct on both paths
+        assert!(dropped_reserved_field_warning("Priority", UPDATE_HANDLED_FIELDS).is_none());
+        assert!(dropped_reserved_field_warning("priority", CREATE_HANDLED_FIELDS).is_none());
+        // issue type is only consumed at create; dropping it from an update is a real loss
+        assert!(dropped_reserved_field_warning("Type", CREATE_HANDLED_FIELDS).is_none());
+        assert!(dropped_reserved_field_warning("issuetype", CREATE_HANDLED_FIELDS).is_none());
+        assert!(dropped_reserved_field_warning("Type", UPDATE_HANDLED_FIELDS).is_some());
+        // status can never be set through a field edit, even at create
+        assert!(dropped_reserved_field_warning("status", CREATE_HANDLED_FIELDS).is_some());
+    }
+
+    #[test]
+    fn dropped_assignee_warns_without_transition_hint() {
+        let msg = dropped_reserved_field_warning("Assignee", UPDATE_HANDLED_FIELDS)
+            .expect("dropping an assignee field edit must warn");
+        assert!(msg.contains("Assignee"));
+        assert!(!msg.contains("transition"));
     }
 
     #[test]

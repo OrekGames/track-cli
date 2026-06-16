@@ -100,13 +100,7 @@ pub fn output_change_summary(
             requested_fields.insert(case_key("Parent"));
         }
         for f in &u.custom_fields {
-            let name = match f {
-                tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
-                tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
-                tracker_core::CustomFieldUpdate::State { name, .. } => name,
-                tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
-            };
-            requested_fields.insert(case_key(name));
+            requested_fields.insert(case_key(resolve_requested_field_name(f, new)));
         }
     }
     if let Some(c) = create {
@@ -118,13 +112,7 @@ pub fn output_change_summary(
             requested_fields.insert(case_key("Parent"));
         }
         for f in &c.custom_fields {
-            let name = match f {
-                tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
-                tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
-                tracker_core::CustomFieldUpdate::State { name, .. } => name,
-                tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
-            };
-            requested_fields.insert(case_key(name));
+            requested_fields.insert(case_key(resolve_requested_field_name(f, new)));
         }
     }
 
@@ -161,14 +149,7 @@ pub fn output_change_summary(
 
     // Check Custom Fields
     for new_cf in &new.custom_fields {
-        let name = match new_cf {
-            CustomField::SingleEnum { name, .. } => name,
-            CustomField::State { name, .. } => name,
-            CustomField::SingleUser { name, .. } => name,
-            CustomField::Text { name, .. } => name,
-            CustomField::MultiEnum { name, .. } => name,
-            CustomField::Unknown { name, .. } => name,
-        };
+        let name = custom_field_name(new_cf);
 
         let old_val = old.and_then(|o| find_field_value(o, name));
         let new_val = find_field_value(new, name);
@@ -229,18 +210,57 @@ fn display_change(name: &str, old: Option<&str>, new: Option<&str>, requested: &
     }
 }
 
+/// Resolve a requested custom field update to the field name the issue actually
+/// carries. A State update targets the tracker's workflow state field whatever the
+/// backend names it (YouTrack "State"/"Stage", Jira "Status"): when the requested
+/// name doesn't appear on the issue but the issue has exactly one State-typed field,
+/// the request resolves to that field so the change summary attributes it correctly
+/// instead of reporting "(Side Effect)" plus a bogus "Ignored" row.
+fn resolve_requested_field_name<'a>(
+    requested: &'a tracker_core::CustomFieldUpdate,
+    issue: &'a Issue,
+) -> &'a str {
+    let name = match requested {
+        tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
+        tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
+        tracker_core::CustomFieldUpdate::State { name, .. } => name,
+        tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
+    };
+
+    let name_exists = issue
+        .custom_fields
+        .iter()
+        .any(|f| unicode_eq_ignore_case(custom_field_name(f), name));
+    if !matches!(requested, tracker_core::CustomFieldUpdate::State { .. }) || name_exists {
+        return name;
+    }
+
+    let mut states = issue.custom_fields.iter().filter_map(|f| match f {
+        CustomField::State { name, .. } => Some(name.as_str()),
+        _ => None,
+    });
+    match (states.next(), states.next()) {
+        (Some(state_name), None) => state_name,
+        _ => name,
+    }
+}
+
+fn custom_field_name(f: &CustomField) -> &str {
+    match f {
+        CustomField::SingleEnum { name, .. } => name,
+        CustomField::State { name, .. } => name,
+        CustomField::SingleUser { name, .. } => name,
+        CustomField::Text { name, .. } => name,
+        CustomField::MultiEnum { name, .. } => name,
+        CustomField::Unknown { name, .. } => name,
+    }
+}
+
 fn find_field_value(issue: &Issue, name: &str) -> Option<String> {
     issue
         .custom_fields
         .iter()
-        .find(|f| match f {
-            CustomField::SingleEnum { name: n, .. } => unicode_eq_ignore_case(n, name),
-            CustomField::State { name: n, .. } => unicode_eq_ignore_case(n, name),
-            CustomField::SingleUser { name: n, .. } => unicode_eq_ignore_case(n, name),
-            CustomField::Text { name: n, .. } => unicode_eq_ignore_case(n, name),
-            CustomField::MultiEnum { name: n, .. } => unicode_eq_ignore_case(n, name),
-            CustomField::Unknown { name: n, .. } => unicode_eq_ignore_case(n, name),
-        })
+        .find(|f| unicode_eq_ignore_case(custom_field_name(f), name))
         .and_then(|f| match f {
             CustomField::SingleEnum { value, .. } => value.clone(),
             CustomField::State { value, .. } => value.clone(),
@@ -727,5 +747,112 @@ mod tests {
     fn find_field_value_misses_when_truly_different() {
         let issue = issue_with_field("Geöffnet", "value");
         assert_eq!(find_field_value(&issue, "Geschlossen"), None);
+    }
+
+    fn issue_with_custom_fields(custom_fields: Vec<CustomField>) -> Issue {
+        Issue {
+            custom_fields,
+            ..issue_with_field("unused", "unused")
+        }
+    }
+
+    fn state_update(name: &str) -> tracker_core::CustomFieldUpdate {
+        tracker_core::CustomFieldUpdate::State {
+            name: name.into(),
+            value: "Done".into(),
+        }
+    }
+
+    #[test]
+    fn state_request_resolves_to_renamed_state_field() {
+        // Jira names its state field "Status"; a `--state` request arrives as "State"
+        let issue = issue_with_custom_fields(vec![CustomField::State {
+            name: "Status".into(),
+            value: Some("Done".into()),
+            is_resolved: true,
+        }]);
+        assert_eq!(
+            resolve_requested_field_name(&state_update("State"), &issue),
+            "Status"
+        );
+    }
+
+    #[test]
+    fn state_request_keeps_name_when_it_exists_on_issue() {
+        let issue = issue_with_custom_fields(vec![
+            CustomField::State {
+                name: "Stage".into(),
+                value: Some("Done".into()),
+                is_resolved: true,
+            },
+            CustomField::State {
+                name: "State".into(),
+                value: Some("Open".into()),
+                is_resolved: false,
+            },
+        ]);
+        assert_eq!(
+            resolve_requested_field_name(&state_update("Stage"), &issue),
+            "Stage"
+        );
+    }
+
+    #[test]
+    fn state_request_keeps_name_when_state_fields_ambiguous() {
+        let issue = issue_with_custom_fields(vec![
+            CustomField::State {
+                name: "Stage".into(),
+                value: Some("Done".into()),
+                is_resolved: true,
+            },
+            CustomField::State {
+                name: "Status".into(),
+                value: Some("Open".into()),
+                is_resolved: false,
+            },
+        ]);
+        assert_eq!(
+            resolve_requested_field_name(&state_update("Phase"), &issue),
+            "Phase"
+        );
+    }
+
+    #[test]
+    fn change_summary_with_renamed_state_field_smoke() {
+        // Jira shape: `--state Done` requests "State", the issue carries "Status".
+        // Exercises the full summary path (display assertions aren't capturable here;
+        // the name resolution itself is covered by the tests above).
+        let old = issue_with_custom_fields(vec![CustomField::State {
+            name: "Status".into(),
+            value: Some("New".into()),
+            is_resolved: false,
+        }]);
+        let new = issue_with_custom_fields(vec![CustomField::State {
+            name: "Status".into(),
+            value: Some("Done".into()),
+            is_resolved: true,
+        }]);
+        let update = tracker_core::UpdateIssue {
+            custom_fields: vec![state_update("State")],
+            ..Default::default()
+        };
+        output_change_summary(Some(&old), &new, Some(&update), None, OutputFormat::Text);
+    }
+
+    #[test]
+    fn non_state_request_never_resolves_to_state_field() {
+        let issue = issue_with_custom_fields(vec![CustomField::State {
+            name: "Status".into(),
+            value: Some("Done".into()),
+            is_resolved: true,
+        }]);
+        let requested = tracker_core::CustomFieldUpdate::SingleEnum {
+            name: "Component".into(),
+            value: "UI".into(),
+        };
+        assert_eq!(
+            resolve_requested_field_name(&requested, &issue),
+            "Component"
+        );
     }
 }
