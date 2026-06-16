@@ -166,14 +166,16 @@ pub fn linear_history_to_events(nodes: Vec<LinearIssueHistory>) -> Vec<IssueHist
             name: Some(linear_user_display_name(user)),
         });
 
-        // State transition -> canonical "status".
-        if let Some(to_state) = &node.to_state {
+        // State transition -> canonical "status" (only when the value changed).
+        let from_state = node.from_state.as_ref().map(|s| s.name.clone());
+        let to_state = node.to_state.as_ref().map(|s| s.name.clone());
+        if to_state.is_some() && to_state != from_state {
             events.push(IssueHistoryEvent {
                 at,
                 author: author.clone(),
                 field: canonical_field_name("state"),
-                from: node.from_state.as_ref().map(|s| s.name.clone()),
-                to: Some(to_state.name.clone()),
+                from: from_state,
+                to: to_state,
             });
         }
 
@@ -201,8 +203,8 @@ pub fn linear_history_to_events(nodes: Vec<LinearIssueHistory>) -> Vec<IssueHist
             });
         }
 
-        // Title transition.
-        if node.to_title.is_some() {
+        // Title transition (only when the value actually changed).
+        if node.to_title.is_some() && node.to_title != node.from_title {
             events.push(IssueHistoryEvent {
                 at,
                 author: author.clone(),
@@ -822,13 +824,19 @@ mod tests {
                 "toPriority": 2,
                 // Assignee present but unchanged -> no assignee event.
                 "fromAssignee": { "id": "u-dan", "name": "dan", "displayName": "Dan" },
-                "toAssignee": { "id": "u-dan", "name": "dan", "displayName": "Dan" }
+                "toAssignee": { "id": "u-dan", "name": "dan", "displayName": "Dan" },
+                // State present but unchanged -> no status event.
+                "fromState": { "name": "In Progress" },
+                "toState": { "name": "In Progress" },
+                // Title present but unchanged -> no title event.
+                "fromTitle": "Fix login",
+                "toTitle": "Fix login"
             }
         ]));
 
         let events = linear_history_to_events(nodes);
         // The timestamp-less node is dropped, and the second node has nothing
-        // that actually changed.
+        // that actually changed (priority, assignee, state, and title all equal).
         assert!(events.is_empty());
     }
 

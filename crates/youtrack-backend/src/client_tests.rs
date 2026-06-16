@@ -2006,6 +2006,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/api/issues/PROJ-123/activities"))
+            .and(query_param("categories", "CustomFieldCategory"))
             .and(query_param("$top", "100"))
             .and(query_param("$skip", "0"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(page1)))
@@ -2016,6 +2017,7 @@ mod tests {
         // (< $top) signals end-of-data.
         Mock::given(method("GET"))
             .and(path("/api/issues/PROJ-123/activities"))
+            .and(query_param("categories", "CustomFieldCategory"))
             .and(query_param("$top", "100"))
             .and(query_param("$skip", "100"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
