@@ -821,6 +821,70 @@ impl YouTrackClient {
     }
 
     // ========================================================================
+    // History Operations
+    // ========================================================================
+
+    /// Fetch one page of an issue's custom-field activity timeline.
+    ///
+    /// `GET /api/issues/{id}/activities` is offset-paged (`$top`/`$skip`). We
+    /// scope to `CustomFieldCategory` so only field transitions come back
+    /// (comments/work-items have their own commands). Activities are
+    /// oldest-first; the caller re-sorts.
+    pub fn get_activities_page(
+        &self,
+        issue_id: &str,
+        top: usize,
+        skip: usize,
+    ) -> Result<Vec<YouTrackActivity>> {
+        let url = format!(
+            "{}/api/issues/{}/activities?categories=CustomFieldCategory&fields=id,timestamp,author(login,name),field(name,presentation),added(name,text,login,presentation),removed(name,text,login,presentation)&$top={}&$skip={}",
+            self.base_url, issue_id, top, skip
+        );
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let activities: Vec<YouTrackActivity> = response.body_mut().read_json()?;
+        Ok(activities)
+    }
+
+    /// Fetch an issue's complete custom-field activity timeline, paging through
+    /// every entry. Activities are returned oldest-first (the caller re-sorts).
+    ///
+    /// Unlike Jira's changelog endpoint, YouTrack honors `$top`, so a page
+    /// shorter than requested is a reliable end-of-data signal. A generous
+    /// `MAX_PAGES` backstop guards against a server that ignores `$skip` (which
+    /// would otherwise loop forever) without truncating a legitimately large
+    /// history.
+    pub fn get_issue_activities(&self, issue_id: &str) -> Result<Vec<YouTrackActivity>> {
+        const PAGE: usize = 100;
+        const MAX_PAGES: usize = 10_000;
+        let mut activities = Vec::new();
+        let mut skip = 0;
+        for _ in 0..MAX_PAGES {
+            let page = self.get_activities_page(issue_id, PAGE, skip)?;
+            let fetched = page.len();
+            activities.extend(page);
+            // YouTrack honors `$top`, so a short (or empty) page means we have
+            // reached the end of the timeline.
+            if fetched < PAGE {
+                return Ok(activities);
+            }
+            skip += fetched;
+        }
+        Err(YouTrackError::PaginationStalled(format!(
+            "issue '{}' activity timeline did not terminate after {} pages",
+            issue_id, MAX_PAGES
+        )))
+    }
+
+    // ========================================================================
     // Knowledge Base / Article Operations
     // ========================================================================
 

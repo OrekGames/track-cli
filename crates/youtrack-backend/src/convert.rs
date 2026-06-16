@@ -1,7 +1,86 @@
 //! Conversion functions between YouTrack API models and tracker-core models
 
 use crate::models as yt;
+use tracker_core::canonical_field_name;
 use tracker_core::models as core;
+
+/// Render one added/removed activity value to a human-readable string.
+///
+/// Field types surface their value under different labels (enum/state under
+/// `name`, text under `text`, users under `login`, anything else under
+/// `presentation`), so the first non-empty label wins.
+fn activity_value_to_string(value: &yt::ActivityValue) -> Option<String> {
+    [
+        value.name.as_deref(),
+        value.text.as_deref(),
+        value.login.as_deref(),
+        value.presentation.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|s| !s.is_empty())
+    .map(str::to_string)
+}
+
+/// Join a list of added/removed values into a single presentable string,
+/// returning `None` when nothing presentable remains (so an empty side of a
+/// transition maps to `None` rather than an empty string).
+fn activity_values_to_string(values: &[yt::ActivityValue]) -> Option<String> {
+    let parts: Vec<String> = values.iter().filter_map(activity_value_to_string).collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
+/// Convert YouTrack custom-field activities into core history events,
+/// newest-first.
+///
+/// Each activity becomes one [`core::IssueHistoryEvent`]: `from` is the joined
+/// `removed` values, `to` the joined `added` values. Activities whose timestamp
+/// cannot be interpreted, or which carry no identifiable field name, are
+/// skipped rather than fabricated. Field names are canonicalized so YouTrack's
+/// "State" folds onto the portable "status" token.
+pub fn youtrack_activities_to_history_events(
+    activities: Vec<yt::YouTrackActivity>,
+) -> Vec<core::IssueHistoryEvent> {
+    let mut events = Vec::new();
+    for activity in activities {
+        let Some(ts) = activity.timestamp else {
+            continue;
+        };
+        let Some(at) = chrono::DateTime::from_timestamp_millis(ts) else {
+            continue;
+        };
+        // A field with no resolvable name can't be reported portably; skip it.
+        let Some(raw_field) = activity.field.as_ref().and_then(|f| {
+            f.name
+                .as_deref()
+                .or(f.presentation.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        }) else {
+            continue;
+        };
+        let author = activity.author.map(|a| core::CommentAuthor {
+            login: a.login,
+            name: a.name,
+        });
+        events.push(core::IssueHistoryEvent {
+            at,
+            author,
+            field: canonical_field_name(raw_field),
+            from: activity_values_to_string(&activity.removed),
+            to: activity_values_to_string(&activity.added),
+        });
+    }
+    // YouTrack returns activities oldest-first; expose newest-first. `sort_by`
+    // is stable, so activities sharing a timestamp keep their original order.
+    events.sort_by(|a, b| b.at.cmp(&a.at));
+    events
+}
 
 /// Convert YouTrack Issue to tracker-core Issue
 impl From<yt::Issue> for core::Issue {
@@ -530,5 +609,146 @@ pub fn project_custom_field_response_to_core(
         required: !field.can_be_empty,
         values,
         state_values,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn activities_from_json(value: serde_json::Value) -> Vec<yt::YouTrackActivity> {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn youtrack_activities_map_state_change_to_status() {
+        // A State change: field name "State" must fold onto canonical "status",
+        // with from/to drawn from removed/added.
+        let activities = activities_from_json(serde_json::json!([
+            {
+                "id": "1",
+                "timestamp": 1640000000000i64,
+                "author": { "login": "alice", "name": "Alice" },
+                "field": { "name": "State", "presentation": "State" },
+                "removed": [{ "name": "Open" }],
+                "added": [{ "name": "In Progress" }]
+            }
+        ]));
+
+        let events = youtrack_activities_to_history_events(activities);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field, "status");
+        assert_eq!(events[0].from.as_deref(), Some("Open"));
+        assert_eq!(events[0].to.as_deref(), Some("In Progress"));
+        assert_eq!(
+            events[0].author.as_ref().map(|a| a.login.as_str()),
+            Some("alice")
+        );
+        assert_eq!(
+            events[0].author.as_ref().and_then(|a| a.name.as_deref()),
+            Some("Alice")
+        );
+    }
+
+    #[test]
+    fn youtrack_activities_join_multi_value_field() {
+        // A multi-value field reports several added values; they join with ", ".
+        // `added`/`removed` may also arrive as a single object (not a list).
+        let activities = activities_from_json(serde_json::json!([
+            {
+                "timestamp": 1640000000000i64,
+                "author": { "login": "bob", "name": "Bob" },
+                "field": { "name": "Platforms" },
+                "removed": { "name": "Windows" },
+                "added": [{ "name": "macOS" }, { "name": "Linux" }]
+            }
+        ]));
+
+        let events = youtrack_activities_to_history_events(activities);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field, "Platforms");
+        assert_eq!(events[0].from.as_deref(), Some("Windows"));
+        assert_eq!(events[0].to.as_deref(), Some("macOS, Linux"));
+    }
+
+    #[test]
+    fn youtrack_activities_handle_null_author_and_empty_sides() {
+        // A system activity may have no author; an "added only" change has an
+        // empty `removed` side, which must map to None (not an empty string).
+        let activities = activities_from_json(serde_json::json!([
+            {
+                "timestamp": 1640000000000i64,
+                "author": null,
+                "field": { "name": "Assignee" },
+                "removed": [],
+                "added": [{ "login": "carol", "name": "Carol" }]
+            }
+        ]));
+
+        let events = youtrack_activities_to_history_events(activities);
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].author.is_none());
+        assert_eq!(events[0].field, "Assignee");
+        assert_eq!(events[0].from, None);
+        // A user value carries a display `name`, which wins over `login`.
+        assert_eq!(events[0].to.as_deref(), Some("Carol"));
+    }
+
+    #[test]
+    fn youtrack_activities_sort_newest_first() {
+        // Two activities arrive oldest-first; output must be newest-first.
+        let activities = activities_from_json(serde_json::json!([
+            {
+                "timestamp": 1640000000000i64,
+                "field": { "name": "State" },
+                "removed": [{ "name": "Open" }],
+                "added": [{ "name": "In Progress" }]
+            },
+            {
+                "timestamp": 1640100000000i64,
+                "field": { "name": "State" },
+                "removed": [{ "name": "In Progress" }],
+                "added": [{ "name": "Done" }]
+            }
+        ]));
+
+        let events = youtrack_activities_to_history_events(activities);
+
+        assert_eq!(events.len(), 2);
+        // Newest (Done) first.
+        assert_eq!(events[0].to.as_deref(), Some("Done"));
+        assert_eq!(events[1].to.as_deref(), Some("In Progress"));
+    }
+
+    #[test]
+    fn youtrack_activities_skip_missing_timestamp_or_field() {
+        let activities = activities_from_json(serde_json::json!([
+            {
+                // No timestamp -> skipped rather than fabricated.
+                "field": { "name": "State" },
+                "added": [{ "name": "Done" }]
+            },
+            {
+                "timestamp": 1640000000000i64,
+                // No field name or presentation -> not portably reportable.
+                "field": {},
+                "added": [{ "name": "Done" }]
+            },
+            {
+                "timestamp": 1640100000000i64,
+                "field": { "name": "State" },
+                "added": [{ "name": "Done" }]
+            }
+        ]));
+
+        let events = youtrack_activities_to_history_events(activities);
+
+        // Only the well-formed third activity survives.
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field, "status");
+        assert_eq!(events[0].to.as_deref(), Some("Done"));
     }
 }
