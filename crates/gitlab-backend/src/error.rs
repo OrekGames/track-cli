@@ -23,6 +23,9 @@ pub enum GitLabError {
 
     #[error("API error ({status}): {message}")]
     Api { status: u16, message: String },
+
+    #[error("Pagination stalled: {0}")]
+    PaginationStalled(String),
 }
 
 pub type Result<T> = std::result::Result<T, GitLabError>;
@@ -37,6 +40,7 @@ impl From<GitLabError> for TrackerError {
             GitLabError::ProjectNotFound(id) => TrackerError::ProjectNotFound(id),
             GitLabError::Unauthorized => TrackerError::Unauthorized,
             GitLabError::Api { status, message } => TrackerError::Api { status, message },
+            GitLabError::PaginationStalled(msg) => TrackerError::PaginationStalled(msg),
         }
     }
 }

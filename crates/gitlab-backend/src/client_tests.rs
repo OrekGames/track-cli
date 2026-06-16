@@ -856,4 +856,99 @@ mod tests {
 
         assert_eq!(client.resolve_link_type("nonexistent"), "nonexistent");
     }
+
+    // ==================== Issue History (3-endpoint merge) Tests ====================
+
+    #[tokio::test]
+    async fn test_get_issue_history_merges_three_endpoints() {
+        let mock_server = MockServer::start().await;
+
+        // resource_state_events: opened -> closed (out of order to exercise the
+        // chronological sort + from-derivation).
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42/resource_state_events"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 200,
+                    "user": { "id": 2, "username": "bob", "name": "Bob" },
+                    "created_at": "2024-01-05T00:00:00.000Z",
+                    "state": "closed"
+                },
+                {
+                    "id": 100,
+                    "user": { "id": 1, "username": "alice", "name": "Alice" },
+                    "created_at": "2024-01-01T00:00:00.000Z",
+                    "state": "opened"
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        // resource_label_events: add bug.
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42/resource_label_events"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 300,
+                    "user": { "id": 3, "username": "carol", "name": "Carol" },
+                    "created_at": "2024-01-03T00:00:00.000Z",
+                    "action": "add",
+                    "label": { "id": 9, "name": "bug" }
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        // resource_milestone_events: add v1.0.
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42/resource_milestone_events"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 400,
+                    "user": { "id": 4, "username": "dave", "name": "Dave" },
+                    "created_at": "2024-01-04T00:00:00.000Z",
+                    "action": "add",
+                    "milestone": { "id": 1, "iid": 1, "title": "v1.0" }
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let events = <GitLabClient as IssueTracker>::get_issue_history(&client, "42").unwrap();
+
+        // 2 state + 1 label + 1 milestone, merged and sorted newest-first.
+        assert_eq!(events.len(), 4);
+
+        // 01-05 closed (status, from-derived as "opened" -> "closed").
+        assert_eq!(events[0].field, "status");
+        assert_eq!(events[0].from.as_deref(), Some("opened"));
+        assert_eq!(events[0].to.as_deref(), Some("closed"));
+        assert_eq!(events[0].author.as_ref().unwrap().login, "bob");
+
+        // 01-04 milestone add.
+        assert_eq!(events[1].field, "milestone");
+        assert_eq!(events[1].from, None);
+        assert_eq!(events[1].to.as_deref(), Some("v1.0"));
+
+        // 01-03 label add.
+        assert_eq!(events[2].field, "labels");
+        assert_eq!(events[2].from, None);
+        assert_eq!(events[2].to.as_deref(), Some("bug"));
+
+        // 01-01 opened (seed transition).
+        assert_eq!(events[3].field, "status");
+        assert_eq!(events[3].from.as_deref(), Some("opened"));
+        assert_eq!(events[3].to.as_deref(), Some("opened"));
+        assert_eq!(events[3].author.as_ref().unwrap().login, "alice");
+    }
 }
