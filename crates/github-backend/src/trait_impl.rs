@@ -2,15 +2,16 @@
 
 use tracker_core::{
     Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CommentAuthor,
-    CreateArticle, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment, IssueLink,
-    IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, ProjectRef, Result,
-    SearchResult, Tag, TrackerError, UpdateArticle, UpdateIssue,
+    CreateArticle, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment,
+    IssueHistoryEvent, IssueLink, IssueTag, IssueTracker, KnowledgeBase, Project,
+    ProjectCustomField, ProjectRef, Result, SearchResult, Tag, TrackerError, UpdateArticle,
+    UpdateIssue,
 };
 
 use crate::client::GitHubClient;
 use crate::convert::{
     convert_query_to_github, create_issue_from_core, get_standard_custom_fields,
-    github_issue_to_core, update_issue_from_core,
+    github_issue_to_core, github_timeline_to_events, update_issue_from_core,
 };
 use crate::wiki::WikiPage;
 
@@ -337,6 +338,12 @@ impl IssueTracker for GitHubClient {
         }
 
         Ok(comments)
+    }
+
+    fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
+        let number = parse_issue_number(issue_id)?;
+        let timeline = self.get_issue_timeline(number)?;
+        Ok(github_timeline_to_events(timeline))
     }
 }
 

@@ -29,6 +29,9 @@ pub enum GitHubError {
 
     #[error("Wiki error: {0}")]
     Wiki(String),
+
+    #[error("Pagination stalled: {0}")]
+    PaginationStalled(String),
 }
 
 pub type Result<T> = std::result::Result<T, GitHubError>;
@@ -51,6 +54,7 @@ impl From<GitHubError> for TrackerError {
                 status: 500,
                 message: format!("Wiki error: {}", msg),
             },
+            GitHubError::PaginationStalled(msg) => TrackerError::PaginationStalled(msg),
         }
     }
 }

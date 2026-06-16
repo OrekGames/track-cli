@@ -447,4 +447,71 @@ impl GitHubClient {
         let comments: Vec<GitHubComment> = response.body_mut().read_json()?;
         Ok(comments)
     }
+
+    // ==================== Timeline / History Operations ====================
+
+    /// Fetch a single page of an issue's timeline events.
+    ///
+    /// Mirrors [`get_comments_page`](Self::get_comments_page): offset paging via
+    /// `per_page` (capped at 100) and `page` (1-based). GitHub returns the
+    /// timeline oldest-first. Unrecognized event types deserialize to
+    /// [`GitHubTimelineEvent::Other`] rather than failing the whole page.
+    pub fn get_timeline_page(
+        &self,
+        number: u64,
+        per_page: usize,
+        page: usize,
+    ) -> Result<Vec<GitHubTimelineEvent>> {
+        let url = format!(
+            "{}?per_page={}&page={}",
+            self.repo_url(&format!("/issues/{}/timeline", number)),
+            per_page.min(100),
+            page.max(1)
+        );
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .call()
+            .map_err(GitHubError::Http)?;
+
+        let mut response = self.check_response(response)?;
+        let raw: Vec<serde_json::Value> = response.body_mut().read_json()?;
+        raw.into_iter()
+            .map(GitHubTimelineEvent::from_value)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(GitHubError::Parse)
+    }
+
+    /// Fetch an issue's complete timeline, paging through every event.
+    ///
+    /// GitHub honors `per_page`, so a short page (fewer than `PER_PAGE` events)
+    /// is a reliable end-of-data signal. A `MAX_PAGES` backstop guards against a
+    /// server that ignores paging and never shrinks a page — failing loudly via
+    /// [`GitHubError::PaginationStalled`] instead of looping forever.
+    ///
+    /// Events are returned oldest-first, matching the GitHub API ordering.
+    pub fn get_issue_timeline(&self, number: u64) -> Result<Vec<GitHubTimelineEvent>> {
+        const PER_PAGE: usize = 100;
+        const MAX_PAGES: usize = 10_000;
+
+        let mut events = Vec::new();
+        let mut page = 1;
+        for _ in 0..MAX_PAGES {
+            let batch = self.get_timeline_page(number, PER_PAGE, page)?;
+            let fetched = batch.len();
+            events.extend(batch);
+            if fetched < PER_PAGE {
+                return Ok(events);
+            }
+            page += 1;
+        }
+        Err(GitHubError::PaginationStalled(format!(
+            "issue '{}' timeline did not terminate after {} pages",
+            number, MAX_PAGES
+        )))
+    }
 }

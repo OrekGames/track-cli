@@ -507,6 +507,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_issue_history_paginates_and_derives_status() {
+        let mock_server = MockServer::start().await;
+
+        // Page 1: a full page of 100 events (oldest-first). A full page forces
+        // the loop to request a second page. These are all `labeled` events so
+        // they don't disturb the running status; timestamps ascend.
+        let page1: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                // Keep hours/minutes in valid RFC3339 ranges (<24 / <60).
+                let created_at = format!("2024-01-01T{:02}:{:02}:00Z", i / 60, i % 60);
+                serde_json::json!({
+                    "event": "labeled",
+                    "created_at": created_at,
+                    "actor": { "login": "alice", "id": 1 },
+                    "label": { "id": i, "name": format!("label-{i}"), "color": "ffffff", "description": null }
+                })
+            })
+            .collect();
+
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/42/timeline"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(header("X-GitHub-Api-Version", "2022-11-28"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(page1)))
+            .mount(&mock_server)
+            .await;
+
+        // Page 2: a short page (< per_page) signaling end-of-data. A
+        // closed->reopened->closed sequence exercises the running-status
+        // derivation, plus an unknown event that must be ignored.
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/42/timeline"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "event": "closed",
+                    "created_at": "2024-02-01T10:00:00Z",
+                    "actor": { "login": "bob", "id": 2 }
+                },
+                {
+                    "event": "reopened",
+                    "created_at": "2024-02-02T10:00:00Z",
+                    "actor": { "login": "carol", "id": 3 }
+                },
+                {
+                    "event": "commented",
+                    "created_at": "2024-02-03T10:00:00Z",
+                    "actor": { "login": "dave", "id": 4 }
+                },
+                {
+                    "event": "closed",
+                    "created_at": "2024-02-04T10:00:00Z",
+                    "actor": { "login": "erin", "id": 5 }
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let events = client.get_issue_history("42").unwrap();
+
+        // 100 labels (page 1) + 3 status events (page 2, comment dropped).
+        assert_eq!(events.len(), 103);
+
+        // Newest-first: the page-2 status events sort to the front in reverse
+        // chronological order. Verify the from-walk: open->closed,
+        // closed->open, open->closed; reversed for display.
+        assert_eq!(events[0].field, "status");
+        assert_eq!(events[0].from.as_deref(), Some("open"));
+        assert_eq!(events[0].to.as_deref(), Some("closed"));
+        assert_eq!(events[0].author.as_ref().unwrap().login, "erin");
+
+        assert_eq!(events[1].field, "status");
+        assert_eq!(events[1].from.as_deref(), Some("closed"));
+        assert_eq!(events[1].to.as_deref(), Some("open"));
+        assert_eq!(events[1].author.as_ref().unwrap().login, "carol");
+
+        assert_eq!(events[2].field, "status");
+        assert_eq!(events[2].from.as_deref(), Some("open"));
+        assert_eq!(events[2].to.as_deref(), Some("closed"));
+        assert_eq!(events[2].author.as_ref().unwrap().login, "bob");
+
+        // The remaining 100 are the labels.
+        assert!(events[3..].iter().all(|e| e.field == "labels"));
+    }
+
+    #[tokio::test]
     async fn test_rate_limit_detection() {
         let mock_server = MockServer::start().await;
 
