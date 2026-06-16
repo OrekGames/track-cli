@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tracker_core::{
-    Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueLink,
-    IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag,
-    UpdateIssue, User,
+    Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueHistoryEvent,
+    IssueLink, IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, StateValueInfo,
+    Tag, UpdateIssue, User, canonical_field_name,
 };
 
 use crate::markdown::adf::{
@@ -322,6 +322,42 @@ impl From<JiraComment> for Comment {
             created: parse_jira_datetime(&c.created),
         }
     }
+}
+
+/// Convert Jira changelog entries into core history events, newest-first.
+///
+/// Each changelog entry may carry multiple field changes (`items`); every item
+/// becomes one [`IssueHistoryEvent`], sharing the entry's author and timestamp.
+/// `from_string`/`to_string` (human-readable) are used for the values. Entries
+/// whose timestamp cannot be parsed are skipped rather than fabricated, and
+/// field names are canonicalized so `status` is portable across backends.
+pub fn jira_changelog_to_history_events(
+    entries: Vec<JiraChangelogEntry>,
+) -> Vec<IssueHistoryEvent> {
+    let mut events = Vec::new();
+    for entry in entries {
+        let Some(at) = parse_jira_datetime(&entry.created) else {
+            continue;
+        };
+        let author = entry.author.map(|u| CommentAuthor {
+            login: u.account_id.unwrap_or_default(),
+            name: u.display_name,
+        });
+        for item in entry.items {
+            events.push(IssueHistoryEvent {
+                at,
+                author: author.clone(),
+                field: canonical_field_name(&item.field),
+                from: item.from_string,
+                to: item.to_string,
+            });
+        }
+    }
+    // Jira returns oldest-first; expose newest-first to match reporting needs.
+    // `sort_by` is a stable sort, so multiple items from one changelog entry
+    // (which share a timestamp) keep their original within-entry order.
+    events.sort_by(|a, b| b.at.cmp(&a.at));
+    events
 }
 
 /// Convert JiraIssueLinkType to tracker-core IssueLinkType
@@ -1679,5 +1715,99 @@ mod tests {
             "3.5"
         );
         assert_eq!(format_number(&serde_json::Number::from(42)), "42");
+    }
+
+    #[test]
+    fn jira_changelog_maps_items_newest_first() {
+        let page: JiraChangelogPage = serde_json::from_value(serde_json::json!({
+            "startAt": 0,
+            "maxResults": 100,
+            "total": 2,
+            "isLast": true,
+            "values": [
+                {
+                    "id": "1",
+                    "author": { "accountId": "acc-1", "displayName": "Alice" },
+                    "created": "2024-01-10T09:00:00.000+0000",
+                    "items": [
+                        { "field": "status", "fromString": "To Do", "toString": "In Progress" }
+                    ]
+                },
+                {
+                    "id": "2",
+                    "author": { "accountId": "acc-2", "displayName": "Bob" },
+                    "created": "2024-01-15T14:30:00.000+0000",
+                    "items": [
+                        { "field": "assignee", "fromString": null, "toString": "Alice" },
+                        { "field": "priority", "fromString": "Medium", "toString": "High" }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let events = jira_changelog_to_history_events(page.values);
+
+        // Two entries, one with two items => three events.
+        assert_eq!(events.len(), 3);
+
+        // Newest entry (2024-01-15) sorts first; its two items preserve order.
+        assert_eq!(events[0].field, "assignee");
+        assert_eq!(events[0].from, None); // null fromString -> None
+        assert_eq!(events[0].to.as_deref(), Some("Alice"));
+        assert_eq!(
+            events[0].author.as_ref().and_then(|a| a.name.as_deref()),
+            Some("Bob")
+        );
+        assert_eq!(
+            events[0].author.as_ref().map(|a| a.login.as_str()),
+            Some("acc-2")
+        );
+        assert_eq!(events[1].field, "priority");
+
+        // Oldest entry sorts last.
+        assert_eq!(events[2].field, "status");
+        assert_eq!(events[2].from.as_deref(), Some("To Do"));
+        assert_eq!(events[2].to.as_deref(), Some("In Progress"));
+    }
+
+    #[test]
+    fn jira_changelog_canonicalizes_state_field() {
+        // A backend that names the field "State" should fold onto "status" so
+        // `--field status` is portable.
+        let page: JiraChangelogPage = serde_json::from_value(serde_json::json!({
+            "values": [
+                {
+                    "created": "2024-02-01T00:00:00.000+0000",
+                    "items": [{ "field": "State", "fromString": "Open", "toString": "Closed" }]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let events = jira_changelog_to_history_events(page.values);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field, "status");
+    }
+
+    #[test]
+    fn jira_changelog_skips_unparseable_timestamp() {
+        let page: JiraChangelogPage = serde_json::from_value(serde_json::json!({
+            "values": [
+                {
+                    "created": null,
+                    "items": [{ "field": "status", "toString": "Done" }]
+                },
+                {
+                    "created": "2024-03-01T12:00:00.000+0000",
+                    "items": [{ "field": "status", "toString": "Done" }]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let events = jira_changelog_to_history_events(page.values);
+        // The entry with no timestamp is dropped rather than fabricated.
+        assert_eq!(events.len(), 1);
     }
 }

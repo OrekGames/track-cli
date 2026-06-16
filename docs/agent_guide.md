@@ -231,6 +231,7 @@ track config get default_project
 | Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` | `track -b gh i cmt PROJ-42 -m "Text"` | `track -b gl i cmt PROJ-42 -m "Text"` |
 | Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Subtask/parent only | `track -b gl i link PROJ-1 PROJ-2` |
 | Unlink | `track i ul PROJ-1 <link-id>` | `track -b j i ul PROJ-1 <link-id>` | Not supported | `track -b gl i ul #42 <link-id>` |
+| History | Not supported | `track -b j i history PROJ-123 --field status --since 7d` | Not supported | Not supported |
 
 **GitHub/GitLab notes**:
 - GitHub and GitLab use numeric issue IDs (e.g., `42`), not project-prefixed keys
@@ -303,6 +304,7 @@ track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fix
 | `track issue delete` | `track i rm`, `track i del` |
 | `track issue comment` | `track i cmt` |
 | `track issue comments` | `track i comments` |
+| `track issue history` | `track i history`, `track i hist` |
 | `track issue complete` | `track i done`, `track i resolve` |
 | `track issue start` | `track i start` |
 | `track issue link` | `track i link` |
@@ -655,6 +657,22 @@ track -b j i comments PROJ-123
 track -b gh i comments PROJ-42
 track -b gl i comments PROJ-42
 ```
+
+### Issue History (Jira only)
+
+Retrieve the field-transition timeline (status/assignee/etc. changes) with
+timestamps and authors — useful for flow metrics, cycle/lead time, and
+per-issue lifecycle reporting. Other backends report "not supported".
+
+```bash
+track -b j i history PROJ-123                 # Full timeline, newest first
+track -b j i history PROJ-123 --field status  # Only status transitions (canonical field)
+track -b j i history PROJ-123 --since 24h      # Window: s/m/h/d/w
+track -b j -o json i history PROJ-123          # {"issue": id, "changes": [{at, author, field, from, to}]}
+```
+
+There is no batch form (one call per issue): for board-level metrics, search
+for the candidate issues first, then call `i history` per issue.
 
 ### Link Issues
 

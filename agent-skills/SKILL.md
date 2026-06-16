@@ -176,6 +176,7 @@ track config clear [-g]        # Delete a config file
 | Unlink | `track i ul PROJ-1 <link-id>` | `track -b j i ul PROJ-1 <link-id>` | Not supported | `track -b gl i ul 42 <link-id>` |
 | Start | `track i start PROJ-123` | `track -b j i start PROJ-123 --field Status --state "In Progress"` | `track -b gh i start 42` | `track -b gl i start 42` |
 | Complete | `track i done PROJ-123` | `track -b j i done PROJ-123 --field Status --state Done` | `track -b gh i done 42` (closes) | `track -b gl i done 42` (closes) |
+| History | Not supported | `track -b j i history PROJ-123 --field status --since 7d` | Not supported | Not supported |
 
 **Bare-ID shortcut**: `track PROJ-123` = `track issue get PROJ-123`, but it only fires for IDs shaped `ALPHANUM-DIGITS` with **exactly one dash** (`PROJ-123`, `my2proj-99`). Purely numeric IDs must use `track i g 42`. Global flags (`-b`, `-o`, ...) must come **before** the ID; the only flag recognized after the ID is `--full`.
 
@@ -329,6 +330,7 @@ Default mappings:
 | `track issue delete` | `track i rm`, `track i del` |
 | `track issue comment` | `track i cmt` |
 | `track issue comments` | `track i comments` |
+| `track issue history` | `track i history`, `track i hist` |
 | `track issue complete` | `track i done`, `track i resolve` |
 | `track issue start` | `track i start` |
 | `track issue link` | `track i link` |
@@ -382,6 +384,26 @@ track completions zsh      # Shell completions (bash|zsh|fish|powershell|elvish)
 - **`--full`** wraps the issue in an envelope: `{"issue": {...}, "links": [{"id", "direction", "link_type", "issues": [...]}], "comments": [{"id", "text", "author", "created"}]}`. Attachments are NOT included — use `track i attachments`.
 - **`i s -o json`** returns a bare array — no total or pagination metadata (hints go to stderr in text mode only).
 - **`i del -o json`** returns `{"success": true, "message": "..."}`.
+
+**History** (`i history`, **Jira only** — other backends error with "not supported"):
+```json
+{
+  "issue": "PROJ-123",
+  "changes": [
+    {
+      "at": "2026-05-01T12:03:44Z",
+      "author": {"login": "712020:...", "name": "Jane Doe"},  // null if unknown
+      "field": "status",        // canonical; "status" is normalized across backends
+      "from": "In Progress",    // human-readable; null on first set
+      "to": "Done"
+    }
+  ]
+}
+```
+
+- Ordered **newest-first**. `author` reuses the comment-author shape (`{login, name}`).
+- Filter at the source: `--field status` (canonical name) and `--since 7d` (`s`/`m`/`h`/`d`/`w`).
+- No batch form — one call per issue. For flow metrics across a board, search for the candidate set first, then call `i history` per issue.
 
 ---
 

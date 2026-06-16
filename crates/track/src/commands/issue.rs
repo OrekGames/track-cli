@@ -1,11 +1,13 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
-use crate::output::{output_json, output_list, output_page_hint, output_progress, output_result};
+use crate::output::{
+    Displayable, output_json, output_list, output_page_hint, output_progress, output_result,
+};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use tracker_core::{
     CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
-    fetch_all_pages, get_max_results, unicode_eq_ignore_case,
+    canonical_field_name, fetch_all_pages, get_max_results, unicode_eq_ignore_case,
 };
 
 /// Shared fields for create, update, and batch-update commands.
@@ -173,6 +175,9 @@ pub fn handle_issue(
         }
         IssueCommands::Comments { id, limit, all } => {
             handle_comments(client, id, *limit, *all, format)
+        }
+        IssueCommands::History { id, field, since } => {
+            handle_history(client, id, field.as_deref(), since.as_deref(), format)
         }
         IssueCommands::Link {
             source,
@@ -1102,6 +1107,85 @@ fn handle_comments(
     Ok(())
 }
 
+fn handle_history(
+    client: &dyn IssueTracker,
+    id: &str,
+    field: Option<&str>,
+    since: Option<&str>,
+    format: OutputFormat,
+) -> Result<()> {
+    let mut events = client
+        .get_issue_history(id)
+        .with_context(|| format!("Failed to get history for issue '{}'", id))?;
+
+    if let Some(field) = field {
+        let wanted = canonical_field_name(field);
+        events.retain(|e| unicode_eq_ignore_case(&canonical_field_name(&e.field), &wanted));
+    }
+
+    if let Some(since) = since {
+        let window = parse_since(since)?;
+        let cutoff = chrono::Utc::now() - window;
+        events.retain(|e| e.at >= cutoff);
+    }
+
+    match format {
+        OutputFormat::Json => {
+            let payload = serde_json::json!({
+                "issue": id,
+                "changes": events,
+            });
+            output_json(&payload)?;
+        }
+        OutputFormat::Text => {
+            use colored::Colorize;
+            if events.is_empty() {
+                println!("No change history for {}", id.cyan().bold());
+            } else {
+                println!("History for {} ({}):", id.cyan().bold(), events.len());
+                for event in &events {
+                    println!("  {}", event.display());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a relative duration like `1d`, `24h`, `2w`, `30m`, or `45s` into a
+/// [`chrono::Duration`]. Accepts a single integer followed by one unit suffix
+/// (`s`, `m`, `h`, `d`, `w`).
+fn parse_since(input: &str) -> Result<chrono::Duration> {
+    let s = input.trim();
+    let split = s
+        .find(|c: char| !c.is_ascii_digit())
+        .ok_or_else(|| anyhow!("--since '{}' must include a unit (s, m, h, d, or w)", input))?;
+    let (num, unit) = s.split_at(split);
+    let value: i64 = num
+        .parse()
+        .map_err(|_| anyhow!("--since '{}' must start with a whole number", input))?;
+    if value < 0 {
+        return Err(anyhow!("--since '{}' must not be negative", input));
+    }
+    // Use the checked constructors: the panicking `Duration::weeks` etc. would
+    // abort the CLI on an out-of-range value like `9999999999999w`.
+    let duration = match unit.trim() {
+        "s" => chrono::Duration::try_seconds(value),
+        "m" => chrono::Duration::try_minutes(value),
+        "h" => chrono::Duration::try_hours(value),
+        "d" => chrono::Duration::try_days(value),
+        "w" => chrono::Duration::try_weeks(value),
+        other => {
+            return Err(anyhow!(
+                "--since '{}' has an unknown unit '{}'; use s, m, h, d, or w",
+                input,
+                other
+            ));
+        }
+    };
+    duration.ok_or_else(|| anyhow!("--since '{}' is out of range", input))
+}
+
 fn handle_link(
     client: &dyn IssueTracker,
     source: &str,
@@ -1778,6 +1862,35 @@ mod tests {
     #[test]
     fn rejects_field_value_with_empty_value() {
         assert!(parse_field_value("Name=").is_err());
+    }
+
+    #[test]
+    fn parse_since_supports_all_units() {
+        assert_eq!(parse_since("45s").unwrap(), chrono::Duration::seconds(45));
+        assert_eq!(parse_since("30m").unwrap(), chrono::Duration::minutes(30));
+        assert_eq!(parse_since("24h").unwrap(), chrono::Duration::hours(24));
+        assert_eq!(parse_since("7d").unwrap(), chrono::Duration::days(7));
+        assert_eq!(parse_since("2w").unwrap(), chrono::Duration::weeks(2));
+        // Surrounding whitespace is tolerated.
+        assert_eq!(parse_since(" 1d ").unwrap(), chrono::Duration::days(1));
+    }
+
+    #[test]
+    fn parse_since_rejects_bad_input() {
+        assert!(parse_since("10").is_err()); // missing unit
+        assert!(parse_since("d").is_err()); // missing number
+        assert!(parse_since("5y").is_err()); // unknown unit
+        assert!(parse_since("-1d").is_err()); // negative / non-digit lead
+        assert!(parse_since("").is_err()); // empty
+    }
+
+    #[test]
+    fn parse_since_rejects_overflow_without_panicking() {
+        // i64::MAX weeks overflows chrono's internal seconds; must error, not panic.
+        let huge = format!("{}w", i64::MAX);
+        assert!(parse_since(&huge).is_err());
+        // A value too large to fit in i64 at all is also a graceful error.
+        assert!(parse_since("99999999999999999999999d").is_err());
     }
 
     #[test]

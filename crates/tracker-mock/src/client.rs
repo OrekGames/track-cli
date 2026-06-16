@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tracker_core::{
     Article, ArticleAttachment, Comment, CreateArticle, CreateIssue, CreateProject, Issue,
-    IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
-    Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
+    IssueHistoryEvent, IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project,
+    ProjectCustomField, Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 /// A mock client that reads responses from fixture files
@@ -407,6 +407,13 @@ impl IssueTracker for MockClient {
             .into_iter()
             .collect();
         self.get_response("get_comments", args, None)
+    }
+
+    fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
+        let args = [("issue_id".to_string(), issue_id.to_string())]
+            .into_iter()
+            .collect();
+        self.get_response("get_issue_history", args, None)
     }
 }
 

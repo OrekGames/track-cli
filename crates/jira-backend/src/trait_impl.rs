@@ -2,14 +2,15 @@
 
 use tracker_core::{
     AttachmentUpload, Comment, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment,
-    IssueLink, IssueLinkType, IssueTag, IssueTracker, Project, ProjectCustomField, Result,
-    SearchResult, TrackerError, UpdateIssue, User,
+    IssueHistoryEvent, IssueLink, IssueLinkType, IssueTag, IssueTracker, Project,
+    ProjectCustomField, Result, SearchResult, TrackerError, UpdateIssue, User,
 };
 
 use crate::client::JiraClient;
 use crate::convert::{
-    create_issue_to_jira, get_standard_custom_fields, jira_field_to_project_custom_field,
-    jira_issue_to_core, merge_fields, parse_jira_datetime, update_issue_to_jira,
+    create_issue_to_jira, get_standard_custom_fields, jira_changelog_to_history_events,
+    jira_field_to_project_custom_field, jira_issue_to_core, merge_fields, parse_jira_datetime,
+    update_issue_to_jira,
 };
 use crate::models::{
     CreateJiraIssueLink, IssueKeyRef, IssueLinkTypeName, ParentId, UpdateJiraIssue,
@@ -436,6 +437,11 @@ impl IssueTracker for JiraClient {
             .into_iter()
             .map(Into::into)
             .collect())
+    }
+
+    fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
+        let entries = self.get_issue_changelog(issue_id)?;
+        Ok(jira_changelog_to_history_events(entries))
     }
 }
 

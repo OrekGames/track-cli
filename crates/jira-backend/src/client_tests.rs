@@ -670,6 +670,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_issue_history_paginates_and_sorts() {
+        use tracker_core::IssueTracker;
+
+        let mock_server = MockServer::start().await;
+
+        // Page 1: two entries, not the last page.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/changelog"))
+            .and(query_param("startAt", "0"))
+            .and(query_param("maxResults", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "startAt": 0,
+                "maxResults": 2,
+                "total": 3,
+                "isLast": false,
+                "values": [
+                    {
+                        "id": "1",
+                        "author": { "accountId": "acc-1", "displayName": "Alice" },
+                        "created": "2024-01-10T09:00:00.000+0000",
+                        "items": [
+                            { "field": "status", "fromString": "To Do", "toString": "In Progress" }
+                        ]
+                    },
+                    {
+                        "id": "2",
+                        "author": { "accountId": "acc-2", "displayName": "Bob" },
+                        "created": "2024-01-12T11:00:00.000+0000",
+                        "items": [
+                            { "field": "assignee", "fromString": null, "toString": "Alice" }
+                        ]
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Page 2: the final entry (newest), isLast=true.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/changelog"))
+            .and(query_param("startAt", "2"))
+            .and(query_param("maxResults", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "startAt": 2,
+                "maxResults": 2,
+                "total": 3,
+                "isLast": true,
+                "values": [
+                    {
+                        "id": "3",
+                        "author": { "accountId": "acc-1", "displayName": "Alice" },
+                        "created": "2024-01-15T14:00:00.000+0000",
+                        "items": [
+                            { "field": "status", "fromString": "In Progress", "toString": "Done" }
+                        ]
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let events = client.get_issue_history("TEST-123").unwrap();
+
+        // Three entries across two pages, one item each => three events.
+        assert_eq!(events.len(), 3);
+        // Newest-first ordering.
+        assert_eq!(events[0].field, "status");
+        assert_eq!(events[0].to.as_deref(), Some("Done"));
+        assert_eq!(events[2].to.as_deref(), Some("In Progress"));
+        // Author mapping (accountId -> login, displayName -> name).
+        assert_eq!(
+            events[0].author.as_ref().map(|a| a.login.as_str()),
+            Some("acc-1")
+        );
+        // Null fromString maps to None.
+        let assignee = events.iter().find(|e| e.field == "assignee").unwrap();
+        assert_eq!(assignee.from, None);
+    }
+
+    #[tokio::test]
     async fn test_unauthorized_error() {
         let mock_server = MockServer::start().await;
 

@@ -1,0 +1,47 @@
+# Issue History Scenario
+# Tests: retrieving an issue's change history (field transition timeline)
+
+[scenario]
+name = "issue-history"
+description = "Test issue change-history retrieval and filtering (Jira only)"
+backend = "jira"
+difficulty = "easy"
+tags = ["history", "reporting", "flow-metrics"]
+
+[setup]
+prompt = """
+You have access to a Jira instance with project DEMO.
+
+Task:
+1. Get the full change history (transition timeline) of issue DEMO-1
+2. Show only the status transitions of DEMO-1
+3. Get the change history of DEMO-2
+
+Use the track issue history command.
+"""
+default_project = "DEMO"
+cache_available = true
+context = """
+DEMO-1 has moved through several states and changed assignee/priority.
+DEMO-2 was reopened once.
+History is read-only and Jira-only; other backends report "not supported".
+"""
+
+[expected_outcomes]
+history_listed = { method_called = "get_issue_history", issue = "DEMO-1" }
+history_filtered = { method_called = "get_issue_history", issue = "DEMO-1" }
+history_demo2 = { method_called = "get_issue_history", issue = "DEMO-2" }
+
+[scoring]
+min_commands = 3
+max_commands = 5
+optimal_commands = 3
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+redundant_fetch = -10
+command_error = -15
+
+[scoring.bonuses]
+under_optimal = 5

@@ -1,0 +1,30 @@
+[
+  {
+    "at": "2026-05-01T12:03:44Z",
+    "author": { "login": "712020:1a2b", "name": "Jane Doe" },
+    "field": "status",
+    "from": "In Progress",
+    "to": "Done"
+  },
+  {
+    "at": "2026-04-28T09:11:02Z",
+    "author": { "login": "712020:3c4d", "name": "John Roe" },
+    "field": "assignee",
+    "from": null,
+    "to": "Jane Doe"
+  },
+  {
+    "at": "2026-04-20T15:30:00Z",
+    "author": { "login": "712020:1a2b", "name": "Jane Doe" },
+    "field": "priority",
+    "from": "Medium",
+    "to": "High"
+  },
+  {
+    "at": "2026-04-18T08:00:00Z",
+    "author": { "login": "712020:1a2b", "name": "Jane Doe" },
+    "field": "status",
+    "from": "To Do",
+    "to": "In Progress"
+  }
+]

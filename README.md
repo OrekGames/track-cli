@@ -301,6 +301,20 @@ track issue comments PROJ-123 --limit 10
 ```
 
 
+### History
+
+Show an issue's change history — the time-ordered timeline of field transitions
+(status changes, assignee changes, etc.) with timestamps and authors.
+**Jira only** for now; other backends report "not supported".
+
+```bash
+track -b j issue history PROJ-123                 # Full timeline, newest first
+track -b j i hist PROJ-123 --field status         # Only status transitions
+track -b j i history PROJ-123 --since 7d           # Last 7 days (s/m/h/d/w)
+track -b j -o json i history PROJ-123              # {"issue": id, "changes": [...]}
+```
+
+
 ### Links
 
 ```bash
@@ -469,6 +483,7 @@ Single command to get all relevant data: projects, fields, users, query template
 | `track issue search` | `track i s`, `track i find` |
 | `track issue delete` | `track i rm`, `track i del` |
 | `track issue comment` | `track i cmt` |
+| `track issue history` | `track i history`, `track i hist` |
 | `track issue complete` | `track i done`, `track i resolve` |
 | `track issue start` | `track i start` |
 | `track issue link` | `track i link` |
