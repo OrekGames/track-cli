@@ -2486,3 +2486,116 @@ fn test_jira_search_skip_shifts_window() {
         "--skip 2 must shift the window past the first page"
     );
 }
+
+/// A single-page Jira changelog body shared by the history tests below.
+fn mock_changelog_body() -> String {
+    serde_json::json!({
+        "startAt": 0,
+        "maxResults": 100,
+        "total": 2,
+        "isLast": true,
+        "values": [
+            {
+                "id": "1",
+                "author": { "accountId": "acc-1", "displayName": "Alice" },
+                "created": "2024-01-10T09:00:00.000+0000",
+                "items": [
+                    { "field": "status", "fromString": "To Do", "toString": "In Progress" }
+                ]
+            },
+            {
+                "id": "2",
+                "author": { "accountId": "acc-2", "displayName": "Bob" },
+                "created": "2024-01-15T14:00:00.000+0000",
+                "items": [
+                    { "field": "assignee", "fromString": null, "toString": "Alice" },
+                    { "field": "status", "fromString": "In Progress", "toString": "Done" }
+                ]
+            }
+        ]
+    })
+    .to_string()
+}
+
+#[test]
+fn test_jira_issue_history_json_envelope_orders_newest_first() {
+    let (_server, port) = start_jira_mock_server(mock_changelog_body());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "history", "TEST-1"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(v["issue"], "TEST-1", "envelope carries the issue id");
+    let changes = v["changes"].as_array().unwrap();
+    // Two entries, one with two items => three events.
+    assert_eq!(changes.len(), 3);
+
+    // Newest entry (2024-01-15) sorts first; its two items keep their order.
+    assert_eq!(changes[0]["field"], "assignee");
+    assert!(changes[0]["from"].is_null(), "null fromString -> JSON null");
+    assert_eq!(changes[0]["to"], "Alice");
+    assert_eq!(changes[0]["author"]["login"], "acc-2");
+    assert_eq!(changes[0]["author"]["name"], "Bob");
+    assert_eq!(changes[1]["field"], "status");
+    assert_eq!(changes[1]["to"], "Done");
+
+    // Oldest entry sorts last.
+    assert_eq!(changes[2]["field"], "status");
+    assert_eq!(changes[2]["to"], "In Progress");
+}
+
+#[test]
+fn test_jira_issue_history_field_filter() {
+    let (_server, port) = start_jira_mock_server(mock_changelog_body());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "history", "TEST-1", "--field", "status"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    let changes = v["changes"].as_array().unwrap();
+    // Only the two status transitions survive the filter.
+    assert_eq!(changes.len(), 2);
+    assert!(changes.iter().all(|c| c["field"] == "status"));
+}
+
+#[test]
+fn test_jira_issue_history_since_filter_excludes_old() {
+    let (_server, port) = start_jira_mock_server(mock_changelog_body());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        // The fixture's changes are from 2024; a 1-day window excludes them all.
+        .args(["issue", "history", "TEST-1", "--since", "1d"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(v["changes"].as_array().unwrap().len(), 0);
+}

@@ -541,6 +541,18 @@ pub enum IssueCommands {
         #[arg(long)]
         all: bool,
     },
+    /// Show an issue's change history (field transition timeline)
+    #[command(visible_alias = "hist")]
+    History {
+        /// Issue ID (e.g., PROJ-123)
+        id: String,
+        /// Only show changes to this field (canonical name, e.g. "status")
+        #[arg(long)]
+        field: Option<String>,
+        /// Only show changes within this window (e.g. 1d, 24h, 2w, 30m)
+        #[arg(long)]
+        since: Option<String>,
+    },
     /// Link two issues together
     Link {
         /// Source issue ID (e.g., PROJ-123)

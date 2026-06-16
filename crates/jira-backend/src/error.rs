@@ -24,6 +24,9 @@ pub enum JiraError {
     #[error("API error ({status}): {message}")]
     Api { status: u16, message: String },
 
+    #[error("Pagination stalled: {0}")]
+    PaginationStalled(String),
+
     #[error(
         "status '{requested}' is not reachable from the current state; available transitions: {available:?}"
     )]
@@ -45,6 +48,7 @@ impl From<JiraError> for TrackerError {
             JiraError::ProjectNotFound(id) => TrackerError::ProjectNotFound(id),
             JiraError::Unauthorized => TrackerError::Unauthorized,
             JiraError::Api { status, message } => TrackerError::Api { status, message },
+            JiraError::PaginationStalled(msg) => TrackerError::PaginationStalled(msg),
             JiraError::InvalidTransition {
                 requested,
                 available,

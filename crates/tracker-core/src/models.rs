@@ -206,6 +206,45 @@ pub struct CommentAuthor {
     pub name: Option<String>,
 }
 
+/// A single field change in an issue's history (changelog / activity timeline).
+///
+/// Backends model history differently — Jira and YouTrack expose field diffs
+/// directly, while GitHub/GitLab expose typed events that must be coerced into
+/// this shape. The lowest-common-denominator representation is one field
+/// transition: who changed `field` from `from` to `to`, and when.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueHistoryEvent {
+    /// When the change was recorded.
+    pub at: DateTime<Utc>,
+    /// Who made the change, if known.
+    pub author: Option<CommentAuthor>,
+    /// Canonical field name that changed (e.g. "status"). See
+    /// [`canonical_field_name`].
+    pub field: String,
+    /// Previous human-readable value, if any.
+    pub from: Option<String>,
+    /// New human-readable value, if any.
+    pub to: Option<String>,
+}
+
+/// Canonical name for the workflow status/state field, normalized across
+/// backends so a `--field status` filter works regardless of the backend's
+/// native terminology (Jira "status", YouTrack "State", GitHub/GitLab close
+/// events).
+pub const FIELD_STATUS: &str = "status";
+
+/// Normalize a backend's raw history field name to a canonical token.
+///
+/// Folds known synonyms for the workflow status field onto [`FIELD_STATUS`] so
+/// callers can filter portably. All other field names are returned trimmed but
+/// otherwise unchanged, preserving their display casing.
+pub fn canonical_field_name(raw: &str) -> String {
+    match raw.trim().to_lowercase().as_str() {
+        "status" | "state" => FIELD_STATUS.to_string(),
+        _ => raw.trim().to_string(),
+    }
+}
+
 /// Upload request shared by issue and article attachment commands.
 #[derive(Debug, Clone)]
 pub struct AttachmentUpload {

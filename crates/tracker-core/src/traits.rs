@@ -256,6 +256,20 @@ pub trait IssueTracker: Send + Sync {
             .take(limit)
             .collect())
     }
+
+    // ========== History Operations ==========
+
+    /// Get an issue's change history (the field-transition timeline).
+    ///
+    /// Returns field changes — status transitions, assignee changes, etc. —
+    /// ordered newest-first. Optional: backends without a changelog/activity
+    /// API return an error by default.
+    fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
+        let _ = issue_id;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Issue history is not supported by this backend".to_string(),
+        ))
+    }
 }
 
 /// Trait for knowledge base / wiki operations

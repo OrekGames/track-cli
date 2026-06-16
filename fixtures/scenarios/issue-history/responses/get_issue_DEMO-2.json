@@ -1,0 +1,22 @@
+{
+  "id": "2-2",
+  "id_readable": "DEMO-2",
+  "summary": "Fix login redirect loop",
+  "project": {
+    "id": "0-1",
+    "short_name": "DEMO"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "Open",
+        "is_resolved": false
+      }
+    }
+  ],
+  "created": "2026-04-30T09:00:00Z",
+  "tags": [],
+  "updated": "2026-05-10T10:00:00Z",
+  "description": null
+}

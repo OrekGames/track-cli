@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use tracker_core::{
     Article, ArticleAttachment, BundleDefinition, Comment, CustomField, CustomFieldDefinition,
-    Issue, IssueAttachment, IssueTag, Project, ProjectCustomField, case_key,
+    Issue, IssueAttachment, IssueHistoryEvent, IssueTag, Project, ProjectCustomField, case_key,
     unicode_eq_ignore_case,
 };
 
@@ -630,6 +630,29 @@ impl Displayable for Comment {
             .unwrap_or_else(|| "Unknown date".to_string());
 
         format!("[{}] {} - {}", date.dimmed(), author.cyan(), self.text)
+    }
+}
+
+impl Displayable for IssueHistoryEvent {
+    fn display(&self) -> String {
+        let author = self
+            .author
+            .as_ref()
+            .map(|a| a.name.as_deref().unwrap_or(&a.login))
+            .unwrap_or("Unknown");
+
+        let date = self.at.format("%Y-%m-%d %H:%M").to_string();
+        let from = self.from.as_deref().unwrap_or("∅");
+        let to = self.to.as_deref().unwrap_or("∅");
+
+        format!(
+            "[{}] {} {}: {} → {}",
+            date.dimmed(),
+            author.cyan(),
+            self.field.yellow(),
+            from,
+            to
+        )
     }
 }
 
