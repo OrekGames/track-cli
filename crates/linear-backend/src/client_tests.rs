@@ -372,4 +372,87 @@ mod tests {
         assert_eq!(events[1].to.as_deref(), Some("In Progress"));
         assert_eq!(events[1].from.as_deref(), Some("Todo"));
     }
+
+    #[tokio::test]
+    async fn test_get_issue_history_skips_empty_page_with_next_cursor() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Issue"))
+            .and(body_string_contains("ORE-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "issue": mock_linear_issue("ORE-123", "History issue") }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Page 3: real data, last page.
+        Mock::given(method("POST"))
+            .and(body_string_contains("query IssueHistory"))
+            .and(body_string_contains("cursor-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issue": {
+                        "history": {
+                            "nodes": [
+                                {
+                                    "createdAt": "2024-01-15T14:30:00Z",
+                                    "fromState": { "name": "In Progress" },
+                                    "toState": { "name": "Done" }
+                                }
+                            ],
+                            "pageInfo": { "hasNextPage": false, "endCursor": null }
+                        }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Page 2: empty but hasNextPage — must not truncate.
+        Mock::given(method("POST"))
+            .and(body_string_contains("query IssueHistory"))
+            .and(body_string_contains("cursor-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issue": {
+                        "history": {
+                            "nodes": [],
+                            "pageInfo": { "hasNextPage": true, "endCursor": "cursor-2" }
+                        }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Page 1: oldest node with a next cursor.
+        Mock::given(method("POST"))
+            .and(body_string_contains("query IssueHistory"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issue": {
+                        "history": {
+                            "nodes": [
+                                {
+                                    "createdAt": "2024-01-10T09:00:00Z",
+                                    "fromState": { "name": "Todo" },
+                                    "toState": { "name": "In Progress" }
+                                }
+                            ],
+                            "pageInfo": { "hasNextPage": true, "endCursor": "cursor-1" }
+                        }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let events = <LinearClient as IssueTracker>::get_issue_history(&client, "ORE-123").unwrap();
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].to.as_deref(), Some("Done"));
+        assert_eq!(events[1].to.as_deref(), Some("In Progress"));
+    }
 }

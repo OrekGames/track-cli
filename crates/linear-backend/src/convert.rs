@@ -193,24 +193,28 @@ pub fn linear_history_to_events(nodes: Vec<LinearIssueHistory>) -> Vec<IssueHist
         }
 
         // Priority transition (only when the value actually changed).
-        if node.to_priority.is_some() && node.to_priority != node.from_priority {
+        let from_priority = node.from_priority;
+        let to_priority = node.to_priority;
+        if (from_priority.is_some() || to_priority.is_some()) && from_priority != to_priority {
             events.push(IssueHistoryEvent {
                 at,
                 author: author.clone(),
                 field: "priority".to_string(),
-                from: node.from_priority.map(|p| priority_label(p).to_string()),
-                to: node.to_priority.map(|p| priority_label(p).to_string()),
+                from: from_priority.map(|p| priority_label(p).to_string()),
+                to: to_priority.map(|p| priority_label(p).to_string()),
             });
         }
 
         // Title transition (only when the value actually changed).
-        if node.to_title.is_some() && node.to_title != node.from_title {
+        let from_title = node.from_title.clone();
+        let to_title = node.to_title.clone();
+        if (from_title.is_some() || to_title.is_some()) && from_title != to_title {
             events.push(IssueHistoryEvent {
                 at,
                 author: author.clone(),
                 field: "title".to_string(),
-                from: node.from_title.clone(),
-                to: node.to_title.clone(),
+                from: from_title,
+                to: to_title,
             });
         }
 
@@ -838,6 +842,30 @@ mod tests {
         // The timestamp-less node is dropped, and the second node has nothing
         // that actually changed (priority, assignee, state, and title all equal).
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn linear_history_emits_cleared_priority_and_title() {
+        let nodes = history_from_json(serde_json::json!([
+            {
+                "createdAt": "2024-01-15T10:00:00Z",
+                "fromPriority": 2,
+                "toPriority": null,
+                "fromTitle": "Old title",
+                "toTitle": null
+            }
+        ]));
+
+        let events = linear_history_to_events(nodes);
+        assert_eq!(events.len(), 2);
+
+        assert_eq!(events[0].field, "priority");
+        assert_eq!(events[0].from.as_deref(), Some("High"));
+        assert_eq!(events[0].to, None);
+
+        assert_eq!(events[1].field, "title");
+        assert_eq!(events[1].from.as_deref(), Some("Old title"));
+        assert_eq!(events[1].to, None);
     }
 
     #[test]
