@@ -371,7 +371,7 @@ track completions zsh      # Shell completions (bash|zsh|fish|powershell|elvish)
     {"SingleEnum": {"name": "Priority", "value": "Major"}},
     {"SingleUser": {"name": "Assignee", "login": "...", "display_name": "..."}},
     {"Text":       {"name": "...", "value": "..."}},
-    {"MultiEnum":  {"name": "...", "values": ["..."]}}
+    {"MultiEnum":  {"name": "Components", "values": ["Rendering", "Audio"]}}
   ],
   "tags": [{"id": "...", "name": "..."}],
   "created": "2024-01-15T10:00:00Z", "updated": "...",
@@ -380,6 +380,7 @@ track completions zsh      # Shell completions (bash|zsh|fish|powershell|elvish)
 ```
 
 - `custom_fields` entries are **externally tagged** — the variant name (`State`, `SingleEnum`, ...) is the JSON key.
+- **Jira `Components`** (the standard subsystem/area field) is surfaced as a `MultiEnum` custom field named `Components`. To find issues by area, read `custom_fields` for that entry (or filter server-side with JQL, e.g. `component = "Rendering"`). Setting components on create/update is not yet supported.
 - `resolved` is the **resolution timestamp**, not a closed flag: it can be `null` even for Done issues (e.g. a Jira workflow that never sets Resolution). Test closedness via the State field's `is_resolved`.
 - **`--full`** wraps the issue in an envelope: `{"issue": {...}, "links": [{"id", "direction", "link_type", "issues": [...]}], "comments": [{"id", "text", "author", "created"}]}`. Attachments are NOT included — use `track i attachments`.
 - **`i s -o json`** returns a bare array — no total or pagination metadata (hints go to stderr in text mode only).

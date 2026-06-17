@@ -44,6 +44,9 @@ pub struct JiraIssueFields {
     /// Labels (equivalent to tags)
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Components (Jira's standard subsystem/area categorization field)
+    #[serde(default)]
+    pub components: Vec<JiraComponent>,
     /// Creation timestamp
     pub created: Option<String>,
     /// Last update timestamp
@@ -151,6 +154,16 @@ pub struct JiraPriority {
     /// Priority ID
     pub id: Option<String>,
     /// Priority name
+    pub name: String,
+}
+
+/// Component (Jira's standard Components field is an array of these)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraComponent {
+    /// Component ID
+    pub id: Option<String>,
+    /// Component name
     pub name: String,
 }
 

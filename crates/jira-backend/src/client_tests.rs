@@ -112,6 +112,19 @@ mod tests {
                     "active": true
                 },
                 "labels": ["bug", "urgent"],
+                "components": [
+                    {
+                        "self": "https://test.atlassian.net/rest/api/3/component/10001",
+                        "id": "10001",
+                        "name": "Rendering",
+                        "description": "Rendering subsystem"
+                    },
+                    {
+                        "self": "https://test.atlassian.net/rest/api/3/component/10002",
+                        "id": "10002",
+                        "name": "Audio"
+                    }
+                ],
                 "created": "2024-01-15T10:30:00.000+0000",
                 "updated": "2024-01-15T12:00:00.000+0000",
                 "subtasks": [],
@@ -213,6 +226,17 @@ mod tests {
         assert_eq!(issue.fields.summary, "Test issue");
         assert_eq!(issue.fields.status.name, "Open");
         assert_eq!(issue.fields.labels, vec!["bug", "urgent"]);
+
+        // Components must be deserialized into the named field (pulled out of
+        // the flattened `extra` catch-all), not silently dropped.
+        let component_names: Vec<&str> = issue
+            .fields
+            .components
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(component_names, vec!["Rendering", "Audio"]);
+        assert!(!issue.fields.extra.contains_key("components"));
     }
 
     #[tokio::test]

@@ -487,6 +487,7 @@ track -b lin i s "project: ORE priority: High"
 | Priority | `Priority: Major` | `priority = Major` | `label:priority-major` | `labels=priority::major` |
 | Text search | `summary:~'keyword'` | `summary ~ "keyword"` | `keyword` (in query) | `search=keyword` |
 | By label | `tag: {bug}` | `labels = bug` | `label:bug` | `labels=bug` |
+| By component | — | `component = "Rendering"` | — | — |
 | AND | implicit or `AND` | `AND` | space-separated | `&`-separated params |
 | OR | `OR` | `OR` | N/A | N/A |
 

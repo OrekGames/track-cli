@@ -74,6 +74,15 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
         value: Some(j.fields.issuetype.name.clone()),
     });
 
+    // Map components (Jira's standard subsystem/area field) as a multi-value
+    // custom field, mirroring how the other standard fields above are surfaced.
+    if !j.fields.components.is_empty() {
+        custom_fields.push(CustomField::MultiEnum {
+            name: "Components".to_string(),
+            values: j.fields.components.iter().map(|c| c.name.clone()).collect(),
+        });
+    }
+
     // Map extra custom fields from the flattened HashMap
     let id_to_name: HashMap<&str, &str> = jira_fields
         .iter()
@@ -1368,6 +1377,7 @@ mod tests {
                 assignee: None,
                 reporter: None,
                 labels: vec![],
+                components: vec![],
                 created: Some("2024-01-15T10:00:00.000+0000".to_string()),
                 updated: Some("2024-01-15T12:00:00.000+0000".to_string()),
                 resolution_date: None,
@@ -1421,6 +1431,46 @@ mod tests {
             Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap()
         );
         assert_eq!(core.resolved, None);
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_components() {
+        let mut issue = mock_jira_issue_for_conversion(Default::default());
+        issue.fields.components = vec![
+            JiraComponent {
+                id: Some("10001".to_string()),
+                name: "Rendering".to_string(),
+            },
+            JiraComponent {
+                id: Some("10002".to_string()),
+                name: "Audio".to_string(),
+            },
+        ];
+
+        let core = jira_issue_to_core(issue, &[]);
+
+        let components = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "Components"))
+            .expect("Components custom field should be present");
+        assert!(
+            matches!(components, CustomField::MultiEnum { values, .. } if values == &["Rendering".to_string(), "Audio".to_string()])
+        );
+    }
+
+    #[test]
+    fn jira_issue_to_core_omits_components_when_empty() {
+        let issue = mock_jira_issue_for_conversion(Default::default());
+        let core = jira_issue_to_core(issue, &[]);
+
+        // No empty Components entry should be emitted when the issue has none.
+        assert!(
+            !core
+                .custom_fields
+                .iter()
+                .any(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "Components"))
+        );
     }
 
     #[test]
