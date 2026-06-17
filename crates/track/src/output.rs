@@ -779,6 +779,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn issue_display_renders_components_multi_enum() {
+        // Jira's Components field is surfaced as a MultiEnum custom field named
+        // "Components"; the text output should list the component names.
+        let issue = issue_with_custom_fields(vec![CustomField::MultiEnum {
+            name: "Components".into(),
+            values: vec!["Rendering".into(), "Audio".into()],
+        }]);
+        let rendered = issue.display();
+        assert!(
+            rendered.contains("Components"),
+            "expected Components label in output, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Rendering, Audio"),
+            "expected joined component names in output, got:\n{rendered}"
+        );
+    }
+
     fn state_update(name: &str) -> tracker_core::CustomFieldUpdate {
         tracker_core::CustomFieldUpdate::State {
             name: name.into(),

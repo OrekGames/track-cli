@@ -575,6 +575,8 @@ track --format json p ls    # JSON
 - **Rich Text**: Uses Atlassian Document Format (ADF) for descriptions
 - **Project Creation**: Requires admin permissions (use web interface)
 - **Subtasks**: Create as subtask with `--parent`, or link existing issues with `issue link -t subtask`
+- **Labels**: Map to tags
+- **Components**: Jira's standard Components field is surfaced as a `Components` multi-value custom field on `issue get`/`issue search` (read-only for now; filter server-side with JQL such as `component = "Rendering"`)
 
 ### GitHub
 - **Scope**: Repository-scoped (requires owner and repo configuration)
