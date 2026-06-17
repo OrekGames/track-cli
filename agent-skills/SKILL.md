@@ -176,7 +176,7 @@ track config clear [-g]        # Delete a config file
 | Unlink | `track i ul PROJ-1 <link-id>` | `track -b j i ul PROJ-1 <link-id>` | Not supported | `track -b gl i ul 42 <link-id>` |
 | Start | `track i start PROJ-123` | `track -b j i start PROJ-123 --field Status --state "In Progress"` | `track -b gh i start 42` | `track -b gl i start 42` |
 | Complete | `track i done PROJ-123` | `track -b j i done PROJ-123 --field Status --state Done` | `track -b gh i done 42` (closes) | `track -b gl i done 42` (closes) |
-| History | Not supported | `track -b j i history PROJ-123 --field status --since 7d` | Not supported | Not supported |
+| History | `track i history PROJ-123` | `track -b j i history PROJ-123 --field status --since 7d` | `track -b gh i history 42` | `track -b gl i history 42` |
 
 **Bare-ID shortcut**: `track PROJ-123` = `track issue get PROJ-123`, but it only fires for IDs shaped `ALPHANUM-DIGITS` with **exactly one dash** (`PROJ-123`, `my2proj-99`). Purely numeric IDs must use `track i g 42`. Global flags (`-b`, `-o`, ...) must come **before** the ID; the only flag recognized after the ID is `--full`.
 
@@ -385,7 +385,7 @@ track completions zsh      # Shell completions (bash|zsh|fish|powershell|elvish)
 - **`i s -o json`** returns a bare array — no total or pagination metadata (hints go to stderr in text mode only).
 - **`i del -o json`** returns `{"success": true, "message": "..."}`.
 
-**History** (`i history`, **Jira only** — other backends error with "not supported"):
+**History** (`i history`, all backends):
 ```json
 {
   "issue": "PROJ-123",
@@ -404,6 +404,7 @@ track completions zsh      # Shell completions (bash|zsh|fish|powershell|elvish)
 - Ordered **newest-first**. `author` reuses the comment-author shape (`{login, name}`).
 - Filter at the source: `--field status` (canonical name) and `--since 7d` (`s`/`m`/`h`/`d`/`w`).
 - No batch form — one call per issue. For flow metrics across a board, search for the candidate set first, then call `i history` per issue.
+- **`from` coverage varies by backend.** Jira/YouTrack/Linear carry the prior value for every field. GitHub/GitLab are event-based, so `from` is populated only for `status` (derived from the event sequence); other fields report `from: null` with the new value in `to`. Linear label-change history is not yet included.
 
 ---
 

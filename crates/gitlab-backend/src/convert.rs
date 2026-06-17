@@ -2,8 +2,9 @@
 
 use chrono::{DateTime, Utc};
 use tracker_core::{
-    Comment, CommentAuthor, CustomField, IssueLink, IssueLinkType, IssueTag, LinkedIssue, Project,
-    ProjectCustomField, ProjectRef, StateValueInfo, Tag, TagColor, User,
+    Comment, CommentAuthor, CustomField, IssueHistoryEvent, IssueLink, IssueLinkType, IssueTag,
+    LinkedIssue, Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag, TagColor, User,
+    canonical_field_name,
 };
 
 use crate::models::*;
@@ -251,6 +252,119 @@ fn parse_gitlab_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
             .ok()
             .map(|d| d.with_timezone(&Utc))
     })
+}
+
+/// Map a GitLab resource-event user onto a [`CommentAuthor`].
+///
+/// Mirrors the note/comment author mapping (`username` → `login`, `name` →
+/// `Some(name)`) so history and comment authors render identically. A
+/// system-generated event with no user produces `None`.
+fn event_user_to_author(user: Option<GitLabUser>) -> Option<CommentAuthor> {
+    user.map(|u| CommentAuthor {
+        login: u.username,
+        name: Some(u.name),
+    })
+}
+
+/// Merge GitLab's three resource-event streams into a unified history.
+///
+/// GitLab is an event-stream backend: state/label/milestone changes live on
+/// three separate endpoints, each recording *what happened* rather than a
+/// before/after diff.
+///
+/// For the workflow status field there is no `from` in the payload, so we
+/// reconstruct it by walking the state events in chronological order
+/// (oldest-first) while threading a single running `status` string (seeded to
+/// `"opened"`, the state a GitLab issue is born in). Each state event reads the
+/// current status as its `from`, then advances it. Events whose `created_at`
+/// cannot be parsed are skipped *without* advancing the running status, so a
+/// dropped event never corrupts later `from` values.
+///
+/// Label and milestone events carry their own value directly: an `add` emits a
+/// `to` with no `from`, a `remove` emits a `from` with no `to`. Their `field`
+/// stays fixed (`labels` / `milestone`).
+///
+/// After merging all three streams the result is sorted newest-first (stable)
+/// to match the reporting order used by the other backends.
+pub fn gitlab_events_to_history_events(
+    mut state: Vec<GitLabStateEvent>,
+    label: Vec<GitLabLabelEvent>,
+    milestone: Vec<GitLabMilestoneEvent>,
+) -> Vec<IssueHistoryEvent> {
+    let mut out = Vec::new();
+
+    // --- State events: derive `from` by walking chronologically. ---
+    // Sort oldest-first so the running-status thread is meaningful; `sort_by`
+    // is stable, preserving the API's ordering for events sharing a timestamp.
+    state.sort_by(|a, b| {
+        let a_at = parse_gitlab_datetime(&a.created_at);
+        let b_at = parse_gitlab_datetime(&b.created_at);
+        a_at.cmp(&b_at)
+    });
+
+    // GitLab issues are born `opened`.
+    let mut status = "opened".to_string();
+    for event in state {
+        let Some(at) = parse_gitlab_datetime(&event.created_at) else {
+            // Skip unparseable timestamps without advancing the running status.
+            continue;
+        };
+        let Some(to) = event.state else {
+            continue;
+        };
+        out.push(IssueHistoryEvent {
+            at,
+            author: event_user_to_author(event.user),
+            field: canonical_field_name("state"),
+            from: Some(status.clone()),
+            to: Some(to.clone()),
+        });
+        status = to;
+    }
+
+    // --- Label events: `add` -> to, `remove` -> from. ---
+    for event in label {
+        let Some(at) = parse_gitlab_datetime(&event.created_at) else {
+            continue;
+        };
+        let label_name = event.label.map(|l| l.name);
+        let (from, to) = match event.action.as_deref() {
+            Some("remove") => (label_name, None),
+            _ => (None, label_name), // "add" (and any other action) treated as add
+        };
+        out.push(IssueHistoryEvent {
+            at,
+            author: event_user_to_author(event.user),
+            field: "labels".to_string(),
+            from,
+            to,
+        });
+    }
+
+    // --- Milestone events: `add` -> to, `remove` -> from. ---
+    for event in milestone {
+        let Some(at) = parse_gitlab_datetime(&event.created_at) else {
+            continue;
+        };
+        let title = event.milestone.map(|m| m.title);
+        let (from, to) = match event.action.as_deref() {
+            Some("remove") => (title, None),
+            _ => (None, title),
+        };
+        out.push(IssueHistoryEvent {
+            at,
+            author: event_user_to_author(event.user),
+            field: "milestone".to_string(),
+            from,
+            to,
+        });
+    }
+
+    // Expose newest-first to match the reporting order used by the other
+    // backends. `sort_by` is stable, so events sharing a timestamp keep their
+    // insertion order.
+    out.sort_by(|a, b| b.at.cmp(&a.at));
+    out
 }
 
 /// Convert a simple tracker-core query to GitLab search params.
@@ -531,5 +645,218 @@ mod tests {
             core_link.issues[0].summary,
             Some("Unknown Link Type Issue".to_string())
         );
+    }
+
+    // ==================== gitlab_events_to_history_events tests ====================
+
+    use crate::models::{
+        GitLabEventLabel, GitLabEventMilestone, GitLabLabelEvent, GitLabMilestoneEvent,
+        GitLabStateEvent, GitLabUser,
+    };
+
+    fn user(username: &str) -> GitLabUser {
+        GitLabUser {
+            id: 1,
+            username: username.to_string(),
+            name: format!("{} Name", username),
+        }
+    }
+
+    fn state_event(id: u64, at: &str, state: &str, username: Option<&str>) -> GitLabStateEvent {
+        GitLabStateEvent {
+            id,
+            user: username.map(user),
+            created_at: Some(at.to_string()),
+            state: Some(state.to_string()),
+        }
+    }
+
+    #[test]
+    fn state_events_derive_from_chronologically() {
+        // opened -> closed -> reopened, given out of order to exercise the sort.
+        let state = vec![
+            state_event(3, "2024-03-03T00:00:00Z", "reopened", Some("carol")),
+            state_event(1, "2024-01-01T00:00:00Z", "opened", Some("alice")),
+            state_event(2, "2024-02-02T00:00:00Z", "closed", Some("bob")),
+        ];
+
+        let events = gitlab_events_to_history_events(state, vec![], vec![]);
+
+        assert_eq!(events.len(), 3);
+        // Newest-first ordering.
+        assert_eq!(events[0].field, "status");
+        assert_eq!(events[0].from.as_deref(), Some("closed"));
+        assert_eq!(events[0].to.as_deref(), Some("reopened"));
+        assert_eq!(events[0].author.as_ref().unwrap().login, "carol");
+
+        assert_eq!(events[1].field, "status");
+        assert_eq!(events[1].from.as_deref(), Some("opened"));
+        assert_eq!(events[1].to.as_deref(), Some("closed"));
+        assert_eq!(events[1].author.as_ref().unwrap().login, "bob");
+
+        // The first transition's `from` is seeded to "opened".
+        assert_eq!(events[2].field, "status");
+        assert_eq!(events[2].from.as_deref(), Some("opened"));
+        assert_eq!(events[2].to.as_deref(), Some("opened"));
+        assert_eq!(events[2].author.as_ref().unwrap().login, "alice");
+    }
+
+    #[test]
+    fn unparseable_state_timestamp_is_skipped_without_advancing_status() {
+        // The middle event has a bad timestamp; it must be dropped and must NOT
+        // advance the running status, so the final transition's `from` is still
+        // "opened" (the seed) rather than "closed".
+        let state = vec![
+            GitLabStateEvent {
+                id: 1,
+                user: Some(user("alice")),
+                created_at: Some("not-a-date".to_string()),
+                state: Some("closed".to_string()),
+            },
+            state_event(2, "2024-02-02T00:00:00Z", "reopened", Some("bob")),
+        ];
+
+        let events = gitlab_events_to_history_events(state, vec![], vec![]);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field, "status");
+        assert_eq!(events[0].from.as_deref(), Some("opened"));
+        assert_eq!(events[0].to.as_deref(), Some("reopened"));
+    }
+
+    #[test]
+    fn label_add_and_remove_produce_correct_from_to() {
+        let label = vec![
+            GitLabLabelEvent {
+                id: 1,
+                user: Some(user("alice")),
+                created_at: Some("2024-01-01T00:00:00Z".to_string()),
+                action: Some("add".to_string()),
+                label: Some(GitLabEventLabel {
+                    name: "bug".to_string(),
+                }),
+            },
+            GitLabLabelEvent {
+                id: 2,
+                user: Some(user("bob")),
+                created_at: Some("2024-01-02T00:00:00Z".to_string()),
+                action: Some("remove".to_string()),
+                label: Some(GitLabEventLabel {
+                    name: "bug".to_string(),
+                }),
+            },
+        ];
+
+        let events = gitlab_events_to_history_events(vec![], label, vec![]);
+
+        assert_eq!(events.len(), 2);
+        // Newest-first: the remove sorts ahead of the add.
+        assert_eq!(events[0].field, "labels");
+        assert_eq!(events[0].from.as_deref(), Some("bug"));
+        assert_eq!(events[0].to, None);
+
+        assert_eq!(events[1].field, "labels");
+        assert_eq!(events[1].from, None);
+        assert_eq!(events[1].to.as_deref(), Some("bug"));
+    }
+
+    #[test]
+    fn milestone_add_and_remove_produce_correct_from_to() {
+        let milestone = vec![
+            GitLabMilestoneEvent {
+                id: 1,
+                user: Some(user("alice")),
+                created_at: Some("2024-01-01T00:00:00Z".to_string()),
+                action: Some("add".to_string()),
+                milestone: Some(GitLabEventMilestone {
+                    title: "v1.0".to_string(),
+                }),
+            },
+            GitLabMilestoneEvent {
+                id: 2,
+                user: Some(user("bob")),
+                created_at: Some("2024-01-02T00:00:00Z".to_string()),
+                action: Some("remove".to_string()),
+                milestone: Some(GitLabEventMilestone {
+                    title: "v1.0".to_string(),
+                }),
+            },
+        ];
+
+        let events = gitlab_events_to_history_events(vec![], vec![], milestone);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].field, "milestone");
+        assert_eq!(events[0].from.as_deref(), Some("v1.0"));
+        assert_eq!(events[0].to, None);
+
+        assert_eq!(events[1].field, "milestone");
+        assert_eq!(events[1].from, None);
+        assert_eq!(events[1].to.as_deref(), Some("v1.0"));
+    }
+
+    #[test]
+    fn mixed_events_merge_and_sort_newest_first() {
+        let state = vec![
+            state_event(1, "2024-01-01T00:00:00Z", "opened", Some("alice")),
+            state_event(2, "2024-01-05T00:00:00Z", "closed", Some("alice")),
+        ];
+        let label = vec![GitLabLabelEvent {
+            id: 1,
+            user: Some(user("bob")),
+            created_at: Some("2024-01-03T00:00:00Z".to_string()),
+            action: Some("add".to_string()),
+            label: Some(GitLabEventLabel {
+                name: "bug".to_string(),
+            }),
+        }];
+        let milestone = vec![GitLabMilestoneEvent {
+            id: 1,
+            user: Some(user("carol")),
+            created_at: Some("2024-01-04T00:00:00Z".to_string()),
+            action: Some("add".to_string()),
+            milestone: Some(GitLabEventMilestone {
+                title: "v1.0".to_string(),
+            }),
+        }];
+
+        let events = gitlab_events_to_history_events(state, label, milestone);
+
+        // All four events present, sorted newest-first across all three streams.
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].field, "status"); // 01-05 closed
+        assert_eq!(events[0].to.as_deref(), Some("closed"));
+        assert_eq!(events[1].field, "milestone"); // 01-04
+        assert_eq!(events[2].field, "labels"); // 01-03
+        assert_eq!(events[3].field, "status"); // 01-01 opened
+        assert_eq!(events[3].to.as_deref(), Some("opened"));
+    }
+
+    #[test]
+    fn null_user_yields_no_author() {
+        let state = vec![state_event(1, "2024-01-01T00:00:00Z", "closed", None)];
+
+        let events = gitlab_events_to_history_events(state, vec![], vec![]);
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].author.is_none());
+    }
+
+    #[test]
+    fn null_label_is_tolerated() {
+        let label = vec![GitLabLabelEvent {
+            id: 1,
+            user: Some(user("alice")),
+            created_at: Some("2024-01-01T00:00:00Z".to_string()),
+            action: Some("add".to_string()),
+            label: None,
+        }];
+
+        let events = gitlab_events_to_history_events(vec![], label, vec![]);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field, "labels");
+        assert_eq!(events[0].from, None);
+        assert_eq!(events[0].to, None);
     }
 }

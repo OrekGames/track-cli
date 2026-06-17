@@ -23,6 +23,9 @@ pub enum YouTrackError {
 
     #[error("API error ({status}): {message}")]
     Api { status: u16, message: String },
+
+    #[error("Pagination stalled: {0}")]
+    PaginationStalled(String),
 }
 
 pub type Result<T> = std::result::Result<T, YouTrackError>;
@@ -37,6 +40,7 @@ impl From<YouTrackError> for TrackerError {
             YouTrackError::ProjectNotFound(id) => TrackerError::ProjectNotFound(id),
             YouTrackError::Unauthorized => TrackerError::Unauthorized,
             YouTrackError::Api { status, message } => TrackerError::Api { status, message },
+            YouTrackError::PaginationStalled(msg) => TrackerError::PaginationStalled(msg),
         }
     }
 }

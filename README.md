@@ -304,15 +304,21 @@ track issue comments PROJ-123 --limit 10
 ### History
 
 Show an issue's change history — the time-ordered timeline of field transitions
-(status changes, assignee changes, etc.) with timestamps and authors.
-**Jira only** for now; other backends report "not supported".
+(status changes, assignee changes, etc.) with timestamps and authors. Supported
+on all backends.
 
 ```bash
-track -b j issue history PROJ-123                 # Full timeline, newest first
-track -b j i hist PROJ-123 --field status         # Only status transitions
-track -b j i history PROJ-123 --since 7d           # Last 7 days (s/m/h/d/w)
-track -b j -o json i history PROJ-123              # {"issue": id, "changes": [...]}
+track issue history PROJ-123                       # Full timeline, newest first
+track i hist PROJ-123 --field status               # Only status transitions
+track i history PROJ-123 --since 7d                 # Last 7 days (s/m/h/d/w)
+track -o json i history PROJ-123                    # {"issue": id, "changes": [...]}
+track -b gh i history 42                            # GitHub (numeric id)
 ```
+
+`from`/`to` coverage varies by backend: Jira, YouTrack, and Linear carry the
+prior value for every field; the event-based backends (GitHub, GitLab) populate
+`from` only for `status` and report `from: null` for other fields. (Linear
+label-change history is not yet included.)
 
 
 ### Links

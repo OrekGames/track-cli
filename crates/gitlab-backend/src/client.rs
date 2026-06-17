@@ -489,6 +489,120 @@ impl GitLabClient {
         Ok(notes)
     }
 
+    // ==================== Resource Event (History) Operations ====================
+
+    /// Fetch a single page of a resource-event subresource for an issue.
+    ///
+    /// `subpath` is the trailing segment (e.g. `resource_state_events`). Mirrors
+    /// [`get_notes_page_raw`](Self::get_notes_page_raw): offset paging via
+    /// `per_page` (capped at 100) and `page` (1-based), `PRIVATE-TOKEN` auth,
+    /// and GitLab returns these events oldest-first.
+    fn get_resource_events_page<T: serde::de::DeserializeOwned>(
+        &self,
+        iid: u64,
+        subpath: &str,
+        per_page: usize,
+        page: usize,
+    ) -> Result<Vec<T>> {
+        let url = self.project_url(&format!(
+            "/issues/{}/{}?per_page={}&page={}",
+            iid,
+            subpath,
+            per_page.min(100),
+            page.max(1)
+        ))?;
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let events: Vec<T> = response.body_mut().read_json()?;
+        Ok(events)
+    }
+
+    /// Page through every event of a resource-event subresource to completion.
+    ///
+    /// GitLab honors `per_page`, so a short page (fewer than `PER_PAGE` events)
+    /// is a reliable end-of-data signal. A `MAX_PAGES` backstop guards against a
+    /// server that ignores paging and never shrinks a page — failing loudly via
+    /// [`GitLabError::PaginationStalled`] instead of looping forever.
+    ///
+    /// Events are returned oldest-first, matching the GitLab API ordering.
+    fn get_all_resource_events<T: serde::de::DeserializeOwned>(
+        &self,
+        iid: u64,
+        subpath: &str,
+    ) -> Result<Vec<T>> {
+        const PER_PAGE: usize = 100;
+        const MAX_PAGES: usize = 10_000;
+
+        let mut events = Vec::new();
+        let mut page = 1;
+        for _ in 0..MAX_PAGES {
+            let batch = self.get_resource_events_page::<T>(iid, subpath, PER_PAGE, page)?;
+            let fetched = batch.len();
+            events.extend(batch);
+            if fetched < PER_PAGE {
+                return Ok(events);
+            }
+            page += 1;
+        }
+        Err(GitLabError::PaginationStalled(format!(
+            "issue '{}' {} did not terminate after {} pages",
+            iid, subpath, MAX_PAGES
+        )))
+    }
+
+    /// Fetch a single page of an issue's resource state events.
+    pub fn get_state_events_page(
+        &self,
+        iid: u64,
+        per_page: usize,
+        page: usize,
+    ) -> Result<Vec<GitLabStateEvent>> {
+        self.get_resource_events_page(iid, "resource_state_events", per_page, page)
+    }
+
+    /// Fetch all of an issue's resource state events (oldest-first).
+    pub fn get_state_events(&self, iid: u64) -> Result<Vec<GitLabStateEvent>> {
+        self.get_all_resource_events(iid, "resource_state_events")
+    }
+
+    /// Fetch a single page of an issue's resource label events.
+    pub fn get_label_events_page(
+        &self,
+        iid: u64,
+        per_page: usize,
+        page: usize,
+    ) -> Result<Vec<GitLabLabelEvent>> {
+        self.get_resource_events_page(iid, "resource_label_events", per_page, page)
+    }
+
+    /// Fetch all of an issue's resource label events (oldest-first).
+    pub fn get_label_events(&self, iid: u64) -> Result<Vec<GitLabLabelEvent>> {
+        self.get_all_resource_events(iid, "resource_label_events")
+    }
+
+    /// Fetch a single page of an issue's resource milestone events.
+    pub fn get_milestone_events_page(
+        &self,
+        iid: u64,
+        per_page: usize,
+        page: usize,
+    ) -> Result<Vec<GitLabMilestoneEvent>> {
+        self.get_resource_events_page(iid, "resource_milestone_events", per_page, page)
+    }
+
+    /// Fetch all of an issue's resource milestone events (oldest-first).
+    pub fn get_milestone_events(&self, iid: u64) -> Result<Vec<GitLabMilestoneEvent>> {
+        self.get_all_resource_events(iid, "resource_milestone_events")
+    }
+
     // ==================== Link Operations ====================
 
     /// Get issue links for an issue
