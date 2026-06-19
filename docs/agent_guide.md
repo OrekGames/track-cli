@@ -231,6 +231,7 @@ track config get default_project
 | Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` | `track -b gh i cmt PROJ-42 -m "Text"` | `track -b gl i cmt PROJ-42 -m "Text"` |
 | Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Subtask/parent only | `track -b gl i link PROJ-1 PROJ-2` |
 | Unlink | `track i ul PROJ-1 <link-id>` | `track -b j i ul PROJ-1 <link-id>` | Not supported | `track -b gl i ul #42 <link-id>` |
+| History | `track i history PROJ-123` | `track -b j i history PROJ-123 --field status --since 7d` | `track -b gh i history 42` | `track -b gl i history 42` |
 
 **GitHub/GitLab notes**:
 - GitHub and GitLab use numeric issue IDs (e.g., `42`), not project-prefixed keys
@@ -303,6 +304,7 @@ track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fix
 | `track issue delete` | `track i rm`, `track i del` |
 | `track issue comment` | `track i cmt` |
 | `track issue comments` | `track i comments` |
+| `track issue history` | `track i history`, `track i hist` |
 | `track issue complete` | `track i done`, `track i resolve` |
 | `track issue start` | `track i start` |
 | `track issue link` | `track i link` |
@@ -485,6 +487,7 @@ track -b lin i s "project: ORE priority: High"
 | Priority | `Priority: Major` | `priority = Major` | `label:priority-major` | `labels=priority::major` |
 | Text search | `summary:~'keyword'` | `summary ~ "keyword"` | `keyword` (in query) | `search=keyword` |
 | By label | `tag: {bug}` | `labels = bug` | `label:bug` | `labels=bug` |
+| By component | — | `component = "Rendering"` | — | — |
 | AND | implicit or `AND` | `AND` | space-separated | `&`-separated params |
 | OR | `OR` | `OR` | N/A | N/A |
 
@@ -655,6 +658,29 @@ track -b j i comments PROJ-123
 track -b gh i comments PROJ-42
 track -b gl i comments PROJ-42
 ```
+
+### Issue History
+
+Retrieve the field-transition timeline (status/assignee/etc. changes) with
+timestamps and authors — useful for flow metrics, cycle/lead time, and
+per-issue lifecycle reporting. Supported on all backends.
+
+```bash
+track i history PROJ-123                       # Full timeline, newest first
+track i history PROJ-123 --field status        # Only status transitions (canonical field)
+track i history PROJ-123 --since 24h            # Window: s/m/h/d/w
+track -o json i history PROJ-123                # {"issue": id, "changes": [{at, author, field, from, to}]}
+track -b gh i history 42                        # GitHub/GitLab use numeric ids
+```
+
+There is no batch form (one call per issue): for board-level metrics, search
+for the candidate issues first, then call `i history` per issue.
+
+`from`/`to` coverage differs by backend. Jira, YouTrack, and Linear carry the
+prior value for every field. The event-based backends (GitHub timeline, GitLab
+resource events) derive `from` only for the canonical `status` field; other
+fields report `from: null` with the new value in `to`. (Linear label-change
+history is a documented follow-up.)
 
 ### Link Issues
 

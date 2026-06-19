@@ -173,23 +173,33 @@ impl JiraClient {
         Ok(issue)
     }
 
-    /// Search issues using JQL
+    /// Search issues using JQL.
+    ///
+    /// `/search/jql` is cursor-based: pass `next_page_token = None` for the
+    /// first page, then the token from the previous response's
+    /// `next_page_token` for each subsequent page. The endpoint does not
+    /// support offset pagination (`startAt` is silently ignored), and the
+    /// server may cap or shrink pages below `max_results`.
     pub fn search_issues(
         &self,
         jql: &str,
         max_results: usize,
-        start_at: usize,
+        next_page_token: Option<&str>,
     ) -> Result<JiraSearchResult> {
         // Jira Cloud uses GET /search/jql (the old POST /search was removed).
         // `fields=*all` is required — without it the endpoint returns only issue IDs.
         let jql_encoded = urlencoding::encode(jql);
-        let url = format!(
-            "{}?jql={}&startAt={}&maxResults={}&fields=*all",
+        let mut url = format!(
+            "{}?jql={}&maxResults={}&fields=*all",
             self.api_url("/search/jql"),
             jql_encoded,
-            start_at,
             max_results,
         );
+        if let Some(token) = next_page_token {
+            // The token is an opaque server string; percent-encode it.
+            url.push_str("&nextPageToken=");
+            url.push_str(&urlencoding::encode(token));
+        }
 
         let response = self
             .agent
@@ -395,6 +405,68 @@ impl JiraClient {
         let mut response = self.check_response(response)?;
         let comments: JiraCommentsResponse = response.body_mut().read_json()?;
         Ok(comments.comments)
+    }
+
+    // ==================== History Operations ====================
+
+    /// Fetch one page of an issue's changelog.
+    ///
+    /// `GET /issue/{key}/changelog` is offset-paged (`startAt`/`maxResults`),
+    /// unlike the cursor-based issue search.
+    pub fn get_issue_changelog_page(
+        &self,
+        key: &str,
+        start_at: usize,
+        max_results: usize,
+    ) -> Result<JiraChangelogPage> {
+        let url = format!(
+            "{}?startAt={}&maxResults={}",
+            self.api_url(&format!("/issue/{}/changelog", key)),
+            start_at,
+            max_results
+        );
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let page: JiraChangelogPage = response.body_mut().read_json()?;
+        Ok(page)
+    }
+
+    /// Fetch an issue's complete changelog, paging through every entry.
+    ///
+    /// Jira returns changelog entries oldest-first; that order is preserved
+    /// here (the caller re-sorts as needed).
+    pub fn get_issue_changelog(&self, key: &str) -> Result<Vec<JiraChangelogEntry>> {
+        const PAGE: usize = 100;
+        // Generous backstop: real changelogs are orders of magnitude smaller.
+        // It guards against a server that ignores `startAt` or never sets
+        // `isLast` (which would otherwise loop forever) without silently
+        // truncating a legitimately large history. We do NOT stop on a short
+        // page — Jira may cap `maxResults` below what we asked, so a short page
+        // is not a reliable end-of-data signal; `isLast`/`total` are.
+        const MAX_PAGES: usize = 10_000;
+        let mut entries = Vec::new();
+        let mut start_at = 0;
+        for _ in 0..MAX_PAGES {
+            let page = self.get_issue_changelog_page(key, start_at, PAGE)?;
+            let fetched = page.values.len();
+            entries.extend(page.values);
+            if page.is_last || fetched == 0 || (page.total > 0 && entries.len() >= page.total) {
+                return Ok(entries);
+            }
+            start_at += fetched;
+        }
+        Err(JiraError::PaginationStalled(format!(
+            "issue '{}' changelog did not terminate after {} pages",
+            key, MAX_PAGES
+        )))
     }
 
     // ==================== Link Operations ====================

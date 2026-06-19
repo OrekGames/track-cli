@@ -1,12 +1,13 @@
 //! Implementation of tracker-core KnowledgeBase trait for ConfluenceClient
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use tracker_core::{
     Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CommentAuthor,
     CreateArticle, KnowledgeBase, ProjectRef, Result, TrackerError, UpdateArticle,
 };
 
 use crate::confluence::ConfluenceClient;
+use crate::convert::parse_jira_datetime;
 use crate::markdown::storage::{markdown_to_storage, storage_to_text};
 use crate::models::confluence::*;
 
@@ -261,19 +262,12 @@ fn confluence_page_to_article(page: ConfluencePage) -> Article {
             .map(|v| storage_to_text(&v))
     });
 
-    let created = page
-        .created_at
-        .as_ref()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(Utc::now);
+    let created = parse_jira_datetime(&page.created_at).unwrap_or_else(Utc::now);
 
     let updated = page
         .version
         .as_ref()
-        .and_then(|v| v.created_at.as_ref())
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Utc))
+        .and_then(|v| parse_jira_datetime(&v.created_at))
         .unwrap_or(created);
 
     Article {
@@ -329,11 +323,7 @@ fn search_content_to_article(content: ConfluenceSearchContent) -> Article {
 }
 
 fn confluence_attachment_to_article_attachment(att: ConfluenceAttachment) -> ArticleAttachment {
-    let created = att
-        .created_at
-        .as_ref()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Utc));
+    let created = parse_jira_datetime(&att.created_at);
 
     ArticleAttachment {
         id: att.id,
@@ -351,9 +341,7 @@ fn confluence_uploaded_attachment_to_article_attachment(
     let created = att
         .version
         .as_ref()
-        .and_then(|v| v.when.as_ref())
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Utc));
+        .and_then(|v| parse_jira_datetime(&v.when));
 
     let (mime_type, size) = att
         .metadata
@@ -387,11 +375,7 @@ fn confluence_comment_to_comment(comment: ConfluenceComment) -> Comment {
         .map(|v| storage_to_text(&v))
         .unwrap_or_default();
 
-    let created = comment
-        .created_at
-        .as_ref()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Utc));
+    let created = parse_jira_datetime(&comment.created_at);
 
     let author = comment.version.and_then(|v| {
         v.author_id.map(|id| CommentAuthor {

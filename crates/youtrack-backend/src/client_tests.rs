@@ -1979,4 +1979,76 @@ mod tests {
 
         assert_eq!(client.resolve_link_type("nonexistent"), "nonexistent");
     }
+
+    // ==================== Issue History Tests ====================
+
+    #[tokio::test]
+    async fn test_get_issue_history_paginates_and_sorts() {
+        use tracker_core::IssueTracker;
+
+        let mock_server = MockServer::start().await;
+
+        // Page 1: a full page of 100 activities (oldest-first). A full page
+        // means the loop must request a second page. Timestamps ascend so the
+        // newest of these is the last element.
+        let page1: Vec<serde_json::Value> = (0..100)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("{i}"),
+                    "timestamp": 1_640_000_000_000i64 + i as i64 * 1000,
+                    "author": { "login": "alice", "name": "Alice" },
+                    "field": { "name": "State", "presentation": "State" },
+                    "removed": [{ "name": "Open" }],
+                    "added": [{ "name": "In Progress" }]
+                })
+            })
+            .collect();
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues/PROJ-123/activities"))
+            .and(query_param("categories", "CustomFieldCategory"))
+            .and(query_param("$top", "100"))
+            .and(query_param("$skip", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(page1)))
+            .mount(&mock_server)
+            .await;
+
+        // Page 2: a single newer activity (the overall newest). A short page
+        // (< $top) signals end-of-data.
+        Mock::given(method("GET"))
+            .and(path("/api/issues/PROJ-123/activities"))
+            .and(query_param("categories", "CustomFieldCategory"))
+            .and(query_param("$top", "100"))
+            .and(query_param("$skip", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "final",
+                    "timestamp": 1_640_001_000_000i64,
+                    "author": { "login": "bob", "name": "Bob" },
+                    "field": { "name": "State" },
+                    "removed": [{ "name": "In Progress" }],
+                    "added": [{ "name": "Done" }]
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let events = client.get_issue_history("PROJ-123").unwrap();
+
+        // 100 from page 1 + 1 from page 2.
+        assert_eq!(events.len(), 101);
+        // Newest-first: the page-2 activity sorts to the front.
+        assert_eq!(events[0].field, "status");
+        assert_eq!(events[0].to.as_deref(), Some("Done"));
+        assert_eq!(events[0].from.as_deref(), Some("In Progress"));
+        assert_eq!(
+            events[0].author.as_ref().map(|a| a.login.as_str()),
+            Some("bob")
+        );
+        // Oldest activity sorts last.
+        assert_eq!(events[100].to.as_deref(), Some("In Progress"));
+        // Field-name canonicalization applies across the whole timeline.
+        assert!(events.iter().all(|e| e.field == "status"));
+    }
 }

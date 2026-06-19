@@ -2,15 +2,15 @@
 
 use tracker_core::{
     Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CreateArticle, CreateIssue,
-    CreateProject, CreateTag, Issue, IssueAttachment, IssueLink, IssueLinkType, IssueTag,
-    IssueTracker, KnowledgeBase, Project, ProjectCustomField, ProjectRef, Result, SearchResult,
-    TrackerError, UpdateArticle, UpdateIssue, User,
+    CreateProject, CreateTag, Issue, IssueAttachment, IssueHistoryEvent, IssueLink, IssueLinkType,
+    IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, ProjectRef, Result,
+    SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 use crate::client::GitLabClient;
 use crate::convert::{
     convert_query_to_gitlab_params, get_gitlab_link_types, get_standard_custom_fields,
-    gitlab_issue_to_core, gitlab_link_to_core,
+    gitlab_events_to_history_events, gitlab_issue_to_core, gitlab_link_to_core,
 };
 use crate::models::{
     CreateGitLabIssue, CreateGitLabIssueLink, CreateGitLabLabel, CreateGitLabWikiPage,
@@ -433,6 +433,18 @@ impl IssueTracker for GitLabClient {
         }
 
         Ok(comments)
+    }
+
+    fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
+        let iid = parse_issue_iid(issue_id)?;
+
+        // History is spread across three independent endpoints; fetch each to
+        // completion, then merge into a single chronological timeline.
+        let state = self.get_state_events(iid)?;
+        let label = self.get_label_events(iid)?;
+        let milestone = self.get_milestone_events(iid)?;
+
+        Ok(gitlab_events_to_history_events(state, label, milestone))
     }
 }
 

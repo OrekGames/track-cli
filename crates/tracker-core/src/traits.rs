@@ -22,6 +22,24 @@ pub trait IssueTracker: Send + Sync {
         Ok(None)
     }
 
+    /// Fetch all issues matching `query`, auto-paginating up to `max_results`.
+    ///
+    /// The default implementation pages through [`Self::search_issues`] in
+    /// offset windows of 100, deduplicating by issue id and failing with
+    /// [`crate::TrackerError::PaginationStalled`] if a full page yields no
+    /// new issues. Backends with cursor-based search APIs (Jira Cloud
+    /// `/search/jql`, Linear) should override this with a native cursor walk
+    /// so a full scan costs O(pages) requests instead of O(pages²) through
+    /// offset emulation.
+    fn search_all_issues(&self, query: &str, max_results: usize) -> Result<Vec<Issue>> {
+        crate::pagination::fetch_all_pages_keyed(
+            |offset, limit| self.search_issues(query, limit, offset).map(|r| r.items),
+            100,
+            max_results,
+            |issue: &Issue| issue.id.clone(),
+        )
+    }
+
     /// Create a new issue
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue>;
 
@@ -238,6 +256,20 @@ pub trait IssueTracker: Send + Sync {
             .take(limit)
             .collect())
     }
+
+    // ========== History Operations ==========
+
+    /// Get an issue's change history (the field-transition timeline).
+    ///
+    /// Returns field changes — status transitions, assignee changes, etc. —
+    /// ordered newest-first. Optional: backends without a changelog/activity
+    /// API return an error by default.
+    fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
+        let _ = issue_id;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Issue history is not supported by this backend".to_string(),
+        ))
+    }
 }
 
 /// Trait for knowledge base / wiki operations
@@ -326,5 +358,140 @@ pub trait KnowledgeBase: Send + Sync {
     /// Whether this backend supports native attachments on article comments.
     fn supports_article_comment_attachments(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::TrackerError;
+    use std::sync::Mutex;
+
+    fn test_issue(n: usize) -> Issue {
+        Issue {
+            id: format!("id-{n}"),
+            id_readable: format!("TEST-{n}"),
+            summary: format!("Issue {n}"),
+            description: None,
+            project: ProjectRef {
+                id: "proj-1".to_string(),
+                name: None,
+                short_name: None,
+            },
+            custom_fields: Vec::new(),
+            tags: Vec::new(),
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+            resolved: None,
+        }
+    }
+
+    /// Offset-window search stub. `ignore_skip` simulates the issue #252
+    /// failure mode where the server ignores the offset parameter.
+    struct StubTracker {
+        issues: Vec<Issue>,
+        ignore_skip: bool,
+        calls: Mutex<Vec<(usize, usize)>>,
+    }
+
+    impl StubTracker {
+        fn new(count: usize, ignore_skip: bool) -> Self {
+            Self {
+                issues: (1..=count).map(test_issue).collect(),
+                ignore_skip,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl IssueTracker for StubTracker {
+        fn get_issue(&self, _: &str) -> Result<Issue> {
+            unimplemented!()
+        }
+        fn search_issues(
+            &self,
+            _query: &str,
+            limit: usize,
+            skip: usize,
+        ) -> Result<SearchResult<Issue>> {
+            self.calls.lock().unwrap().push((skip, limit));
+            let skip = if self.ignore_skip { 0 } else { skip };
+            let items = self.issues.iter().skip(skip).take(limit).cloned().collect();
+            Ok(SearchResult::from_items(items))
+        }
+        fn create_issue(&self, _: &CreateIssue) -> Result<Issue> {
+            unimplemented!()
+        }
+        fn update_issue(&self, _: &str, _: &UpdateIssue) -> Result<Issue> {
+            unimplemented!()
+        }
+        fn delete_issue(&self, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        fn list_projects(&self) -> Result<Vec<Project>> {
+            unimplemented!()
+        }
+        fn get_project(&self, _: &str) -> Result<Project> {
+            unimplemented!()
+        }
+        fn create_project(&self, _: &CreateProject) -> Result<Project> {
+            unimplemented!()
+        }
+        fn resolve_project_id(&self, _: &str) -> Result<String> {
+            unimplemented!()
+        }
+        fn get_project_custom_fields(&self, _: &str) -> Result<Vec<ProjectCustomField>> {
+            unimplemented!()
+        }
+        fn list_tags(&self) -> Result<Vec<IssueTag>> {
+            unimplemented!()
+        }
+        fn get_issue_links(&self, _: &str) -> Result<Vec<IssueLink>> {
+            unimplemented!()
+        }
+        fn link_issues(&self, _: &str, _: &str, _: &str, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        fn link_subtask(&self, _: &str, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        fn add_comment(&self, _: &str, _: &str) -> Result<Comment> {
+            unimplemented!()
+        }
+        fn get_comments(&self, _: &str) -> Result<Vec<Comment>> {
+            unimplemented!()
+        }
+    }
+
+    #[test]
+    fn search_all_issues_default_pages_with_offset() {
+        let tracker = StubTracker::new(250, false);
+        let result = tracker.search_all_issues("query", 1000).unwrap();
+        assert_eq!(result.len(), 250);
+        assert_eq!(result[0].id, "id-1");
+        assert_eq!(result[249].id, "id-250");
+        // Same request sequence the old fetch_all_pages closure produced
+        assert_eq!(
+            *tracker.calls.lock().unwrap(),
+            vec![(0, 100), (100, 100), (200, 100)]
+        );
+    }
+
+    #[test]
+    fn search_all_issues_default_respects_max_results() {
+        let tracker = StubTracker::new(250, false);
+        let result = tracker.search_all_issues("query", 150).unwrap();
+        assert_eq!(result.len(), 150);
+        assert_eq!(*tracker.calls.lock().unwrap(), vec![(0, 100), (100, 50)]);
+    }
+
+    #[test]
+    fn search_all_issues_default_errors_when_backend_ignores_skip() {
+        // The issue #252 regression: offset ignored => same page forever.
+        // Must fail loudly instead of returning truncated data.
+        let tracker = StubTracker::new(250, true);
+        let result = tracker.search_all_issues("query", 1000);
+        assert!(matches!(result, Err(TrackerError::PaginationStalled(_))));
+        assert_eq!(tracker.calls.lock().unwrap().len(), 2);
     }
 }

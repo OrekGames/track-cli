@@ -2203,3 +2203,399 @@ fn test_jira_project_fields_shows_field_ids() {
         "expected at least one field with a customfield_ ID"
     );
 }
+
+// ============================================================================
+// Cursor Pagination Tests (with mock server) — issue #252
+// ============================================================================
+
+/// Like `mock_jira_issue`, but with a distinct internal id. Needed because
+/// `--all` deduplicates by issue id.
+fn mock_jira_issue_with_id(id: &str, key: &str, summary: &str) -> serde_json::Value {
+    let mut issue = mock_jira_issue(key, summary);
+    issue["id"] = serde_json::Value::String(id.to_string());
+    issue
+}
+
+/// Start a mock server that serves `/search/jql` pages keyed by the
+/// `nextPageToken` query parameter and captures each request target.
+///
+/// `pages_by_token` maps an expected token (`None` = first page, no token
+/// param) to the response body served for it. Unmatched requests get a 404
+/// (the backend also probes e.g. `/field`, which tolerates errors).
+fn start_jira_paged_mock_server(
+    pages_by_token: Vec<(Option<&'static str>, String)>,
+    max_requests: usize,
+) -> (thread::JoinHandle<()>, u16, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port");
+    let port = listener.local_addr().unwrap().port();
+    let captured_targets = Arc::new(Mutex::new(Vec::new()));
+    let captured_for_thread = Arc::clone(&captured_targets);
+
+    let handle = thread::spawn(move || {
+        use std::io::{Read, Write};
+
+        let timeout = Duration::from_secs(3);
+        for stream in listener.incoming().flatten().take(max_requests) {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(timeout));
+            let mut buffer = [0; 4096];
+            let size = stream.read(&mut buffer).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..size]);
+
+            // Request line: "GET /rest/api/3/search/jql?... HTTP/1.1"
+            let target = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("")
+                .to_string();
+            captured_for_thread.lock().unwrap().push(target.clone());
+
+            let token = target.split_once('?').and_then(|(_, query)| {
+                query
+                    .split('&')
+                    .find_map(|part| part.strip_prefix("nextPageToken=").map(str::to_string))
+            });
+
+            // Only /search/jql is token-paged; other probes (e.g. /field)
+            // get a 404, which the backend tolerates.
+            let body = if target.contains("/search/jql") {
+                pages_by_token
+                    .iter()
+                    .find(|(expected, _)| *expected == token.as_deref())
+                    .map(|(_, body)| body.as_str())
+            } else {
+                None
+            };
+
+            let response = match body {
+                Some(body) => format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                ),
+                None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_string(),
+            };
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+
+            // Draining the request body before closing is important on Windows
+            // to avoid "Connection forcibly closed by remote host" errors (RST).
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            let mut discard = [0; 1024];
+            while let Ok(n) = stream.read(&mut discard) {
+                if n == 0 {
+                    break;
+                }
+            }
+        }
+    });
+
+    (handle, port, captured_targets)
+}
+
+fn search_jql_requests(captured: &Mutex<Vec<String>>) -> Vec<String> {
+    captured
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|t| t.contains("/search/jql"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn test_jira_search_all_walks_token_chain() {
+    // Three pages chained by nextPageToken; the middle page is deliberately
+    // short (1 issue) — short pages must NOT terminate the walk, only token
+    // absence does.
+    let pages = vec![
+        (
+            None,
+            serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("1", "TEST-1", "Issue 1"),
+                    mock_jira_issue_with_id("2", "TEST-2", "Issue 2")
+                ],
+                "nextPageToken": "tok-1"
+            })
+            .to_string(),
+        ),
+        (
+            Some("tok-1"),
+            serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("3", "TEST-3", "Issue 3")
+                ],
+                "nextPageToken": "tok-2"
+            })
+            .to_string(),
+        ),
+        (
+            Some("tok-2"),
+            serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("4", "TEST-4", "Issue 4"),
+                    mock_jira_issue_with_id("5", "TEST-5", "Issue 5")
+                ]
+            })
+            .to_string(),
+        ),
+    ];
+
+    // 3 search pages + headroom for non-search probes (/field etc.)
+    let (_server, port, captured) = start_jira_paged_mock_server(pages, 6);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "search", "project = TEST", "--all"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let issues: Vec<Value> = serde_json::from_str(&stdout).unwrap();
+    let keys: Vec<&str> = issues
+        .iter()
+        .map(|i| i["id_readable"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["TEST-1", "TEST-2", "TEST-3", "TEST-4", "TEST-5"],
+        "expected every issue exactly once, in page order"
+    );
+
+    let requests = search_jql_requests(&captured);
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected a linear token walk (one request per page), got: {:?}",
+        requests
+    );
+    assert!(
+        !requests[0].contains("nextPageToken") && !requests[0].contains("startAt"),
+        "first request must carry neither a token nor startAt: {}",
+        requests[0]
+    );
+    assert!(
+        requests[1].contains("nextPageToken=tok-1"),
+        "second request must carry the first page's token: {}",
+        requests[1]
+    );
+    assert!(
+        requests[2].contains("nextPageToken=tok-2"),
+        "third request must carry the second page's token: {}",
+        requests[2]
+    );
+}
+
+#[test]
+fn test_jira_search_all_fails_loudly_on_stalled_pagination() {
+    // The server hands out a token but serves identical data for it: the
+    // cursor never advances. --all must fail instead of silently returning
+    // a truncated (or duplicated) result set.
+    let same_page = serde_json::json!({
+        "issues": [
+            mock_jira_issue_with_id("1", "TEST-1", "Issue 1"),
+            mock_jira_issue_with_id("2", "TEST-2", "Issue 2")
+        ],
+        "nextPageToken": "tok-1"
+    })
+    .to_string();
+    let pages = vec![(None, same_page.clone()), (Some("tok-1"), same_page)];
+
+    let (_server, port, _captured) = start_jira_paged_mock_server(pages, 4);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    cargo_bin_cmd!("track")
+        .args(["-b", "jira", "--config"])
+        .arg(&cfg)
+        .args(["issue", "search", "project = TEST", "--all"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Pagination stalled"));
+}
+
+#[test]
+fn test_jira_search_skip_shifts_window() {
+    // --skip is emulated by walking the token chain and discarding: with
+    // pages of 2+2, --limit 2 --skip 2 must return exactly the second page.
+    let pages = vec![
+        (
+            None,
+            serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("1", "TEST-1", "Issue 1"),
+                    mock_jira_issue_with_id("2", "TEST-2", "Issue 2")
+                ],
+                "nextPageToken": "tok-1"
+            })
+            .to_string(),
+        ),
+        (
+            Some("tok-1"),
+            serde_json::json!({
+                "issues": [
+                    mock_jira_issue_with_id("3", "TEST-3", "Issue 3"),
+                    mock_jira_issue_with_id("4", "TEST-4", "Issue 4")
+                ]
+            })
+            .to_string(),
+        ),
+    ];
+
+    let (_server, port, _captured) = start_jira_paged_mock_server(pages, 4);
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args([
+            "issue",
+            "search",
+            "project = TEST",
+            "--limit",
+            "2",
+            "--skip",
+            "2",
+        ])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let issues: Vec<Value> = serde_json::from_str(&stdout).unwrap();
+    let keys: Vec<&str> = issues
+        .iter()
+        .map(|i| i["id_readable"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["TEST-3", "TEST-4"],
+        "--skip 2 must shift the window past the first page"
+    );
+}
+
+/// A single-page Jira changelog body shared by the history tests below.
+fn mock_changelog_body() -> String {
+    serde_json::json!({
+        "startAt": 0,
+        "maxResults": 100,
+        "total": 2,
+        "isLast": true,
+        "values": [
+            {
+                "id": "1",
+                "author": { "accountId": "acc-1", "displayName": "Alice" },
+                "created": "2024-01-10T09:00:00.000+0000",
+                "items": [
+                    { "field": "status", "fromString": "To Do", "toString": "In Progress" }
+                ]
+            },
+            {
+                "id": "2",
+                "author": { "accountId": "acc-2", "displayName": "Bob" },
+                "created": "2024-01-15T14:00:00.000+0000",
+                "items": [
+                    { "field": "assignee", "fromString": null, "toString": "Alice" },
+                    { "field": "status", "fromString": "In Progress", "toString": "Done" }
+                ]
+            }
+        ]
+    })
+    .to_string()
+}
+
+#[test]
+fn test_jira_issue_history_json_envelope_orders_newest_first() {
+    let (_server, port) = start_jira_mock_server(mock_changelog_body());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "history", "TEST-1"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(v["issue"], "TEST-1", "envelope carries the issue id");
+    let changes = v["changes"].as_array().unwrap();
+    // Two entries, one with two items => three events.
+    assert_eq!(changes.len(), 3);
+
+    // Newest entry (2024-01-15) sorts first; its two items keep their order.
+    assert_eq!(changes[0]["field"], "assignee");
+    assert!(changes[0]["from"].is_null(), "null fromString -> JSON null");
+    assert_eq!(changes[0]["to"], "Alice");
+    assert_eq!(changes[0]["author"]["login"], "acc-2");
+    assert_eq!(changes[0]["author"]["name"], "Bob");
+    assert_eq!(changes[1]["field"], "status");
+    assert_eq!(changes[1]["to"], "Done");
+
+    // Oldest entry sorts last.
+    assert_eq!(changes[2]["field"], "status");
+    assert_eq!(changes[2]["to"], "In Progress");
+}
+
+#[test]
+fn test_jira_issue_history_field_filter() {
+    let (_server, port) = start_jira_mock_server(mock_changelog_body());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        .args(["issue", "history", "TEST-1", "--field", "status"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    let changes = v["changes"].as_array().unwrap();
+    // Only the two status transitions survive the filter.
+    assert_eq!(changes.len(), 2);
+    assert!(changes.iter().all(|c| c["field"] == "status"));
+}
+
+#[test]
+fn test_jira_issue_history_since_filter_excludes_old() {
+    let (_server, port) = start_jira_mock_server(mock_changelog_body());
+    thread::sleep(Duration::from_millis(50));
+
+    let cfg = write_jira_mock_config(port);
+    let output = cargo_bin_cmd!("track")
+        .args(["-b", "jira", "-o", "json", "--config"])
+        .arg(&cfg)
+        // The fixture's changes are from 2024; a 1-day window excludes them all.
+        .args(["issue", "history", "TEST-1", "--since", "1d"])
+        .timeout(Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: Value = serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(v["changes"].as_array().unwrap().len(), 0);
+}

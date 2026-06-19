@@ -1,11 +1,13 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
-use crate::output::{output_json, output_list, output_page_hint, output_progress, output_result};
+use crate::output::{
+    Displayable, output_json, output_list, output_page_hint, output_progress, output_result,
+};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use tracker_core::{
     CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
-    fetch_all_pages, unicode_eq_ignore_case,
+    canonical_field_name, fetch_all_pages, get_max_results, unicode_eq_ignore_case,
 };
 
 /// Shared fields for create, update, and batch-update commands.
@@ -173,6 +175,9 @@ pub fn handle_issue(
         }
         IssueCommands::Comments { id, limit, all } => {
             handle_comments(client, id, *limit, *all, format)
+        }
+        IssueCommands::History { id, field, since } => {
+            handle_history(client, id, field.as_deref(), since.as_deref(), format)
         }
         IssueCommands::Link {
             source,
@@ -839,17 +844,11 @@ fn handle_search(
         resolve_search_query(args.query, args.template, args.project, default_project)?;
 
     let (issues, inline_total) = if args.all {
-        // Auto-paginate using the helper; default page size 100
-        let page_size = 100usize;
-        let res = fetch_all_pages(
-            |offset, page_limit| {
-                client
-                    .search_issues(&actual_query, page_limit, offset)
-                    .map(|r| r.items)
-            },
-            page_size,
-        )
-        .context("Failed to search issues (pagination)")?;
+        // Auto-paginate; backends with cursor-based search override
+        // search_all_issues with a native cursor walk.
+        let res = client
+            .search_all_issues(&actual_query, get_max_results())
+            .context("Failed to search issues (pagination)")?;
         output_progress(&format!("Fetched {} issues", res.len()), format);
         (res, None)
     } else {
@@ -1108,6 +1107,85 @@ fn handle_comments(
     Ok(())
 }
 
+fn handle_history(
+    client: &dyn IssueTracker,
+    id: &str,
+    field: Option<&str>,
+    since: Option<&str>,
+    format: OutputFormat,
+) -> Result<()> {
+    let mut events = client
+        .get_issue_history(id)
+        .with_context(|| format!("Failed to get history for issue '{}'", id))?;
+
+    if let Some(field) = field {
+        let wanted = canonical_field_name(field);
+        events.retain(|e| unicode_eq_ignore_case(&canonical_field_name(&e.field), &wanted));
+    }
+
+    if let Some(since) = since {
+        let window = parse_since(since)?;
+        let cutoff = chrono::Utc::now() - window;
+        events.retain(|e| e.at >= cutoff);
+    }
+
+    match format {
+        OutputFormat::Json => {
+            let payload = serde_json::json!({
+                "issue": id,
+                "changes": events,
+            });
+            output_json(&payload)?;
+        }
+        OutputFormat::Text => {
+            use colored::Colorize;
+            if events.is_empty() {
+                println!("No change history for {}", id.cyan().bold());
+            } else {
+                println!("History for {} ({}):", id.cyan().bold(), events.len());
+                for event in &events {
+                    println!("  {}", event.display());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a relative duration like `1d`, `24h`, `2w`, `30m`, or `45s` into a
+/// [`chrono::Duration`]. Accepts a single integer followed by one unit suffix
+/// (`s`, `m`, `h`, `d`, `w`).
+fn parse_since(input: &str) -> Result<chrono::Duration> {
+    let s = input.trim();
+    let split = s
+        .find(|c: char| !c.is_ascii_digit())
+        .ok_or_else(|| anyhow!("--since '{}' must include a unit (s, m, h, d, or w)", input))?;
+    let (num, unit) = s.split_at(split);
+    let value: i64 = num
+        .parse()
+        .map_err(|_| anyhow!("--since '{}' must start with a whole number", input))?;
+    if value < 0 {
+        return Err(anyhow!("--since '{}' must not be negative", input));
+    }
+    // Use the checked constructors: the panicking `Duration::weeks` etc. would
+    // abort the CLI on an out-of-range value like `9999999999999w`.
+    let duration = match unit.trim() {
+        "s" => chrono::Duration::try_seconds(value),
+        "m" => chrono::Duration::try_minutes(value),
+        "h" => chrono::Duration::try_hours(value),
+        "d" => chrono::Duration::try_days(value),
+        "w" => chrono::Duration::try_weeks(value),
+        other => {
+            return Err(anyhow!(
+                "--since '{}' has an unknown unit '{}'; use s, m, h, d, or w",
+                input,
+                other
+            ));
+        }
+    };
+    duration.ok_or_else(|| anyhow!("--since '{}' is out of range", input))
+}
+
 fn handle_link(
     client: &dyn IssueTracker,
     source: &str,
@@ -1235,6 +1313,28 @@ fn handle_unlink(
     Ok(())
 }
 
+/// Build the custom field update for a state transition (`issue start`/`issue complete`).
+///
+/// State-typed field names get the State variant so backends route them to their
+/// workflow-transition machinery: "State"/"Stage" (YouTrack), "Status" (Jira).
+/// Anything else falls back to SingleEnum.
+fn build_state_field_update(field: &str, state: &str) -> CustomFieldUpdate {
+    if field.eq_ignore_ascii_case("State")
+        || field.eq_ignore_ascii_case("Stage")
+        || field.eq_ignore_ascii_case("Status")
+    {
+        CustomFieldUpdate::State {
+            name: field.to_string(),
+            value: state.to_string(),
+        }
+    } else {
+        CustomFieldUpdate::SingleEnum {
+            name: field.to_string(),
+            value: state.to_string(),
+        }
+    }
+}
+
 fn handle_state_transition(
     client: &dyn IssueTracker,
     id: &str,
@@ -1243,25 +1343,10 @@ fn handle_state_transition(
     action: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    // Build the custom field update based on field name
-    let custom_field = if field.eq_ignore_ascii_case("State") || field.eq_ignore_ascii_case("Stage")
-    {
-        CustomFieldUpdate::State {
-            name: field.to_string(),
-            value: state.to_string(),
-        }
-    } else {
-        // For non-State fields, treat as SingleEnum
-        CustomFieldUpdate::SingleEnum {
-            name: field.to_string(),
-            value: state.to_string(),
-        }
-    };
-
     let update = UpdateIssue {
         summary: None,
         description: None,
-        custom_fields: vec![custom_field],
+        custom_fields: vec![build_state_field_update(field, state)],
         tags: vec![],
         parent: None,
     };
@@ -1269,6 +1354,9 @@ fn handle_state_transition(
     let issue = client
         .update_issue(id, &update)
         .with_context(|| format!("Failed to update issue '{}' state to '{}'", id, state))?;
+
+    let warnings = verify_issue_update(&update, &issue);
+    crate::output::output_verification_warnings(&warnings, format);
 
     match format {
         OutputFormat::Json => {
@@ -1336,7 +1424,7 @@ fn handle_update_batch(
                 .and_then(|update| validate_update(client, id, &update))
                 .map(|_| None)
         } else {
-            handle_update_single(client, id, args).map(Some)
+            handle_update_single(client, id, args, format).map(Some)
         };
 
         match result {
@@ -1369,6 +1457,7 @@ fn handle_update_single(
     client: &dyn IssueTracker,
     id: &str,
     args: &IssueFieldArgs,
+    format: OutputFormat,
 ) -> Result<Issue> {
     let update = build_update(client, id, args)?;
 
@@ -1380,7 +1469,18 @@ fn handle_update_single(
         .update_issue(id, &update)
         .with_context(|| format!("Failed to update issue '{}'", id))?;
 
+    let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
+    crate::output::output_verification_warnings(&warnings, format);
+
     Ok(issue)
+}
+
+/// Prefix verification warnings with the issue ID so batch output stays attributable.
+fn prefix_warnings(id: &str, warnings: Vec<String>) -> Vec<String> {
+    warnings
+        .into_iter()
+        .map(|w| format!("{}: {}", id, w))
+        .collect()
 }
 
 fn handle_delete_batch(
@@ -1436,24 +1536,10 @@ fn handle_state_transition_batch(
         return handle_state_transition(client, &ids[0], field, state, action, format);
     }
 
-    // Build the custom field update
-    let custom_field = if field.eq_ignore_ascii_case("State") || field.eq_ignore_ascii_case("Stage")
-    {
-        CustomFieldUpdate::State {
-            name: field.to_string(),
-            value: state.to_string(),
-        }
-    } else {
-        CustomFieldUpdate::SingleEnum {
-            name: field.to_string(),
-            value: state.to_string(),
-        }
-    };
-
     let update = UpdateIssue {
         summary: None,
         description: None,
-        custom_fields: vec![custom_field],
+        custom_fields: vec![build_state_field_update(field, state)],
         tags: vec![],
         parent: None,
     };
@@ -1466,6 +1552,8 @@ fn handle_state_transition_batch(
 
         match result {
             Ok(issue) => {
+                let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
+                crate::output::output_verification_warnings(&warnings, format);
                 results.push(BatchResult {
                     id: id.clone(),
                     success: true,
@@ -1624,6 +1712,21 @@ fn verify_field_match(
         CustomField::Unknown { name } => unicode_eq_ignore_case(name, req_name),
     });
 
+    // A State update targets the tracker's workflow state field whatever the backend
+    // names it (YouTrack "State"/"Stage", Jira "Status"). When the requested name has
+    // no match, fall back to the result's State-typed field — but only when there is
+    // exactly one, so we never verify against the wrong field.
+    let actual = actual.or_else(|| {
+        if !matches!(requested, CustomFieldUpdate::State { .. }) {
+            return None;
+        }
+        let mut states = actual_fields
+            .iter()
+            .filter(|f| matches!(f, CustomField::State { .. }));
+        let first = states.next();
+        if states.next().is_none() { first } else { None }
+    });
+
     match (requested, actual) {
         (
             CustomFieldUpdate::SingleEnum { name, value },
@@ -1661,15 +1764,17 @@ fn verify_field_match(
             }
         }
         (
-            CustomFieldUpdate::State { name, value },
+            CustomFieldUpdate::State { value, .. },
             Some(CustomField::State {
-                value: actual_val, ..
+                name: actual_name,
+                value: actual_val,
+                ..
             }),
         ) => {
             if actual_val.as_deref().unwrap_or("") != value {
                 Some(format!(
                     "Field '{}': expected '{}', got '{}'",
-                    name,
+                    actual_name,
                     value,
                     actual_val.as_deref().unwrap_or("None")
                 ))
@@ -1757,6 +1862,35 @@ mod tests {
     #[test]
     fn rejects_field_value_with_empty_value() {
         assert!(parse_field_value("Name=").is_err());
+    }
+
+    #[test]
+    fn parse_since_supports_all_units() {
+        assert_eq!(parse_since("45s").unwrap(), chrono::Duration::seconds(45));
+        assert_eq!(parse_since("30m").unwrap(), chrono::Duration::minutes(30));
+        assert_eq!(parse_since("24h").unwrap(), chrono::Duration::hours(24));
+        assert_eq!(parse_since("7d").unwrap(), chrono::Duration::days(7));
+        assert_eq!(parse_since("2w").unwrap(), chrono::Duration::weeks(2));
+        // Surrounding whitespace is tolerated.
+        assert_eq!(parse_since(" 1d ").unwrap(), chrono::Duration::days(1));
+    }
+
+    #[test]
+    fn parse_since_rejects_bad_input() {
+        assert!(parse_since("10").is_err()); // missing unit
+        assert!(parse_since("d").is_err()); // missing number
+        assert!(parse_since("5y").is_err()); // unknown unit
+        assert!(parse_since("-1d").is_err()); // negative / non-digit lead
+        assert!(parse_since("").is_err()); // empty
+    }
+
+    #[test]
+    fn parse_since_rejects_overflow_without_panicking() {
+        // i64::MAX weeks overflows chrono's internal seconds; must error, not panic.
+        let huge = format!("{}w", i64::MAX);
+        assert!(parse_since(&huge).is_err());
+        // A value too large to fit in i64 at all is also a graceful error.
+        assert!(parse_since("99999999999999999999999d").is_err());
     }
 
     #[test]
@@ -1967,6 +2101,7 @@ mod tests {
             tags: vec![],
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
+            resolved: None,
         };
 
         let warnings = verify_issue_update(&requested, &result);
@@ -2005,11 +2140,115 @@ mod tests {
             tags: vec![],
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
+            resolved: None,
         };
 
         let warnings = verify_issue_update(&requested, &result);
         assert_eq!(warnings.len(), 2);
         assert!(warnings[0].contains("Summary"));
         assert!(warnings[1].contains("State"));
+    }
+
+    #[test]
+    fn state_field_update_routes_status_state_and_stage_to_state_variant() {
+        for field in ["Status", "status", "State", "Stage", "STAGE"] {
+            assert!(
+                matches!(
+                    build_state_field_update(field, "Done"),
+                    CustomFieldUpdate::State { .. }
+                ),
+                "'{}' should build a State update",
+                field
+            );
+        }
+        assert!(matches!(
+            build_state_field_update("Backlog", "Done"),
+            CustomFieldUpdate::SingleEnum { .. }
+        ));
+    }
+
+    #[test]
+    fn verifies_state_update_against_renamed_state_field() {
+        use tracker_core::CustomField;
+
+        // Jira: the CLI requests "State", the converted issue names the field "Status"
+        let requested = CustomFieldUpdate::State {
+            name: "State".to_string(),
+            value: "Done".to_string(),
+        };
+        let actual = vec![CustomField::State {
+            name: "Status".to_string(),
+            value: Some("Done".to_string()),
+            is_resolved: true,
+        }];
+
+        assert!(verify_field_match(&requested, &actual).is_none());
+    }
+
+    #[test]
+    fn detects_state_mismatch_against_renamed_state_field() {
+        use tracker_core::CustomField;
+
+        let requested = CustomFieldUpdate::State {
+            name: "State".to_string(),
+            value: "Done".to_string(),
+        };
+        let actual = vec![CustomField::State {
+            name: "Status".to_string(),
+            value: Some("New".to_string()),
+            is_resolved: false,
+        }];
+
+        let warning = verify_field_match(&requested, &actual).expect("mismatch must warn");
+        assert!(
+            warning.contains("Status"),
+            "warning should name the actual field: {}",
+            warning
+        );
+        assert!(warning.contains("Done") && warning.contains("New"));
+    }
+
+    #[test]
+    fn state_fallback_requires_unique_state_field() {
+        use tracker_core::CustomField;
+
+        let requested = CustomFieldUpdate::State {
+            name: "Phase".to_string(),
+            value: "Done".to_string(),
+        };
+        let actual = vec![
+            CustomField::State {
+                name: "State".to_string(),
+                value: Some("Done".to_string()),
+                is_resolved: true,
+            },
+            CustomField::State {
+                name: "Stage".to_string(),
+                value: Some("Develop".to_string()),
+                is_resolved: false,
+            },
+        ];
+
+        // Two state fields and no name match: never guess, report as ignored
+        let warning = verify_field_match(&requested, &actual).expect("ambiguity must warn");
+        assert!(warning.contains("ignored"));
+    }
+
+    #[test]
+    fn non_state_updates_do_not_fall_back_to_state_field() {
+        use tracker_core::CustomField;
+
+        let requested = CustomFieldUpdate::SingleEnum {
+            name: "Component".to_string(),
+            value: "UI".to_string(),
+        };
+        let actual = vec![CustomField::State {
+            name: "Status".to_string(),
+            value: Some("Done".to_string()),
+            is_resolved: true,
+        }];
+
+        let warning = verify_field_match(&requested, &actual).expect("missing field must warn");
+        assert!(warning.contains("ignored"));
     }
 }

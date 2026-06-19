@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tracker_core::{
-    Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueLink,
-    IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag,
-    UpdateIssue, User,
+    Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueHistoryEvent,
+    IssueLink, IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, StateValueInfo,
+    Tag, UpdateIssue, User, canonical_field_name,
 };
 
 use crate::markdown::adf::{
@@ -73,6 +73,15 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
         name: "Type".to_string(),
         value: Some(j.fields.issuetype.name.clone()),
     });
+
+    // Map components (Jira's standard subsystem/area field) as a multi-value
+    // custom field, mirroring how the other standard fields above are surfaced.
+    if !j.fields.components.is_empty() {
+        custom_fields.push(CustomField::MultiEnum {
+            name: "Components".to_string(),
+            values: j.fields.components.iter().map(|c| c.name.clone()).collect(),
+        });
+    }
 
     // Map extra custom fields from the flattened HashMap
     let id_to_name: HashMap<&str, &str> = jira_fields
@@ -151,6 +160,7 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
             .collect(),
         created: parse_jira_datetime(&j.fields.created).unwrap_or_else(Utc::now),
         updated: parse_jira_datetime(&j.fields.updated).unwrap_or_else(Utc::now),
+        resolved: parse_jira_datetime(&j.fields.resolution_date),
     }
 }
 
@@ -323,6 +333,42 @@ impl From<JiraComment> for Comment {
     }
 }
 
+/// Convert Jira changelog entries into core history events, newest-first.
+///
+/// Each changelog entry may carry multiple field changes (`items`); every item
+/// becomes one [`IssueHistoryEvent`], sharing the entry's author and timestamp.
+/// `from_string`/`to_string` (human-readable) are used for the values. Entries
+/// whose timestamp cannot be parsed are skipped rather than fabricated, and
+/// field names are canonicalized so `status` is portable across backends.
+pub fn jira_changelog_to_history_events(
+    entries: Vec<JiraChangelogEntry>,
+) -> Vec<IssueHistoryEvent> {
+    let mut events = Vec::new();
+    for entry in entries {
+        let Some(at) = parse_jira_datetime(&entry.created) else {
+            continue;
+        };
+        let author = entry.author.map(|u| CommentAuthor {
+            login: u.account_id.unwrap_or_default(),
+            name: u.display_name,
+        });
+        for item in entry.items {
+            events.push(IssueHistoryEvent {
+                at,
+                author: author.clone(),
+                field: canonical_field_name(&item.field),
+                from: item.from_string,
+                to: item.to_string,
+            });
+        }
+    }
+    // Jira returns oldest-first; expose newest-first to match reporting needs.
+    // `sort_by` is a stable sort, so multiple items from one changelog entry
+    // (which share a timestamp) keep their original within-entry order.
+    events.sort_by(|a, b| b.at.cmp(&a.at));
+    events
+}
+
 /// Convert JiraIssueLinkType to tracker-core IssueLinkType
 impl From<JiraIssueLinkType> for IssueLinkType {
     fn from(lt: JiraIssueLinkType) -> Self {
@@ -423,7 +469,7 @@ pub fn create_issue_to_jira(
 
     let issue_type = issue_type_opt.unwrap_or_else(|| "Task".to_string());
 
-    let extra = resolve_extra_fields(&issue.custom_fields, jira_fields)?;
+    let extra = resolve_extra_fields(&issue.custom_fields, jira_fields, CREATE_HANDLED_FIELDS)?;
 
     Ok(CreateJiraIssue {
         fields: CreateJiraIssueFields {
@@ -474,7 +520,7 @@ pub fn update_issue_to_jira(
         _ => None,
     });
 
-    let extra = resolve_extra_fields(&update.custom_fields, jira_fields)?;
+    let extra = resolve_extra_fields(&update.custom_fields, jira_fields, UPDATE_HANDLED_FIELDS)?;
 
     Ok(UpdateJiraIssue {
         fields: UpdateJiraIssueFields {
@@ -495,10 +541,14 @@ pub fn update_issue_to_jira(
     })
 }
 
-/// Parse Jira datetime string to chrono DateTime
-fn parse_jira_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
+/// Parse an Atlassian (Jira/Confluence) datetime string to chrono DateTime
+///
+/// Jira Cloud emits offsets without a colon (`2024-01-15T10:00:00.000+0000`),
+/// which strict RFC 3339 parsing rejects, so fall back to a `%z`-based format.
+pub(crate) fn parse_jira_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
     dt.as_ref().and_then(|s| {
         chrono::DateTime::parse_from_rfc3339(s)
+            .or_else(|_| chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%z"))
             .ok()
             .map(|d| d.with_timezone(&Utc))
     })
@@ -744,6 +794,38 @@ fn is_reserved_field(name: &str) -> bool {
         .any(|&r| r.eq_ignore_ascii_case(name))
 }
 
+/// Reserved fields the create path consumes through the typed request struct;
+/// dropping them from "extra" is expected and must stay silent.
+const CREATE_HANDLED_FIELDS: &[&str] = &["priority", "type", "issuetype"];
+
+/// Reserved fields the update path consumes through the typed request struct.
+/// Status/state never legitimately reach `resolve_extra_fields` on this path:
+/// `CustomFieldUpdate::State` is partitioned out upstream and routed to the
+/// /transitions endpoint, so a status-named field seen here was mistyped
+/// (e.g. SingleEnum) and is about to be dropped.
+const UPDATE_HANDLED_FIELDS: &[&str] = &["priority"];
+
+/// Warning for a reserved-name field that is about to be silently dropped, or
+/// None when the caller's typed struct already carries it.
+fn dropped_reserved_field_warning(name: &str, silently_handled: &[&str]) -> Option<String> {
+    if silently_handled
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
+    let hint = if name.eq_ignore_ascii_case("status") || name.eq_ignore_ascii_case("state") {
+        " Jira changes status through workflow transitions, not field edits: \
+         use `issue update --state <value>` or `issue start`/`issue complete`."
+    } else {
+        ""
+    };
+    Some(format!(
+        "Field '{}' was not applied: the Jira backend does not set it through field edits.{}",
+        name, hint
+    ))
+}
+
 /// Resolve custom field updates to Jira extra fields using field metadata.
 /// Returns a map of field_id → JSON value for fields not handled by the standard struct.
 fn insert_resolved_field(
@@ -793,6 +875,7 @@ fn insert_resolved_field(
 pub fn resolve_extra_fields(
     custom_fields: &[CustomFieldUpdate],
     jira_fields: &[JiraField],
+    silently_handled: &[&str],
 ) -> tracker_core::Result<HashMap<String, serde_json::Value>> {
     let field_id_map = build_field_id_map(jira_fields);
     let schema_map: HashMap<&str, &JiraFieldSchema> = jira_fields
@@ -808,6 +891,9 @@ pub fn resolve_extra_fields(
             | CustomFieldUpdate::State { name, value }
             | CustomFieldUpdate::SingleUser { name, login: value } => {
                 if is_reserved_field(name) {
+                    if let Some(msg) = dropped_reserved_field_warning(name, silently_handled) {
+                        eprintln!("Warning: {}", msg);
+                    }
                     continue;
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
@@ -818,6 +904,9 @@ pub fn resolve_extra_fields(
             CustomFieldUpdate::MultiEnum { name, values } => {
                 let joined = values.join(",");
                 if is_reserved_field(name) {
+                    if let Some(msg) = dropped_reserved_field_warning(name, silently_handled) {
+                        eprintln!("Warning: {}", msg);
+                    }
                     continue;
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
@@ -1018,7 +1107,8 @@ mod tests {
             },
         ];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
+        let extra =
+            resolve_extra_fields(&custom_fields, &jira_fields, UPDATE_HANDLED_FIELDS).unwrap();
 
         assert!(!extra.contains_key("timeoriginalestimate"));
         assert!(!extra.contains_key("timeestimate"));
@@ -1047,7 +1137,8 @@ mod tests {
             }),
         }];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
+        let extra =
+            resolve_extra_fields(&custom_fields, &jira_fields, UPDATE_HANDLED_FIELDS).unwrap();
 
         assert!(!extra.contains_key("timeoriginalestimate"));
         assert!(extra.contains_key("timetracking"));
@@ -1097,12 +1188,44 @@ mod tests {
             },
         ];
 
-        let extra = resolve_extra_fields(&custom_fields, &jira_fields).unwrap();
+        let extra =
+            resolve_extra_fields(&custom_fields, &jira_fields, UPDATE_HANDLED_FIELDS).unwrap();
         // Priority and State should be skipped (handled by struct/transitions),
         // Story Points should be resolved
         assert!(!extra.contains_key("priority"));
         assert!(!extra.contains_key("customfield_11315")); // "State" custom field should be skipped
         assert_eq!(extra["customfield_10016"], serde_json::json!(3.0));
+    }
+
+    #[test]
+    fn dropped_status_field_warns_on_update_with_transition_hint() {
+        let msg = dropped_reserved_field_warning("Status", UPDATE_HANDLED_FIELDS)
+            .expect("dropping a status field edit must warn");
+        assert!(msg.contains("Status"));
+        assert!(msg.contains("transition"));
+        // "state" alias gets the same treatment, in any case
+        assert!(dropped_reserved_field_warning("STATE", UPDATE_HANDLED_FIELDS).is_some());
+    }
+
+    #[test]
+    fn typed_struct_fields_drop_silently_per_call_site() {
+        // priority is consumed by the typed struct on both paths
+        assert!(dropped_reserved_field_warning("Priority", UPDATE_HANDLED_FIELDS).is_none());
+        assert!(dropped_reserved_field_warning("priority", CREATE_HANDLED_FIELDS).is_none());
+        // issue type is only consumed at create; dropping it from an update is a real loss
+        assert!(dropped_reserved_field_warning("Type", CREATE_HANDLED_FIELDS).is_none());
+        assert!(dropped_reserved_field_warning("issuetype", CREATE_HANDLED_FIELDS).is_none());
+        assert!(dropped_reserved_field_warning("Type", UPDATE_HANDLED_FIELDS).is_some());
+        // status can never be set through a field edit, even at create
+        assert!(dropped_reserved_field_warning("status", CREATE_HANDLED_FIELDS).is_some());
+    }
+
+    #[test]
+    fn dropped_assignee_warns_without_transition_hint() {
+        let msg = dropped_reserved_field_warning("Assignee", UPDATE_HANDLED_FIELDS)
+            .expect("dropping an assignee field edit must warn");
+        assert!(msg.contains("Assignee"));
+        assert!(!msg.contains("transition"));
     }
 
     #[test]
@@ -1254,8 +1377,10 @@ mod tests {
                 assignee: None,
                 reporter: None,
                 labels: vec![],
+                components: vec![],
                 created: Some("2024-01-15T10:00:00.000+0000".to_string()),
                 updated: Some("2024-01-15T12:00:00.000+0000".to_string()),
+                resolution_date: None,
                 subtasks: vec![],
                 parent: None,
                 issuelinks: vec![],
@@ -1293,6 +1418,105 @@ mod tests {
         assert!(
             matches!(priority, CustomField::SingleEnum { value: Some(v), .. } if v == "Medium")
         );
+
+        // Real dates from the fixture, not marshal time (regression for the
+        // strict-RFC3339 bug that stamped every issue with Utc::now())
+        use chrono::TimeZone;
+        assert_eq!(
+            core.created,
+            Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap()
+        );
+        assert_eq!(
+            core.updated,
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap()
+        );
+        assert_eq!(core.resolved, None);
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_components() {
+        let mut issue = mock_jira_issue_for_conversion(Default::default());
+        issue.fields.components = vec![
+            JiraComponent {
+                id: Some("10001".to_string()),
+                name: "Rendering".to_string(),
+            },
+            JiraComponent {
+                id: Some("10002".to_string()),
+                name: "Audio".to_string(),
+            },
+        ];
+
+        let core = jira_issue_to_core(issue, &[]);
+
+        let components = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "Components"))
+            .expect("Components custom field should be present");
+        assert!(
+            matches!(components, CustomField::MultiEnum { values, .. } if values == &["Rendering".to_string(), "Audio".to_string()])
+        );
+    }
+
+    #[test]
+    fn jira_issue_to_core_omits_components_when_empty() {
+        let issue = mock_jira_issue_for_conversion(Default::default());
+        let core = jira_issue_to_core(issue, &[]);
+
+        // No empty Components entry should be emitted when the issue has none.
+        assert!(
+            !core
+                .custom_fields
+                .iter()
+                .any(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "Components"))
+        );
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_resolution_date() {
+        use chrono::TimeZone;
+        let mut issue = mock_jira_issue_for_conversion(Default::default());
+        issue.fields.resolution_date = Some("2024-02-01T08:30:00.000+0000".to_string());
+
+        let core = jira_issue_to_core(issue, &[]);
+        assert_eq!(
+            core.resolved,
+            Some(Utc.with_ymd_and_hms(2024, 2, 1, 8, 30, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_jira_datetime_handles_jira_cloud_offsets() {
+        use chrono::TimeZone;
+        // Jira Cloud emits colon-less offsets, which strict RFC 3339 rejects
+        assert_eq!(
+            parse_jira_datetime(&Some("2024-01-15T10:00:00.000+0000".to_string())),
+            Some(Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap())
+        );
+        assert_eq!(
+            parse_jira_datetime(&Some("2024-01-15T10:00:00.000-0500".to_string())),
+            Some(Utc.with_ymd_and_hms(2024, 1, 15, 15, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_jira_datetime_handles_rfc3339() {
+        use chrono::TimeZone;
+        assert_eq!(
+            parse_jira_datetime(&Some("2024-01-15T10:00:00Z".to_string())),
+            Some(Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap())
+        );
+        assert_eq!(
+            parse_jira_datetime(&Some("2024-01-15T10:00:00.000+00:00".to_string())),
+            Some(Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_jira_datetime_rejects_invalid() {
+        assert_eq!(parse_jira_datetime(&Some("not a date".to_string())), None);
+        assert_eq!(parse_jira_datetime(&None), None);
     }
 
     #[test]
@@ -1541,5 +1765,99 @@ mod tests {
             "3.5"
         );
         assert_eq!(format_number(&serde_json::Number::from(42)), "42");
+    }
+
+    #[test]
+    fn jira_changelog_maps_items_newest_first() {
+        let page: JiraChangelogPage = serde_json::from_value(serde_json::json!({
+            "startAt": 0,
+            "maxResults": 100,
+            "total": 2,
+            "isLast": true,
+            "values": [
+                {
+                    "id": "1",
+                    "author": { "accountId": "acc-1", "displayName": "Alice" },
+                    "created": "2024-01-10T09:00:00.000+0000",
+                    "items": [
+                        { "field": "status", "fromString": "To Do", "toString": "In Progress" }
+                    ]
+                },
+                {
+                    "id": "2",
+                    "author": { "accountId": "acc-2", "displayName": "Bob" },
+                    "created": "2024-01-15T14:30:00.000+0000",
+                    "items": [
+                        { "field": "assignee", "fromString": null, "toString": "Alice" },
+                        { "field": "priority", "fromString": "Medium", "toString": "High" }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let events = jira_changelog_to_history_events(page.values);
+
+        // Two entries, one with two items => three events.
+        assert_eq!(events.len(), 3);
+
+        // Newest entry (2024-01-15) sorts first; its two items preserve order.
+        assert_eq!(events[0].field, "assignee");
+        assert_eq!(events[0].from, None); // null fromString -> None
+        assert_eq!(events[0].to.as_deref(), Some("Alice"));
+        assert_eq!(
+            events[0].author.as_ref().and_then(|a| a.name.as_deref()),
+            Some("Bob")
+        );
+        assert_eq!(
+            events[0].author.as_ref().map(|a| a.login.as_str()),
+            Some("acc-2")
+        );
+        assert_eq!(events[1].field, "priority");
+
+        // Oldest entry sorts last.
+        assert_eq!(events[2].field, "status");
+        assert_eq!(events[2].from.as_deref(), Some("To Do"));
+        assert_eq!(events[2].to.as_deref(), Some("In Progress"));
+    }
+
+    #[test]
+    fn jira_changelog_canonicalizes_state_field() {
+        // A backend that names the field "State" should fold onto "status" so
+        // `--field status` is portable.
+        let page: JiraChangelogPage = serde_json::from_value(serde_json::json!({
+            "values": [
+                {
+                    "created": "2024-02-01T00:00:00.000+0000",
+                    "items": [{ "field": "State", "fromString": "Open", "toString": "Closed" }]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let events = jira_changelog_to_history_events(page.values);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field, "status");
+    }
+
+    #[test]
+    fn jira_changelog_skips_unparseable_timestamp() {
+        let page: JiraChangelogPage = serde_json::from_value(serde_json::json!({
+            "values": [
+                {
+                    "created": null,
+                    "items": [{ "field": "status", "toString": "Done" }]
+                },
+                {
+                    "created": "2024-03-01T12:00:00.000+0000",
+                    "items": [{ "field": "status", "toString": "Done" }]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let events = jira_changelog_to_history_events(page.values);
+        // The entry with no timestamp is dropped rather than fabricated.
+        assert_eq!(events.len(), 1);
     }
 }

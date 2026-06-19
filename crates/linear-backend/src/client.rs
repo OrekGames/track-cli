@@ -19,6 +19,8 @@ const ISSUE_FIELDS: &str = r#"
     url
     createdAt
     updatedAt
+    completedAt
+    canceledAt
     team { id key name description }
     state { id name type position }
     assignee { id name displayName email }
@@ -669,6 +671,66 @@ impl LinearClient {
             .issue
             .ok_or_else(|| LinearError::IssueNotFound(issue_id.to_string()))?;
         Ok((issue.comments.nodes, issue.comments.page_info))
+    }
+
+    /// Fetch one page of an issue's change history (`Issue.history`).
+    ///
+    /// Mirrors [`get_comments_page`](Self::get_comments_page): cursor-paged via
+    /// `first`/`after`, returning the nodes plus the page info so the caller can
+    /// walk to completion. `issue_id` must be Linear's internal id (callers
+    /// resolve a readable identifier through [`get_issue`](Self::get_issue)
+    /// first, exactly as the comments path does). History is returned
+    /// newest-first by Linear; the converter re-sorts to be safe.
+    pub fn get_issue_history_page(
+        &self,
+        issue_id: &str,
+        first: usize,
+        after: Option<String>,
+    ) -> Result<(Vec<LinearIssueHistory>, LinearPageInfo)> {
+        #[derive(serde::Deserialize)]
+        struct IssueHistory {
+            history: LinearConnection<LinearIssueHistory>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct Data {
+            issue: Option<IssueHistory>,
+        }
+
+        let query = r#"
+            query IssueHistory($id: String!, $first: Int!, $after: String) {
+              issue(id: $id) {
+                history(first: $first, after: $after) {
+                  nodes {
+                    createdAt
+                    actor { id name displayName email }
+                    fromState { name }
+                    toState { name }
+                    fromAssignee { id displayName name email }
+                    toAssignee { id displayName name email }
+                    fromPriority
+                    toPriority
+                    fromTitle
+                    toTitle
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+        "#;
+
+        let data: Data = self.graphql(
+            query,
+            json!({
+                "id": issue_id,
+                "first": first.clamp(1, 100),
+                "after": after,
+            }),
+        )?;
+        let issue = data
+            .issue
+            .ok_or_else(|| LinearError::IssueNotFound(issue_id.to_string()))?;
+        Ok((issue.history.nodes, issue.history.page_info))
     }
 
     pub fn create_label(&self, input: &LinearIssueLabelCreateInput) -> Result<LinearIssueLabel> {

@@ -18,6 +18,8 @@ pub struct Issue {
     pub created: DateTime<Utc>,
     #[serde(with = "chrono::serde::ts_milliseconds")]
     pub updated: DateTime<Utc>,
+    #[serde(default, with = "chrono::serde::ts_milliseconds_option")]
+    pub resolved: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

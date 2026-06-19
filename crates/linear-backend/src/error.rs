@@ -26,6 +26,9 @@ pub enum LinearError {
 
     #[error("API error ({status}): {message}")]
     Api { status: u16, message: String },
+
+    #[error("Pagination stalled: {0}")]
+    PaginationStalled(String),
 }
 
 pub type Result<T> = std::result::Result<T, LinearError>;
@@ -44,6 +47,7 @@ impl From<LinearError> for TrackerError {
                 message: "Linear API rate limit exceeded".to_string(),
             },
             LinearError::Api { status, message } => TrackerError::Api { status, message },
+            LinearError::PaginationStalled(msg) => TrackerError::PaginationStalled(msg),
         }
     }
 }

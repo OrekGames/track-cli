@@ -10,8 +10,9 @@ use tracker_core::{
     Article, ArticleAttachment, AttachFieldToProject, AttachmentUpload, BundleDefinition,
     BundleType, BundleValueDefinition, Comment, CreateArticle, CreateBundle, CreateBundleValue,
     CreateCustomField, CreateIssue, CreateProject, CreateTag, CustomFieldDefinition, Issue,
-    IssueAttachment, IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project,
-    ProjectCustomField, Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
+    IssueAttachment, IssueHistoryEvent, IssueLink, IssueLinkType, IssueTag, IssueTracker,
+    KnowledgeBase, Project, ProjectCustomField, Result, SearchResult, TrackerError, UpdateArticle,
+    UpdateIssue, User,
 };
 
 impl IssueTracker for YouTrackClient {
@@ -225,6 +226,11 @@ impl IssueTracker for YouTrackClient {
             .into_iter()
             .map(Into::into)
             .collect())
+    }
+
+    fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
+        let activities = self.get_issue_activities(issue_id)?;
+        Ok(convert::youtrack_activities_to_history_events(activities))
     }
 
     // ========== Custom Field Admin Operations ==========

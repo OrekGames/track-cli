@@ -2,15 +2,15 @@
 
 use tracker_core::{
     Article, ArticleAttachment, AttachmentUpload, Comment, CreateArticle, CreateIssue,
-    CreateProject, CreateTag, CustomFieldUpdate, Issue, IssueLink, IssueLinkType, IssueTag,
-    IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result, SearchResult, TrackerError,
-    UpdateArticle, UpdateIssue, User,
+    CreateProject, CreateTag, CustomFieldUpdate, Issue, IssueHistoryEvent, IssueLink,
+    IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result,
+    SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
 use crate::client::LinearClient;
 use crate::convert::{
-    build_filter_from_parsed, linear_issue_to_core, linear_link_types, linear_relations_to_core,
-    parse_linear_query, priority_from_label, team_details_custom_fields,
+    build_filter_from_parsed, linear_history_to_events, linear_issue_to_core, linear_link_types,
+    linear_relations_to_core, parse_linear_query, priority_from_label, team_details_custom_fields,
 };
 use crate::models::{
     LinearIssueCreateInput, LinearIssueLabelCreateInput, LinearIssueLabelUpdateInput,
@@ -311,6 +311,58 @@ impl IssueTracker for LinearClient {
         }
 
         Ok(comments)
+    }
+
+    fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
+        // Generous backstop against a server that keeps reporting `hasNextPage`
+        // without advancing the cursor; large enough never to truncate a real
+        // history (100 nodes/page).
+        const MAX_PAGES: usize = 10_000;
+        const MAX_EMPTY_PAGES: usize = 5;
+
+        // Resolve the readable identifier to Linear's internal id, exactly as
+        // the comments path does, since `Issue.history` keys on the id.
+        let issue = self.get_issue(issue_id)?;
+        let mut nodes = Vec::new();
+        let mut after = None;
+        let mut empty_pages = 0;
+
+        for _ in 0..MAX_PAGES {
+            let prev_after = after.clone();
+            let (page, page_info) = self.get_issue_history_page(&issue.id, 100, after)?;
+            let page_len = page.len();
+            nodes.extend(page);
+
+            if !page_info.has_next_page {
+                return Ok(linear_history_to_events(nodes));
+            }
+
+            if page_len == 0 {
+                empty_pages += 1;
+                if empty_pages >= MAX_EMPTY_PAGES {
+                    return Err(TrackerError::PaginationStalled(format!(
+                        "issue '{}' history returned {} consecutive empty pages with hasNextPage=true",
+                        issue_id, MAX_EMPTY_PAGES
+                    )));
+                }
+            } else {
+                empty_pages = 0;
+            }
+
+            let next_after = page_info.end_cursor;
+            if next_after == prev_after {
+                return Err(TrackerError::PaginationStalled(format!(
+                    "issue '{}' history cursor did not advance",
+                    issue_id
+                )));
+            }
+            after = next_after;
+        }
+
+        Err(TrackerError::PaginationStalled(format!(
+            "issue '{}' history did not terminate after {} pages",
+            issue_id, MAX_PAGES
+        )))
     }
 }
 

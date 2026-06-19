@@ -1,3 +1,4 @@
+pub mod changelog;
 pub mod comment;
 pub mod confluence;
 pub mod field;
@@ -6,6 +7,7 @@ pub mod project;
 pub mod transitions;
 pub mod user;
 
+pub use changelog::*;
 pub use comment::*;
 pub use confluence::*;
 pub use field::*;
