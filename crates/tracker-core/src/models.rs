@@ -714,6 +714,7 @@ mod tests {
             tags: vec![],
             created: Utc::now(),
             updated: Utc::now(),
+            resolved: None,
         }
     }
 
