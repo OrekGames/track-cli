@@ -230,20 +230,6 @@ fn display_change(name: &str, old: Option<&str>, new: Option<&str>, requested: &
 }
 
 fn find_field_value(issue: &Issue, name: &str) -> Option<String> {
-    if unicode_eq_ignore_case("priority", name)
-        && let Some(p) = issue.common_fields().priority
-    {
-        return Some(p.to_string());
-    } else if unicode_eq_ignore_case("state", name)
-        && let Some(s) = issue.common_fields().state
-    {
-        return Some(s.to_string());
-    } else if unicode_eq_ignore_case("assignee", name)
-        && let Some(a) = issue.common_fields().assignee
-    {
-        return Some(a.to_string());
-    }
-
     issue
         .custom_fields
         .iter()

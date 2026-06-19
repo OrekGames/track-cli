@@ -25,7 +25,12 @@ pub struct Issue {
     pub updated: DateTime<Utc>,
 }
 
-/// Commonly accessed issue fields extracted in a single pass
+/// Canonical state, priority, and assignee values extracted from an issue's custom fields.
+///
+/// Selection rules:
+/// - `state`: first [`CustomField::State`] value
+/// - `priority`: first [`CustomField::SingleEnum`] whose name is `"priority"` (case-insensitive)
+/// - `assignee`: first [`CustomField::SingleUser`] login
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CommonFields<'a> {
     pub state: Option<&'a str>,
@@ -34,8 +39,7 @@ pub struct CommonFields<'a> {
 }
 
 impl Issue {
-    /// Extracts commonly used fields (state, priority, assignee) in a single pass
-    /// without cloning the underlying strings.
+    /// Returns the canonical state, priority, and assignee for display and caching.
     pub fn common_fields(&self) -> CommonFields<'_> {
         let mut fields = CommonFields::default();
         for cf in &self.custom_fields {
@@ -647,6 +651,105 @@ impl<T> SearchResult<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+
+    fn issue_with_custom_fields(custom_fields: Vec<CustomField>) -> Issue {
+        Issue {
+            id: "1".into(),
+            id_readable: "PROJ-1".into(),
+            summary: "Test".into(),
+            description: None,
+            project: ProjectRef {
+                id: "PROJ".into(),
+                name: None,
+                short_name: Some("PROJ".into()),
+            },
+            custom_fields,
+            tags: vec![],
+            created: Utc::now(),
+            updated: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn common_fields_extracts_all_three() {
+        let issue = issue_with_custom_fields(vec![
+            CustomField::State {
+                name: "State".into(),
+                value: Some("Open".into()),
+                is_resolved: false,
+            },
+            CustomField::SingleEnum {
+                name: "Priority".into(),
+                value: Some("High".into()),
+            },
+            CustomField::SingleUser {
+                name: "Assignee".into(),
+                login: Some("alice".into()),
+                display_name: None,
+            },
+        ]);
+
+        let common = issue.common_fields();
+        assert_eq!(common.state, Some("Open"));
+        assert_eq!(common.priority, Some("High"));
+        assert_eq!(common.assignee, Some("alice"));
+    }
+
+    #[test]
+    fn common_fields_priority_name_is_case_insensitive() {
+        let issue = issue_with_custom_fields(vec![CustomField::SingleEnum {
+            name: "PRIORITY".into(),
+            value: Some("Low".into()),
+        }]);
+
+        assert_eq!(issue.common_fields().priority, Some("Low"));
+    }
+
+    #[test]
+    fn common_fields_first_state_wins() {
+        let issue = issue_with_custom_fields(vec![
+            CustomField::State {
+                name: "Stage".into(),
+                value: Some("Done".into()),
+                is_resolved: true,
+            },
+            CustomField::State {
+                name: "State".into(),
+                value: Some("Open".into()),
+                is_resolved: false,
+            },
+        ]);
+
+        assert_eq!(issue.common_fields().state, Some("Done"));
+    }
+
+    #[test]
+    fn common_fields_stops_after_all_three_found() {
+        let issue = issue_with_custom_fields(vec![
+            CustomField::State {
+                name: "State".into(),
+                value: Some("Open".into()),
+                is_resolved: false,
+            },
+            CustomField::SingleEnum {
+                name: "Priority".into(),
+                value: Some("High".into()),
+            },
+            CustomField::SingleUser {
+                name: "Assignee".into(),
+                login: Some("alice".into()),
+                display_name: None,
+            },
+            CustomField::SingleUser {
+                name: "Reviewer".into(),
+                login: Some("bob".into()),
+                display_name: None,
+            },
+        ]);
+
+        assert_eq!(issue.common_fields().assignee, Some("alice"));
+    }
 
     #[test]
     fn search_result_from_items() {
