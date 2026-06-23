@@ -733,38 +733,46 @@ impl TrackerCache {
         // Fetch projects
         let projects = client.list_projects().context("Failed to fetch projects")?;
         cache.projects = projects
-            .iter()
+            .into_iter()
             .map(|p| CachedProject {
-                id: p.id.clone(),
-                short_name: p.short_name.clone(),
-                name: p.name.clone(),
-                description: p.description.clone(),
+                id: p.id,
+                short_name: p.short_name,
+                name: p.name,
+                description: p.description,
             })
             .collect();
 
         // Determine which projects to fetch detailed data for:
         // - If default_project is set (project context), only fetch that project's details
         // - Otherwise (global context), fetch details for all projects
-        let projects_for_details: Vec<&tracker_core::Project> = if let Some(dp) = default_project {
-            projects
+        let projects_for_details: Vec<&CachedProject> = if let Some(dp) = default_project {
+            cache
+                .projects
                 .iter()
                 .filter(|p| p.short_name.eq_ignore_ascii_case(dp))
                 .collect()
         } else {
-            projects.iter().collect()
+            cache.projects.iter().collect()
         };
 
         // Fetch custom fields and build workflow hints for scoped projects
         for project in &projects_for_details {
             if let Ok(fields) = client.get_project_custom_fields(&project.id) {
+                // Build workflow hints for state fields before consuming
+                let workflow_hints =
+                    Self::build_workflow_hints(&project.short_name, &project.id, &fields);
+                if !workflow_hints.state_fields.is_empty() {
+                    cache.workflow_hints.push(workflow_hints);
+                }
+
                 let cached_fields: Vec<CachedField> = fields
-                    .iter()
+                    .into_iter()
                     .map(|f| CachedField {
-                        name: f.name.clone(),
-                        field_id: Some(f.id.clone()),
-                        field_type: f.field_type.clone(),
+                        name: f.name,
+                        field_id: Some(f.id),
+                        field_type: f.field_type,
                         required: f.required,
-                        values: f.values.clone(),
+                        values: f.values,
                     })
                     .collect();
 
@@ -773,24 +781,17 @@ impl TrackerCache {
                     project_id: project.id.clone(),
                     fields: cached_fields,
                 });
-
-                // Build workflow hints for state fields
-                let workflow_hints =
-                    Self::build_workflow_hints(&project.short_name, &project.id, &fields);
-                if !workflow_hints.state_fields.is_empty() {
-                    cache.workflow_hints.push(workflow_hints);
-                }
             }
         }
 
         // Fetch tags (instance-level, always fetch all)
         if let Ok(tags) = client.list_tags() {
             cache.tags = tags
-                .iter()
+                .into_iter()
                 .map(|t| CachedTag {
-                    id: t.id.clone(),
-                    name: t.name.clone(),
-                    color: t.color.as_ref().and_then(|c| c.background.clone()),
+                    id: t.id,
+                    name: t.name,
+                    color: t.color.and_then(|c| c.background),
                     description: None,
                 })
                 .collect();
@@ -799,12 +800,12 @@ impl TrackerCache {
         // Fetch link types (instance-level, always fetch all)
         if let Ok(link_types) = client.list_link_types() {
             cache.link_types = link_types
-                .iter()
+                .into_iter()
                 .map(|lt| CachedLinkType {
-                    id: lt.id.clone(),
-                    name: lt.name.clone(),
-                    source_to_target: lt.source_to_target.clone(),
-                    target_to_source: lt.target_to_source.clone(),
+                    id: lt.id,
+                    name: lt.name,
+                    source_to_target: lt.source_to_target,
+                    target_to_source: lt.target_to_source,
                     directed: lt.directed,
                 })
                 .collect();
@@ -814,11 +815,11 @@ impl TrackerCache {
         for project in &projects_for_details {
             if let Ok(users) = client.list_project_users(&project.id) {
                 let cached_users: Vec<CachedUser> = users
-                    .iter()
+                    .into_iter()
                     .map(|u| CachedUser {
-                        id: u.id.clone(),
-                        login: u.login.clone(),
-                        display_name: u.display_name.clone(),
+                        id: u.id,
+                        login: u.login,
+                        display_name: u.display_name,
                     })
                     .collect();
 
