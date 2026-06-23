@@ -163,10 +163,19 @@ impl YouTrackClient {
         const MAX_RETRIES: u32 = 4;
         const RETRY_DELAY_MS: u64 = 400;
 
+        self.count_issues_with_retry(query, MAX_RETRIES, Duration::from_millis(RETRY_DELAY_MS))
+    }
+
+    pub(crate) fn count_issues_with_retry(
+        &self,
+        query: &str,
+        max_attempts: u32,
+        retry_delay: Duration,
+    ) -> Result<Option<u64>> {
         let url = format!("{}/api/issuesGetter/count?fields=count", self.base_url);
         let body = serde_json::json!({ "query": query });
 
-        for attempt in 0..MAX_RETRIES {
+        for attempt in 0..max_attempts {
             let response = self
                 .agent
                 .post(&url)
@@ -184,8 +193,8 @@ impl YouTrackClient {
             }
 
             // -1 means still counting; wait and retry (except on last attempt)
-            if attempt < MAX_RETRIES - 1 {
-                std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+            if attempt < max_attempts - 1 {
+                std::thread::sleep(retry_delay);
             }
         }
 
