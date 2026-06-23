@@ -5,7 +5,7 @@ mod tests {
     use crate::client::GitLabClient;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tracker_core::{AttachmentUpload, AttachmentUploadFile, IssueTracker};
+    use tracker_core::{AttachmentUpload, AttachmentUploadFile, IssueTracker, KnowledgeBase};
     use wiremock::matchers::{body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -66,6 +66,16 @@ mod tests {
             "path_with_namespace": format!("group/{}", name.to_lowercase().replace(' ', "-")),
             "description": "Project description",
             "web_url": format!("https://gitlab.com/group/{}", name.to_lowercase().replace(' ', "-"))
+        })
+    }
+
+    fn mock_wiki_page(slug: &str, title: &str, content: &str) -> serde_json::Value {
+        serde_json::json!({
+            "slug": slug,
+            "title": title,
+            "content": content,
+            "format": "markdown",
+            "encoding": "UTF-8"
         })
     }
 
@@ -919,6 +929,58 @@ mod tests {
         let client = GitLabClient::new("https://gitlab.com/api/v4", "test-token", Some("123"));
 
         assert_eq!(client.resolve_link_type("nonexistent"), "nonexistent");
+    }
+
+    #[tokio::test]
+    async fn test_list_all_articles_fetches_wiki_once_and_truncates() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/wikis"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("with_content", "1"))
+            .and(query_param("per_page", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                mock_wiki_page("first", "First", "alpha"),
+                mock_wiki_page("second", "Second", "beta"),
+                mock_wiki_page("third", "Third", "gamma")
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let articles = client.list_all_articles(Some("123"), 2).unwrap();
+
+        assert_eq!(articles.len(), 2);
+        assert_eq!(articles[0].id, "first");
+        assert_eq!(articles[1].id, "second");
+    }
+
+    #[tokio::test]
+    async fn test_search_all_articles_fetches_wiki_once_filters_and_truncates() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/wikis"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("with_content", "1"))
+            .and(query_param("per_page", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                mock_wiki_page("install", "Install Guide", "alpha"),
+                mock_wiki_page("deploy", "Deploy", "contains guide details"),
+                mock_wiki_page("other", "Other", "guide appendix")
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let articles = client.search_all_articles("guide", 2).unwrap();
+
+        assert_eq!(articles.len(), 2);
+        assert_eq!(articles[0].id, "install");
+        assert_eq!(articles[1].id, "deploy");
     }
 
     // ==================== Issue History (3-endpoint merge) Tests ====================

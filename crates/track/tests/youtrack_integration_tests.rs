@@ -180,10 +180,8 @@ fn test_issue_get_with_text_output() {
 
 #[test]
 fn test_issue_search_with_results() {
-    // First request: count endpoint response
-    let count_response = serde_json::json!({ "count": 2 }).to_string();
-
-    // Second request: search endpoint response
+    // Search returns fewer items than the requested limit, so the optimized
+    // YouTrack path should not issue a count request.
     let search_response = serde_json::json!([
         {
             "id": "2-1",
@@ -208,7 +206,7 @@ fn test_issue_search_with_results() {
     ])
     .to_string();
 
-    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
+    let (_server, port) = start_mock_server_multi(vec![search_response]);
     thread::sleep(Duration::from_millis(50));
 
     let output = cargo_bin_cmd!("track")
@@ -750,7 +748,8 @@ fn test_completions_no_config_required() {
 
 #[test]
 fn test_pagination_hint_on_full_page() {
-    // YouTrack search: first request = count, second request = search results
+    // YouTrack search: first request = search results, second request = count
+    // because the full page needs a best-effort total for the hint.
     let count_response = serde_json::json!({ "count": 10 }).to_string();
     let search_response = serde_json::json!([
         {
@@ -768,7 +767,7 @@ fn test_pagination_hint_on_full_page() {
     ])
     .to_string();
 
-    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
+    let (_server, port) = start_mock_server_multi(vec![search_response, count_response]);
     thread::sleep(Duration::from_millis(50));
 
     let output = cargo_bin_cmd!("track")
@@ -798,8 +797,7 @@ fn test_pagination_hint_on_full_page() {
 
 #[test]
 fn test_no_pagination_hint_on_partial_page() {
-    // Return fewer items than limit — no hint expected
-    let count_response = serde_json::json!({ "count": 2 }).to_string();
+    // Return fewer items than limit -- no hint expected and no count request needed.
     let search_response = serde_json::json!([
         {
             "id": "2-1", "idReadable": "PROJ-1", "summary": "Issue 1",
@@ -816,7 +814,7 @@ fn test_no_pagination_hint_on_partial_page() {
     ])
     .to_string();
 
-    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
+    let (_server, port) = start_mock_server_multi(vec![search_response]);
     thread::sleep(Duration::from_millis(50));
 
     let output = cargo_bin_cmd!("track")
@@ -858,7 +856,7 @@ fn test_no_pagination_hint_in_json_mode() {
     ])
     .to_string();
 
-    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
+    let (_server, port) = start_mock_server_multi(vec![search_response, count_response]);
     thread::sleep(Duration::from_millis(50));
 
     let output = cargo_bin_cmd!("track")
@@ -908,7 +906,7 @@ fn test_pagination_hint_shows_total() {
     ])
     .to_string();
 
-    let (_server, port) = start_mock_server_multi(vec![count_response, search_response]);
+    let (_server, port) = start_mock_server_multi(vec![search_response, count_response]);
     thread::sleep(Duration::from_millis(50));
 
     let output = cargo_bin_cmd!("track")

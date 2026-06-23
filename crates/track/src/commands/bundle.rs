@@ -1,7 +1,7 @@
 //! Bundle admin command handlers
 
 use crate::cli::{BundleCommands, OutputFormat};
-use crate::output::output_result;
+use crate::output::{output_json, output_result};
 use anyhow::{Context, Result, anyhow};
 use tracker_core::{BundleType, CreateBundle, CreateBundleValue, IssueTracker};
 
@@ -39,8 +39,7 @@ fn handle_list(client: &dyn IssueTracker, bundle_type: &str, format: OutputForma
 
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&bundles)?;
-            println!("{}", json);
+            output_json(&bundles)?;
         }
         OutputFormat::Text => {
             if bundles.is_empty() {
@@ -138,8 +137,7 @@ fn handle_add_value(
 
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&created)?;
-            println!("{}", json);
+            output_json(&created)?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
