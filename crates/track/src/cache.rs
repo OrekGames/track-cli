@@ -2,9 +2,11 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::thread;
 
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
@@ -30,6 +32,35 @@ fn create_dir_all_secure(path: &Path) -> Result<()> {
 const CACHE_DIR_NAME: &str = ".tracker-cache";
 const CACHE_VERSION: u32 = 2;
 const MAX_RECENT_ISSUES: usize = 50;
+const DEFAULT_CACHE_REFRESH_CONCURRENCY: usize = 4;
+const MIN_CACHE_REFRESH_CONCURRENCY: usize = 1;
+const MAX_CACHE_REFRESH_CONCURRENCY: usize = 16;
+const MIN_PARALLEL_PROJECT_META_SHARDS: usize = 64;
+
+fn cache_refresh_concurrency() -> usize {
+    let configured = env::var("TRACK_CACHE_REFRESH_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok());
+    clamp_cache_refresh_concurrency(configured)
+}
+
+fn clamp_cache_refresh_concurrency(configured: Option<usize>) -> usize {
+    configured
+        .unwrap_or(DEFAULT_CACHE_REFRESH_CONCURRENCY)
+        .clamp(MIN_CACHE_REFRESH_CONCURRENCY, MAX_CACHE_REFRESH_CONCURRENCY)
+}
+
+fn project_metadata_worker_count(project_count: usize, configured: Option<usize>) -> usize {
+    if project_count < MIN_PARALLEL_PROJECT_META_SHARDS {
+        return 1;
+    }
+
+    clamp_cache_refresh_concurrency(configured).min(project_count)
+}
+
+fn configured_project_metadata_worker_count(project_count: usize) -> usize {
+    project_metadata_worker_count(project_count, Some(cache_refresh_concurrency()))
+}
 
 /// Cached tracker context for AI assistants
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -268,6 +299,61 @@ pub struct StateTransition {
 }
 
 impl TrackerCache {
+    fn load_project_metadata_shard(project_dir: &Path) -> Option<CachedProject> {
+        if !project_dir.is_dir() {
+            return None;
+        }
+
+        let content = fs::read_to_string(project_dir.join("meta.json")).ok()?;
+        let meta = serde_json::from_str::<ProjectShardMeta>(&content).ok()?;
+        Some(CachedProject {
+            id: meta.id,
+            short_name: meta.short_name,
+            name: meta.name,
+            description: meta.description,
+        })
+    }
+
+    fn load_project_metadata_shards(
+        project_dirs: &[PathBuf],
+        worker_count: usize,
+    ) -> Result<Vec<CachedProject>> {
+        if project_dirs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let worker_count = worker_count.max(1).min(project_dirs.len());
+        if worker_count == 1 {
+            return Ok(project_dirs
+                .iter()
+                .filter_map(|project_dir| Self::load_project_metadata_shard(project_dir))
+                .collect());
+        }
+
+        thread::scope(|scope| -> Result<Vec<CachedProject>> {
+            let chunk_size = project_dirs.len().div_ceil(worker_count);
+            let mut handles = Vec::with_capacity(worker_count);
+            for chunk in project_dirs.chunks(chunk_size) {
+                handles.push(scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .filter_map(|project_dir| Self::load_project_metadata_shard(project_dir))
+                        .collect::<Vec<_>>()
+                }));
+            }
+
+            let mut projects = Vec::new();
+            for handle in handles {
+                let mut loaded = handle
+                    .join()
+                    .map_err(|_| anyhow!("project metadata worker panicked"))?;
+                projects.append(&mut loaded);
+            }
+
+            Ok(projects)
+        })
+    }
+
     /// Load cache from the sharded directory layout
     pub fn load(cache_dir: Option<PathBuf>) -> Result<Self> {
         let root = Self::cache_dir_path(cache_dir.clone())?;
@@ -478,46 +564,8 @@ impl TrackerCache {
                 return Ok(());
             }
 
-            // Read and parse project metadata concurrently to improve startup performance
-            let num_threads = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-            let chunk_size = project_dirs.len().div_ceil(num_threads);
-
-            let mut worker_error = None;
-            std::thread::scope(|s| {
-                let mut handles = Vec::with_capacity(num_threads);
-                for chunk in project_dirs.chunks(chunk_size) {
-                    handles.push(s.spawn(move || {
-                        let mut chunk_projects = Vec::with_capacity(chunk.len());
-                        for project_dir in chunk {
-                            if project_dir.is_dir()
-                                && let Ok(content) =
-                                    fs::read_to_string(project_dir.join("meta.json"))
-                                && let Ok(meta) = serde_json::from_str::<ProjectShardMeta>(&content)
-                            {
-                                chunk_projects.push(CachedProject {
-                                    id: meta.id,
-                                    short_name: meta.short_name,
-                                    name: meta.name,
-                                    description: meta.description,
-                                });
-                            }
-                        }
-                        chunk_projects
-                    }));
-                }
-                for handle in handles {
-                    match handle.join() {
-                        Ok(mut res) => self.projects.append(&mut res),
-                        Err(_) => worker_error = Some(anyhow!("project metadata worker panicked")),
-                    }
-                }
-            });
-
-            if let Some(err) = worker_error {
-                return Err(err);
-            }
+            let worker_count = configured_project_metadata_worker_count(project_dirs.len());
+            self.projects = Self::load_project_metadata_shards(&project_dirs, worker_count)?;
         }
         self.loaded_shards.projects = true;
         Ok(())
@@ -1539,6 +1587,57 @@ mod tests {
     fn get_issue_count_returns_none_for_unknown() {
         let cache = TrackerCache::default();
         assert_eq!(cache.get_issue_count("PROJ", "unresolved"), None);
+    }
+
+    #[test]
+    fn cache_refresh_concurrency_clamps_to_conservative_range() {
+        assert_eq!(
+            clamp_cache_refresh_concurrency(None),
+            DEFAULT_CACHE_REFRESH_CONCURRENCY
+        );
+        assert_eq!(clamp_cache_refresh_concurrency(Some(0)), 1);
+        assert_eq!(clamp_cache_refresh_concurrency(Some(2)), 2);
+        assert_eq!(
+            clamp_cache_refresh_concurrency(Some(MAX_CACHE_REFRESH_CONCURRENCY + 1)),
+            MAX_CACHE_REFRESH_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn project_metadata_worker_count_stays_sequential_below_threshold() {
+        for project_count in [0, 1, 10, 50, MIN_PARALLEL_PROJECT_META_SHARDS - 1] {
+            assert_eq!(
+                project_metadata_worker_count(project_count, Some(MAX_CACHE_REFRESH_CONCURRENCY)),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn project_metadata_worker_count_uses_bounded_concurrency_at_threshold() {
+        assert_eq!(
+            project_metadata_worker_count(MIN_PARALLEL_PROJECT_META_SHARDS, None),
+            DEFAULT_CACHE_REFRESH_CONCURRENCY
+        );
+        assert_eq!(
+            project_metadata_worker_count(MIN_PARALLEL_PROJECT_META_SHARDS, Some(8)),
+            8
+        );
+    }
+
+    #[test]
+    fn project_metadata_worker_count_clamps_configured_concurrency() {
+        assert_eq!(
+            project_metadata_worker_count(MIN_PARALLEL_PROJECT_META_SHARDS, Some(0)),
+            MIN_CACHE_REFRESH_CONCURRENCY
+        );
+        assert_eq!(
+            project_metadata_worker_count(
+                MIN_PARALLEL_PROJECT_META_SHARDS,
+                Some(MAX_CACHE_REFRESH_CONCURRENCY + 1)
+            ),
+            MAX_CACHE_REFRESH_CONCURRENCY
+        );
     }
 
     #[test]
