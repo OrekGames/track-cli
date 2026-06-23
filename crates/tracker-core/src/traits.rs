@@ -300,6 +300,39 @@ pub trait KnowledgeBase: Send + Sync {
     /// Search articles using the backend's query language
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>>;
 
+    /// Fetch all articles, auto-paginating up to `max_results`.
+    ///
+    /// The default implementation pages through [`Self::list_articles`] in
+    /// offset windows of 100, deduplicating by article id and failing with
+    /// [`crate::TrackerError::PaginationStalled`] if a full page yields no
+    /// new articles. Backends with native cursor or full-scan APIs should
+    /// override this to avoid replaying earlier pages through offset emulation.
+    fn list_all_articles(
+        &self,
+        project_id: Option<&str>,
+        max_results: usize,
+    ) -> Result<Vec<Article>> {
+        crate::pagination::fetch_all_pages_keyed(
+            |offset, limit| self.list_articles(project_id, limit, offset),
+            100,
+            max_results,
+            |article: &Article| article.id.clone(),
+        )
+    }
+
+    /// Search all articles, auto-paginating up to `max_results`.
+    ///
+    /// The default implementation pages through [`Self::search_articles`] in
+    /// offset windows of 100, deduplicating by article id.
+    fn search_all_articles(&self, query: &str, max_results: usize) -> Result<Vec<Article>> {
+        crate::pagination::fetch_all_pages_keyed(
+            |offset, limit| self.search_articles(query, limit, offset),
+            100,
+            max_results,
+            |article: &Article| article.id.clone(),
+        )
+    }
+
     /// Create a new article
     fn create_article(&self, article: &CreateArticle) -> Result<Article>;
 
@@ -386,6 +419,26 @@ mod tests {
         }
     }
 
+    fn test_article(n: usize) -> Article {
+        Article {
+            id: format!("article-{n}"),
+            id_readable: format!("TEST-A-{n}"),
+            summary: format!("Article {n}"),
+            content: None,
+            project: ProjectRef {
+                id: "proj-1".to_string(),
+                name: None,
+                short_name: None,
+            },
+            parent_article: None,
+            has_children: false,
+            tags: Vec::new(),
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+            reporter: None,
+        }
+    }
+
     /// Offset-window search stub. `ignore_skip` simulates the issue #252
     /// failure mode where the server ignores the offset parameter.
     struct StubTracker {
@@ -401,6 +454,91 @@ mod tests {
                 ignore_skip,
                 calls: Mutex::new(Vec::new()),
             }
+        }
+    }
+
+    struct StubKnowledgeBase {
+        articles: Vec<Article>,
+        ignore_skip: bool,
+        list_calls: Mutex<Vec<(usize, usize)>>,
+        search_calls: Mutex<Vec<(usize, usize)>>,
+    }
+
+    impl StubKnowledgeBase {
+        fn new(count: usize, ignore_skip: bool) -> Self {
+            Self {
+                articles: (1..=count).map(test_article).collect(),
+                ignore_skip,
+                list_calls: Mutex::new(Vec::new()),
+                search_calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl KnowledgeBase for StubKnowledgeBase {
+        fn get_article(&self, _: &str) -> Result<Article> {
+            unimplemented!()
+        }
+
+        fn list_articles(
+            &self,
+            _: Option<&str>,
+            limit: usize,
+            skip: usize,
+        ) -> Result<Vec<Article>> {
+            self.list_calls.lock().unwrap().push((skip, limit));
+            let skip = if self.ignore_skip { 0 } else { skip };
+            Ok(self
+                .articles
+                .iter()
+                .skip(skip)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn search_articles(&self, _: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
+            self.search_calls.lock().unwrap().push((skip, limit));
+            let skip = if self.ignore_skip { 0 } else { skip };
+            Ok(self
+                .articles
+                .iter()
+                .skip(skip)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        fn create_article(&self, _: &CreateArticle) -> Result<Article> {
+            unimplemented!()
+        }
+
+        fn update_article(&self, _: &str, _: &UpdateArticle) -> Result<Article> {
+            unimplemented!()
+        }
+
+        fn delete_article(&self, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn get_child_articles(&self, _: &str) -> Result<Vec<Article>> {
+            unimplemented!()
+        }
+
+        fn move_article(&self, _: &str, _: Option<&str>) -> Result<Article> {
+            unimplemented!()
+        }
+
+        fn list_article_attachments(&self, _: &str) -> Result<Vec<ArticleAttachment>> {
+            unimplemented!()
+        }
+
+        fn get_article_comments(&self, _: &str) -> Result<Vec<Comment>> {
+            unimplemented!()
+        }
+
+        fn add_article_comment(&self, _: &str, _: &str) -> Result<Comment> {
+            unimplemented!()
         }
     }
 
@@ -493,5 +631,23 @@ mod tests {
         let result = tracker.search_all_issues("query", 1000);
         assert!(matches!(result, Err(TrackerError::PaginationStalled(_))));
         assert_eq!(tracker.calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn list_all_articles_default_respects_max_results() {
+        let kb = StubKnowledgeBase::new(250, false);
+        let result = kb.list_all_articles(None, 150).unwrap();
+        assert_eq!(result.len(), 150);
+        assert_eq!(result[0].id, "article-1");
+        assert_eq!(result[149].id, "article-150");
+        assert_eq!(*kb.list_calls.lock().unwrap(), vec![(0, 100), (100, 50)]);
+    }
+
+    #[test]
+    fn search_all_articles_default_errors_when_backend_ignores_skip() {
+        let kb = StubKnowledgeBase::new(250, true);
+        let result = kb.search_all_articles("query", 1000);
+        assert!(matches!(result, Err(TrackerError::PaginationStalled(_))));
+        assert_eq!(kb.search_calls.lock().unwrap().len(), 2);
     }
 }
