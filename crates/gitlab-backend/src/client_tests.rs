@@ -436,6 +436,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_all_comments_walks_native_note_pages_once() {
+        let mock_server = MockServer::start().await;
+
+        let first_page: Vec<_> = (1..=100)
+            .map(|id| {
+                serde_json::json!({
+                    "id": id,
+                    "body": format!("Comment {id}"),
+                    "author": {"id": 1, "username": "user", "name": "User"},
+                    "created_at": "2024-01-15T10:00:00.000Z",
+                    "updated_at": "2024-01-15T10:00:00.000Z",
+                    "system": id == 50
+                })
+            })
+            .collect();
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42/notes"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(first_page))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42/notes"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 101,
+                    "body": "Comment 101",
+                    "author": {"id": 1, "username": "user", "name": "User"},
+                    "created_at": "2024-01-15T11:00:00.000Z",
+                    "updated_at": "2024-01-15T11:00:00.000Z",
+                    "system": false
+                },
+                {
+                    "id": 102,
+                    "body": "Comment 102",
+                    "author": {"id": 1, "username": "user", "name": "User"},
+                    "created_at": "2024-01-15T12:00:00.000Z",
+                    "updated_at": "2024-01-15T12:00:00.000Z",
+                    "system": false
+                }
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let comments = <GitLabClient as IssueTracker>::get_all_comments(&client, "#42", 101)
+            .expect("get_all_comments should succeed");
+
+        assert_eq!(comments.len(), 101);
+        assert!(!comments.iter().any(|comment| comment.id == "50"));
+        assert_eq!(comments[0].id, "1");
+        assert_eq!(comments[100].id, "102");
+    }
+
+    #[tokio::test]
     async fn test_get_issue_links() {
         let mock_server = MockServer::start().await;
 
