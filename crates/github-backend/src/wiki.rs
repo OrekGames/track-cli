@@ -318,6 +318,12 @@ impl WikiManager {
         }
     }
 
+    fn invalidate_path(&self, path: &std::path::Path) {
+        if let Ok(mut cache) = self.page_cache.lock() {
+            cache.remove(path);
+        }
+    }
+
     /// Read a wiki page from disk
     fn read_page(&self, path: &Path) -> Result<WikiPage> {
         if let Ok(cache) = self.page_cache.lock() {
@@ -491,6 +497,7 @@ impl WikiManager {
 
         fs::write(&page_path, markdown)
             .map_err(|e| GitHubError::Wiki(format!("Failed to write file: {}", e)))?;
+        self.invalidate_path(&page_path);
 
         // Commit and push
         self.commit_and_push(&format!("Create {}", slug), &[&page_path])?;
@@ -527,6 +534,7 @@ impl WikiManager {
 
         fs::write(&page_path, markdown)
             .map_err(|e| GitHubError::Wiki(format!("Failed to write file: {}", e)))?;
+        self.invalidate_path(&page_path);
 
         // Commit and push
         self.commit_and_push(&format!("Update {}", slug), &[&page_path])?;
@@ -547,6 +555,7 @@ impl WikiManager {
 
         fs::remove_file(&page_path)
             .map_err(|e| GitHubError::Wiki(format!("Failed to delete file: {}", e)))?;
+        self.invalidate_path(&page_path);
 
         // Commit and push
         self.commit_and_push(&format!("Delete {}", slug), &[&page_path])?;
@@ -692,6 +701,8 @@ impl WikiManager {
         // Move file
         fs::rename(&old_path, &new_path)
             .map_err(|e| GitHubError::Wiki(format!("Failed to move file: {}", e)))?;
+        self.invalidate_path(&old_path);
+        self.invalidate_path(&new_path);
 
         // Commit and push
         self.commit_and_push(
