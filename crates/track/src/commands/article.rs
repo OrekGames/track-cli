@@ -1,7 +1,7 @@
 use crate::cli::{ArticleCommands, OutputFormat};
 use crate::output::{output_list, output_page_hint, output_progress, output_result};
 use anyhow::{Context, Result, anyhow};
-use tracker_core::{CreateArticle, IssueTracker, KnowledgeBase, UpdateArticle, fetch_all_pages};
+use tracker_core::{CreateArticle, IssueTracker, KnowledgeBase, UpdateArticle, get_max_results};
 
 pub fn handle_article(
     issue_client: &dyn IssueTracker,
@@ -135,12 +135,9 @@ fn handle_list(
     format: OutputFormat,
 ) -> Result<()> {
     let articles = if all {
-        let page_size = 100usize;
-        let res = fetch_all_pages(
-            |offset, page_limit| client.list_articles(project, page_limit, offset),
-            page_size,
-        )
-        .context("Failed to list articles (pagination)")?;
+        let res = client
+            .list_all_articles(project, get_max_results())
+            .context("Failed to list articles (pagination)")?;
         output_progress(&format!("Fetched {} articles", res.len()), format);
         res
     } else {
@@ -165,17 +162,14 @@ fn handle_search(
     format: OutputFormat,
 ) -> Result<()> {
     let articles = if all {
-        let page_size = 100usize;
-        let res = fetch_all_pages(
-            |offset, page_limit| client.search_articles(query, page_limit, offset),
-            page_size,
-        )
-        .with_context(|| {
-            format!(
-                "Failed to search articles with query '{}' (pagination)",
-                query
-            )
-        })?;
+        let res = client
+            .search_all_articles(query, get_max_results())
+            .with_context(|| {
+                format!(
+                    "Failed to search articles with query '{}' (pagination)",
+                    query
+                )
+            })?;
         output_progress(&format!("Fetched {} articles", res.len()), format);
         res
     } else {
