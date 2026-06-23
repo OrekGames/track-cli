@@ -2,7 +2,7 @@ use crate::cli::OutputFormat;
 use colored::Colorize;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::io::{IsTerminal, Write};
+use std::io::{BufWriter, IsTerminal, Write};
 use tracker_core::{
     Article, ArticleAttachment, BundleDefinition, Comment, CustomField, CustomFieldDefinition,
     Issue, IssueAttachment, IssueHistoryEvent, IssueTag, Project, ProjectCustomField, case_key,
@@ -11,9 +11,11 @@ use tracker_core::{
 
 pub fn output_json<T: Serialize + ?Sized>(value: &T) -> anyhow::Result<()> {
     let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
-    serde_json::to_writer_pretty(&mut handle, value)?;
-    writeln!(handle)?;
+    let handle = stdout.lock();
+    let mut writer = BufWriter::new(handle);
+    serde_json::to_writer_pretty(&mut writer, value)?;
+    writeln!(writer)?;
+    writer.flush()?;
     Ok(())
 }
 
