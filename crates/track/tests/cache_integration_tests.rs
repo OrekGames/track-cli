@@ -608,6 +608,19 @@ fn test_issue_access_preserves_other_shards() {
     );
     assert_eq!(recent_arr[0]["id_readable"], "DEMO-1");
 
+    // Verify the compact runtime shard is loadable through normal cache loading.
+    let output = track_in_no_mock(&dir)
+        .args(["-o", "json", "cache", "show"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cache show should load runtime shard, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let loaded: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(loaded["recent_issues"][0]["id_readable"], "DEMO-1");
+
     fs::remove_dir_all(&dir).unwrap();
 }
 

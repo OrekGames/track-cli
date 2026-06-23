@@ -507,9 +507,9 @@ impl TrackerCache {
         let root = Self::cache_dir_path(cache_dir)?;
         let runtime_dir = root.join("runtime");
         create_dir_all_secure(&runtime_dir)?;
-        Self::atomic_write(
+        Self::atomic_write_relaxed(
             &runtime_dir.join("recent_issues.json"),
-            serde_json::to_string_pretty(&self.recent_issues)?.as_bytes(),
+            &serde_json::to_vec(&self.recent_issues)?,
         )?;
         Ok(())
     }
@@ -737,6 +737,19 @@ impl TrackerCache {
 
     /// Atomic write helper: write temp -> fsync -> rename
     fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
+        Self::atomic_write_inner(path, content, true)
+    }
+
+    /// Relaxed atomic write helper: write temp -> rename, without fsync.
+    ///
+    /// Used for non-critical runtime metadata on hot paths where preserving
+    /// atomic replacement and file permissions matters more than durability
+    /// across sudden power loss.
+    fn atomic_write_relaxed(path: &Path, content: &[u8]) -> Result<()> {
+        Self::atomic_write_inner(path, content, false)
+    }
+
+    fn atomic_write_inner(path: &Path, content: &[u8], durable: bool) -> Result<()> {
         let temp_path = path.with_extension("tmp");
 
         // Create parent directory if needed
@@ -766,8 +779,11 @@ impl TrackerCache {
             file.write_all(content).with_context(|| {
                 format!("Failed to write to temp file: {}", temp_path.display())
             })?;
-            file.sync_all()
-                .with_context(|| format!("Failed to sync temp file: {}", temp_path.display()))?;
+            if durable {
+                file.sync_all().with_context(|| {
+                    format!("Failed to sync temp file: {}", temp_path.display())
+                })?;
+            }
         }
 
         #[cfg(unix)]
