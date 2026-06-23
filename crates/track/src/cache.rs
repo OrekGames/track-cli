@@ -975,8 +975,21 @@ impl TrackerCache {
                 .into_iter()
                 .map(|(_, result)| result.issue_count),
         );
+        cache.mark_refreshed_shards_loaded(
+            projects_for_details.iter().map(|p| p.short_name.clone()),
+        );
 
         Ok(cache)
+    }
+
+    fn mark_refreshed_shards_loaded<I>(&mut self, detailed_project_keys: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.loaded_shards.projects = true;
+        self.loaded_shards.backend = true;
+        self.loaded_shards.runtime = true;
+        self.loaded_projects.extend(detailed_project_keys);
     }
 
     /// Refresh cache with articles from knowledge base (if available)
