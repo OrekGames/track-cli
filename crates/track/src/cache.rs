@@ -466,13 +466,15 @@ impl TrackerCache {
         if self.loaded_shards.projects {
             return Ok(());
         }
-        self.loaded_shards.projects = true;
 
         let root = Self::cache_dir_path(self.cache_dir.clone())?;
         let projects_dir = root.join("projects");
         if projects_dir.exists() {
-            let entries: Vec<_> = fs::read_dir(projects_dir)?.filter_map(|e| e.ok()).collect();
-            if entries.is_empty() {
+            let project_dirs: Vec<PathBuf> = fs::read_dir(&projects_dir)?
+                .map(|entry| entry.map(|e| e.path()))
+                .collect::<std::io::Result<_>>()?;
+            if project_dirs.is_empty() {
+                self.loaded_shards.projects = true;
                 return Ok(());
             }
 
@@ -480,15 +482,15 @@ impl TrackerCache {
             let num_threads = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(4);
-            let chunk_size = entries.len().div_ceil(num_threads);
+            let chunk_size = project_dirs.len().div_ceil(num_threads);
 
+            let mut worker_error = None;
             std::thread::scope(|s| {
                 let mut handles = Vec::with_capacity(num_threads);
-                for chunk in entries.chunks(chunk_size) {
+                for chunk in project_dirs.chunks(chunk_size) {
                     handles.push(s.spawn(move || {
                         let mut chunk_projects = Vec::with_capacity(chunk.len());
-                        for entry in chunk {
-                            let project_dir = entry.path();
+                        for project_dir in chunk {
                             if project_dir.is_dir()
                                 && let Ok(content) =
                                     fs::read_to_string(project_dir.join("meta.json"))
@@ -506,14 +508,22 @@ impl TrackerCache {
                     }));
                 }
                 for handle in handles {
-                    if let Ok(mut res) = handle.join() {
-                        self.projects.append(&mut res);
+                    match handle.join() {
+                        Ok(mut res) => self.projects.append(&mut res),
+                        Err(_) => worker_error = Some(anyhow!("project metadata worker panicked")),
                     }
                 }
             });
+
+            if let Some(err) = worker_error {
+                return Err(err);
+            }
         }
+        self.loaded_shards.projects = true;
         Ok(())
     }
+
+    /// Ensure backend shards are loaded (tags, templates, link types)
     pub fn ensure_backend_shards(&mut self) -> Result<()> {
         if self.loaded_shards.backend {
             return Ok(());
