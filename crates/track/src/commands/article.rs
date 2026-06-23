@@ -1,5 +1,5 @@
 use crate::cli::{ArticleCommands, OutputFormat};
-use crate::output::{output_list, output_page_hint, output_progress, output_result};
+use crate::output::{output_json, output_list, output_page_hint, output_progress, output_result};
 use anyhow::{Context, Result, anyhow};
 use tracker_core::{CreateArticle, IssueTracker, KnowledgeBase, UpdateArticle, get_max_results};
 
@@ -288,7 +288,7 @@ fn handle_tree(client: &dyn KnowledgeBase, id: &str, format: OutputFormat) -> Re
                 article: parent,
                 children,
             };
-            println!("{}", serde_json::to_string_pretty(&tree).unwrap());
+            output_json(&tree)?;
         }
         OutputFormat::Text => {
             use colored::Colorize;

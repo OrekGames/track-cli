@@ -1,7 +1,7 @@
 //! Custom field admin command handlers
 
 use crate::cli::{FieldCommands, OutputFormat};
-use crate::output::output_result;
+use crate::output::{output_json, output_result};
 use anyhow::{Context, Result, anyhow};
 use tracker_core::{
     AttachFieldToProject, BundleType, CreateBundle, CreateBundleValue, CreateCustomField,
@@ -38,8 +38,7 @@ fn handle_list(client: &dyn IssueTracker, format: OutputFormat) -> Result<()> {
 
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&fields)?;
-            println!("{}", json);
+            output_json(&fields)?;
         }
         OutputFormat::Text => {
             if fields.is_empty() {
@@ -184,8 +183,7 @@ fn handle_new(
 
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&result)?;
-            println!("{}", json);
+            output_json(&result)?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
