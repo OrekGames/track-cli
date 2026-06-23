@@ -73,6 +73,7 @@ pub struct WikiManager {
     token: String,
     cache_dir: PathBuf,
     initialized: Mutex<bool>,
+    page_cache: Mutex<std::collections::HashMap<PathBuf, WikiPage>>,
 }
 
 impl WikiManager {
@@ -86,6 +87,7 @@ impl WikiManager {
             token: token.to_string(),
             cache_dir,
             initialized: Mutex::new(false),
+            page_cache: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -104,6 +106,7 @@ impl WikiManager {
             token: token.to_string(),
             cache_dir,
             initialized: Mutex::new(true),
+            page_cache: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -152,6 +155,7 @@ impl WikiManager {
 
     /// Clone the wiki repository
     fn clone_wiki(&self) -> Result<()> {
+        self.clear_cache();
         // Create parent directories
         if let Some(parent) = self.cache_dir.parent() {
             fs::create_dir_all(parent).map_err(|e| {
@@ -184,6 +188,7 @@ impl WikiManager {
 
     /// Fetch and merge latest changes
     fn fetch_and_merge(&self) -> Result<()> {
+        self.clear_cache();
         let repo = Repository::open(&self.cache_dir)
             .map_err(|e| GitHubError::Wiki(format!("Failed to open wiki repository: {}", e)))?;
 
@@ -307,7 +312,21 @@ impl WikiManager {
     }
 
     /// Read a wiki page from disk
+    fn clear_cache(&self) {
+        if let Ok(mut cache) = self.page_cache.lock() {
+            cache.clear();
+        }
+    }
+
+    /// Read a wiki page from disk
     fn read_page(&self, path: &Path) -> Result<WikiPage> {
+        if let Ok(cache) = self.page_cache.lock() {
+            #[allow(clippy::collapsible_if)]
+            if let Some(page) = cache.get(path) {
+                return Ok(page.clone());
+            }
+        }
+
         let content = fs::read_to_string(path)
             .map_err(|e| GitHubError::Wiki(format!("Failed to read file: {}", e)))?;
 
@@ -346,7 +365,7 @@ impl WikiManager {
         // Get timestamps from git
         let (created, updated, author) = self.get_file_timestamps(path)?;
 
-        Ok(WikiPage {
+        let page = WikiPage {
             slug,
             title,
             content,
@@ -355,7 +374,13 @@ impl WikiManager {
             created,
             updated,
             author,
-        })
+        };
+
+        if let Ok(mut cache) = self.page_cache.lock() {
+            cache.insert(path.to_path_buf(), page.clone());
+        }
+
+        Ok(page)
     }
 
     /// Parse markdown with YAML front matter
@@ -706,6 +731,7 @@ impl WikiManager {
 
     /// Commit changes and push to remote
     fn commit_and_push(&self, message: &str, paths: &[&Path]) -> Result<()> {
+        self.clear_cache();
         let repo = Repository::open(&self.cache_dir)
             .map_err(|e| GitHubError::Wiki(format!("Failed to open repository: {}", e)))?;
 
