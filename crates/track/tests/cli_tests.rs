@@ -1,15 +1,17 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::json;
-use std::sync::atomic::{AtomicU16, Ordering};
+
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Helper function to get an available port with atomic counter to avoid conflicts
-static PORT_COUNTER: AtomicU16 = AtomicU16::new(51000);
+
 
 fn get_available_port() -> u16 {
-    PORT_COUNTER.fetch_add(1, Ordering::SeqCst)
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
 }
 
 // Helper to create a simple mock server
