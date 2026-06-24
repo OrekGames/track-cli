@@ -887,26 +887,31 @@ impl TrackerCache {
         // Fetch projects
         let projects = client.list_projects().context("Failed to fetch projects")?;
         cache.projects = projects
-            .iter()
+            .into_iter()
             .map(|p| CachedProject {
-                id: p.id.clone(),
-                short_name: p.short_name.clone(),
-                name: p.name.clone(),
-                description: p.description.clone(),
+                id: p.id,
+                short_name: p.short_name,
+                name: p.name,
+                description: p.description,
             })
             .collect();
 
         // Determine which projects to fetch detailed data for:
         // - If default_project is set (project context), only fetch that project's details
         // - Otherwise (global context), fetch details for all projects
-        let projects_for_details: Vec<&tracker_core::Project> = if let Some(dp) = default_project {
-            projects
+        let projects_for_details: Vec<&CachedProject> = if let Some(dp) = default_project {
+            cache
+                .projects
                 .iter()
                 .filter(|p| p.short_name.eq_ignore_ascii_case(dp))
                 .collect()
         } else {
-            projects.iter().collect()
+            cache.projects.iter().collect()
         };
+        let detailed_project_keys: Vec<String> = projects_for_details
+            .iter()
+            .map(|p| p.short_name.clone())
+            .collect();
 
         // Fetch tags (instance-level, always fetch all)
         if let Ok(tags) = client.list_tags() {
@@ -1053,9 +1058,7 @@ impl TrackerCache {
                 .into_iter()
                 .map(|(_, result)| result.issue_count),
         );
-        cache.mark_refreshed_shards_loaded(
-            projects_for_details.iter().map(|p| p.short_name.clone()),
-        );
+        cache.mark_refreshed_shards_loaded(detailed_project_keys);
 
         Ok(cache)
     }
