@@ -946,10 +946,8 @@ impl TrackerCache {
         let field_results =
             bounded_parallel_map_indexed(&projects_for_details, concurrency, |_, project| {
                 let fields = client.get_project_custom_fields(&project.id).ok()?;
-
                 let workflow_hints =
                     Self::build_workflow_hints(&project.short_name, &project.id, &fields);
-
                 let cached_fields: Vec<CachedField> = fields
                     .into_iter()
                     .map(|f| CachedField {
