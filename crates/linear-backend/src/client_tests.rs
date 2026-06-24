@@ -4,7 +4,7 @@
 mod tests {
     use crate::client::LinearClient;
     use crate::error::LinearError;
-    use tracker_core::IssueTracker;
+    use tracker_core::{IssueTracker, TrackerError};
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -68,6 +68,85 @@ mod tests {
             "name": format!("{key} Team"),
             "description": "Team description"
         })
+    }
+
+    fn mock_comment(id: usize) -> serde_json::Value {
+        serde_json::json!({
+            "id": format!("comment-{id}"),
+            "body": format!("Comment {id}"),
+            "createdAt": "2024-01-15T10:30:00Z",
+            "user": null
+        })
+    }
+
+    fn request_variables(request: &wiremock::Request) -> serde_json::Value {
+        request.body_json::<serde_json::Value>().unwrap()["variables"].clone()
+    }
+
+    struct SearchAllIssuePages;
+
+    impl wiremock::Respond for SearchAllIssuePages {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            let variables = request_variables(request);
+            let (nodes, has_next_page, end_cursor) = match variables["after"].as_str() {
+                None => (
+                    (1..=100)
+                        .map(|idx| {
+                            mock_linear_issue(&format!("ORE-{idx}"), &format!("Issue {idx}"))
+                        })
+                        .collect::<Vec<_>>(),
+                    true,
+                    Some("cursor-1"),
+                ),
+                Some("cursor-1") => (
+                    (101..=120)
+                        .map(|idx| {
+                            mock_linear_issue(&format!("ORE-{idx}"), &format!("Issue {idx}"))
+                        })
+                        .collect::<Vec<_>>(),
+                    true,
+                    Some("cursor-2"),
+                ),
+                other => panic!("unexpected Linear search cursor: {other:?}"),
+            };
+
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issues": {
+                        "nodes": nodes,
+                        "pageInfo": {
+                            "hasNextPage": has_next_page,
+                            "endCursor": end_cursor
+                        }
+                    }
+                }
+            }))
+        }
+    }
+
+    struct NonAdvancingSearchPages;
+
+    impl wiremock::Respond for NonAdvancingSearchPages {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            let variables = request_variables(request);
+            let (nodes, end_cursor) = match variables["after"].as_str() {
+                None => (vec![mock_linear_issue("ORE-1", "Issue 1")], "cursor-1"),
+                Some("cursor-1") => (vec![mock_linear_issue("ORE-2", "Issue 2")], "cursor-1"),
+                other => panic!("unexpected Linear search cursor: {other:?}"),
+            };
+
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issues": {
+                        "nodes": nodes,
+                        "pageInfo": {
+                            "hasNextPage": true,
+                            "endCursor": end_cursor
+                        }
+                    }
+                }
+            }))
+        }
     }
 
     #[tokio::test]
@@ -236,6 +315,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_all_issues_walks_cursor_chain_once_and_respects_max_results() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(SearchAllIssuePages)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let result =
+            <LinearClient as IssueTracker>::search_all_issues(&client, "#Unresolved", 120).unwrap();
+
+        assert_eq!(result.len(), 120);
+        assert_eq!(result[0].id_readable, "ORE-1");
+        assert_eq!(result[119].id_readable, "ORE-120");
+
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            2,
+            "expected a native cursor walk, got {requests:#?}"
+        );
+        let first_request = request_variables(&requests[0]);
+        assert_eq!(first_request["after"], serde_json::Value::Null);
+        assert_eq!(first_request["first"], 100);
+
+        let second_request = request_variables(&requests[1]);
+        assert_eq!(second_request["after"], "cursor-1");
+        assert_eq!(second_request["first"], 20);
+    }
+
+    #[tokio::test]
+    async fn test_search_all_issues_errors_on_non_advancing_cursor() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(NonAdvancingSearchPages)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let result = <LinearClient as IssueTracker>::search_all_issues(&client, "#Unresolved", 10);
+
+        assert!(matches!(result, Err(TrackerError::PaginationStalled(_))));
+    }
+
+    #[tokio::test]
     async fn test_project_custom_fields_are_synthetic_team_schema() {
         let mock_server = MockServer::start().await;
 
@@ -288,6 +414,131 @@ mod tests {
         assert!(fields.iter().any(|field| field.name == "Priority"));
         assert!(fields.iter().any(|field| field.name == "Labels"));
         assert!(fields.iter().any(|field| field.name == "Project"));
+    }
+
+    #[tokio::test]
+    async fn test_get_all_comments_walks_cursor_pages_once() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Issue"))
+            .and(body_string_contains("ORE-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "issue": mock_linear_issue("ORE-123", "Comment issue") }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query IssueComments"))
+            .and(body_string_contains("cursor-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issue": {
+                        "comments": {
+                            "nodes": [mock_comment(101)],
+                            "pageInfo": { "hasNextPage": false, "endCursor": null }
+                        }
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let first_page: Vec<_> = (1..=100).map(mock_comment).collect();
+        Mock::given(method("POST"))
+            .and(body_string_contains("query IssueComments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issue": {
+                        "comments": {
+                            "nodes": first_page,
+                            "pageInfo": { "hasNextPage": true, "endCursor": "cursor-1" }
+                        }
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let comments = <LinearClient as IssueTracker>::get_all_comments(&client, "ORE-123", 101)
+            .expect("get_all_comments should succeed");
+
+        assert_eq!(comments.len(), 101);
+        assert_eq!(comments[0].id, "comment-1");
+        assert_eq!(comments[100].id, "comment-101");
+    }
+
+    #[tokio::test]
+    async fn test_get_all_comments_errors_when_cursor_does_not_advance() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Issue"))
+            .and(body_string_contains("ORE-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "issue": mock_linear_issue("ORE-123", "Comment issue") }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query IssueComments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issue": {
+                        "comments": {
+                            "nodes": [mock_comment(1)],
+                            "pageInfo": { "hasNextPage": true, "endCursor": null }
+                        }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let result = <LinearClient as IssueTracker>::get_all_comments(&client, "ORE-123", 10);
+
+        assert!(matches!(result, Err(TrackerError::PaginationStalled(_))));
+    }
+
+    #[tokio::test]
+    async fn test_get_all_comments_errors_when_page_makes_no_progress() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Issue"))
+            .and(body_string_contains("ORE-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "issue": mock_linear_issue("ORE-123", "Comment issue") }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query IssueComments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issue": {
+                        "comments": {
+                            "nodes": [],
+                            "pageInfo": { "hasNextPage": true, "endCursor": "cursor-1" }
+                        }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let result = <LinearClient as IssueTracker>::get_all_comments(&client, "ORE-123", 10);
+
+        assert!(matches!(result, Err(TrackerError::PaginationStalled(_))));
     }
 
     #[tokio::test]

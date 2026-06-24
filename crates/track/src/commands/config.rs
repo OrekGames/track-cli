@@ -261,7 +261,7 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
                             })
                         })
                         .collect();
-                    println!("{}", serde_json::to_string_pretty(&keys)?);
+                    output_json(&keys)?;
                 }
                 cli::OutputFormat::Text => {
                     use colored::Colorize;

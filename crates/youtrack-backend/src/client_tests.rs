@@ -4,9 +4,24 @@ mod tests {
     use crate::models::*;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tracker_core::{AttachmentUpload, AttachmentUploadFile};
+    use tracker_core::{AttachmentUpload, AttachmentUploadFile, IssueTracker};
     use wiremock::matchers::{body_json, body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn mock_issue(id: &str, id_readable: &str, summary: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "idReadable": id_readable,
+            "summary": summary,
+            "project": {
+                "id": "0-1",
+                "shortName": "PROJ"
+            },
+            "customFields": [],
+            "created": 1640000000000i64,
+            "updated": 1640000000000i64,
+        })
+    }
 
     fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
         let nanos = SystemTime::now()
@@ -94,6 +109,186 @@ mod tests {
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0].id_readable, "PROJ-123");
         assert_eq!(issues[1].id_readable, "PROJ-124");
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_all_issues_pages_without_counting() {
+        let mock_server = MockServer::start().await;
+        let first_page: Vec<_> = (1..=100)
+            .map(|n| {
+                mock_issue(
+                    &format!("2-{n}"),
+                    &format!("PROJ-{n}"),
+                    &format!("Issue {n}"),
+                )
+            })
+            .collect();
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues"))
+            .and(query_param("query", "project: PROJ"))
+            .and(query_param("$top", "100"))
+            .and(query_param("$skip", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(first_page))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues"))
+            .and(query_param("query", "project: PROJ"))
+            .and(query_param("$top", "100"))
+            .and(query_param("$skip", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                mock_issue("2-101", "PROJ-101", "Last issue")
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 3
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let issues = IssueTracker::search_all_issues(&client, "project: PROJ", 1000).unwrap();
+
+        assert_eq!(issues.len(), 101);
+        assert_eq!(issues[0].id_readable, "PROJ-1");
+        assert_eq!(issues[100].id_readable, "PROJ-101");
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_short_page_infers_total_without_counting() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues"))
+            .and(query_param("query", "project: PROJ"))
+            .and(query_param("$top", "3"))
+            .and(query_param("$skip", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                mock_issue("2-6", "PROJ-6", "Sixth issue"),
+                mock_issue("2-7", "PROJ-7", "Seventh issue")
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 7
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = IssueTracker::search_issues(&client, "project: PROJ", 3, 5).unwrap();
+
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.total, Some(7));
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_zero_limit_makes_no_requests() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 10
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = IssueTracker::search_issues(&client, "project: PROJ", 0, 0).unwrap();
+
+        assert!(result.items.is_empty());
+        assert_eq!(result.total, None);
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_full_page_counts_once() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues"))
+            .and(query_param("query", "project: PROJ"))
+            .and(query_param("$top", "2"))
+            .and(query_param("$skip", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                mock_issue("2-1", "PROJ-1", "First issue"),
+                mock_issue("2-2", "PROJ-2", "Second issue")
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .and(query_param("fields", "count"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 42
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = IssueTracker::search_issues(&client, "project: PROJ", 2, 0).unwrap();
+
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.total, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_minus_one_count_does_not_retry() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues"))
+            .and(query_param("query", "project: PROJ"))
+            .and(query_param("$top", "2"))
+            .and(query_param("$skip", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                mock_issue("2-1", "PROJ-1", "First issue"),
+                mock_issue("2-2", "PROJ-2", "Second issue")
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .and(query_param("fields", "count"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": -1
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = IssueTracker::search_issues(&client, "project: PROJ", 2, 0).unwrap();
+
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.total, None);
     }
 
     #[tokio::test]
