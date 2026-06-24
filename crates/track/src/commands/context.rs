@@ -4,6 +4,7 @@ use crate::cache::{
     TrackerCache,
 };
 use crate::cli::OutputFormat;
+use crate::output::output_json;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::Serialize;
@@ -204,8 +205,7 @@ pub fn handle_context(
     // Output
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&context)?;
-            println!("{}", json);
+            output_json(&context)?;
         }
         OutputFormat::Text => {
             println!("{}:", "AI Context".white().bold());
