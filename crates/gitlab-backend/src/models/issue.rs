@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// GitLab user reference (used in assignee, author, etc.)
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -6,7 +7,10 @@ pub struct GitLabUser {
     pub id: u64,
     pub username: String,
     #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// GitLab milestone reference
@@ -37,6 +41,15 @@ pub struct GitLabIssue {
     pub closed_at: Option<String>,
     pub author: Option<GitLabUser>,
     pub web_url: Option<String>,
+    #[serde(default)]
+    pub confidential: bool,
+    pub due_date: Option<String>,
+    pub weight: Option<i64>,
+    /// Catch-all for any API field not modeled above. Named fields are
+    /// consumed before this flatten, so there is no duplication. Surfaced
+    /// losslessly as custom fields during conversion (see `convert.rs`).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// GitLab linked issue (response from GET /projects/:id/issues/:iid/links).

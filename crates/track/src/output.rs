@@ -271,7 +271,10 @@ fn find_field_value(issue: &Issue, name: &str) -> Option<String> {
             CustomField::SingleUser { login, .. } => login.clone(),
             CustomField::Text { value, .. } => value.clone(),
             CustomField::MultiEnum { values, .. } => Some(values.join(", ")),
-            CustomField::Unknown { .. } => None,
+            CustomField::Unknown { value, .. } => value.as_ref().map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            }),
         })
 }
 
@@ -445,8 +448,13 @@ impl Displayable for CustomField {
             CustomField::MultiEnum { name, values } => {
                 format!("{}: {}", name.dimmed(), values.join(", "))
             }
-            CustomField::Unknown { name } => {
-                format!("{}: {}", name.dimmed(), "Unknown field".dimmed())
+            CustomField::Unknown { name, value } => {
+                let rendered = match value {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(v) => v.to_string(),
+                    None => "Unknown field".dimmed().to_string(),
+                };
+                format!("{}: {}", name.dimmed(), rendered)
             }
         }
     }

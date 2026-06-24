@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::label::GitHubLabel;
 
@@ -7,6 +10,8 @@ use super::label::GitHubLabel;
 pub struct GitHubUser {
     pub login: String,
     pub id: u64,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 /// GitHub milestone
@@ -43,6 +48,12 @@ pub struct GitHubIssue {
     pub user: Option<GitHubUser>,
     /// If present (non-null), this "issue" is actually a pull request
     pub pull_request: Option<GitHubPullRequest>,
+    /// Any field GitHub returned that no named field above claimed. Serde
+    /// `flatten` only captures unmatched keys, so typed fields are never
+    /// duplicated here and a typed field's own deserialize failure is never
+    /// masked. Surfaced losslessly as custom fields by the converter.
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 impl GitHubIssue {

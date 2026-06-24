@@ -63,6 +63,42 @@ pub fn linear_issue_to_core(issue: LinearIssue) -> Issue {
         });
     }
 
+    if let Some(estimate) = issue.estimate {
+        custom_fields.push(CustomField::Text {
+            name: "Estimate".to_string(),
+            value: Some(format_estimate(estimate)),
+        });
+    }
+
+    if let Some(due_date) = &issue.due_date {
+        custom_fields.push(CustomField::Text {
+            name: "Due Date".to_string(),
+            value: Some(due_date.clone()),
+        });
+    }
+
+    if let Some(cycle) = &issue.cycle {
+        let value = cycle.name.clone().unwrap_or_else(|| {
+            let label = cycle
+                .number
+                .map(format_estimate)
+                .unwrap_or_else(|| cycle.id.clone());
+            format!("Cycle {label}")
+        });
+        custom_fields.push(CustomField::SingleEnum {
+            name: "Cycle".to_string(),
+            value: Some(value),
+        });
+    }
+
+    if let Some(creator) = &issue.creator {
+        custom_fields.push(CustomField::SingleUser {
+            name: "Creator".to_string(),
+            login: Some(linear_user_login(creator)),
+            display_name: Some(linear_user_display_name(creator)),
+        });
+    }
+
     let tags = issue
         .labels
         .nodes
@@ -613,6 +649,17 @@ fn linear_user_display_name(user: &LinearUser) -> String {
         .unwrap_or_else(|| user.name.clone())
 }
 
+/// Render a Linear numeric estimate/cycle number, stripping a trailing `.0` so
+/// whole-number values read as `2` rather than `2.0` while fractional values
+/// (e.g. `1.5`) keep their decimal part.
+fn format_estimate(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{}", value as i64)
+    } else {
+        format!("{value}")
+    }
+}
+
 fn priority_label(priority: i64) -> &'static str {
     match priority {
         1 => "Urgent",
@@ -884,5 +931,119 @@ mod tests {
             parsed.state_type_nin,
             Some(vec!["completed".to_string(), "canceled".to_string()])
         );
+    }
+
+    fn issue_from_json(value: serde_json::Value) -> LinearIssue {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn text_value<'a>(fields: &'a [CustomField], name: &str) -> Option<&'a str> {
+        fields.iter().find_map(|field| match field {
+            CustomField::Text { name: n, value } if n == name => value.as_deref(),
+            _ => None,
+        })
+    }
+
+    fn single_enum_value<'a>(fields: &'a [CustomField], name: &str) -> Option<&'a str> {
+        fields.iter().find_map(|field| match field {
+            CustomField::SingleEnum { name: n, value } if n == name => value.as_deref(),
+            _ => None,
+        })
+    }
+
+    fn single_user<'a>(
+        fields: &'a [CustomField],
+        name: &str,
+    ) -> Option<(Option<&'a str>, Option<&'a str>)> {
+        fields.iter().find_map(|field| match field {
+            CustomField::SingleUser {
+                name: n,
+                login,
+                display_name,
+            } if n == name => Some((login.as_deref(), display_name.as_deref())),
+            _ => None,
+        })
+    }
+
+    fn sample_issue_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": "issue-1",
+            "identifier": "ENG-1",
+            "title": "Widen field projection",
+            "description": "body",
+            "priority": 2,
+            "priorityLabel": "High",
+            "estimate": 3.0,
+            "dueDate": "2026-07-01",
+            "url": "https://linear.app/x/issue/ENG-1",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-02T00:00:00Z",
+            "team": { "id": "team-1", "key": "ENG", "name": "Engineering", "description": null },
+            "state": { "id": "s-1", "name": "In Progress", "type": "started", "position": 1.0 },
+            "assignee": { "id": "u-1", "name": "alice", "displayName": "Alice", "email": "alice@example.com" },
+            "creator": { "id": "u-2", "name": "bob", "displayName": "Bob", "email": "bob@example.com" },
+            "cycle": { "id": "c-1", "number": 7.0, "name": "Sprint 7" },
+            "project": { "id": "p-1", "name": "Platform", "slugId": "plat", "description": null },
+            "parent": null,
+            "labels": { "nodes": [], "pageInfo": { "hasNextPage": false, "endCursor": null } }
+        })
+    }
+
+    #[test]
+    fn linear_issue_projects_widened_fields() {
+        let issue = issue_from_json(sample_issue_json());
+        let core = linear_issue_to_core(issue);
+        let fields = &core.custom_fields;
+
+        // Estimate is a Text field with the trailing `.0` stripped.
+        assert_eq!(text_value(fields, "Estimate"), Some("3"));
+        // Due Date passes through verbatim.
+        assert_eq!(text_value(fields, "Due Date"), Some("2026-07-01"));
+        // Cycle prefers the explicit name.
+        assert_eq!(single_enum_value(fields, "Cycle"), Some("Sprint 7"));
+        // Creator reuses the user helpers (login = email, display = displayName).
+        assert_eq!(
+            single_user(fields, "Creator"),
+            Some((Some("bob@example.com"), Some("Bob")))
+        );
+    }
+
+    #[test]
+    fn linear_issue_omits_absent_widened_fields() {
+        let mut json = sample_issue_json();
+        let obj = json.as_object_mut().unwrap();
+        obj.remove("estimate");
+        obj.remove("dueDate");
+        obj.remove("cycle");
+        obj.remove("creator");
+
+        let core = linear_issue_to_core(issue_from_json(json));
+        let fields = &core.custom_fields;
+
+        assert_eq!(text_value(fields, "Estimate"), None);
+        assert_eq!(text_value(fields, "Due Date"), None);
+        assert_eq!(single_enum_value(fields, "Cycle"), None);
+        assert!(single_user(fields, "Creator").is_none());
+    }
+
+    #[test]
+    fn linear_cycle_without_name_falls_back_to_number() {
+        let mut json = sample_issue_json();
+        json["cycle"] = serde_json::json!({ "id": "c-2", "number": 9.0, "name": null });
+
+        let core = linear_issue_to_core(issue_from_json(json));
+        assert_eq!(
+            single_enum_value(&core.custom_fields, "Cycle"),
+            Some("Cycle 9")
+        );
+    }
+
+    #[test]
+    fn linear_estimate_keeps_fractional_part() {
+        let mut json = sample_issue_json();
+        json["estimate"] = serde_json::json!(1.5);
+
+        let core = linear_issue_to_core(issue_from_json(json));
+        assert_eq!(text_value(&core.custom_fields, "Estimate"), Some("1.5"));
     }
 }
