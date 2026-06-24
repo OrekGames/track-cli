@@ -40,7 +40,24 @@ pub struct ProjectRef {
     pub short_name: Option<String>,
 }
 
-/// Custom field on an issue
+/// Custom field on an issue.
+///
+/// `custom_fields` is a best-effort-lossless projection of each backend's issue
+/// fields. Every backend converter follows one contract:
+///
+/// 1. Surface a field as the most specific variant it can prove (`State`,
+///    `SingleEnum`, `SingleUser`, `Text`, `MultiEnum`).
+/// 2. When a value is present but untypeable, emit
+///    [`CustomField::Unknown`] with `value: Some(<raw json>)` so the payload
+///    round-trips verbatim.
+/// 3. Use `Unknown { value: None }` only when a field is known to exist but its
+///    value is structurally unretrievable.
+/// 4. Never silently drop a field the API returned to the converter, except an
+///    enumerated, per-backend noise denylist.
+///
+/// There is exactly one fallback tag (`Unknown`) across all backends. The
+/// externally-tagged JSON encoding is stable and additive: existing variant
+/// encodings never change, and `Unknown` only gains an optional `value` key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CustomField {
     SingleEnum {
@@ -65,8 +82,14 @@ pub enum CustomField {
         name: String,
         values: Vec<String>,
     },
+    /// Fallback for a field present on the issue that the backend could not map
+    /// to a typed variant above. `value` carries the backend's raw JSON verbatim
+    /// (`None` only when the value is structurally unretrievable). See the
+    /// projection contract on [`CustomField`].
     Unknown {
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
     },
 }
 

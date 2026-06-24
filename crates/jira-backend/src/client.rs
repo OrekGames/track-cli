@@ -158,7 +158,10 @@ impl JiraClient {
 
     /// Get an issue by key or ID
     pub fn get_issue(&self, key: &str) -> Result<JiraIssue> {
-        let url = self.api_url(&format!("/issue/{}", key));
+        // `fields=*all` mirrors the search endpoint so a single-issue read
+        // surfaces the same set of (system + custom) fields, keeping the
+        // lossless projection consistent between `get` and `search`.
+        let url = self.api_url(&format!("/issue/{}?fields=*all", key));
 
         let response = self
             .agent

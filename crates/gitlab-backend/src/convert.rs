@@ -39,6 +39,80 @@ pub fn gitlab_issue_to_core(issue: GitLabIssue, project_id: &str) -> tracker_cor
         });
     }
 
+    // --- Step A: typed promotions for high-value fields. ---
+    if let Some(w) = issue.weight {
+        custom_fields.push(CustomField::Text {
+            name: "Weight".into(),
+            value: Some(w.to_string()),
+        });
+    }
+    if let Some(d) = issue.due_date.clone().filter(|s| !s.is_empty()) {
+        custom_fields.push(CustomField::Text {
+            name: "Due Date".into(),
+            value: Some(d),
+        });
+    }
+    custom_fields.push(CustomField::Text {
+        name: "Confidential".into(),
+        value: Some(issue.confidential.to_string()),
+    });
+
+    // --- Step B: surface any remaining API fields losslessly. ---
+    // NOISE: fields that are structural/transport noise, not user-facing data.
+    const NOISE: &[&str] = &[
+        "web_url",
+        "_links",
+        "references",
+        "time_stats",
+        "task_completion_status",
+        "epic_iid",
+        "project_id",
+        "id",
+        "iid",
+        "subscribed",
+        "user_notes_count",
+        "blocking_issues_count",
+        "upvotes",
+        "downvotes",
+        "merge_requests_count",
+        "moved_to_id",
+        "service_desk_reply_to",
+        "imported",
+        "imported_from",
+    ];
+    // Fields already surfaced as typed/hardcoded variants above.
+    let known_titles = [
+        "Status",
+        "Assignee",
+        "Milestone",
+        "Weight",
+        "Due Date",
+        "Confidential",
+    ];
+
+    // Sort keys for deterministic output ordering.
+    let mut extra_keys: Vec<&String> = issue.extra.keys().collect();
+    extra_keys.sort();
+    for key in extra_keys {
+        if NOISE.contains(&key.as_str()) {
+            continue;
+        }
+        let val = &issue.extra[key];
+        if val.is_null() {
+            continue;
+        }
+        let title = canonical_field_name(key);
+        if known_titles
+            .iter()
+            .any(|kt| kt.eq_ignore_ascii_case(&title))
+        {
+            continue;
+        }
+        if let Some(field) = classify_gitlab_extra(&title, val) {
+            custom_fields.push(field);
+        }
+    }
+
     let tags: Vec<Tag> = issue
         .labels
         .iter()
@@ -64,6 +138,122 @@ pub fn gitlab_issue_to_core(issue: GitLabIssue, project_id: &str) -> tracker_cor
         updated: parse_gitlab_datetime(&issue.updated_at).unwrap_or_else(Utc::now),
         resolved: parse_gitlab_datetime(&issue.closed_at),
     }
+}
+
+/// Classify a single unmodeled GitLab issue field into the most specific
+/// [`CustomField`] variant we can prove. Per the projection contract, a
+/// present-but-untypeable value falls back to `Unknown { value: Some(raw) }`.
+fn classify_gitlab_extra(name: &str, val: &serde_json::Value) -> Option<CustomField> {
+    use serde_json::Value;
+    match val {
+        Value::Null => None,
+        Value::String(s) => Some(CustomField::Text {
+            name: name.to_string(),
+            value: Some(s.clone()),
+        }),
+        Value::Bool(b) => Some(CustomField::Text {
+            name: name.to_string(),
+            value: Some(b.to_string()),
+        }),
+        Value::Number(n) => Some(CustomField::Text {
+            name: name.to_string(),
+            value: Some(n.to_string()),
+        }),
+        Value::Array(arr) => classify_array(name, arr),
+        Value::Object(obj) => {
+            // A user object: surface as SingleUser.
+            if obj.contains_key("username") {
+                return Some(CustomField::SingleUser {
+                    name: name.to_string(),
+                    login: obj
+                        .get("username")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    display_name: obj.get("name").and_then(|v| v.as_str()).map(String::from),
+                });
+            }
+            // A single-display-key reference (only `name`/`title`): surface that
+            // display value as SingleEnum. A richer object carrying sub-fields
+            // beyond the lone display key cannot be losslessly flattened, so per
+            // the array-of-objects heuristic (applied here to a single object)
+            // it is preserved verbatim as Unknown.
+            let display = obj
+                .get("name")
+                .or_else(|| obj.get("title"))
+                .and_then(|v| v.as_str());
+            let is_single_display_key =
+                obj.len() == 1 && (obj.contains_key("name") || obj.contains_key("title"));
+            match (display, is_single_display_key) {
+                (Some(d), true) => Some(CustomField::SingleEnum {
+                    name: name.to_string(),
+                    value: Some(d.to_string()),
+                }),
+                _ => Some(CustomField::Unknown {
+                    name: name.to_string(),
+                    value: Some(val.clone()),
+                }),
+            }
+        }
+    }
+}
+
+/// Classify an array field. Per the maintainer-decided array heuristic:
+/// - empty -> dropped (`None`)
+/// - all plain strings (or single-display-key objects whose only key is
+///   `name`/`title`) -> [`CustomField::MultiEnum`]
+/// - any rich object (sub-fields beyond a single display key) -> the whole
+///   array preserved as [`CustomField::Unknown`].
+fn classify_array(name: &str, arr: &[serde_json::Value]) -> Option<CustomField> {
+    use serde_json::Value;
+    if arr.is_empty() {
+        return None;
+    }
+
+    let mut values = Vec::with_capacity(arr.len());
+    for item in arr {
+        match item {
+            Value::String(s) => values.push(s.clone()),
+            Value::Object(obj) => {
+                // Acceptable only if its sole content is a single display key.
+                let is_single_display_key =
+                    obj.len() == 1 && (obj.contains_key("name") || obj.contains_key("title"));
+                if !is_single_display_key {
+                    // Rich object: preserve the whole array verbatim.
+                    return Some(CustomField::Unknown {
+                        name: name.to_string(),
+                        value: Some(Value::Array(arr.to_vec())),
+                    });
+                }
+                let display = obj
+                    .get("name")
+                    .or_else(|| obj.get("title"))
+                    .and_then(|v| v.as_str());
+                match display {
+                    Some(s) => values.push(s.to_string()),
+                    // Single display key present but not a string: not plainly
+                    // representable -> preserve the whole array.
+                    None => {
+                        return Some(CustomField::Unknown {
+                            name: name.to_string(),
+                            value: Some(Value::Array(arr.to_vec())),
+                        });
+                    }
+                }
+            }
+            // Numbers, bools, nested arrays, nulls: not a plain display list.
+            _ => {
+                return Some(CustomField::Unknown {
+                    name: name.to_string(),
+                    value: Some(Value::Array(arr.to_vec())),
+                });
+            }
+        }
+    }
+
+    Some(CustomField::MultiEnum {
+        name: name.to_string(),
+        values,
+    })
 }
 
 impl From<GitLabNote> for Comment {
@@ -858,5 +1048,197 @@ mod tests {
         assert_eq!(events[0].field, "labels");
         assert_eq!(events[0].from, None);
         assert_eq!(events[0].to, None);
+    }
+
+    // ==================== custom-field projection tests ====================
+
+    use crate::models::issue::GitLabIssue;
+    use serde_json::json;
+
+    /// Deserialize a GitLabIssue from JSON, filling in the minimal required
+    /// fields and merging the supplied extra keys.
+    fn issue_from_extra(extra: serde_json::Value) -> GitLabIssue {
+        let mut base = json!({
+            "id": 1,
+            "iid": 10,
+            "project_id": 100,
+            "title": "Test",
+            "state": "opened",
+        });
+        if let serde_json::Value::Object(extra_map) = extra {
+            let base_map = base.as_object_mut().unwrap();
+            for (k, v) in extra_map {
+                base_map.insert(k, v);
+            }
+        }
+        serde_json::from_value(base).expect("GitLabIssue should deserialize")
+    }
+
+    fn find_text<'a>(fields: &'a [CustomField], name: &str) -> Option<&'a Option<String>> {
+        fields.iter().find_map(|f| match f {
+            CustomField::Text { name: n, value } if n == name => Some(value),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn lossless_projection_promotes_and_surfaces() {
+        let issue = issue_from_extra(json!({
+            "weight": 5,
+            "due_date": "2024-06-01",
+            "confidential": true,
+            "discussion_locked": true,
+            "epic": { "id": 7, "iid": 2, "title": "Q3" },
+            "iteration": { "title": "Sprint 4" },
+        }));
+
+        let core = gitlab_issue_to_core(issue, "100");
+        let fields = &core.custom_fields;
+
+        // Typed promotions.
+        assert_eq!(find_text(fields, "Weight"), Some(&Some("5".to_string())));
+        assert_eq!(
+            find_text(fields, "Due Date"),
+            Some(&Some("2024-06-01".to_string()))
+        );
+        assert_eq!(
+            find_text(fields, "Confidential"),
+            Some(&Some("true".to_string()))
+        );
+
+        // Unmodeled scalar surfaced as Text.
+        assert_eq!(
+            find_text(fields, "discussion_locked"),
+            Some(&Some("true".to_string()))
+        );
+
+        // Unmodeled rich object (id+iid+title beyond a single display key) is
+        // preserved verbatim as Unknown.
+        let epic = fields
+            .iter()
+            .find_map(|f| match f {
+                CustomField::Unknown { name, value } if name == "epic" => Some(value),
+                _ => None,
+            })
+            .expect("epic should be Unknown");
+        assert_eq!(
+            epic.as_ref().unwrap(),
+            &json!({ "id": 7, "iid": 2, "title": "Q3" })
+        );
+
+        // A single-display-key object collapses to its display value (SingleEnum).
+        let iteration = fields.iter().find_map(|f| match f {
+            CustomField::SingleEnum { name, value } if name == "iteration" => Some(value),
+            _ => None,
+        });
+        assert_eq!(iteration, Some(&Some("Sprint 4".to_string())));
+    }
+
+    #[test]
+    fn no_duplication_of_typed_fields() {
+        let issue = issue_from_extra(json!({
+            "weight": 5,
+            "milestone": { "id": 1, "iid": 1, "title": "v1.0" },
+        }));
+
+        let core = gitlab_issue_to_core(issue, "100");
+        let fields = &core.custom_fields;
+
+        let weight_count = fields
+            .iter()
+            .filter(|f| matches!(f, CustomField::Text { name, .. } if name == "Weight"))
+            .count();
+        assert_eq!(weight_count, 1, "Weight should appear exactly once");
+
+        let milestone_count = fields
+            .iter()
+            .filter(|f| matches!(f, CustomField::SingleEnum { name, .. } if name == "Milestone"))
+            .count();
+        assert_eq!(milestone_count, 1, "Milestone should appear exactly once");
+    }
+
+    #[test]
+    fn noise_fields_are_not_surfaced() {
+        let issue = issue_from_extra(json!({
+            "web_url": "https://example.com/issues/10",
+            "_links": { "self": "https://example.com" },
+            "references": { "short": "#10" },
+            "user_notes_count": 3,
+            "upvotes": 2,
+        }));
+
+        let core = gitlab_issue_to_core(issue, "100");
+        for noise in [
+            "web_url",
+            "_links",
+            "references",
+            "user_notes_count",
+            "upvotes",
+        ] {
+            assert!(
+                !core.custom_fields.iter().any(|f| field_name(f) == noise),
+                "noise field {noise} should not be surfaced"
+            );
+        }
+    }
+
+    #[test]
+    fn null_values_are_skipped() {
+        let issue = issue_from_extra(json!({
+            "some_field": serde_json::Value::Null,
+        }));
+
+        let core = gitlab_issue_to_core(issue, "100");
+        assert!(
+            !core
+                .custom_fields
+                .iter()
+                .any(|f| field_name(f) == "some_field"),
+            "null-valued field should be skipped"
+        );
+    }
+
+    #[test]
+    fn array_heuristic_strings_vs_rich_objects() {
+        // Plain string array -> MultiEnum.
+        let issue = issue_from_extra(json!({ "tag_list": ["a", "b"] }));
+        let core = gitlab_issue_to_core(issue, "100");
+        let values = core
+            .custom_fields
+            .iter()
+            .find_map(|f| match f {
+                CustomField::MultiEnum { name, values } if name == "tag_list" => Some(values),
+                _ => None,
+            })
+            .expect("string array should be MultiEnum");
+        assert_eq!(values, &vec!["a".to_string(), "b".to_string()]);
+
+        // Array of rich objects -> Unknown preserving the whole array.
+        let issue = issue_from_extra(json!({ "things": [{ "id": 1, "state": "x" }] }));
+        let core = gitlab_issue_to_core(issue, "100");
+        let preserved = core
+            .custom_fields
+            .iter()
+            .find_map(|f| match f {
+                CustomField::Unknown { name, value } if name == "things" => Some(value),
+                _ => None,
+            })
+            .expect("rich-object array should be Unknown");
+        assert_eq!(
+            preserved.as_ref().unwrap(),
+            &json!([{ "id": 1, "state": "x" }])
+        );
+    }
+
+    /// Helper: the `name` of any CustomField variant.
+    fn field_name(f: &CustomField) -> &str {
+        match f {
+            CustomField::SingleEnum { name, .. }
+            | CustomField::State { name, .. }
+            | CustomField::SingleUser { name, .. }
+            | CustomField::Text { name, .. }
+            | CustomField::MultiEnum { name, .. }
+            | CustomField::Unknown { name, .. } => name,
+        }
     }
 }

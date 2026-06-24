@@ -16,6 +16,8 @@ const ISSUE_FIELDS: &str = r#"
     description
     priority
     priorityLabel
+    estimate
+    dueDate
     url
     createdAt
     updatedAt
@@ -24,6 +26,8 @@ const ISSUE_FIELDS: &str = r#"
     team { id key name description }
     state { id name type position }
     assignee { id name displayName email }
+    creator { id name displayName email }
+    cycle { id number name }
     project { id name slugId description }
     parent { id identifier title }
     labels(first: 100) {

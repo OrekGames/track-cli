@@ -68,6 +68,17 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
             .and_then(|u| u.display_name.clone()),
     });
 
+    // Map reporter as a SingleUser custom field. Unlike the extra/custom
+    // fields, `reporter` is a strongly-typed field that never reaches `extra`,
+    // so it is surfaced here in parallel with assignee.
+    if let Some(ref reporter) = j.fields.reporter {
+        custom_fields.push(CustomField::SingleUser {
+            name: "Reporter".to_string(),
+            login: reporter.account_id.clone(),
+            display_name: reporter.display_name.clone(),
+        });
+    }
+
     // Map issue type
     custom_fields.push(CustomField::SingleEnum {
         name: "Type".to_string(),
@@ -93,15 +104,43 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
         .filter_map(|f| f.schema.as_ref().map(|s| (f.id.as_str(), s)))
         .collect();
 
-    for (key, value) in &j.fields.extra {
-        if !key.starts_with("customfield_")
-            && key != "timeoriginalestimate"
-            && key != "timeestimate"
-            && key != "timetracking"
+    // Tracks the estimate display names already emitted, so the scalar
+    // `timeoriginalestimate`/`timeestimate` keys never re-emit an estimate the
+    // `timetracking` object already produced (Jira can populate both). A scalar
+    // that the timetracking object did NOT cover still emits once. The
+    // `timetracking` object is the authoritative source, so process it before
+    // the scalar keys regardless of the (unordered) HashMap iteration order.
+    let mut emitted_estimates: HashSet<&str> = HashSet::new();
+    if let Some(value) = j.fields.extra.get("timetracking")
+        && let Some(obj) = value.as_object()
+    {
+        if let Some(orig) = obj.get("originalEstimate")
+            && let Some(cf) =
+                json_value_to_custom_field("Original Estimate".to_string(), orig, None)
         {
+            emitted_estimates.insert("Original Estimate");
+            custom_fields.push(cf);
+        }
+        if let Some(rem) = obj.get("remainingEstimate")
+            && let Some(cf) =
+                json_value_to_custom_field("Remaining Estimate".to_string(), rem, None)
+        {
+            emitted_estimates.insert("Remaining Estimate");
+            custom_fields.push(cf);
+        }
+    }
+
+    for (key, value) in &j.fields.extra {
+        // Skip absent values and the enumerated noise denylist; surface
+        // everything else (system fields and custom fields alike) so the
+        // projection stays lossless.
+        if value.is_null() {
             continue;
         }
-        if value.is_null() {
+        if JIRA_NOISE_FIELDS
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(key))
+        {
             continue;
         }
         let name = id_to_name
@@ -111,30 +150,23 @@ pub fn jira_issue_to_core(j: JiraIssue, jira_fields: &[JiraField]) -> Issue {
         let schema = id_to_schema.get(key.as_str()).copied();
 
         if key == "timetracking" {
-            if let Some(obj) = value.as_object() {
-                if let Some(orig) = obj.get("originalEstimate")
-                    && let Some(cf) =
-                        json_value_to_custom_field("Original Estimate".to_string(), orig, None)
-                {
-                    custom_fields.push(cf);
-                }
-                if let Some(rem) = obj.get("remainingEstimate")
-                    && let Some(cf) =
-                        json_value_to_custom_field("Remaining Estimate".to_string(), rem, None)
-                {
-                    custom_fields.push(cf);
-                }
-            }
+            // Already emitted above (authoritative estimate source); skip here
+            // so the object is never double-counted.
+            continue;
         } else if key == "timeoriginalestimate" {
-            if let Some(cf) =
-                json_value_to_custom_field("Original Estimate".to_string(), value, None)
+            if !emitted_estimates.contains("Original Estimate")
+                && let Some(cf) =
+                    json_value_to_custom_field("Original Estimate".to_string(), value, None)
             {
+                emitted_estimates.insert("Original Estimate");
                 custom_fields.push(cf);
             }
         } else if key == "timeestimate" {
-            if let Some(cf) =
-                json_value_to_custom_field("Remaining Estimate".to_string(), value, None)
+            if !emitted_estimates.contains("Remaining Estimate")
+                && let Some(cf) =
+                    json_value_to_custom_field("Remaining Estimate".to_string(), value, None)
             {
+                emitted_estimates.insert("Remaining Estimate");
                 custom_fields.push(cf);
             }
         } else if let Some(cf) = json_value_to_custom_field(name, value, schema) {
@@ -172,6 +204,28 @@ fn json_value_to_custom_field(
     value: &Value,
     schema: Option<&JiraFieldSchema>,
 ) -> Option<CustomField> {
+    // ADF rich-text documents ({"type":"doc","version":1,"content":[…]}) are
+    // gated before the schema match: rich-text custom fields report schema type
+    // "string" yet return an object value, so neither the (Some("string"), …)
+    // arm nor the schemaless heuristics would render them. Flatten to plain text
+    // the same way descriptions and comments already do; when the document
+    // flattens to nothing, preserve it raw rather than dropping it.
+    if let Value::Object(obj) = value
+        && obj.get("type").and_then(|t| t.as_str()) == Some("doc")
+    {
+        let txt = adf_document_to_text(value);
+        return if txt.is_empty() {
+            Some(CustomField::Unknown {
+                name,
+                value: Some(value.clone()),
+            })
+        } else {
+            Some(CustomField::Text {
+                name,
+                value: Some(txt),
+            })
+        };
+    }
     match (schema.map(|s| s.field_type.as_str()), value) {
         (_, Value::Null) => None,
 
@@ -240,12 +294,18 @@ fn json_value_to_custom_field(
                     value: Some(n.to_string()),
                 })
             } else {
-                Some(CustomField::Unknown { name })
+                Some(CustomField::Unknown {
+                    name,
+                    value: Some(value.clone()),
+                })
             }
         }
         (None, Value::Array(arr)) => convert_array_field(name, arr, None),
 
-        _ => Some(CustomField::Unknown { name }),
+        _ => Some(CustomField::Unknown {
+            name,
+            value: Some(value.clone()),
+        }),
     }
 }
 
@@ -260,6 +320,25 @@ fn convert_array_field(
     }
 
     let _items_type = schema.and_then(|s| s.items.as_deref());
+
+    // HEURISTIC: an array whose items are objects carrying sub-fields beyond a
+    // single display key (e.g. Sprint objects with id/state/goal/board) would
+    // lose data if collapsed to one display string per item. Preserve the whole
+    // array verbatim as Unknown in that case. Plain-string arrays and arrays of
+    // single-display-key option objects stay MultiEnum.
+    const DISPLAY_KEYS: &[&str] = &["value", "name", "displayName", "id", "self"];
+    let has_rich_object = arr.iter().any(|item| match item {
+        Value::Object(obj) => {
+            obj.len() > 1 || obj.keys().any(|k| !DISPLAY_KEYS.contains(&k.as_str()))
+        }
+        _ => false,
+    });
+    if has_rich_object {
+        return Some(CustomField::Unknown {
+            name,
+            value: Some(Value::Array(arr.to_vec())),
+        });
+    }
 
     let values: Vec<String> = arr
         .iter()
@@ -786,6 +865,29 @@ const RESERVED_FIELD_NAMES: &[&str] = &[
     "type",
     "issuetype",
     "labels",
+];
+
+/// System fields that arrive in the flattened `extra` map but carry no
+/// user-meaningful value worth surfacing as a custom field (progress rollups,
+/// worklog/vote/watch aggregates, internal bookkeeping). These are the only
+/// fields the read projection is allowed to silently drop; everything else the
+/// API returns is surfaced (typed when possible, `Unknown` otherwise).
+const JIRA_NOISE_FIELDS: &[&str] = &[
+    "aggregateprogress",
+    "progress",
+    "worklog",
+    "votes",
+    "watches",
+    "workratio",
+    "statuscategorychangedate",
+    "lastViewed",
+    "timespent",
+    "aggregatetimespent",
+    "aggregatetimeestimate",
+    "aggregatetimeoriginalestimate",
+    "statusCategory",
+    "issuerestriction",
+    "watchers",
 ];
 
 fn is_reserved_field(name: &str) -> bool {
@@ -1619,16 +1721,52 @@ mod tests {
     }
 
     #[test]
-    fn jira_issue_to_core_maps_array_field_sprint() {
+    fn jira_issue_to_core_maps_array_field_single_display_key() {
+        // An array of single-display-key option objects collapses to a
+        // MultiEnum of display strings (each item carries only one of the
+        // recognized display keys, so nothing is lost).
         let mut extra = std::collections::HashMap::new();
         extra.insert(
-            "customfield_10020".to_string(),
-            serde_json::json!([{"id": 1, "name": "Sprint 1"}, {"id": 2, "name": "Sprint 2"}]),
+            "customfield_10030".to_string(),
+            serde_json::json!([{"value": "Red"}, {"value": "Green"}]),
         );
 
         let fields = vec![JiraField {
-            id: "customfield_10020".to_string(),
-            name: "Sprint".to_string(),
+            id: "customfield_10030".to_string(),
+            name: "Colors".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "array".to_string(),
+                custom: None,
+                items: Some("option".to_string()),
+            }),
+        }];
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &fields);
+
+        let colors = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "Colors"))
+            .unwrap();
+        assert!(
+            matches!(colors, CustomField::MultiEnum { values, .. } if values == &["Red", "Green"])
+        );
+    }
+
+    #[test]
+    fn jira_issue_to_core_maps_plain_string_array() {
+        // Plain string arrays stay MultiEnum.
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "customfield_10031".to_string(),
+            serde_json::json!(["alpha", "beta"]),
+        );
+
+        let fields = vec![JiraField {
+            id: "customfield_10031".to_string(),
+            name: "Tags".to_string(),
             custom: true,
             schema: Some(JiraFieldSchema {
                 field_type: "array".to_string(),
@@ -1640,13 +1778,13 @@ mod tests {
         let issue = mock_jira_issue_for_conversion(extra);
         let core = jira_issue_to_core(issue, &fields);
 
-        let sprint = core
+        let tags = core
             .custom_fields
             .iter()
-            .find(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "Sprint"))
+            .find(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "Tags"))
             .unwrap();
         assert!(
-            matches!(sprint, CustomField::MultiEnum { values, .. } if values == &["Sprint 1", "Sprint 2"])
+            matches!(tags, CustomField::MultiEnum { values, .. } if values == &["alpha", "beta"])
         );
     }
 
@@ -1730,28 +1868,243 @@ mod tests {
     }
 
     #[test]
-    fn jira_issue_to_core_ignores_non_custom_extra_fields() {
+    fn jira_issue_to_core_surfaces_system_extra_fields() {
         let mut extra = std::collections::HashMap::new();
-        // System fields that end up in extra should be ignored
+        // A meaningful system field (not on the noise denylist) must now be
+        // surfaced rather than silently dropped.
         extra.insert("environment".to_string(), serde_json::json!("Production"));
+        // A denylisted noise field must NOT be surfaced.
+        extra.insert("workratio".to_string(), serde_json::json!(42));
         extra.insert("customfield_10016".to_string(), serde_json::json!(5.0));
 
         let issue = mock_jira_issue_for_conversion(extra);
         let core = jira_issue_to_core(issue, &[]);
 
-        // "environment" should NOT be in custom_fields
-        assert!(
-            !core
-                .custom_fields
-                .iter()
-                .any(|f| matches!(f, CustomField::Text { name, .. } if name == "environment"))
-        );
-        // customfield_ should be present
+        // "environment" IS surfaced as Text "Production".
+        assert!(core.custom_fields.iter().any(
+            |f| matches!(f, CustomField::Text { name, value: Some(v) } if name == "environment" && v == "Production")
+        ));
+        // "workratio" (noise) is NOT surfaced under any variant.
+        assert!(!core.custom_fields.iter().any(|f| matches!(
+            f,
+            CustomField::Text { name, .. }
+                | CustomField::SingleEnum { name, .. }
+                | CustomField::Unknown { name, .. }
+            if name == "workratio"
+        )));
+        // customfield_ should still be present.
         assert!(
             core.custom_fields.iter().any(
                 |f| matches!(f, CustomField::Text { name, .. } if name == "customfield_10016")
             )
         );
+    }
+
+    #[test]
+    fn jira_issue_to_core_renders_adf_custom_field_as_text() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "customfield_14000".to_string(),
+            serde_json::json!({
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            { "type": "text", "text": "Hello rich text" }
+                        ]
+                    }
+                ]
+            }),
+        );
+
+        let fields = vec![JiraField {
+            id: "customfield_14000".to_string(),
+            name: "Notes".to_string(),
+            custom: true,
+            schema: None,
+        }];
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &fields);
+
+        let notes = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::Text { name, .. } if name == "Notes"))
+            .expect("ADF rich-text field should be surfaced as Text");
+        assert!(
+            matches!(notes, CustomField::Text { value: Some(v), .. } if v.contains("Hello rich text"))
+        );
+    }
+
+    #[test]
+    fn jira_issue_to_core_renders_adf_field_with_string_schema_as_text() {
+        // Rich-text custom fields report schema type "string" but return an ADF
+        // object value. The ADF gate must fire regardless of the declared schema
+        // (regression for the schema-present path).
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "customfield_14001".to_string(),
+            serde_json::json!({
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    { "type": "paragraph", "content": [ { "type": "text", "text": "Repro steps here" } ] }
+                ]
+            }),
+        );
+
+        let fields = vec![JiraField {
+            id: "customfield_14001".to_string(),
+            name: "Repro Steps".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "string".to_string(),
+                custom: None,
+                items: None,
+            }),
+        }];
+
+        let core = jira_issue_to_core(mock_jira_issue_for_conversion(extra), &fields);
+        let repro = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::Text { name, .. } if name == "Repro Steps"))
+            .expect("ADF field with string schema should still render as Text");
+        assert!(
+            matches!(repro, CustomField::Text { value: Some(v), .. } if v.contains("Repro steps here"))
+        );
+    }
+
+    #[test]
+    fn jira_issue_to_core_preserves_object_array_losslessly() {
+        let raw = serde_json::json!([{"id": 1, "state": "active", "name": "Sprint 1"}]);
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("customfield_10020".to_string(), raw.clone());
+
+        let fields = vec![JiraField {
+            id: "customfield_10020".to_string(),
+            name: "Sprint".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "array".to_string(),
+                custom: None,
+                items: Some("json".to_string()),
+            }),
+        }];
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &fields);
+
+        // The array items carry sub-fields (state) beyond a single display key,
+        // so the whole array is preserved as Unknown rather than collapsed to a
+        // lossy MultiEnum of display strings.
+        let sprint = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::Unknown { name, .. } if name == "Sprint"))
+            .expect("object array should be preserved as Unknown");
+        assert!(matches!(sprint, CustomField::Unknown { value: Some(v), .. } if v == &raw));
+        // It must NOT have been collapsed to a MultiEnum.
+        assert!(
+            !core
+                .custom_fields
+                .iter()
+                .any(|f| matches!(f, CustomField::MultiEnum { name, .. } if name == "Sprint"))
+        );
+    }
+
+    #[test]
+    fn jira_issue_to_core_surfaces_reporter() {
+        let mut issue = mock_jira_issue_for_conversion(Default::default());
+        issue.fields.reporter = Some(JiraUser {
+            account_id: Some("rep-1".to_string()),
+            display_name: Some("Rita Reporter".to_string()),
+            email_address: None,
+            active: true,
+            self_url: None,
+        });
+
+        let core = jira_issue_to_core(issue, &[]);
+
+        let reporter = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::SingleUser { name, .. } if name == "Reporter"))
+            .expect("Reporter should be surfaced as SingleUser");
+        assert!(matches!(
+            reporter,
+            CustomField::SingleUser {
+                login: Some(l),
+                display_name: Some(dn),
+                ..
+            } if l == "rep-1" && dn == "Rita Reporter"
+        ));
+    }
+
+    #[test]
+    fn jira_issue_to_core_dedupes_time_estimates() {
+        // The timetracking object carries BOTH estimates, and the scalar keys
+        // also populate the same names. Each estimate name must be emitted
+        // exactly once, sourced from the authoritative timetracking object.
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "timetracking".to_string(),
+            serde_json::json!({
+                "originalEstimate": "4h",
+                "remainingEstimate": "2h"
+            }),
+        );
+        extra.insert("timeoriginalestimate".to_string(), serde_json::json!(14400));
+        extra.insert("timeestimate".to_string(), serde_json::json!(7200));
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &[]);
+
+        let original_count = core
+            .custom_fields
+            .iter()
+            .filter(|f| matches!(f, CustomField::Text { name, .. } if name == "Original Estimate"))
+            .count();
+        let remaining_count = core
+            .custom_fields
+            .iter()
+            .filter(|f| matches!(f, CustomField::Text { name, .. } if name == "Remaining Estimate"))
+            .count();
+        assert_eq!(original_count, 1, "Original Estimate must be emitted once");
+        assert_eq!(
+            remaining_count, 1,
+            "Remaining Estimate must be emitted once"
+        );
+
+        // The timetracking object is authoritative, so the textual "4h"/"2h"
+        // win over the raw scalar seconds.
+        let original = core
+            .custom_fields
+            .iter()
+            .find(|f| matches!(f, CustomField::Text { name, .. } if name == "Original Estimate"))
+            .unwrap();
+        assert!(matches!(original, CustomField::Text { value: Some(v), .. } if v == "4h"));
+    }
+
+    #[test]
+    fn jira_issue_to_core_emits_scalar_estimate_when_timetracking_absent() {
+        // A scalar estimate the timetracking object did NOT cover still emits
+        // exactly once.
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("timeoriginalestimate".to_string(), serde_json::json!("8h"));
+
+        let issue = mock_jira_issue_for_conversion(extra);
+        let core = jira_issue_to_core(issue, &[]);
+
+        let count = core
+            .custom_fields
+            .iter()
+            .filter(|f| matches!(f, CustomField::Text { name, .. } if name == "Original Estimate"))
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[test]

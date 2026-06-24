@@ -1709,7 +1709,7 @@ fn verify_field_match(
         CustomField::SingleUser { name, .. } => unicode_eq_ignore_case(name, req_name),
         CustomField::Text { name, .. } => unicode_eq_ignore_case(name, req_name),
         CustomField::MultiEnum { name, .. } => unicode_eq_ignore_case(name, req_name),
-        CustomField::Unknown { name } => unicode_eq_ignore_case(name, req_name),
+        CustomField::Unknown { name, .. } => unicode_eq_ignore_case(name, req_name),
     });
 
     // A State update targets the tracker's workflow state field whatever the backend

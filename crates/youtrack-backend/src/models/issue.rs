@@ -66,33 +66,136 @@ pub struct ProjectRef {
     pub short_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(tag = "$type")]
+/// A custom field as projected from the YouTrack issue payload.
+///
+/// Deserialization is hand-written (not `#[serde(untagged)]`): we buffer each
+/// element into a [`serde_json::Value`], read its `$type`, and dispatch to the
+/// matching typed variant. A known `$type` whose body fails to parse propagates
+/// the error (it does NOT silently degrade to `Unknown`) -- that is the whole
+/// point of dispatching by tag rather than using `untagged`. An unrecognized
+/// `$type` (or a missing one) becomes `Unknown { name, value: Some(raw) }`,
+/// carrying the entire raw element verbatim so no API data is dropped.
+#[derive(Debug, Serialize, Clone)]
 pub enum CustomField {
-    #[serde(rename = "SingleEnumIssueCustomField")]
     SingleEnum {
         name: String,
         value: Option<EnumValue>,
     },
-    #[serde(rename = "StateIssueCustomField")]
     State {
         name: String,
         value: Option<StateValue>,
     },
-    #[serde(rename = "SingleUserIssueCustomField")]
     SingleUser {
         name: String,
         value: Option<UserValue>,
     },
-    #[serde(rename = "TextIssueCustomField")]
     Text {
         name: String,
         value: Option<TextValue>,
     },
-    #[serde(rename = "MultiEnumIssueCustomField")]
-    MultiEnum { name: String, value: Vec<EnumValue> },
-    #[serde(other)]
-    Unknown,
+    MultiEnum {
+        name: String,
+        value: Vec<EnumValue>,
+    },
+    Unknown {
+        name: String,
+        value: Option<serde_json::Value>,
+    },
+}
+
+#[derive(Deserialize)]
+struct SingleEnumData {
+    name: String,
+    #[serde(default)]
+    value: Option<EnumValue>,
+}
+
+#[derive(Deserialize)]
+struct StateData {
+    name: String,
+    #[serde(default)]
+    value: Option<StateValue>,
+}
+
+#[derive(Deserialize)]
+struct UserData {
+    name: String,
+    #[serde(default)]
+    value: Option<UserValue>,
+}
+
+#[derive(Deserialize)]
+struct TextData {
+    name: String,
+    #[serde(default)]
+    value: Option<TextValue>,
+}
+
+#[derive(Deserialize)]
+struct MultiEnumData {
+    name: String,
+    #[serde(default)]
+    value: Vec<EnumValue>,
+}
+
+impl<'de> Deserialize<'de> for CustomField {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        use serde_json::Value;
+
+        let raw = Value::deserialize(d)?;
+        let ty = raw.get("$type").and_then(Value::as_str);
+        let field = match ty {
+            Some("SingleEnumIssueCustomField") => {
+                let d: SingleEnumData = serde_json::from_value(raw).map_err(D::Error::custom)?;
+                CustomField::SingleEnum {
+                    name: d.name,
+                    value: d.value,
+                }
+            }
+            Some("StateIssueCustomField") => {
+                let d: StateData = serde_json::from_value(raw).map_err(D::Error::custom)?;
+                CustomField::State {
+                    name: d.name,
+                    value: d.value,
+                }
+            }
+            Some("SingleUserIssueCustomField") => {
+                let d: UserData = serde_json::from_value(raw).map_err(D::Error::custom)?;
+                CustomField::SingleUser {
+                    name: d.name,
+                    value: d.value,
+                }
+            }
+            Some("TextIssueCustomField") => {
+                let d: TextData = serde_json::from_value(raw).map_err(D::Error::custom)?;
+                CustomField::Text {
+                    name: d.name,
+                    value: d.value,
+                }
+            }
+            Some("MultiEnumIssueCustomField") => {
+                let d: MultiEnumData = serde_json::from_value(raw).map_err(D::Error::custom)?;
+                CustomField::MultiEnum {
+                    name: d.name,
+                    value: d.value,
+                }
+            }
+            _ => {
+                let name = raw
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| ty.map(str::to_string))
+                    .unwrap_or_else(|| "custom field".to_string());
+                CustomField::Unknown {
+                    name,
+                    value: Some(raw),
+                }
+            }
+        };
+        Ok(field)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -416,5 +519,70 @@ mod tests {
         assert!(!json.contains("\"id\""));
         assert!(json.contains("\"name\":\"urgent\""));
         assert!(json.contains("\"$type\":\"IssueTag\""));
+    }
+
+    #[test]
+    fn custom_field_unknown_type_retains_raw_value() {
+        // A field type we don't model (Date) must be captured losslessly as
+        // Unknown, keeping the original name and the raw payload verbatim.
+        let json = serde_json::json!({
+            "$type": "DateIssueCustomField",
+            "name": "Due Date",
+            "value": 1700000000000i64
+        });
+
+        let field: CustomField = serde_json::from_value(json).unwrap();
+        match field {
+            CustomField::Unknown { name, value } => {
+                assert_eq!(name, "Due Date");
+                let value = value.expect("raw value must be retained");
+                // The whole element is buffered, so the payload is recoverable.
+                assert_eq!(
+                    value.get("value").and_then(|v| v.as_i64()),
+                    Some(1700000000000)
+                );
+                assert_eq!(
+                    value.get("$type").and_then(|v| v.as_str()),
+                    Some("DateIssueCustomField")
+                );
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_field_malformed_known_type_errors_not_unknown() {
+        // A KNOWN $type whose body is malformed (value.name should be a string)
+        // must propagate a deserialization error rather than degrading to
+        // Unknown -- this is the guarantee vs #[serde(untagged)].
+        let json = serde_json::json!({
+            "$type": "StateIssueCustomField",
+            "name": "State",
+            "value": { "name": 123 }
+        });
+
+        let result: Result<CustomField, _> = serde_json::from_value(json);
+        assert!(
+            result.is_err(),
+            "malformed known type must error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn custom_field_known_single_enum_preserves_value() {
+        let json = serde_json::json!({
+            "$type": "SingleEnumIssueCustomField",
+            "name": "Priority",
+            "value": { "name": "Major" }
+        });
+
+        let field: CustomField = serde_json::from_value(json).unwrap();
+        match field {
+            CustomField::SingleEnum { name, value } => {
+                assert_eq!(name, "Priority");
+                assert_eq!(value.map(|v| v.name).as_deref(), Some("Major"));
+            }
+            other => panic!("expected SingleEnum, got {other:?}"),
+        }
     }
 }

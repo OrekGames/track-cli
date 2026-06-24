@@ -49,6 +49,27 @@ pub fn github_issue_to_core(issue: GitHubIssue, owner: &str, repo: &str) -> Issu
         });
     }
 
+    // Catch-all: surface every field GitHub returned that no named field
+    // claimed (captured by `#[serde(flatten)]` into `issue.extra`). This keeps
+    // the projection lossless per the CustomField contract — present values are
+    // typed if provable and otherwise round-tripped via Unknown{value}. Keys
+    // are sorted for deterministic output. `issue.extra` is borrowed here and
+    // is not moved into the `Issue {..}` below, so the borrow is fine.
+    let mut keys: Vec<&String> = issue.extra.keys().collect();
+    keys.sort();
+    for key in keys {
+        let value = &issue.extra[key];
+        if value.is_null() {
+            continue;
+        }
+        if is_github_noise(key) {
+            continue;
+        }
+        if let Some(cf) = github_json_to_custom_field(key.clone(), value) {
+            custom_fields.push(cf);
+        }
+    }
+
     let tags: Vec<Tag> = issue
         .labels
         .iter()
@@ -73,6 +94,167 @@ pub fn github_issue_to_core(issue: GitHubIssue, owner: &str, repo: &str) -> Issu
         created: parse_github_datetime(&issue.created_at).unwrap_or_else(Utc::now),
         updated: parse_github_datetime(&issue.updated_at).unwrap_or_else(Utc::now),
         resolved: issue.closed_at.as_deref().and_then(parse_github_datetime),
+    }
+}
+
+/// GitHub issue-payload keys that carry no reporting value and are deliberately
+/// dropped from the lossless projection (the per-backend NOISE denylist allowed
+/// by the [`CustomField`] contract).
+///
+/// This covers hypermedia link keys (`url` and any `*_url`) plus a fixed set of
+/// API-plumbing / UI-only fields. Everything else GitHub returns is surfaced.
+fn is_github_noise(key: &str) -> bool {
+    key == "url"
+        || key.ends_with("_url")
+        || matches!(
+            key,
+            "node_id"
+                | "reactions"
+                | "performed_via_github_app"
+                | "author_association"
+                | "active_lock_reason"
+                | "locked"
+                | "comments"
+                | "score"
+                | "draft"
+                | "repository"
+                | "sub_issues_summary"
+                | "timeline_url"
+                | "events_url"
+        )
+}
+
+/// Project a single raw GitHub field value onto the most specific
+/// [`CustomField`] variant we can prove, falling back to `Unknown { value }` so
+/// the payload round-trips verbatim. Returns `None` only when the value carries
+/// nothing to surface (e.g. an empty array).
+fn github_json_to_custom_field(name: String, value: &serde_json::Value) -> Option<CustomField> {
+    use serde_json::Value;
+    match value {
+        Value::String(s) => Some(CustomField::Text {
+            name,
+            value: Some(s.clone()),
+        }),
+        Value::Number(n) => Some(CustomField::Text {
+            name,
+            value: Some(format_github_number(n)),
+        }),
+        Value::Bool(b) => Some(CustomField::Text {
+            name,
+            value: Some(b.to_string()),
+        }),
+        Value::Object(map) => {
+            // A user-shaped object (`login`) becomes a SingleUser; a named
+            // object (`name`/`title`) becomes a SingleEnum; anything richer
+            // round-trips as Unknown.
+            if let Some(login) = map.get("login").and_then(|v| v.as_str()) {
+                let display_name = map
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(login)
+                    .to_string();
+                Some(CustomField::SingleUser {
+                    name,
+                    login: Some(login.to_string()),
+                    display_name: Some(display_name),
+                })
+            } else if let Some(label) = map
+                .get("name")
+                .and_then(|v| v.as_str())
+                .or_else(|| map.get("title").and_then(|v| v.as_str()))
+            {
+                Some(CustomField::SingleEnum {
+                    name,
+                    value: Some(label.to_string()),
+                })
+            } else {
+                Some(CustomField::Unknown {
+                    name,
+                    value: Some(value.clone()),
+                })
+            }
+        }
+        Value::Array(arr) => github_json_array_to_custom_field(name, arr, value),
+        Value::Null => None,
+    }
+}
+
+/// Display keys an array item may carry while still counting as a "plain"
+/// single-display-key object (vs. a rich object that forces Unknown).
+const GITHUB_ARRAY_DISPLAY_KEYS: [&str; 5] = ["name", "title", "value", "login", "display_name"];
+
+/// Project an array value. Per the maintainer HEURISTIC: an array whose items
+/// are rich objects (more than one key, or a key outside the display-key set)
+/// or nested arrays round-trips whole as `Unknown { value }`; plain string /
+/// single-display-key arrays become a `MultiEnum`. `whole` is the original
+/// array `Value` so Unknown can carry it verbatim.
+fn github_json_array_to_custom_field(
+    name: String,
+    arr: &[serde_json::Value],
+    whole: &serde_json::Value,
+) -> Option<CustomField> {
+    use serde_json::Value;
+    if arr.is_empty() {
+        return None;
+    }
+
+    // Detect any item that disqualifies the array from MultiEnum.
+    let has_rich_item = arr.iter().any(|item| match item {
+        Value::Array(_) => true,
+        Value::Object(map) => {
+            map.len() > 1
+                || map
+                    .keys()
+                    .any(|k| !GITHUB_ARRAY_DISPLAY_KEYS.contains(&k.as_str()))
+        }
+        _ => false,
+    });
+    if has_rich_item {
+        return Some(CustomField::Unknown {
+            name,
+            value: Some(whole.clone()),
+        });
+    }
+
+    // Collect display strings from plain items.
+    let values: Vec<String> = arr
+        .iter()
+        .filter_map(|item| match item {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(format_github_number(n)),
+            Value::Bool(b) => Some(b.to_string()),
+            Value::Object(map) => GITHUB_ARRAY_DISPLAY_KEYS
+                .iter()
+                .find_map(|k| map.get(*k).and_then(|v| v.as_str()))
+                .map(|s| s.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    if values.is_empty() {
+        // Items existed but none yielded a display string — round-trip whole.
+        Some(CustomField::Unknown {
+            name,
+            value: Some(whole.clone()),
+        })
+    } else {
+        Some(CustomField::MultiEnum { name, values })
+    }
+}
+
+/// Format a JSON number for display, stripping `.0` from whole values. Mirrors
+/// the jira backend's `format_number`.
+fn format_github_number(n: &serde_json::Number) -> String {
+    if let Some(i) = n.as_i64() {
+        i.to_string()
+    } else if let Some(f) = n.as_f64() {
+        if f.fract() == 0.0 {
+            (f as i64).to_string()
+        } else {
+            f.to_string()
+        }
+    } else {
+        n.to_string()
     }
 }
 
