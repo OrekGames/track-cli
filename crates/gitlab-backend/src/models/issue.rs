@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// GitLab user reference (used in assignee, author, etc.)
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -6,7 +7,10 @@ pub struct GitLabUser {
     pub id: u64,
     pub username: String,
     #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// GitLab milestone reference

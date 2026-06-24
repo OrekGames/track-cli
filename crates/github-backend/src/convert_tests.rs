@@ -258,6 +258,19 @@ mod tests {
     }
 
     #[test]
+    fn projection_preserves_large_unsigned_numbers() {
+        let issue = issue_from_json(serde_json::json!({ "database_id": u64::MAX }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        match fields_named(&core.custom_fields, "database_id")[0] {
+            CustomField::Text { value, .. } => {
+                assert_eq!(value.as_deref(), Some("18446744073709551615"));
+            }
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn projection_drops_noise_keys() {
         let issue = issue_from_json(serde_json::json!({
             "html_url": "https://github.com/owner/repo/issues/42",
@@ -343,6 +356,81 @@ mod tests {
                 assert_eq!(display_name.as_deref(), Some("alice"));
             }
             other => panic!("expected SingleUser, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_surfaces_named_user_consumed_before_extra() {
+        let issue = issue_from_json(serde_json::json!({
+            "user": {
+                "login": "reporter",
+                "id": 9,
+                "avatar_url": "https://avatars.example/reporter"
+            }
+        }));
+        assert!(
+            !issue.extra.contains_key("user"),
+            "named user should be consumed before flatten extra"
+        );
+
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        let matches = fields_named(&core.custom_fields, "user");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::SingleUser {
+                login,
+                display_name,
+                ..
+            } => {
+                assert_eq!(login.as_deref(), Some("reporter"));
+                assert_eq!(display_name.as_deref(), Some("reporter"));
+            }
+            other => panic!("expected SingleUser, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_preserves_named_assignees_without_replacing_assignee() {
+        let assignees = serde_json::json!([
+            {
+                "login": "alice",
+                "id": 7,
+                "avatar_url": "https://avatars.example/alice",
+                "type": "User"
+            },
+            {
+                "login": "bob",
+                "id": 8,
+                "avatar_url": "https://avatars.example/bob",
+                "type": "User"
+            }
+        ]);
+        let issue = issue_from_json(serde_json::json!({
+            "assignee": { "login": "alice", "id": 7 },
+            "assignees": assignees.clone()
+        }));
+        assert!(
+            !issue.extra.contains_key("assignees"),
+            "named assignees should be consumed before flatten extra"
+        );
+
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        let assignee = fields_named(&core.custom_fields, "Assignee");
+        assert_eq!(assignee.len(), 1);
+        match assignee[0] {
+            CustomField::SingleUser { login, .. } => assert_eq!(login.as_deref(), Some("alice")),
+            other => panic!("expected SingleUser, got {:?}", other),
+        }
+
+        let matches = fields_named(&core.custom_fields, "assignees");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::Unknown { value, .. } => {
+                assert_eq!(value.as_ref(), Some(&assignees));
+            }
+            other => panic!("expected Unknown, got {:?}", other),
         }
     }
 

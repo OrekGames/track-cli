@@ -39,6 +39,21 @@ pub fn gitlab_issue_to_core(issue: GitLabIssue, project_id: &str) -> tracker_cor
         });
     }
 
+    if !issue.assignees.is_empty() {
+        let value =
+            serde_json::to_value(&issue.assignees).expect("GitLab assignees should serialize");
+        if let Some(field) = classify_gitlab_extra("assignees", &value) {
+            custom_fields.push(field);
+        }
+    }
+
+    if let Some(author) = issue.author.as_ref() {
+        let value = serde_json::to_value(author).expect("GitLab author should serialize");
+        if let Some(field) = classify_gitlab_extra("author", &value) {
+            custom_fields.push(field);
+        }
+    }
+
     // --- Step A: typed promotions for high-value fields. ---
     if let Some(w) = issue.weight {
         custom_fields.push(CustomField::Text {
@@ -849,6 +864,7 @@ mod tests {
             id: 1,
             username: username.to_string(),
             name: format!("{} Name", username),
+            extra: Default::default(),
         }
     }
 
@@ -1081,6 +1097,10 @@ mod tests {
         })
     }
 
+    fn fields_named<'a>(fields: &'a [CustomField], name: &str) -> Vec<&'a CustomField> {
+        fields.iter().filter(|f| field_name(f) == name).collect()
+    }
+
     #[test]
     fn lossless_projection_promotes_and_surfaces() {
         let issue = issue_from_extra(json!({
@@ -1155,6 +1175,86 @@ mod tests {
             .filter(|f| matches!(f, CustomField::SingleEnum { name, .. } if name == "Milestone"))
             .count();
         assert_eq!(milestone_count, 1, "Milestone should appear exactly once");
+    }
+
+    #[test]
+    fn named_author_consumed_before_extra_is_surfaced() {
+        let issue = issue_from_extra(json!({
+            "author": {
+                "id": 9,
+                "username": "reporter",
+                "name": "Reporter Name",
+                "web_url": "https://gitlab.example/reporter"
+            }
+        }));
+        assert!(
+            !issue.extra.contains_key("author"),
+            "named author should be consumed before flatten extra"
+        );
+
+        let core = gitlab_issue_to_core(issue, "100");
+
+        let matches = fields_named(&core.custom_fields, "author");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::SingleUser {
+                login,
+                display_name,
+                ..
+            } => {
+                assert_eq!(login.as_deref(), Some("reporter"));
+                assert_eq!(display_name.as_deref(), Some("Reporter Name"));
+            }
+            other => panic!("expected SingleUser, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn named_assignees_are_preserved_without_replacing_assignee() {
+        let assignees = json!([
+            {
+                "id": 7,
+                "username": "alice",
+                "name": "Alice Name",
+                "web_url": "https://gitlab.example/alice"
+            },
+            {
+                "id": 8,
+                "username": "bob",
+                "name": "Bob Name",
+                "web_url": "https://gitlab.example/bob"
+            }
+        ]);
+        let issue = issue_from_extra(json!({
+            "assignee": {
+                "id": 7,
+                "username": "alice",
+                "name": "Alice Name"
+            },
+            "assignees": assignees.clone()
+        }));
+        assert!(
+            !issue.extra.contains_key("assignees"),
+            "named assignees should be consumed before flatten extra"
+        );
+
+        let core = gitlab_issue_to_core(issue, "100");
+
+        let assignee = fields_named(&core.custom_fields, "Assignee");
+        assert_eq!(assignee.len(), 1);
+        match assignee[0] {
+            CustomField::SingleUser { login, .. } => assert_eq!(login.as_deref(), Some("alice")),
+            other => panic!("expected SingleUser, got {:?}", other),
+        }
+
+        let matches = fields_named(&core.custom_fields, "assignees");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::Unknown { value, .. } => {
+                assert_eq!(value.as_ref(), Some(&assignees));
+            }
+            other => panic!("expected Unknown, got {:?}", other),
+        }
     }
 
     #[test]

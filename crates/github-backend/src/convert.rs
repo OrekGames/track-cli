@@ -49,6 +49,21 @@ pub fn github_issue_to_core(issue: GitHubIssue, owner: &str, repo: &str) -> Issu
         });
     }
 
+    if !issue.assignees.is_empty() {
+        let value =
+            serde_json::to_value(&issue.assignees).expect("GitHub assignees should serialize");
+        if let Some(cf) = github_json_to_custom_field("assignees".to_string(), &value) {
+            custom_fields.push(cf);
+        }
+    }
+
+    if let Some(user) = issue.user.as_ref() {
+        let value = serde_json::to_value(user).expect("GitHub user should serialize");
+        if let Some(cf) = github_json_to_custom_field("user".to_string(), &value) {
+            custom_fields.push(cf);
+        }
+    }
+
     // Catch-all: surface every field GitHub returned that no named field
     // claimed (captured by `#[serde(flatten)]` into `issue.extra`). This keeps
     // the projection lossless per the CustomField contract — present values are
@@ -247,6 +262,8 @@ fn github_json_array_to_custom_field(
 fn format_github_number(n: &serde_json::Number) -> String {
     if let Some(i) = n.as_i64() {
         i.to_string()
+    } else if let Some(u) = n.as_u64() {
+        u.to_string()
     } else if let Some(f) = n.as_f64() {
         if f.fract() == 0.0 {
             (f as i64).to_string()

@@ -10,6 +10,8 @@ use super::label::GitHubLabel;
 pub struct GitHubUser {
     pub login: String,
     pub id: u64,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 /// GitHub milestone
