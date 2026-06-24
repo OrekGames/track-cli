@@ -435,6 +435,39 @@ impl IssueTracker for GitLabClient {
         Ok(comments)
     }
 
+    fn get_all_comments(&self, issue_id: &str, max_results: usize) -> Result<Vec<Comment>> {
+        if max_results == 0 {
+            return Ok(Vec::new());
+        }
+
+        let iid = parse_issue_iid(issue_id)?;
+        let per_page = 100;
+        let mut page = 1;
+        let mut comments = Vec::new();
+
+        while comments.len() < max_results {
+            let raw_notes = self.get_notes_page_raw(iid, per_page, page)?;
+            let page_len = raw_notes.len();
+            let remaining = max_results - comments.len();
+
+            comments.extend(
+                raw_notes
+                    .into_iter()
+                    .filter(|note| !note.system)
+                    .take(remaining)
+                    .map(Into::into),
+            );
+
+            if comments.len() >= max_results || page_len < per_page {
+                break;
+            }
+
+            page += 1;
+        }
+
+        Ok(comments)
+    }
+
     fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
         let iid = parse_issue_iid(issue_id)?;
 
@@ -495,6 +528,51 @@ impl KnowledgeBase for GitLabClient {
             })
             .skip(skip)
             .take(limit)
+            .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
+            .collect())
+    }
+
+    fn list_all_articles(
+        &self,
+        project_id: Option<&str>,
+        max_results: usize,
+    ) -> Result<Vec<Article>> {
+        if let Some(project) = project_id
+            && project != self.project_id_str()
+        {
+            return Ok(Vec::new());
+        }
+        if max_results == 0 {
+            return Ok(Vec::new());
+        }
+
+        Ok(self
+            .list_wiki_pages(true)?
+            .into_iter()
+            .take(max_results)
+            .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
+            .collect())
+    }
+
+    fn search_all_articles(&self, query: &str, max_results: usize) -> Result<Vec<Article>> {
+        if max_results == 0 {
+            return Ok(Vec::new());
+        }
+
+        let query = query.to_lowercase();
+        Ok(self
+            .list_wiki_pages(true)?
+            .into_iter()
+            .filter(|page| {
+                page.title.to_lowercase().contains(&query)
+                    || page
+                        .content
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .take(max_results)
             .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
             .collect())
     }

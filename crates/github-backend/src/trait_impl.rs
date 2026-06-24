@@ -428,6 +428,36 @@ fn wiki_page_to_article(page: WikiPage, owner: &str, repo: &str) -> Article {
     }
 }
 
+fn wiki_pages_to_articles(
+    pages: Vec<WikiPage>,
+    owner: &str,
+    repo: &str,
+    limit: usize,
+    skip: usize,
+) -> Vec<Article> {
+    let parent_slugs: HashSet<String> = pages.iter().filter_map(|p| p.parent.clone()).collect();
+
+    pages
+        .into_iter()
+        .skip(skip)
+        .take(limit)
+        .map(|page| {
+            let mut article = wiki_page_to_article(page, owner, repo);
+            article.has_children = parent_slugs.contains(&article.id);
+            article
+        })
+        .collect()
+}
+
+fn wiki_page_matches_query(page: &WikiPage, query_lower: &str) -> bool {
+    page.title.to_lowercase().contains(query_lower)
+        || page.content.to_lowercase().contains(query_lower)
+        || page
+            .tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(query_lower))
+}
+
 impl KnowledgeBase for GitHubClient {
     fn get_article(&self, id: &str) -> Result<Article> {
         let wiki = self.wiki();
@@ -459,42 +489,75 @@ impl KnowledgeBase for GitHubClient {
         let wiki = self.wiki();
         let pages = wiki.list_pages()?;
 
-        // Single-pass parent set for has_children
-        let parent_slugs: HashSet<String> = pages.iter().filter_map(|p| p.parent.clone()).collect();
-
-        let articles: Vec<Article> = pages
-            .into_iter()
-            .skip(skip)
-            .take(limit)
-            .map(|page| {
-                let mut article = wiki_page_to_article(page, self.owner(), self.repo());
-                article.has_children = parent_slugs.contains(&article.id);
-                article
-            })
-            .collect();
-
-        Ok(articles)
+        Ok(wiki_pages_to_articles(
+            pages,
+            self.owner(),
+            self.repo(),
+            limit,
+            skip,
+        ))
     }
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
         let wiki = self.wiki();
         let pages = wiki.search_pages(query)?;
 
-        // Single-pass parent set for has_children
-        let parent_slugs: HashSet<String> = pages.iter().filter_map(|p| p.parent.clone()).collect();
+        Ok(wiki_pages_to_articles(
+            pages,
+            self.owner(),
+            self.repo(),
+            limit,
+            skip,
+        ))
+    }
 
-        let articles: Vec<Article> = pages
+    fn list_all_articles(
+        &self,
+        project_id: Option<&str>,
+        max_results: usize,
+    ) -> Result<Vec<Article>> {
+        if let Some(proj) = project_id {
+            let expected_project = format!("{}/{}", self.owner(), self.repo());
+            if proj != expected_project {
+                return Ok(Vec::new());
+            }
+        }
+        if max_results == 0 {
+            return Ok(Vec::new());
+        }
+
+        let wiki = self.wiki();
+        let pages = wiki.list_pages()?;
+
+        Ok(wiki_pages_to_articles(
+            pages,
+            self.owner(),
+            self.repo(),
+            max_results,
+            0,
+        ))
+    }
+
+    fn search_all_articles(&self, query: &str, max_results: usize) -> Result<Vec<Article>> {
+        if max_results == 0 {
+            return Ok(Vec::new());
+        }
+
+        let wiki = self.wiki();
+        let query_lower = query.to_lowercase();
+        let pages: Vec<WikiPage> = wiki
+            .list_pages()?
             .into_iter()
-            .skip(skip)
-            .take(limit)
-            .map(|page| {
-                let mut article = wiki_page_to_article(page, self.owner(), self.repo());
-                article.has_children = parent_slugs.contains(&article.id);
-                article
-            })
+            .filter(|page| wiki_page_matches_query(page, &query_lower))
             .collect();
 
-        Ok(articles)
+        Ok(wiki_pages_to_articles(
+            pages,
+            self.owner(),
+            self.repo(),
+            max_results,
+            0,
+        ))
     }
 
     fn create_article(&self, article: &CreateArticle) -> Result<Article> {
@@ -618,7 +681,21 @@ impl KnowledgeBase for GitHubClient {
 
 #[cfg(test)]
 mod slugify_tests {
-    use super::slugify;
+    use super::{slugify, wiki_page_matches_query, wiki_pages_to_articles};
+    use crate::wiki::WikiPage;
+
+    fn wiki_page(slug: &str, title: &str, content: &str, parent: Option<&str>) -> WikiPage {
+        WikiPage {
+            slug: slug.to_string(),
+            title: title.to_string(),
+            content: content.to_string(),
+            parent: parent.map(str::to_string),
+            tags: Vec::new(),
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+            author: None,
+        }
+    }
 
     #[test]
     fn ascii_titles_unchanged() {
@@ -678,5 +755,33 @@ mod slugify_tests {
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(b, c);
+    }
+
+    #[test]
+    fn wiki_pages_to_articles_sets_children_and_truncates() {
+        let pages = vec![
+            wiki_page("Parent", "Parent", "root", None),
+            wiki_page("Parent/Child", "Child", "nested", Some("Parent")),
+            wiki_page("Other", "Other", "root", None),
+        ];
+
+        let articles = wiki_pages_to_articles(pages, "owner", "repo", 2, 0);
+
+        assert_eq!(articles.len(), 2);
+        assert_eq!(articles[0].id, "Parent");
+        assert!(articles[0].has_children);
+        assert_eq!(articles[1].id, "Parent/Child");
+        assert!(!articles[1].has_children);
+    }
+
+    #[test]
+    fn wiki_page_matches_query_searches_title_content_and_tags() {
+        let mut page = wiki_page("Guide", "Install Guide", "setup notes", None);
+        page.tags = vec!["docs".to_string()];
+
+        assert!(wiki_page_matches_query(&page, "install"));
+        assert!(wiki_page_matches_query(&page, "setup"));
+        assert!(wiki_page_matches_query(&page, "docs"));
+        assert!(!wiki_page_matches_query(&page, "missing"));
     }
 }

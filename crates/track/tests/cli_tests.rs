@@ -7,7 +7,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Helper function to get an available port with atomic counter to avoid conflicts
 
-
 fn get_available_port() -> u16 {
     use std::net::TcpListener;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
