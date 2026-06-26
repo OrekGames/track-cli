@@ -140,6 +140,7 @@ fn test_version() {
 fn test_config_file_is_used_for_defaults() {
     let temp_dir = create_temp_dir();
     let config_path = temp_dir.join("config.toml");
+    let mut _server = None;
 
     let port = get_available_port();
     let url = format!("http://127.0.0.1:{}", port);
@@ -154,8 +155,14 @@ fn test_config_file_is_used_for_defaults() {
         "description": "A test project"
     }]);
 
-    let _server = start_mock_server(port, mock_response.to_string());
-    thread::sleep(Duration::from_millis(200));
+    for _ in 0..3 {
+        _server = Some(start_mock_server(port, mock_response.to_string()));
+        if _server.is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    thread::sleep(Duration::from_millis(1000));
 
     let output = cargo_bin_cmd!("track")
         .args(["--config"])
