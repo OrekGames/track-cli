@@ -5,26 +5,15 @@ use serde_json::json;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// Helper function to get an available port with atomic counter to avoid conflicts
-
-fn get_available_port() -> u16 {
-    use std::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
-}
-
 // Helper to create a simple mock server
-fn start_mock_server(port: u16, response_body: String) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
+fn start_mock_server(response_body: String) -> (u16, thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
-        let bind_addr = format!("127.0.0.1:{}", port);
-        let listener = match TcpListener::bind(&bind_addr) {
-            Ok(l) => l,
-            Err(_) => return, // Port already in use, exit gracefully
-        };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
 
+    let handle = thread::spawn(move || {
         if let Some(mut stream) = listener.incoming().flatten().next() {
             let mut buffer = [0; 4096];
             // Read headers
@@ -48,7 +37,9 @@ fn start_mock_server(port: u16, response_body: String) -> thread::JoinHandle<()>
                 }
             }
         }
-    })
+    });
+
+    (port, handle)
 }
 
 fn create_temp_dir() -> std::path::PathBuf {
@@ -160,7 +151,16 @@ fn test_init_enforces_https_for_remote_urls() {
 
     // 2. http:// on spoofed local domain should fail
     cargo_bin_cmd!("track")
-        .args(["init", "--url", "http://localhost.evil.com", "--token", "test", "-b", "youtrack", "--global"])
+        .args([
+            "init",
+            "--url",
+            "http://localhost.evil.com",
+            "--token",
+            "test",
+            "-b",
+            "youtrack",
+            "--global",
+        ])
         .env("HOME", &temp_dir)
         .env("USERPROFILE", &temp_dir)
         .assert()
@@ -220,12 +220,6 @@ fn test_config_file_is_used_for_defaults() {
     let temp_dir = create_temp_dir();
     let config_path = temp_dir.join("config.toml");
 
-    let port = get_available_port();
-    let url = format!("http://127.0.0.1:{}", port);
-
-    let config_contents = format!("url = \"{}\"\ntoken = \"test-token\"\n", url);
-    std::fs::write(&config_path, config_contents).unwrap();
-
     let mock_response = json!([{
         "id": "0-1",
         "name": "Test Project",
@@ -233,8 +227,11 @@ fn test_config_file_is_used_for_defaults() {
         "description": "A test project"
     }]);
 
-    let _server = start_mock_server(port, mock_response.to_string());
-    thread::sleep(Duration::from_millis(200));
+    let (port, _server) = start_mock_server(mock_response.to_string());
+
+    let url = format!("http://127.0.0.1:{}", port);
+    let config_contents = format!("url = \"{}\"\ntoken = \"test-token\"\n", url);
+    std::fs::write(&config_path, config_contents).unwrap();
 
     let output = cargo_bin_cmd!("track")
         .args(["--config"])
