@@ -78,7 +78,7 @@ pub fn linear_issue_to_core(issue: LinearIssue) -> Issue {
     }
 
     if let Some(cycle) = &issue.cycle {
-        let value = cycle.name.clone().unwrap_or_else(|| {
+        let value = cycle.name.as_ref().cloned().unwrap_or_else(|| {
             let label = cycle
                 .number
                 .map(format_estimate)
