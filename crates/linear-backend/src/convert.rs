@@ -640,13 +640,11 @@ fn linked_issue(issue: LinearIssueRef) -> LinkedIssue {
 }
 
 fn linear_user_login(user: &LinearUser) -> String {
-    user.email.clone().unwrap_or_else(|| user.name.clone())
+    user.email.as_ref().unwrap_or(&user.name).clone()
 }
 
 fn linear_user_display_name(user: &LinearUser) -> String {
-    user.display_name
-        .clone()
-        .unwrap_or_else(|| user.name.clone())
+    user.display_name.as_ref().unwrap_or(&user.name).clone()
 }
 
 /// Render a Linear numeric estimate/cycle number, stripping a trailing `.0` so
