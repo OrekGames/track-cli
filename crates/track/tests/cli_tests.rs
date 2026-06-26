@@ -137,6 +137,85 @@ fn test_version() {
 }
 
 #[test]
+fn test_init_enforces_https_for_remote_urls() {
+    let temp_dir = create_temp_dir();
+
+    // 1. http:// on non-local domain should fail
+    cargo_bin_cmd!("track")
+        .args([
+            "init",
+            "--url",
+            "http://example.com",
+            "--token",
+            "test",
+            "-b",
+            "youtrack",
+            "--global",
+        ])
+        .env("HOME", &temp_dir)
+        .env("USERPROFILE", &temp_dir)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Insecure URL"));
+
+    // 2. http:// on spoofed local domain should fail
+    cargo_bin_cmd!("track")
+        .args(["init", "--url", "http://localhost.evil.com", "--token", "test", "-b", "youtrack", "--global"])
+        .env("HOME", &temp_dir)
+        .env("USERPROFILE", &temp_dir)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Insecure URL"));
+
+    // 3. http:// on local domain should NOT fail with "Insecure URL"
+    // It might fail connection/auth, but it should pass the security check.
+    let out = cargo_bin_cmd!("track")
+        .args([
+            "init",
+            "--url",
+            "http://127.0.0.1:1",
+            "--token",
+            "test",
+            "-b",
+            "youtrack",
+            "--global",
+        ])
+        .env("HOME", &temp_dir)
+        .env("USERPROFILE", &temp_dir)
+        .output()
+        .expect("failed to execute process");
+    let stderr_str = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr_str.contains("Insecure URL"),
+        "127.0.0.1 should not be insecure"
+    );
+
+    // 4. https:// on remote should NOT fail with "Insecure URL"
+    let out = cargo_bin_cmd!("track")
+        .args([
+            "init",
+            "--url",
+            "https://example.com",
+            "--token",
+            "test",
+            "-b",
+            "youtrack",
+            "--global",
+        ])
+        .env("HOME", &temp_dir)
+        .env("USERPROFILE", &temp_dir)
+        .output()
+        .expect("failed to execute process");
+    let stderr_str = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr_str.contains("Insecure URL"),
+        "https:// should not be insecure"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
 fn test_config_file_is_used_for_defaults() {
     let temp_dir = create_temp_dir();
     let config_path = temp_dir.join("config.toml");

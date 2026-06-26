@@ -149,6 +149,24 @@ pub fn handle_init(
         ));
     }
 
+    // Security: Enforce HTTPS for remote URLs to prevent token interception
+    if url.starts_with("http://") {
+        let is_local = url.starts_with("http://127.0.0.1:")
+            || url == "http://127.0.0.1"
+            || url.starts_with("http://127.0.0.1/")
+            || url.starts_with("http://localhost:")
+            || url == "http://localhost"
+            || url.starts_with("http://localhost/")
+            || url.starts_with("http://[::1]:")
+            || url == "http://[::1]"
+            || url.starts_with("http://[::1]/");
+        if !is_local {
+            return Err(anyhow::anyhow!(
+                "Insecure URL: http:// is only allowed for local addresses (127.0.0.1, localhost, [::1]). Use https:// for remote servers to protect your API token."
+            ));
+        }
+    }
+
     let config_path = if global {
         config::global_config_path_ensure()?
     } else {
