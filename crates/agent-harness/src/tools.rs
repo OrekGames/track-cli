@@ -138,4 +138,32 @@ mod tests {
             vec!["issue", "comment", "DEMO-1", "-m", "Hello world"]
         );
     }
+
+    #[test]
+    fn test_parse_track_input_missing_args() {
+        let input = json!({});
+        let result = parse_track_input(&input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Missing 'args' field");
+    }
+
+    #[test]
+    fn test_parse_track_input_args_not_array() {
+        let input = json!({
+            "args": "issue get DEMO-1"
+        });
+        let result = parse_track_input(&input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "'args' must be an array");
+    }
+
+    #[test]
+    fn test_parse_track_input_args_not_strings() {
+        let input = json!({
+            "args": ["issue", 123]
+        });
+        let result = parse_track_input(&input);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "All args must be strings");
+    }
 }
