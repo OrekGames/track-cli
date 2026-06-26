@@ -10,7 +10,7 @@ use tracker_core::{
 use crate::client::{LinearIssueRelations, add_filter_condition, filter_with_team};
 use crate::models::*;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ParsedLinearQuery {
     pub team: Option<String>,
     pub state: Option<String>,
@@ -1045,5 +1045,61 @@ mod tests {
 
         let core = linear_issue_to_core(issue_from_json(json));
         assert_eq!(text_value(&core.custom_fields, "Estimate"), Some("1.5"));
+    }
+
+    #[test]
+    fn parse_linear_query_works() {
+        // Test open hashtag
+        let parsed = parse_linear_query("#open");
+        assert_eq!(
+            parsed.state_type_nin,
+            Some(vec!["completed".to_string(), "canceled".to_string()])
+        );
+
+        // Test closed hashtag
+        let parsed = parse_linear_query("#closed");
+        assert_eq!(
+            parsed.state_type_in,
+            Some(vec!["completed".to_string(), "canceled".to_string()])
+        );
+
+        // Test custom label hashtag
+        let parsed = parse_linear_query("#Bug");
+        assert_eq!(parsed.labels, vec!["bug".to_string()]);
+
+        // Test key-value extraction
+        let parsed = parse_linear_query("team:ENG assignee:bob priority:urgent");
+        assert_eq!(parsed.team, Some("ENG".to_string()));
+        assert_eq!(parsed.assignee, Some("bob".to_string()));
+        assert_eq!(parsed.priority, Some(1));
+
+        // Test key-value extraction with quotes
+        let parsed = parse_linear_query("label:\"Front End\"");
+        assert_eq!(parsed.labels, vec!["Front End".to_string()]);
+
+        // Test plain text
+        let parsed = parse_linear_query("fix login bug");
+        assert_eq!(
+            parsed.text,
+            vec!["fix".to_string(), "login".to_string(), "bug".to_string()]
+        );
+
+        // Test mixed
+        let parsed =
+            parse_linear_query("#resolved assignee:alice priority:high crashing on startup");
+        assert_eq!(
+            parsed.state_type_in,
+            Some(vec!["completed".to_string(), "canceled".to_string()])
+        );
+        assert_eq!(parsed.assignee, Some("alice".to_string()));
+        assert_eq!(parsed.priority, Some(2));
+        assert_eq!(
+            parsed.text,
+            vec![
+                "crashing".to_string(),
+                "on".to_string(),
+                "startup".to_string()
+            ]
+        );
     }
 }
