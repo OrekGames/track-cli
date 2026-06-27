@@ -6,7 +6,6 @@ use std::net::TcpListener;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// Helper to create a simple mock server
 fn start_mock_server(response_body: String) -> (u16, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -14,13 +13,18 @@ fn start_mock_server(response_body: String) -> (u16, thread::JoinHandle<()>) {
     let handle = thread::spawn(move || {
         use std::io::{Read, Write};
 
-        if let Some(mut stream) = listener.incoming().flatten().next() {
+        for mut stream in listener.incoming().flatten() {
             let mut buffer = [0; 4096];
             // Read headers
             let _ = stream.read(&mut buffer);
 
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{}",
                 response_body.len(),
                 response_body
             );
