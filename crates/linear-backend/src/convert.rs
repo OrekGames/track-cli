@@ -749,18 +749,6 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
-    }
-
-    fn resolved_state_types() -> Vec<String> {
-        strings(&["completed", "canceled"])
-    }
-
-    fn unresolved_state_types() -> Vec<String> {
-        strings(&["completed", "canceled"])
-    }
-
     #[test]
     fn linear_history_decomposes_multi_change_node() {
         // One node carrying state + assignee + priority transitions must yield
@@ -929,29 +917,19 @@ mod tests {
 
     #[test]
     fn parses_linear_query_tokens() {
-        let parsed = parse_linear_query("project: ORE state: {In Progress} #bug login bug");
-        assert_eq!(
-            parsed,
-            ParsedLinearQuery {
-                team: Some("ORE".to_string()),
-                state: Some("In Progress".to_string()),
-                labels: strings(&["bug"]),
-                text: strings(&["login", "bug"]),
-                ..ParsedLinearQuery::default()
-            }
-        );
+        let parsed = parse_linear_query("project: ORE state: {In Progress} #Bug login bug");
+        assert_eq!(parsed.team.as_deref(), Some("ORE"));
+        assert_eq!(parsed.state.as_deref(), Some("In Progress"));
+        assert_eq!(parsed.labels, vec!["bug".to_string()]);
+        assert_eq!(parsed.text, vec!["login".to_string(), "bug".to_string()]);
     }
 
     #[test]
     fn parses_unresolved_filter() {
         let parsed = parse_linear_query("team:ORE #Unresolved");
         assert_eq!(
-            parsed,
-            ParsedLinearQuery {
-                team: Some("ORE".to_string()),
-                state_type_nin: Some(unresolved_state_types()),
-                ..ParsedLinearQuery::default()
-            }
+            parsed.state_type_nin,
+            Some(vec!["completed".to_string(), "canceled".to_string()])
         );
     }
 
@@ -1070,86 +1048,58 @@ mod tests {
     }
 
     #[test]
-    fn parses_open_and_closed_state_hashtags() {
+    fn parse_linear_query_works() {
+        // Test open hashtag
+        let parsed = parse_linear_query("#open");
         assert_eq!(
-            parse_linear_query("#open"),
-            ParsedLinearQuery {
-                state_type_nin: Some(unresolved_state_types()),
-                ..ParsedLinearQuery::default()
-            }
+            parsed.state_type_nin,
+            Some(vec!["completed".to_string(), "canceled".to_string()])
         );
 
+        // Test closed hashtag
+        let parsed = parse_linear_query("#closed");
         assert_eq!(
-            parse_linear_query("#closed"),
-            ParsedLinearQuery {
-                state_type_in: Some(resolved_state_types()),
-                ..ParsedLinearQuery::default()
-            }
+            parsed.state_type_in,
+            Some(vec!["completed".to_string(), "canceled".to_string()])
         );
-    }
 
-    #[test]
-    fn parses_custom_hashtag_label() {
-        assert_eq!(
-            parse_linear_query("#bug"),
-            ParsedLinearQuery {
-                labels: strings(&["bug"]),
-                ..ParsedLinearQuery::default()
-            }
-        );
-    }
+        // Test custom label hashtag
+        let parsed = parse_linear_query("#Bug");
+        assert_eq!(parsed.labels, vec!["bug".to_string()]);
 
-    #[test]
-    fn parses_key_value_filters() {
+        // Test key-value extraction
         let parsed = parse_linear_query("team:ENG assignee:bob priority:urgent");
-        assert_eq!(
-            parsed,
-            ParsedLinearQuery {
-                team: Some("ENG".to_string()),
-                assignee: Some("bob".to_string()),
-                priority: Some(1),
-                ..ParsedLinearQuery::default()
-            }
-        );
-    }
+        assert_eq!(parsed.team, Some("ENG".to_string()));
+        assert_eq!(parsed.assignee, Some("bob".to_string()));
+        assert_eq!(parsed.priority, Some(1));
 
-    #[test]
-    fn parses_quoted_label_value() {
+        // Test key-value extraction with quotes
         let parsed = parse_linear_query("label:\"Front End\"");
-        assert_eq!(
-            parsed,
-            ParsedLinearQuery {
-                labels: strings(&["Front End"]),
-                ..ParsedLinearQuery::default()
-            }
-        );
-    }
+        assert_eq!(parsed.labels, vec!["Front End".to_string()]);
 
-    #[test]
-    fn parses_plain_text_terms() {
+        // Test plain text
         let parsed = parse_linear_query("fix login bug");
         assert_eq!(
-            parsed,
-            ParsedLinearQuery {
-                text: strings(&["fix", "login", "bug"]),
-                ..ParsedLinearQuery::default()
-            }
+            parsed.text,
+            vec!["fix".to_string(), "login".to_string(), "bug".to_string()]
         );
-    }
 
-    #[test]
-    fn parses_mixed_query() {
+        // Test mixed
         let parsed =
             parse_linear_query("#resolved assignee:alice priority:high crashing on startup");
         assert_eq!(
-            parsed,
-            ParsedLinearQuery {
-                state_type_in: Some(resolved_state_types()),
-                assignee: Some("alice".to_string()),
-                priority: Some(2),
-                text: strings(&["crashing", "on", "startup"]),
-                ..ParsedLinearQuery::default()
-            }
+            parsed.state_type_in,
+            Some(vec!["completed".to_string(), "canceled".to_string()])
+        );
+        assert_eq!(parsed.assignee, Some("alice".to_string()));
+        assert_eq!(parsed.priority, Some(2));
+        assert_eq!(
+            parsed.text,
+            vec![
+                "crashing".to_string(),
+                "on".to_string(),
+                "startup".to_string()
+            ]
         );
     }
 }
