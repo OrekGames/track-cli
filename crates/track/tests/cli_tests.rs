@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// Helper to create a simple mock server
 fn start_mock_server(response_body: String) -> (u16, thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -21,7 +20,12 @@ fn start_mock_server(response_body: String) -> (u16, thread::JoinHandle<()>) {
             let _ = stream.read(&mut buffer);
 
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{}",
                 response_body.len(),
                 response_body
             );
