@@ -2,35 +2,19 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::json;
 
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// Helper function to get an available port with atomic counter to avoid conflicts
-
-fn get_available_port() -> u16 {
+fn start_mock_server(response_body: String) -> (u16, thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
     use std::net::TcpListener;
+
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
-}
+    let port = listener.local_addr().unwrap().port();
 
-// Helper to create a simple mock server
-fn start_mock_server(
-    port: u16,
-    response_body: String,
-) -> (thread::JoinHandle<()>, std::sync::mpsc::Receiver<()>) {
-    let (tx, rx) = std::sync::mpsc::channel();
     let handle = thread::spawn(move || {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-
-        let bind_addr = format!("127.0.0.1:{}", port);
-        let listener = match TcpListener::bind(&bind_addr) {
-            Ok(l) => l,
-            Err(_) => return, // Port already in use, exit gracefully
-        };
-        tx.send(()).unwrap();
-
-        for mut stream in listener.incoming().flatten() {
+        if let Some(mut stream) = listener.incoming().flatten().next() {
             let mut buffer = [0; 4096];
             // Read headers
             let _ = stream.read(&mut buffer);
@@ -59,10 +43,11 @@ Connection: close
             }
         }
     });
-    (handle, rx)
+
+    (port, handle)
 }
 
-fn create_temp_dir() -> std::path::PathBuf {
+fn create_temp_dir() -> PathBuf {
     let mut dir = std::env::temp_dir();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -73,12 +58,11 @@ fn create_temp_dir() -> std::path::PathBuf {
     dir
 }
 
-#[test]
-fn test_missing_config() {
-    let temp_home = create_temp_dir();
-
-    cargo_bin_cmd!("track")
-        .args(["issue", "get", "PROJ-1"])
+fn track_with_home(temp_home: &Path) -> assert_cmd::Command {
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(temp_home)
+        .env("HOME", temp_home)
+        .env("USERPROFILE", temp_home)
         .env_remove("TRACKER_URL")
         .env_remove("TRACKER_TOKEN")
         .env_remove("TRACKER_BACKEND")
@@ -101,9 +85,69 @@ fn test_missing_config() {
         .env_remove("LINEAR_URL")
         .env_remove("LINEAR_DEFAULT_TEAM")
         .env_remove("LINEAR_DEFAULT_PROJECT")
-        .env_remove("TRACK_MOCK_DIR")
-        .env("HOME", &temp_home)
-        .env("USERPROFILE", &temp_home)
+        .env_remove("TRACK_MOCK_DIR");
+    cmd
+}
+
+fn global_config_path(temp_home: &Path) -> PathBuf {
+    temp_home.join(".tracker-cli").join(".track.toml")
+}
+
+fn assert_init_rejects_url(url: &str, expected_message: &str) {
+    let temp_dir = create_temp_dir();
+    let config_path = global_config_path(&temp_dir);
+
+    track_with_home(&temp_dir)
+        .args([
+            "--format", "json", "init", "--url", url, "--token", "test", "-b", "youtrack",
+            "--global",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(expected_message));
+
+    assert!(
+        !config_path.exists(),
+        "rejected init URL should not create config: {}",
+        config_path.display()
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+fn assert_init_allows_url(url: &str) {
+    let temp_dir = create_temp_dir();
+    let config_path = global_config_path(&temp_dir);
+
+    let output = track_with_home(&temp_dir)
+        .args([
+            "--format", "json", "init", "--url", url, "--token", "test", "-b", "youtrack",
+            "--global",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["config_path"], config_path.display().to_string());
+
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    assert!(config.contains("backend = \"youtrack\""));
+    assert!(config.contains(&format!("url = \"{url}\"")));
+    assert!(config.contains("token = \"test\""));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_missing_config() {
+    let temp_home = create_temp_dir();
+
+    track_with_home(&temp_home)
+        .args(["issue", "get", "PROJ-1"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("URL not configured"));
@@ -148,15 +192,38 @@ fn test_version() {
 }
 
 #[test]
+fn test_init_enforces_https_for_remote_urls() {
+    for url in [
+        "http://example.com",
+        "http://localhost.evil.com",
+        "http://127.0.0.1.example.com",
+    ] {
+        assert_init_rejects_url(url, "Insecure URL");
+    }
+
+    for url in [
+        "http://localhost:token@example.com",
+        "http://127.0.0.1:token@example.com",
+    ] {
+        assert_init_rejects_url(url, "userinfo is not allowed");
+    }
+
+    for url in [
+        "http://127.0.0.1",
+        "http://127.0.0.1:8080",
+        "http://localhost",
+        "http://[::1]",
+        "http://[::1]:8080",
+        "https://example.com",
+    ] {
+        assert_init_allows_url(url);
+    }
+}
+
+#[test]
 fn test_config_file_is_used_for_defaults() {
     let temp_dir = create_temp_dir();
     let config_path = temp_dir.join("config.toml");
-
-    let port = get_available_port();
-    let url = format!("http://127.0.0.1:{}", port);
-
-    let config_contents = format!("url = \"{}\"\ntoken = \"test-token\"\n", url);
-    std::fs::write(&config_path, config_contents).unwrap();
 
     let mock_response = json!([{
         "id": "0-1",
@@ -165,9 +232,11 @@ fn test_config_file_is_used_for_defaults() {
         "description": "A test project"
     }]);
 
-    let (_server, rx) = start_mock_server(port, mock_response.to_string());
-    rx.recv().unwrap();
-    thread::sleep(Duration::from_millis(200));
+    let (port, _server) = start_mock_server(mock_response.to_string());
+
+    let url = format!("http://127.0.0.1:{}", port);
+    let config_contents = format!("url = \"{}\"\ntoken = \"test-token\"\n", url);
+    std::fs::write(&config_path, config_contents).unwrap();
 
     let output = cargo_bin_cmd!("track")
         .args(["--config"])

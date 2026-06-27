@@ -8,6 +8,7 @@ use gitlab_backend::GitLabClient;
 use jira_backend::JiraClient;
 use linear_backend::LinearClient;
 use tracker_core::IssueTracker;
+use ureq::http::Uri;
 use youtrack_backend::YouTrackClient;
 
 /// Embedded agent guide content - written to project directory during `track init`
@@ -64,6 +65,46 @@ fn parse_github_project(project: &str) -> Result<(String, String)> {
     }
 
     Ok((owner.to_string(), repo.to_string()))
+}
+
+fn validate_init_url(url: &str) -> Result<()> {
+    let parsed = url.parse::<Uri>().map_err(|_| {
+        anyhow::anyhow!("Invalid URL: must be a valid absolute http:// or https:// URL")
+    })?;
+
+    let scheme = parsed
+        .scheme_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid URL: must start with http:// or https://"))?;
+    if scheme != "http" && scheme != "https" {
+        return Err(anyhow::anyhow!(
+            "Invalid URL: must start with http:// or https://"
+        ));
+    }
+
+    let authority = parsed
+        .authority()
+        .ok_or_else(|| anyhow::anyhow!("Invalid URL: must include a host"))?;
+    if authority.as_str().contains('@') {
+        return Err(anyhow::anyhow!(
+            "Invalid URL: userinfo is not allowed in server URLs"
+        ));
+    }
+
+    let host = parsed
+        .host()
+        .ok_or_else(|| anyhow::anyhow!("Invalid URL: must include a host"))?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+
+    if scheme == "http" && !matches!(host, "127.0.0.1" | "localhost" | "::1") {
+        return Err(anyhow::anyhow!(
+            "Insecure URL: http:// is only allowed for local addresses (127.0.0.1, localhost, [::1]). Use https:// for remote servers to protect your API token."
+        ));
+    }
+
+    Ok(())
 }
 
 fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
@@ -142,12 +183,7 @@ pub fn handle_init(
     let url = url.expect("url required when not using --skills alone");
     let token = token.expect("token required when not using --skills alone");
 
-    // Validate URL format
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(anyhow::anyhow!(
-            "Invalid URL: must start with http:// or https://"
-        ));
-    }
+    validate_init_url(url)?;
 
     let config_path = if global {
         config::global_config_path_ensure()?
