@@ -14,8 +14,12 @@ fn get_available_port() -> u16 {
 }
 
 // Helper to create a simple mock server
-fn start_mock_server(port: u16, response_body: String) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
+fn start_mock_server(
+    port: u16,
+    response_body: String,
+) -> (thread::JoinHandle<()>, std::sync::mpsc::Receiver<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = thread::spawn(move || {
         use std::io::{Read, Write};
         use std::net::TcpListener;
 
@@ -24,14 +28,20 @@ fn start_mock_server(port: u16, response_body: String) -> thread::JoinHandle<()>
             Ok(l) => l,
             Err(_) => return, // Port already in use, exit gracefully
         };
+        tx.send(()).unwrap();
 
-        if let Some(mut stream) = listener.incoming().flatten().next() {
+        for mut stream in listener.incoming().flatten() {
             let mut buffer = [0; 4096];
             // Read headers
             let _ = stream.read(&mut buffer);
 
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{}",
                 response_body.len(),
                 response_body
             );
@@ -48,7 +58,8 @@ fn start_mock_server(port: u16, response_body: String) -> thread::JoinHandle<()>
                 }
             }
         }
-    })
+    });
+    (handle, rx)
 }
 
 fn create_temp_dir() -> std::path::PathBuf {
@@ -154,7 +165,8 @@ fn test_config_file_is_used_for_defaults() {
         "description": "A test project"
     }]);
 
-    let _server = start_mock_server(port, mock_response.to_string());
+    let (_server, rx) = start_mock_server(port, mock_response.to_string());
+    rx.recv().unwrap();
     thread::sleep(Duration::from_millis(200));
 
     let output = cargo_bin_cmd!("track")
