@@ -316,7 +316,7 @@ fn confluence_page_to_article(page: ConfluencePage) -> Article {
         summary: page.title,
         content,
         project: ProjectRef {
-            id: page.space_id.clone().unwrap_or_default(),
+            id: page.space_id.unwrap_or_default(),
             name: None,
             short_name: None,
         },
