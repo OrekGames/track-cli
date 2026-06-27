@@ -231,10 +231,9 @@ fn test_config_file_is_used_for_defaults() {
         "shortName": "PROJ",
         "description": "A test project"
     }]);
-
     let (port, _server) = start_mock_server(mock_response.to_string());
-
     let url = format!("http://127.0.0.1:{}", port);
+
     let config_contents = format!("url = \"{}\"\ntoken = \"test-token\"\n", url);
     std::fs::write(&config_path, config_contents).unwrap();
 
