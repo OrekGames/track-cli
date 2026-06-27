@@ -694,8 +694,11 @@ mod tests {
             .bonuses
             .iter()
             .find(|b| b.reason.contains("cache usage"));
-        assert!(cache_bonus.is_some(), "cache_use bonus should be awarded");
-        assert_eq!(cache_bonus.unwrap().points, 15);
+        assert_eq!(
+            cache_bonus.map(|b| b.points),
+            Some(15),
+            "cache_use bonus should be awarded"
+        );
     }
 
     #[test]
@@ -726,8 +729,11 @@ mod tests {
             .bonuses
             .iter()
             .find(|b| b.reason.contains("cache usage"));
-        assert!(cache_bonus.is_some(), "cache_show should trigger bonus");
-        assert_eq!(cache_bonus.unwrap().points, 10);
+        assert_eq!(
+            cache_bonus.map(|b| b.points),
+            Some(10),
+            "cache_show should trigger bonus"
+        );
     }
 
     #[test]
