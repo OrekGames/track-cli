@@ -130,9 +130,7 @@ impl From<yt::CustomField> for core::CustomField {
                 name,
                 values: value.into_iter().map(|v| v.name).collect(),
             },
-            yt::CustomField::Unknown => core::CustomField::Unknown {
-                name: "Unknown".to_string(),
-            },
+            yt::CustomField::Unknown { name, value } => core::CustomField::Unknown { name, value },
         }
     }
 }
@@ -750,5 +748,29 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].field, "status");
         assert_eq!(events[0].to.as_deref(), Some("Done"));
+    }
+
+    #[test]
+    fn custom_field_unknown_passthrough_preserves_name_and_value() {
+        // yt Unknown { name, value } -> core Unknown { name, value } verbatim:
+        // the raw payload must survive the conversion untouched.
+        let raw = serde_json::json!({
+            "$type": "DateIssueCustomField",
+            "name": "Due Date",
+            "value": 1700000000000i64
+        });
+        let yt_field = yt::CustomField::Unknown {
+            name: "Due Date".to_string(),
+            value: Some(raw.clone()),
+        };
+
+        let core_field: core::CustomField = yt_field.into();
+        match core_field {
+            core::CustomField::Unknown { name, value } => {
+                assert_eq!(name, "Due Date");
+                assert_eq!(value, Some(raw));
+            }
+            other => panic!("expected core Unknown, got {other:?}"),
+        }
     }
 }

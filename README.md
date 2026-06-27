@@ -572,11 +572,12 @@ track --format json p ls    # JSON
 ### Jira
 - **Knowledge Base**: Uses Confluence API (automatically at same domain with `/wiki` path)
 - **Authentication**: Basic Auth with email and API token
-- **Rich Text**: Uses Atlassian Document Format (ADF) for descriptions
+- **Rich Text**: Uses Atlassian Document Format (ADF) for descriptions. ADF rich-text *custom* fields (e.g. "Repro Steps", "Expected Results") are surfaced as rendered plain text, the same way descriptions and comments are.
 - **Project Creation**: Requires admin permissions (use web interface)
 - **Subtasks**: Create as subtask with `--parent`, or link existing issues with `issue link -t subtask`
 - **Labels**: Map to tags
-- **Components**: Jira's standard Components field is surfaced as a `Components` multi-value custom field on `issue get`/`issue search` (read-only for now; filter server-side with JQL such as `component = "Rendering"`)
+- **System & custom fields**: `issue get`/`issue search` surface *all* populated fields Jira returns — standard system fields (`fixVersions`, `reporter`, `environment`, `duedate`, `resolution`, …) and every custom field — as `custom_fields` entries, not just a hardcoded subset. Single-issue reads (`track <KEY>`) fetch the full field set too. Anything that can't be mapped to a typed variant is preserved verbatim as `Unknown { value }`, so no data is lost. `--field <name>` write attempts flow straight to Jira; if a field isn't editable, Jira's error is surfaced.
+- **Components**: Jira's standard Components field is surfaced as a `Components` multi-value custom field. To filter by area, use server-side JQL such as `component = "Rendering"`.
 
 ### GitHub
 - **Scope**: Repository-scoped (requires owner and repo configuration)

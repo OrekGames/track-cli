@@ -87,6 +87,87 @@ impl IssueTracker for LinearClient {
         }
     }
 
+    fn search_all_issues(&self, query: &str, max_results: usize) -> Result<Vec<Issue>> {
+        if max_results == 0 {
+            return Ok(Vec::new());
+        }
+
+        let parsed = parse_linear_query(query);
+        let team_id = if let Some(team) = parsed.team.as_deref() {
+            Some(self.resolve_team_id(team)?)
+        } else {
+            None
+        };
+        let assignee_id = if parsed
+            .assignee
+            .as_deref()
+            .is_some_and(|assignee| assignee.eq_ignore_ascii_case("me"))
+        {
+            Some(self.viewer()?.id)
+        } else {
+            None
+        };
+        let filter = build_filter_from_parsed(&parsed, team_id.as_deref(), assignee_id.as_deref());
+        let term = if parsed.text.is_empty() {
+            None
+        } else {
+            Some(parsed.text.join(" "))
+        };
+
+        let mut items = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut after = None;
+        let mut no_progress_pages = 0usize;
+
+        loop {
+            let remaining = max_results.saturating_sub(items.len());
+            if remaining == 0 {
+                break;
+            }
+
+            let prev_after = after.clone();
+            let page_size = remaining.min(100);
+            let (page, _total, page_info) =
+                self.search_issues_page(filter.clone(), term.as_deref(), page_size, after)?;
+
+            let before = items.len();
+            for linear_issue in page {
+                let issue = linear_issue_to_core(linear_issue);
+                if seen.insert(issue.id.clone()) {
+                    items.push(issue);
+                    if items.len() >= max_results {
+                        break;
+                    }
+                }
+            }
+
+            if !page_info.has_next_page || items.len() >= max_results {
+                break;
+            }
+
+            if items.len() == before {
+                no_progress_pages += 1;
+                if no_progress_pages >= MAX_NO_PROGRESS_PAGES {
+                    return Err(TrackerError::PaginationStalled(
+                        "Linear search cursor pages stopped yielding new issues".to_string(),
+                    ));
+                }
+            } else {
+                no_progress_pages = 0;
+            }
+
+            let next_after = page_info.end_cursor;
+            if next_after == prev_after {
+                return Err(TrackerError::PaginationStalled(
+                    "Linear search cursor did not advance".to_string(),
+                ));
+            }
+            after = next_after;
+        }
+
+        Ok(items)
+    }
+
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
         let parsed = parse_linear_query(query);
         if parsed.text.is_empty() {
@@ -313,6 +394,52 @@ impl IssueTracker for LinearClient {
         Ok(comments)
     }
 
+    fn get_all_comments(&self, issue_id: &str, max_results: usize) -> Result<Vec<Comment>> {
+        const MAX_PAGES: usize = 10_000;
+
+        if max_results == 0 {
+            return Ok(Vec::new());
+        }
+
+        let issue = self.get_issue(issue_id)?;
+        let mut comments = Vec::new();
+        let mut after = None;
+
+        for _ in 0..MAX_PAGES {
+            let remaining = max_results - comments.len();
+            let prev_after = after.clone();
+            let (page, page_info) = self.get_comments_page(&issue.id, remaining.min(100), after)?;
+            let page_len = page.len();
+
+            comments.extend(page.into_iter().map(Into::into));
+
+            if comments.len() >= max_results || !page_info.has_next_page {
+                return Ok(comments);
+            }
+
+            if page_len == 0 {
+                return Err(TrackerError::PaginationStalled(format!(
+                    "issue '{}' comments returned no results with hasNextPage=true",
+                    issue_id
+                )));
+            }
+
+            let next_after = page_info.end_cursor;
+            if next_after.is_none() || next_after == prev_after {
+                return Err(TrackerError::PaginationStalled(format!(
+                    "issue '{}' comments cursor did not advance",
+                    issue_id
+                )));
+            }
+            after = next_after;
+        }
+
+        Err(TrackerError::PaginationStalled(format!(
+            "issue '{}' comments did not terminate after {} pages",
+            issue_id, MAX_PAGES
+        )))
+    }
+
     fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
         // Generous backstop against a server that keeps reporting `hasNextPage`
         // without advancing the cursor; large enough never to truncate a real
@@ -365,6 +492,8 @@ impl IssueTracker for LinearClient {
         )))
     }
 }
+
+const MAX_NO_PROGRESS_PAGES: usize = 5;
 
 impl LinearClient {
     fn build_create_input(&self, issue: &CreateIssue) -> Result<LinearIssueCreateInput> {

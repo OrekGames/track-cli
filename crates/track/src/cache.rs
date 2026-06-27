@@ -2,9 +2,15 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    mpsc,
+};
+use std::thread;
 
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
@@ -30,6 +36,88 @@ fn create_dir_all_secure(path: &Path) -> Result<()> {
 const CACHE_DIR_NAME: &str = ".tracker-cache";
 const CACHE_VERSION: u32 = 2;
 const MAX_RECENT_ISSUES: usize = 50;
+const DEFAULT_CACHE_REFRESH_CONCURRENCY: usize = 4;
+const MIN_CACHE_REFRESH_CONCURRENCY: usize = 1;
+const MAX_CACHE_REFRESH_CONCURRENCY: usize = 16;
+const MIN_PARALLEL_PROJECT_META_SHARDS: usize = 64;
+
+fn cache_refresh_concurrency() -> usize {
+    let configured = env::var("TRACK_CACHE_REFRESH_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok());
+    clamp_cache_refresh_concurrency(configured)
+}
+
+fn clamp_cache_refresh_concurrency(configured: Option<usize>) -> usize {
+    configured
+        .unwrap_or(DEFAULT_CACHE_REFRESH_CONCURRENCY)
+        .clamp(MIN_CACHE_REFRESH_CONCURRENCY, MAX_CACHE_REFRESH_CONCURRENCY)
+}
+
+fn project_metadata_worker_count(project_count: usize, configured: Option<usize>) -> usize {
+    if project_count < MIN_PARALLEL_PROJECT_META_SHARDS {
+        return 1;
+    }
+
+    clamp_cache_refresh_concurrency(configured).min(project_count)
+}
+
+fn configured_project_metadata_worker_count(project_count: usize) -> usize {
+    project_metadata_worker_count(project_count, Some(cache_refresh_concurrency()))
+}
+
+fn bounded_parallel_map_indexed<T, R, F>(items: &[T], concurrency: usize, job: F) -> Vec<(usize, R)>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(usize, &T) -> Option<R> + Sync,
+{
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let worker_count = concurrency
+        .clamp(MIN_CACHE_REFRESH_CONCURRENCY, MAX_CACHE_REFRESH_CONCURRENCY)
+        .min(items.len());
+
+    if worker_count == 1 {
+        return items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| job(index, item).map(|result| (index, result)))
+            .collect();
+    }
+
+    let next_index = AtomicUsize::new(0);
+    let (tx, rx) = mpsc::channel();
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let tx = tx.clone();
+            let next_index = &next_index;
+            let job = &job;
+
+            scope.spawn(move || {
+                loop {
+                    let index = next_index.fetch_add(1, Ordering::Relaxed);
+                    if index >= items.len() {
+                        break;
+                    }
+
+                    if let Some(result) = job(index, &items[index]) {
+                        let _ = tx.send((index, result));
+                    }
+                }
+            });
+        }
+
+        drop(tx);
+
+        let mut results: Vec<_> = rx.into_iter().collect();
+        results.sort_by_key(|(index, _)| *index);
+        results
+    })
+}
 
 /// Cached tracker context for AI assistants
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -268,6 +356,61 @@ pub struct StateTransition {
 }
 
 impl TrackerCache {
+    fn load_project_metadata_shard(project_dir: &Path) -> Option<CachedProject> {
+        if !project_dir.is_dir() {
+            return None;
+        }
+
+        let content = fs::read_to_string(project_dir.join("meta.json")).ok()?;
+        let meta = serde_json::from_str::<ProjectShardMeta>(&content).ok()?;
+        Some(CachedProject {
+            id: meta.id,
+            short_name: meta.short_name,
+            name: meta.name,
+            description: meta.description,
+        })
+    }
+
+    fn load_project_metadata_shards(
+        project_dirs: &[PathBuf],
+        worker_count: usize,
+    ) -> Result<Vec<CachedProject>> {
+        if project_dirs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let worker_count = worker_count.max(1).min(project_dirs.len());
+        if worker_count == 1 {
+            return Ok(project_dirs
+                .iter()
+                .filter_map(|project_dir| Self::load_project_metadata_shard(project_dir))
+                .collect());
+        }
+
+        thread::scope(|scope| -> Result<Vec<CachedProject>> {
+            let chunk_size = project_dirs.len().div_ceil(worker_count);
+            let mut handles = Vec::with_capacity(worker_count);
+            for chunk in project_dirs.chunks(chunk_size) {
+                handles.push(scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .filter_map(|project_dir| Self::load_project_metadata_shard(project_dir))
+                        .collect::<Vec<_>>()
+                }));
+            }
+
+            let mut projects = Vec::new();
+            for handle in handles {
+                let mut loaded = handle
+                    .join()
+                    .map_err(|_| anyhow!("project metadata worker panicked"))?;
+                projects.append(&mut loaded);
+            }
+
+            Ok(projects)
+        })
+    }
+
     /// Load cache from the sharded directory layout
     pub fn load(cache_dir: Option<PathBuf>) -> Result<Self> {
         let root = Self::cache_dir_path(cache_dir.clone())?;
@@ -432,9 +575,9 @@ impl TrackerCache {
         let root = Self::cache_dir_path(cache_dir)?;
         let runtime_dir = root.join("runtime");
         create_dir_all_secure(&runtime_dir)?;
-        Self::atomic_write(
+        Self::atomic_write_relaxed(
             &runtime_dir.join("recent_issues.json"),
-            serde_json::to_string_pretty(&self.recent_issues)?.as_bytes(),
+            &serde_json::to_vec(&self.recent_issues)?,
         )?;
         Ok(())
     }
@@ -466,27 +609,22 @@ impl TrackerCache {
         if self.loaded_shards.projects {
             return Ok(());
         }
-        self.loaded_shards.projects = true;
 
         let root = Self::cache_dir_path(self.cache_dir.clone())?;
         let projects_dir = root.join("projects");
         if projects_dir.exists() {
-            for entry in fs::read_dir(projects_dir)? {
-                let entry = entry?;
-                let project_dir = entry.path();
-                if project_dir.is_dir()
-                    && let Ok(content) = fs::read_to_string(project_dir.join("meta.json"))
-                    && let Ok(meta) = serde_json::from_str::<ProjectShardMeta>(&content)
-                {
-                    self.projects.push(CachedProject {
-                        id: meta.id.clone(),
-                        short_name: meta.short_name.clone(),
-                        name: meta.name.clone(),
-                        description: meta.description.clone(),
-                    });
-                }
+            let project_dirs: Vec<PathBuf> = fs::read_dir(&projects_dir)?
+                .map(|entry| entry.map(|e| e.path()))
+                .collect::<std::io::Result<_>>()?;
+            if project_dirs.is_empty() {
+                self.loaded_shards.projects = true;
+                return Ok(());
             }
+
+            let worker_count = configured_project_metadata_worker_count(project_dirs.len());
+            self.projects = Self::load_project_metadata_shards(&project_dirs, worker_count)?;
         }
+        self.loaded_shards.projects = true;
         Ok(())
     }
 
@@ -662,6 +800,19 @@ impl TrackerCache {
 
     /// Atomic write helper: write temp -> fsync -> rename
     fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
+        Self::atomic_write_inner(path, content, true)
+    }
+
+    /// Relaxed atomic write helper: write temp -> rename, without fsync.
+    ///
+    /// Used for non-critical runtime metadata on hot paths where preserving
+    /// atomic replacement and file permissions matters more than durability
+    /// across sudden power loss.
+    fn atomic_write_relaxed(path: &Path, content: &[u8]) -> Result<()> {
+        Self::atomic_write_inner(path, content, false)
+    }
+
+    fn atomic_write_inner(path: &Path, content: &[u8], durable: bool) -> Result<()> {
         let temp_path = path.with_extension("tmp");
 
         // Create parent directory if needed
@@ -691,8 +842,11 @@ impl TrackerCache {
             file.write_all(content).with_context(|| {
                 format!("Failed to write to temp file: {}", temp_path.display())
             })?;
-            file.sync_all()
-                .with_context(|| format!("Failed to sync temp file: {}", temp_path.display()))?;
+            if durable {
+                file.sync_all().with_context(|| {
+                    format!("Failed to sync temp file: {}", temp_path.display())
+                })?;
+            }
         }
 
         #[cfg(unix)]
@@ -733,64 +887,40 @@ impl TrackerCache {
         // Fetch projects
         let projects = client.list_projects().context("Failed to fetch projects")?;
         cache.projects = projects
-            .iter()
+            .into_iter()
             .map(|p| CachedProject {
-                id: p.id.clone(),
-                short_name: p.short_name.clone(),
-                name: p.name.clone(),
-                description: p.description.clone(),
+                id: p.id,
+                short_name: p.short_name,
+                name: p.name,
+                description: p.description,
             })
             .collect();
 
         // Determine which projects to fetch detailed data for:
         // - If default_project is set (project context), only fetch that project's details
         // - Otherwise (global context), fetch details for all projects
-        let projects_for_details: Vec<&tracker_core::Project> = if let Some(dp) = default_project {
-            projects
+        let projects_for_details: Vec<&CachedProject> = if let Some(dp) = default_project {
+            cache
+                .projects
                 .iter()
                 .filter(|p| p.short_name.eq_ignore_ascii_case(dp))
                 .collect()
         } else {
-            projects.iter().collect()
+            cache.projects.iter().collect()
         };
-
-        // Fetch custom fields and build workflow hints for scoped projects
-        for project in &projects_for_details {
-            if let Ok(fields) = client.get_project_custom_fields(&project.id) {
-                let cached_fields: Vec<CachedField> = fields
-                    .iter()
-                    .map(|f| CachedField {
-                        name: f.name.clone(),
-                        field_id: Some(f.id.clone()),
-                        field_type: f.field_type.clone(),
-                        required: f.required,
-                        values: f.values.clone(),
-                    })
-                    .collect();
-
-                cache.project_fields.push(ProjectFieldsCache {
-                    project_short_name: project.short_name.clone(),
-                    project_id: project.id.clone(),
-                    fields: cached_fields,
-                });
-
-                // Build workflow hints for state fields
-                let workflow_hints =
-                    Self::build_workflow_hints(&project.short_name, &project.id, &fields);
-                if !workflow_hints.state_fields.is_empty() {
-                    cache.workflow_hints.push(workflow_hints);
-                }
-            }
-        }
+        let detailed_project_keys: Vec<String> = projects_for_details
+            .iter()
+            .map(|p| p.short_name.clone())
+            .collect();
 
         // Fetch tags (instance-level, always fetch all)
         if let Ok(tags) = client.list_tags() {
             cache.tags = tags
-                .iter()
+                .into_iter()
                 .map(|t| CachedTag {
-                    id: t.id.clone(),
-                    name: t.name.clone(),
-                    color: t.color.as_ref().and_then(|c| c.background.clone()),
+                    id: t.id,
+                    name: t.name,
+                    color: t.color.and_then(|c| c.background),
                     description: None,
                 })
                 .collect();
@@ -799,35 +929,75 @@ impl TrackerCache {
         // Fetch link types (instance-level, always fetch all)
         if let Ok(link_types) = client.list_link_types() {
             cache.link_types = link_types
-                .iter()
+                .into_iter()
                 .map(|lt| CachedLinkType {
-                    id: lt.id.clone(),
-                    name: lt.name.clone(),
-                    source_to_target: lt.source_to_target.clone(),
-                    target_to_source: lt.target_to_source.clone(),
+                    id: lt.id,
+                    name: lt.name,
+                    source_to_target: lt.source_to_target,
+                    target_to_source: lt.target_to_source,
                     directed: lt.directed,
                 })
                 .collect();
         }
 
-        // Fetch project users for scoped projects
-        for project in &projects_for_details {
-            if let Ok(users) = client.list_project_users(&project.id) {
-                let cached_users: Vec<CachedUser> = users
-                    .iter()
-                    .map(|u| CachedUser {
-                        id: u.id.clone(),
-                        login: u.login.clone(),
-                        display_name: u.display_name.clone(),
+        let concurrency = cache_refresh_concurrency();
+
+        // Fetch custom fields and build workflow hints for scoped projects
+        let field_results =
+            bounded_parallel_map_indexed(&projects_for_details, concurrency, |_, project| {
+                let fields = client.get_project_custom_fields(&project.id).ok()?;
+                let workflow_hints =
+                    Self::build_workflow_hints(&project.short_name, &project.id, &fields);
+                let cached_fields: Vec<CachedField> = fields
+                    .into_iter()
+                    .map(|f| CachedField {
+                        name: f.name,
+                        field_id: Some(f.id),
+                        field_type: f.field_type,
+                        required: f.required,
+                        values: f.values,
                     })
                     .collect();
 
-                cache.project_users.push(ProjectUsersCache {
+                let project_fields = ProjectFieldsCache {
+                    project_short_name: project.short_name.clone(),
+                    project_id: project.id.clone(),
+                    fields: cached_fields,
+                };
+
+                Some((
+                    project_fields,
+                    (!workflow_hints.state_fields.is_empty()).then_some(workflow_hints),
+                ))
+            });
+        for (_, (project_fields, workflow_hints)) in field_results {
+            cache.project_fields.push(project_fields);
+            if let Some(workflow_hints) = workflow_hints {
+                cache.workflow_hints.push(workflow_hints);
+            }
+        }
+
+        // Fetch project users for scoped projects
+        let user_results =
+            bounded_parallel_map_indexed(&projects_for_details, concurrency, |_, project| {
+                let users = client.list_project_users(&project.id).ok()?;
+                let cached_users: Vec<CachedUser> = users
+                    .into_iter()
+                    .map(|u| CachedUser {
+                        id: u.id,
+                        login: u.login,
+                        display_name: u.display_name,
+                    })
+                    .collect();
+
+                Some(ProjectUsersCache {
                     project_short_name: project.short_name.clone(),
                     project_id: project.id.clone(),
                     users: cached_users,
-                });
-            }
+                })
+            });
+        for (_, project_users) in user_results {
+            cache.project_users.push(project_users);
         }
 
         // Fetch issue counts for query templates
@@ -841,20 +1011,66 @@ impl TrackerCache {
             cache.projects.iter().collect()
         };
 
-        for project in &projects_to_count {
-            for template in &cache.query_templates {
-                let expanded_query = template.query.replace("{PROJECT}", &project.short_name);
-                if let Ok(Some(count)) = client.get_issue_count(&expanded_query) {
-                    cache.issue_counts.push(CachedIssueCount {
-                        project_short_name: project.short_name.clone(),
-                        template_name: template.name.clone(),
-                        count,
-                    });
-                }
+        struct IssueCountJob {
+            project_index: usize,
+            template_index: usize,
+            project_short_name: String,
+            template_name: String,
+            query: String,
+        }
+
+        struct IssueCountResult {
+            project_index: usize,
+            template_index: usize,
+            issue_count: CachedIssueCount,
+        }
+
+        let mut issue_count_jobs = Vec::new();
+        for (project_index, project) in projects_to_count.iter().enumerate() {
+            for (template_index, template) in cache.query_templates.iter().enumerate() {
+                issue_count_jobs.push(IssueCountJob {
+                    project_index,
+                    template_index,
+                    project_short_name: project.short_name.clone(),
+                    template_name: template.name.clone(),
+                    query: template.query.replace("{PROJECT}", &project.short_name),
+                });
             }
         }
 
+        let mut issue_count_results =
+            bounded_parallel_map_indexed(&issue_count_jobs, concurrency, |_, job| {
+                let count = client.get_issue_count(&job.query).ok().flatten()?;
+                Some(IssueCountResult {
+                    project_index: job.project_index,
+                    template_index: job.template_index,
+                    issue_count: CachedIssueCount {
+                        project_short_name: job.project_short_name.clone(),
+                        template_name: job.template_name.clone(),
+                        count,
+                    },
+                })
+            });
+        issue_count_results
+            .sort_by_key(|(_, result)| (result.project_index, result.template_index));
+        cache.issue_counts.extend(
+            issue_count_results
+                .into_iter()
+                .map(|(_, result)| result.issue_count),
+        );
+        cache.mark_refreshed_shards_loaded(detailed_project_keys);
+
         Ok(cache)
+    }
+
+    fn mark_refreshed_shards_loaded<I>(&mut self, detailed_project_keys: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.loaded_shards.projects = true;
+        self.loaded_shards.backend = true;
+        self.loaded_shards.runtime = true;
+        self.loaded_projects.extend(detailed_project_keys);
     }
 
     /// Refresh cache with articles from knowledge base (if available)
@@ -1195,8 +1411,7 @@ impl TrackerCache {
             .clone()
             .unwrap_or_else(|| "UNKNOWN".to_string());
 
-        // Extract state from custom fields
-        let state = issue.common_fields().state.map(String::from);
+        let state = issue.state_value().map(String::from);
 
         let recent = CachedRecentIssue {
             id: issue.id.clone(),
@@ -1500,6 +1715,75 @@ mod tests {
     fn get_issue_count_returns_none_for_unknown() {
         let cache = TrackerCache::default();
         assert_eq!(cache.get_issue_count("PROJ", "unresolved"), None);
+    }
+
+    #[test]
+    fn cache_refresh_concurrency_clamps_to_conservative_range() {
+        assert_eq!(
+            clamp_cache_refresh_concurrency(None),
+            DEFAULT_CACHE_REFRESH_CONCURRENCY
+        );
+        assert_eq!(clamp_cache_refresh_concurrency(Some(0)), 1);
+        assert_eq!(clamp_cache_refresh_concurrency(Some(2)), 2);
+        assert_eq!(
+            clamp_cache_refresh_concurrency(Some(MAX_CACHE_REFRESH_CONCURRENCY + 1)),
+            MAX_CACHE_REFRESH_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn project_metadata_worker_count_stays_sequential_below_threshold() {
+        for project_count in [0, 1, 10, 50, MIN_PARALLEL_PROJECT_META_SHARDS - 1] {
+            assert_eq!(
+                project_metadata_worker_count(project_count, Some(MAX_CACHE_REFRESH_CONCURRENCY)),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn project_metadata_worker_count_uses_bounded_concurrency_at_threshold() {
+        assert_eq!(
+            project_metadata_worker_count(MIN_PARALLEL_PROJECT_META_SHARDS, None),
+            DEFAULT_CACHE_REFRESH_CONCURRENCY
+        );
+        assert_eq!(
+            project_metadata_worker_count(MIN_PARALLEL_PROJECT_META_SHARDS, Some(8)),
+            8
+        );
+    }
+
+    #[test]
+    fn project_metadata_worker_count_clamps_configured_concurrency() {
+        assert_eq!(
+            project_metadata_worker_count(MIN_PARALLEL_PROJECT_META_SHARDS, Some(0)),
+            MIN_CACHE_REFRESH_CONCURRENCY
+        );
+        assert_eq!(
+            project_metadata_worker_count(
+                MIN_PARALLEL_PROJECT_META_SHARDS,
+                Some(MAX_CACHE_REFRESH_CONCURRENCY + 1)
+            ),
+            MAX_CACHE_REFRESH_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn bounded_parallel_map_indexed_preserves_input_order_and_skips_failures() {
+        // Performance speedup is intentionally not asserted here; elapsed-time
+        // checks are brittle in CI. The important contract is deterministic output.
+        let items = [3, 1, 4, 1, 5, 9];
+
+        let results =
+            bounded_parallel_map_indexed(
+                &items,
+                4,
+                |_, item| {
+                    if *item == 1 { None } else { Some(item * 2) }
+                },
+            );
+
+        assert_eq!(results, vec![(0, 6), (2, 8), (4, 10), (5, 18)]);
     }
 
     #[test]

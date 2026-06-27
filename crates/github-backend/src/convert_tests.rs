@@ -184,4 +184,300 @@ mod tests {
             );
         }
     }
+
+    // ------------------------------------------------------------------
+    // Lossless custom-field projection (issue #277)
+    // ------------------------------------------------------------------
+
+    use crate::convert::github_issue_to_core;
+    use crate::models::GitHubIssue;
+    use tracker_core::CustomField;
+
+    /// Build a GitHubIssue from a JSON object that supplies the required base
+    /// fields plus whatever extra keys the test exercises. `#[serde(flatten)]`
+    /// routes the extras into `issue.extra`.
+    fn issue_from_json(extra: serde_json::Value) -> GitHubIssue {
+        let mut base = serde_json::json!({
+            "id": 1,
+            "number": 42,
+            "title": "Example issue",
+            "body": null,
+            "state": "open",
+            "created_at": "2024-01-01T10:00:00Z",
+            "updated_at": "2024-01-02T10:00:00Z",
+            "closed_at": null
+        });
+        let map = base.as_object_mut().unwrap();
+        for (k, v) in extra.as_object().unwrap() {
+            map.insert(k.clone(), v.clone());
+        }
+        serde_json::from_value(base).unwrap()
+    }
+
+    /// Find custom fields surfaced under `name` (case-sensitive).
+    fn fields_named<'a>(fields: &'a [CustomField], name: &str) -> Vec<&'a CustomField> {
+        fields
+            .iter()
+            .filter(|cf| match cf {
+                CustomField::SingleEnum { name: n, .. }
+                | CustomField::State { name: n, .. }
+                | CustomField::SingleUser { name: n, .. }
+                | CustomField::Text { name: n, .. }
+                | CustomField::MultiEnum { name: n, .. }
+                | CustomField::Unknown { name: n, .. } => n == name,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn projection_surfaces_scalar_as_text() {
+        let issue = issue_from_json(serde_json::json!({ "state_reason": "completed" }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        let matches = fields_named(&core.custom_fields, "state_reason");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::Text { value, .. } => assert_eq!(value.as_deref(), Some("completed")),
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_strips_trailing_zero_from_numbers() {
+        let issue = issue_from_json(serde_json::json!({ "weight": 3.0, "count": 7 }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        match fields_named(&core.custom_fields, "weight")[0] {
+            CustomField::Text { value, .. } => assert_eq!(value.as_deref(), Some("3")),
+            other => panic!("expected Text, got {:?}", other),
+        }
+        match fields_named(&core.custom_fields, "count")[0] {
+            CustomField::Text { value, .. } => assert_eq!(value.as_deref(), Some("7")),
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_preserves_large_unsigned_numbers() {
+        let issue = issue_from_json(serde_json::json!({ "database_id": u64::MAX }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        match fields_named(&core.custom_fields, "database_id")[0] {
+            CustomField::Text { value, .. } => {
+                assert_eq!(value.as_deref(), Some("18446744073709551615"));
+            }
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_drops_noise_keys() {
+        let issue = issue_from_json(serde_json::json!({
+            "html_url": "https://github.com/owner/repo/issues/42",
+            "node_id": "I_abc123",
+            "reactions": { "total_count": 3, "+1": 2 },
+            "author_association": "OWNER"
+        }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        for noise in ["html_url", "node_id", "reactions", "author_association"] {
+            assert!(
+                fields_named(&core.custom_fields, noise).is_empty(),
+                "noise key {} leaked into projection",
+                noise
+            );
+        }
+    }
+
+    #[test]
+    fn projection_does_not_duplicate_typed_fields() {
+        // Real state/assignee/milestone live on named fields and are surfaced by
+        // the hardcoded pushes. They must NOT also appear via `extra`, proving
+        // serde flatten never re-captures a matched key.
+        let issue = issue_from_json(serde_json::json!({
+            "state": "closed",
+            "assignee": { "login": "alice", "id": 7 },
+            "milestone": { "id": 1, "number": 1, "title": "v1.0" }
+        }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        // Exactly one Status (from named `state`), is_resolved true.
+        let status = fields_named(&core.custom_fields, "Status");
+        assert_eq!(status.len(), 1);
+        match status[0] {
+            CustomField::State {
+                value, is_resolved, ..
+            } => {
+                assert_eq!(value.as_deref(), Some("closed"));
+                assert!(is_resolved);
+            }
+            other => panic!("expected State, got {:?}", other),
+        }
+
+        // Exactly one Assignee SingleUser from the named field.
+        let assignee = fields_named(&core.custom_fields, "Assignee");
+        assert_eq!(assignee.len(), 1);
+        match assignee[0] {
+            CustomField::SingleUser { login, .. } => assert_eq!(login.as_deref(), Some("alice")),
+            other => panic!("expected SingleUser, got {:?}", other),
+        }
+
+        // Exactly one Milestone SingleEnum from the named field.
+        let milestone = fields_named(&core.custom_fields, "Milestone");
+        assert_eq!(milestone.len(), 1);
+        match milestone[0] {
+            CustomField::SingleEnum { value, .. } => assert_eq!(value.as_deref(), Some("v1.0")),
+            other => panic!("expected SingleEnum, got {:?}", other),
+        }
+
+        // No lowercase leak from extra (proves no duplication).
+        assert!(fields_named(&core.custom_fields, "state").is_empty());
+        assert!(fields_named(&core.custom_fields, "assignee").is_empty());
+        assert!(fields_named(&core.custom_fields, "milestone").is_empty());
+    }
+
+    #[test]
+    fn projection_surfaces_user_object_as_single_user() {
+        let issue = issue_from_json(serde_json::json!({
+            "closed_by": { "login": "alice", "id": 7 }
+        }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        let matches = fields_named(&core.custom_fields, "closed_by");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::SingleUser {
+                login,
+                display_name,
+                ..
+            } => {
+                assert_eq!(login.as_deref(), Some("alice"));
+                // No `name` on the object, so display falls back to login.
+                assert_eq!(display_name.as_deref(), Some("alice"));
+            }
+            other => panic!("expected SingleUser, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_surfaces_named_user_consumed_before_extra() {
+        let issue = issue_from_json(serde_json::json!({
+            "user": {
+                "login": "reporter",
+                "id": 9,
+                "avatar_url": "https://avatars.example/reporter"
+            }
+        }));
+        assert!(
+            !issue.extra.contains_key("user"),
+            "named user should be consumed before flatten extra"
+        );
+
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        let matches = fields_named(&core.custom_fields, "user");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::SingleUser {
+                login,
+                display_name,
+                ..
+            } => {
+                assert_eq!(login.as_deref(), Some("reporter"));
+                assert_eq!(display_name.as_deref(), Some("reporter"));
+            }
+            other => panic!("expected SingleUser, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_preserves_named_assignees_without_replacing_assignee() {
+        let assignees = serde_json::json!([
+            {
+                "login": "alice",
+                "id": 7,
+                "avatar_url": "https://avatars.example/alice",
+                "type": "User"
+            },
+            {
+                "login": "bob",
+                "id": 8,
+                "avatar_url": "https://avatars.example/bob",
+                "type": "User"
+            }
+        ]);
+        let issue = issue_from_json(serde_json::json!({
+            "assignee": { "login": "alice", "id": 7 },
+            "assignees": assignees.clone()
+        }));
+        assert!(
+            !issue.extra.contains_key("assignees"),
+            "named assignees should be consumed before flatten extra"
+        );
+
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        let assignee = fields_named(&core.custom_fields, "Assignee");
+        assert_eq!(assignee.len(), 1);
+        match assignee[0] {
+            CustomField::SingleUser { login, .. } => assert_eq!(login.as_deref(), Some("alice")),
+            other => panic!("expected SingleUser, got {:?}", other),
+        }
+
+        let matches = fields_named(&core.custom_fields, "assignees");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::Unknown { value, .. } => {
+                assert_eq!(value.as_ref(), Some(&assignees));
+            }
+            other => panic!("expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_array_of_strings_is_multi_enum() {
+        let issue = issue_from_json(serde_json::json!({
+            "topics": ["alpha", "beta", "gamma"]
+        }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        let matches = fields_named(&core.custom_fields, "topics");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::MultiEnum { values, .. } => {
+                assert_eq!(values, &vec!["alpha", "beta", "gamma"]);
+            }
+            other => panic!("expected MultiEnum, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_array_of_rich_objects_is_unknown_whole() {
+        let arr = serde_json::json!([
+            { "login": "alice", "id": 7, "type": "User" },
+            { "login": "bob", "id": 8, "type": "User" }
+        ]);
+        let issue = issue_from_json(serde_json::json!({ "requested_reviewers": arr.clone() }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        let matches = fields_named(&core.custom_fields, "requested_reviewers");
+        assert_eq!(matches.len(), 1);
+        match matches[0] {
+            CustomField::Unknown { value, .. } => {
+                assert_eq!(value.as_ref(), Some(&arr));
+            }
+            other => panic!("expected Unknown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn projection_skips_null_extra() {
+        let issue = issue_from_json(serde_json::json!({ "state_reason": null }));
+        let core = github_issue_to_core(issue, "owner", "repo");
+
+        assert!(
+            fields_named(&core.custom_fields, "state_reason").is_empty(),
+            "null extra should not be surfaced"
+        );
+    }
 }

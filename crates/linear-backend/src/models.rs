@@ -96,6 +96,10 @@ pub struct LinearIssue {
     #[serde(default)]
     pub priority: i64,
     pub priority_label: Option<String>,
+    #[serde(default)]
+    pub estimate: Option<f64>,
+    #[serde(default)]
+    pub due_date: Option<String>,
     pub url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -106,9 +110,20 @@ pub struct LinearIssue {
     pub team: LinearTeam,
     pub state: Option<LinearWorkflowState>,
     pub assignee: Option<LinearUser>,
+    #[serde(default)]
+    pub creator: Option<LinearUser>,
+    #[serde(default)]
+    pub cycle: Option<LinearCycle>,
     pub project: Option<LinearProject>,
     pub parent: Option<LinearIssueRef>,
     pub labels: LinearConnection<LinearIssueLabel>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LinearCycle {
+    pub id: String,
+    pub number: Option<f64>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

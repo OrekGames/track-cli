@@ -21,16 +21,42 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
-        // Best-effort count — don't fail the search if counting fails
-        let total = self.count_issues(query).ok().flatten();
+        if limit == 0 {
+            return Ok(SearchResult::from_items(Vec::new()));
+        }
 
         let issues = self.search_issues(query, limit, skip)?;
         let items: Vec<Issue> = issues.into_iter().map(Into::into).collect();
+        let item_count = items.len();
+
+        if item_count < limit {
+            return Ok(SearchResult::with_total(items, (skip + item_count) as u64));
+        }
+
+        // Best-effort count -- don't fail the search if counting fails.
+        // Normal interactive search gets one no-sleep attempt; explicit counts
+        // keep the public retrying behavior through `count_issues`.
+        let total = self
+            .count_issues_with_retry(query, 1, std::time::Duration::ZERO)
+            .ok()
+            .flatten();
 
         match total {
             Some(count) => Ok(SearchResult::with_total(items, count)),
             None => Ok(SearchResult::from_items(items)),
         }
+    }
+
+    fn search_all_issues(&self, query: &str, max_results: usize) -> Result<Vec<Issue>> {
+        tracker_core::pagination::fetch_all_pages_keyed(
+            |offset, limit| {
+                let issues = self.search_issues(query, limit, offset)?;
+                Ok(issues.into_iter().map(Into::into).collect::<Vec<Issue>>())
+            },
+            100,
+            max_results,
+            |issue: &Issue| issue.id.clone(),
+        )
     }
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {

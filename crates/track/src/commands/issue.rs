@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use tracker_core::{
     CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
-    canonical_field_name, fetch_all_pages, get_max_results, unicode_eq_ignore_case,
+    canonical_field_name, get_max_results, unicode_eq_ignore_case,
 };
 
 /// Shared fields for create, update, and batch-update commands.
@@ -1065,11 +1065,9 @@ fn handle_comments(
     format: OutputFormat,
 ) -> Result<()> {
     let comments = if all {
-        fetch_all_pages(
-            |offset, page_limit| client.get_comments_page(id, page_limit, offset),
-            100,
-        )
-        .with_context(|| format!("Failed to get comments for issue '{}'", id))?
+        client
+            .get_all_comments(id, get_max_results())
+            .with_context(|| format!("Failed to get comments for issue '{}'", id))?
     } else {
         client
             .get_comments_page(id, limit, 0)
@@ -1709,7 +1707,7 @@ fn verify_field_match(
         CustomField::SingleUser { name, .. } => unicode_eq_ignore_case(name, req_name),
         CustomField::Text { name, .. } => unicode_eq_ignore_case(name, req_name),
         CustomField::MultiEnum { name, .. } => unicode_eq_ignore_case(name, req_name),
-        CustomField::Unknown { name } => unicode_eq_ignore_case(name, req_name),
+        CustomField::Unknown { name, .. } => unicode_eq_ignore_case(name, req_name),
     });
 
     // A State update targets the tracker's workflow state field whatever the backend

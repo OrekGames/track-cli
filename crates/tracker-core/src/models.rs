@@ -37,7 +37,7 @@ pub struct Issue {
 /// Selection rules:
 /// - `state`: first [`CustomField::State`] value
 /// - `priority`: first [`CustomField::SingleEnum`] whose name is `"priority"` (case-insensitive)
-/// - `assignee`: first [`CustomField::SingleUser`] login
+/// - `assignee`: first [`CustomField::SingleUser`] whose name is `"assignee"` (case-insensitive)
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CommonFields<'a> {
     pub state: Option<&'a str>,
@@ -59,7 +59,9 @@ impl Issue {
                 {
                     fields.priority = value.as_deref();
                 }
-                CustomField::SingleUser { login, .. } if fields.assignee.is_none() => {
+                CustomField::SingleUser { name, login, .. }
+                    if fields.assignee.is_none() && name.eq_ignore_ascii_case("assignee") =>
+                {
                     fields.assignee = login.as_deref();
                 }
                 _ => {}
@@ -69,6 +71,14 @@ impl Issue {
             }
         }
         fields
+    }
+
+    /// Returns the first workflow state value without scanning unrelated common fields.
+    pub fn state_value(&self) -> Option<&str> {
+        self.custom_fields.iter().find_map(|cf| match cf {
+            CustomField::State { value, .. } => value.as_deref(),
+            _ => None,
+        })
     }
 }
 
@@ -80,7 +90,24 @@ pub struct ProjectRef {
     pub short_name: Option<String>,
 }
 
-/// Custom field on an issue
+/// Custom field on an issue.
+///
+/// `custom_fields` is a best-effort-lossless projection of each backend's issue
+/// fields. Every backend converter follows one contract:
+///
+/// 1. Surface a field as the most specific variant it can prove (`State`,
+///    `SingleEnum`, `SingleUser`, `Text`, `MultiEnum`).
+/// 2. When a value is present but untypeable, emit
+///    [`CustomField::Unknown`] with `value: Some(<raw json>)` so the payload
+///    round-trips verbatim.
+/// 3. Use `Unknown { value: None }` only when a field is known to exist but its
+///    value is structurally unretrievable.
+/// 4. Never silently drop a field the API returned to the converter, except an
+///    enumerated, per-backend noise denylist.
+///
+/// There is exactly one fallback tag (`Unknown`) across all backends. The
+/// externally-tagged JSON encoding is stable and additive: existing variant
+/// encodings never change, and `Unknown` only gains an optional `value` key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CustomField {
     SingleEnum {
@@ -105,8 +132,14 @@ pub enum CustomField {
         name: String,
         values: Vec<String>,
     },
+    /// Fallback for a field present on the issue that the backend could not map
+    /// to a typed variant above. `value` carries the backend's raw JSON verbatim
+    /// (`None` only when the value is structurally unretrievable). See the
+    /// projection contract on [`CustomField`].
     Unknown {
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
     },
 }
 
@@ -796,6 +829,53 @@ mod tests {
         ]);
 
         assert_eq!(issue.common_fields().assignee, Some("alice"));
+    }
+
+    #[test]
+    fn common_fields_skips_reviewer_before_assignee() {
+        let issue = issue_with_custom_fields(vec![
+            CustomField::SingleUser {
+                name: "Reviewer".into(),
+                login: Some("bob".into()),
+                display_name: None,
+            },
+            CustomField::SingleUser {
+                name: "aSsIgNeE".into(),
+                login: Some("alice".into()),
+                display_name: None,
+            },
+        ]);
+
+        assert_eq!(issue.common_fields().assignee, Some("alice"));
+    }
+
+    #[test]
+    fn common_fields_returns_no_assignee_for_other_user_fields() {
+        let issue = issue_with_custom_fields(vec![CustomField::SingleUser {
+            name: "Reviewer".into(),
+            login: Some("bob".into()),
+            display_name: None,
+        }]);
+
+        assert_eq!(issue.common_fields().assignee, None);
+    }
+
+    #[test]
+    fn state_value_returns_first_state_without_requiring_common_fields() {
+        let issue = issue_with_custom_fields(vec![
+            CustomField::SingleUser {
+                name: "Assignee".into(),
+                login: Some("alice".into()),
+                display_name: None,
+            },
+            CustomField::State {
+                name: "Status".into(),
+                value: Some("In Progress".into()),
+                is_resolved: false,
+            },
+        ]);
+
+        assert_eq!(issue.state_value(), Some("In Progress"));
     }
 
     #[test]
