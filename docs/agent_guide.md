@@ -359,6 +359,39 @@ track i done PROJ-1,PROJ-2 --state Done
 track i del PROJ-1,PROJ-2,PROJ-3
 ```
 
+### Declarative Apply Plans
+
+Use `track apply <plan.json>` when a workflow needs several dependent issue operations in one backend-scoped run. Plans are JSON-only and support `create_issue`, `update_issue`, `comment`, `link`, and guarded `delete_issue` operations.
+
+```bash
+track apply plan.json --dry-run
+track apply plan.json --validate --resume /tmp/track-apply-state.json
+track -o json apply plan.json
+track apply delete-plan.json --allow-delete
+```
+
+Local refs from create operations are written as `$name` and resolve to the created or dedupe-reused issue ID in later operations. `--resume` uses only the explicit JSON state path you pass; it does not write hidden project state. Real `delete_issue` operations require `--allow-delete`; dry-runs can inspect delete plans without it.
+
+```json
+{
+  "version": 1,
+  "defaults": {"project": "PROJ", "validate": true},
+  "operations": [
+    {
+      "ref": "parent",
+      "op": "create_issue",
+      "summary": "Parent issue",
+      "fields": {"Priority": "Major"}
+    },
+    {
+      "op": "comment",
+      "issue": "$parent",
+      "body": "Created from an apply plan."
+    }
+  ]
+}
+```
+
 ### Batch Output Format
 
 Text output shows success/failure summary:

@@ -159,6 +159,23 @@ pub enum Commands {
         #[arg(long, default_value_t = 10)]
         issue_limit: usize,
     },
+    /// Execute a JSON issue-operation plan against the selected backend
+    Apply {
+        /// Path to a JSON apply plan, or "-" to read from stdin
+        plan: PathBuf,
+        /// Parse, resolve, validate, and dedupe-check without mutating
+        #[arg(long)]
+        dry_run: bool,
+        /// Validate custom fields against project schema before create/update writes
+        #[arg(long)]
+        validate: bool,
+        /// Explicit JSON resume state path
+        #[arg(long, value_name = "PATH")]
+        resume: Option<PathBuf>,
+        /// Allow real delete_issue operations
+        #[arg(long)]
+        allow_delete: bool,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -2730,6 +2747,59 @@ mod tests {
                 _ => panic!("expected issue update"),
             },
             _ => panic!("expected issue command"),
+        }
+    }
+
+    #[test]
+    fn parses_apply_command_with_plan_path() {
+        let cli = Cli::parse_from(["track", "apply", "plan.json"]);
+
+        match cli.command {
+            Commands::Apply {
+                plan,
+                dry_run,
+                validate,
+                resume,
+                allow_delete,
+            } => {
+                assert_eq!(plan, PathBuf::from("plan.json"));
+                assert!(!dry_run);
+                assert!(!validate);
+                assert!(resume.is_none());
+                assert!(!allow_delete);
+            }
+            _ => panic!("expected apply command"),
+        }
+    }
+
+    #[test]
+    fn parses_apply_command_with_stdin_and_flags() {
+        let cli = Cli::parse_from([
+            "track",
+            "apply",
+            "-",
+            "--dry-run",
+            "--validate",
+            "--resume",
+            "state.json",
+            "--allow-delete",
+        ]);
+
+        match cli.command {
+            Commands::Apply {
+                plan,
+                dry_run,
+                validate,
+                resume,
+                allow_delete,
+            } => {
+                assert_eq!(plan, PathBuf::from("-"));
+                assert!(dry_run);
+                assert!(validate);
+                assert_eq!(resume, Some(PathBuf::from("state.json")));
+                assert!(allow_delete);
+            }
+            _ => panic!("expected apply command"),
         }
     }
 }
