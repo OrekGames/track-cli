@@ -254,6 +254,24 @@ fn run_with_client(
                 config.default_project.as_deref(),
             )
         }
+        Commands::Apply {
+            plan,
+            dry_run,
+            validate,
+            resume,
+            allow_delete,
+        } => commands::apply::handle_apply(
+            issue_client,
+            commands::apply::ApplyOptions {
+                plan_path: plan,
+                dry_run: *dry_run,
+                validate: *validate,
+                resume_path: resume.as_deref(),
+                allow_delete: *allow_delete,
+                format: cli.format,
+                default_project: config.default_project.as_deref(),
+            },
+        ),
         Commands::Completions { .. } => {
             unreachable!("Completions command should be handled before API validation")
         }

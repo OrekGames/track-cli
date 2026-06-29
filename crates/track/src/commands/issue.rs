@@ -491,7 +491,11 @@ fn build_update(client: &dyn IssueTracker, id: &str, args: &IssueFieldArgs) -> R
     Ok(update)
 }
 
-fn validate_update(client: &dyn IssueTracker, id: &str, update: &UpdateIssue) -> Result<usize> {
+pub(crate) fn validate_update(
+    client: &dyn IssueTracker,
+    id: &str,
+    update: &UpdateIssue,
+) -> Result<usize> {
     if !update.custom_fields.is_empty() {
         let existing_issue = client
             .get_issue(id)
@@ -528,7 +532,7 @@ fn output_update_dry_run(id: &str, fields_validated: usize, format: OutputFormat
 /// When `project_fields` is provided, the field type is detected from the project schema
 /// so that state fields, user fields, and enum fields get the correct `$type` discriminator.
 /// Without schema info, generic `--field` arguments default to SingleEnum.
-fn build_custom_fields(
+pub(crate) fn build_custom_fields(
     fields: &[String],
     state: Option<&str>,
     priority: Option<&str>,
@@ -554,20 +558,12 @@ fn build_custom_fields(
             );
         }
 
-        let detected_type = matched_field.map(|f| f.field_type.as_str());
-
-        let update = match detected_type {
-            Some(ft) if ft.contains("state") => CustomFieldUpdate::State { name, value },
-            Some(ft) if ft.contains("user") => CustomFieldUpdate::SingleUser { name, login: value },
-            // enum[*] = multi-enum, supports comma-separated values
-            Some(ft) if ft.contains("enum[*]") || ft.contains("multi-enum") => {
-                let values = value.split(',').map(|v| v.trim().to_string()).collect();
-                CustomFieldUpdate::MultiEnum { name, values }
-            }
-            _ => CustomFieldUpdate::SingleEnum { name, value },
-        };
-
-        custom_fields.push(update);
+        custom_fields.push(build_custom_field_update(
+            name,
+            vec![value],
+            false,
+            project_fields,
+        ));
     }
 
     // Add state if provided
@@ -597,8 +593,35 @@ fn build_custom_fields(
     Ok(custom_fields)
 }
 
+pub(crate) fn build_custom_field_update(
+    name: String,
+    values: Vec<String>,
+    force_multi: bool,
+    project_fields: Option<&[ProjectCustomField]>,
+) -> CustomFieldUpdate {
+    if force_multi {
+        return CustomFieldUpdate::MultiEnum { name, values };
+    }
+
+    let value = values.into_iter().next().unwrap_or_default();
+    let detected_type = project_fields
+        .and_then(|pf| pf.iter().find(|f| unicode_eq_ignore_case(&f.name, &name)))
+        .map(|f| f.field_type.as_str());
+
+    match detected_type {
+        Some(ft) if ft.contains("state") => CustomFieldUpdate::State { name, value },
+        Some(ft) if ft.contains("user") => CustomFieldUpdate::SingleUser { name, login: value },
+        // enum[*] = multi-enum, supports comma-separated values for CLI parity.
+        Some(ft) if ft.contains("enum[*]") || ft.contains("multi-enum") => {
+            let values = value.split(',').map(|v| v.trim().to_string()).collect();
+            CustomFieldUpdate::MultiEnum { name, values }
+        }
+        _ => CustomFieldUpdate::SingleEnum { name, value },
+    }
+}
+
 /// Validate custom fields against project schema
-fn validate_custom_fields(
+pub(crate) fn validate_custom_fields(
     client: &dyn IssueTracker,
     project_id: &str,
     custom_fields: &[CustomFieldUpdate],
@@ -781,7 +804,9 @@ fn parse_update_payload(payload: &str) -> Result<UpdateIssue> {
 }
 
 /// Parse custom fields from raw JSON values
-fn parse_custom_fields_json(fields: &[serde_json::Value]) -> Result<Vec<CustomFieldUpdate>> {
+pub(crate) fn parse_custom_fields_json(
+    fields: &[serde_json::Value],
+) -> Result<Vec<CustomFieldUpdate>> {
     let mut result = Vec::new();
 
     for field in fields {
@@ -814,6 +839,23 @@ fn parse_custom_fields_json(fields: &[serde_json::Value]) -> Result<Vec<CustomFi
                     .unwrap_or("")
                     .to_string();
                 CustomFieldUpdate::SingleUser { name, login }
+            }
+            "MultiEnumIssueCustomField" => {
+                let values = field
+                    .get("value")
+                    .and_then(|v| v.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| {
+                                item.get("name")
+                                    .and_then(|name| name.as_str())
+                                    .map(String::from)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                CustomFieldUpdate::MultiEnum { name, values }
             }
             _ => {
                 // Default to SingleEnum for unknown types
@@ -1191,95 +1233,105 @@ fn handle_link(
     link_type: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    // Parent-child relationships use link_subtask() — each backend implements this natively
-    match link_type.to_lowercase().as_str() {
-        "subtask" | "subtask-of" => {
-            client
-                .link_subtask(source, target)
-                .with_context(|| format!("Failed to set {} as subtask of {}", source, target))?;
-            let description = "is subtask of";
-            match format {
-                OutputFormat::Json => {
-                    println!(
-                        r#"{{"success":true,"source":"{}","target":"{}","linkType":"{}","description":"{}"}}"#,
-                        source, target, link_type, description
-                    );
-                }
-                OutputFormat::Text => {
-                    use colored::Colorize;
-                    println!(
-                        "{} {} {}",
-                        source.cyan().bold(),
-                        description.dimmed(),
-                        target.cyan().bold()
-                    );
-                }
-            }
-            return Ok(());
-        }
-        "parent" | "parent-of" => {
-            client
-                .link_subtask(target, source)
-                .with_context(|| format!("Failed to set {} as parent of {}", source, target))?;
-            let description = "is parent of";
-            match format {
-                OutputFormat::Json => {
-                    println!(
-                        r#"{{"success":true,"source":"{}","target":"{}","linkType":"{}","description":"{}"}}"#,
-                        source, target, link_type, description
-                    );
-                }
-                OutputFormat::Text => {
-                    use colored::Colorize;
-                    println!(
-                        "{} {} {}",
-                        source.cyan().bold(),
-                        description.dimmed(),
-                        target.cyan().bold()
-                    );
-                }
-            }
-            return Ok(());
-        }
-        _ => {}
-    }
-
-    // All other link types use link_issues()
-    let lowered = link_type.to_lowercase();
-    let (canonical_type, direction, description) = match lowered.as_str() {
-        "relates" => ("relates", "BOTH", "relates to"),
-        "depends" => ("depends", "OUTWARD", "depends on"),
-        "required" | "required-for" => ("required", "INWARD", "is required for"),
-        "duplicates" | "duplicate" => ("duplicates", "OUTWARD", "duplicates"),
-        "duplicated-by" => ("duplicated-by", "INWARD", "is duplicated by"),
-        // Pass through unrecognized types to the backend as-is (bidirectional default).
-        // This supports custom link types defined by backend admins, either directly
-        // by native name or via link_mappings config.
-        _ => (lowered.as_str(), "BOTH", lowered.as_str()),
-    };
-
-    client
-        .link_issues(source, target, canonical_type, direction)
-        .with_context(|| format!("Failed to link {} to {}", source, target))?;
+    let outcome = link_issues_with_type(client, source, target, link_type)?;
 
     match format {
         OutputFormat::Json => {
             println!(
                 r#"{{"success":true,"source":"{}","target":"{}","linkType":"{}","description":"{}"}}"#,
-                source, target, link_type, description
+                outcome.source, outcome.target, outcome.link_type, outcome.description
             );
         }
         OutputFormat::Text => {
             use colored::Colorize;
             println!(
                 "{} {} {}",
-                source.cyan().bold(),
-                description.dimmed(),
-                target.cyan().bold()
+                outcome.source.cyan().bold(),
+                outcome.description.dimmed(),
+                outcome.target.cyan().bold()
             );
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LinkOutcome {
+    pub source: String,
+    pub target: String,
+    pub link_type: String,
+    pub description: String,
+}
+
+pub(crate) fn link_issues_with_type(
+    client: &dyn IssueTracker,
+    source: &str,
+    target: &str,
+    link_type: &str,
+) -> Result<LinkOutcome> {
+    // Parent-child relationships use link_subtask() — each backend implements this natively.
+    match link_type.to_lowercase().as_str() {
+        "subtask" | "subtask-of" => {
+            client
+                .link_subtask(source, target)
+                .with_context(|| format!("Failed to set {} as subtask of {}", source, target))?;
+            return Ok(LinkOutcome {
+                source: source.to_string(),
+                target: target.to_string(),
+                link_type: link_type.to_string(),
+                description: "is subtask of".to_string(),
+            });
+        }
+        "parent" | "parent-of" => {
+            client
+                .link_subtask(target, source)
+                .with_context(|| format!("Failed to set {} as parent of {}", source, target))?;
+            return Ok(LinkOutcome {
+                source: source.to_string(),
+                target: target.to_string(),
+                link_type: link_type.to_string(),
+                description: "is parent of".to_string(),
+            });
+        }
+        _ => {}
+    }
+
+    // All other link types use link_issues().
+    let lowered = link_type.to_lowercase();
+    let (canonical_type, direction, description) = match lowered.as_str() {
+        "relates" => ("relates".to_string(), "BOTH", "relates to".to_string()),
+        "depends" => ("depends".to_string(), "OUTWARD", "depends on".to_string()),
+        "required" | "required-for" => (
+            "required".to_string(),
+            "INWARD",
+            "is required for".to_string(),
+        ),
+        "duplicates" | "duplicate" => (
+            "duplicates".to_string(),
+            "OUTWARD",
+            "duplicates".to_string(),
+        ),
+        "duplicated-by" => (
+            "duplicated-by".to_string(),
+            "INWARD",
+            "is duplicated by".to_string(),
+        ),
+        // Pass through unrecognized types to the backend as-is (bidirectional default).
+        // This supports custom link types defined by backend admins, either directly
+        // by native name or via link_mappings config.
+        _ => (lowered.clone(), "BOTH", lowered),
+    };
+
+    client
+        .link_issues(source, target, &canonical_type, direction)
+        .with_context(|| format!("Failed to link {} to {}", source, target))?;
+
+    Ok(LinkOutcome {
+        source: source.to_string(),
+        target: target.to_string(),
+        link_type: link_type.to_string(),
+        description,
+    })
 }
 
 fn handle_unlink(
@@ -1634,7 +1686,7 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
 
 /// Verify that an issue update was correctly applied by the backend.
 /// Returns a list of warning messages for fields that do not match the request.
-fn verify_issue_update(requested: &UpdateIssue, result: &Issue) -> Vec<String> {
+pub(crate) fn verify_issue_update(requested: &UpdateIssue, result: &Issue) -> Vec<String> {
     let mut warnings = Vec::new();
 
     if let Some(req_summary) = &requested.summary
@@ -1662,7 +1714,7 @@ fn verify_issue_update(requested: &UpdateIssue, result: &Issue) -> Vec<String> {
 }
 
 /// Verify that an issue creation correctly applied all requested fields.
-fn verify_issue_create(requested: &CreateIssue, result: &Issue) -> Vec<String> {
+pub(crate) fn verify_issue_create(requested: &CreateIssue, result: &Issue) -> Vec<String> {
     let mut warnings = Vec::new();
 
     if result.summary != requested.summary {
