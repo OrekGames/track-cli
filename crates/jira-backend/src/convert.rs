@@ -832,6 +832,16 @@ fn custom_field_to_json(
                         .collect();
                     serde_json::Value::Array(items)
                 }
+                // Multi-group pickers (schema items == "group") must be written as
+                // an array of group objects keyed by `name`. Jira rejects bare
+                // strings with: "Operation value must be an array of group objects".
+                Some("group") => {
+                    let items: Vec<serde_json::Value> = values
+                        .iter()
+                        .map(|v| serde_json::json!({ "name": *v }))
+                        .collect();
+                    serde_json::Value::Array(items)
+                }
                 _ => {
                     let items: Vec<serde_json::Value> = values
                         .iter()
@@ -1171,6 +1181,49 @@ mod tests {
         let jira = update_issue_to_jira(&update, &fields).unwrap();
         let json = serde_json::to_value(&jira).unwrap();
         assert_eq!(json["fields"]["customfield_10016"], 8.0);
+    }
+
+    #[test]
+    fn custom_field_to_json_wraps_group_items_as_name_objects() {
+        let schema = JiraFieldSchema {
+            field_type: "array".to_string(),
+            custom: None,
+            items: Some("group".to_string()),
+        };
+        // Single group value.
+        assert_eq!(
+            custom_field_to_json("customfield_12954", "Group A", Some(&schema)),
+            serde_json::json!([{ "name": "Group A" }])
+        );
+        // Comma-separated multi-group value (trimmed).
+        assert_eq!(
+            custom_field_to_json("customfield_12954", "Group A, Group B", Some(&schema)),
+            serde_json::json!([{ "name": "Group A" }, { "name": "Group B" }])
+        );
+    }
+
+    #[test]
+    fn resolve_extra_fields_serializes_multi_group_picker_as_name_objects() {
+        let custom_fields = vec![CustomFieldUpdate::MultiEnum {
+            name: "Partner".to_string(),
+            values: vec!["Group A".to_string(), "Group B".to_string()],
+        }];
+        let jira_fields = vec![JiraField {
+            id: "customfield_12954".to_string(),
+            name: "Partner".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "array".to_string(),
+                custom: None,
+                items: Some("group".to_string()),
+            }),
+        }];
+
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields, &[]).unwrap();
+        assert_eq!(
+            extra["customfield_12954"],
+            serde_json::json!([{ "name": "Group A" }, { "name": "Group B" }])
+        );
     }
 
     #[test]
