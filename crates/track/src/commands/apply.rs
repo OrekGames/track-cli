@@ -9,29 +9,30 @@ use std::io::Read;
 use std::path::Path;
 use tracker_core::{CreateIssue, CustomFieldUpdate, Issue, IssueTracker, UpdateIssue};
 
-pub fn handle_apply(
-    client: &dyn IssueTracker,
-    plan_path: &Path,
-    dry_run: bool,
-    validate: bool,
-    resume_path: Option<&Path>,
-    allow_delete: bool,
-    format: OutputFormat,
-    default_project: Option<&str>,
-) -> Result<()> {
-    let raw_plan = read_plan_bytes(plan_path)?;
+pub(crate) struct ApplyOptions<'a> {
+    pub(crate) plan_path: &'a Path,
+    pub(crate) dry_run: bool,
+    pub(crate) validate: bool,
+    pub(crate) resume_path: Option<&'a Path>,
+    pub(crate) allow_delete: bool,
+    pub(crate) format: OutputFormat,
+    pub(crate) default_project: Option<&'a str>,
+}
+
+pub fn handle_apply(client: &dyn IssueTracker, options: ApplyOptions<'_>) -> Result<()> {
+    let raw_plan = read_plan_bytes(options.plan_path)?;
     let checksum = plan_checksum(&raw_plan);
     let plan = parse_apply_plan(&raw_plan)?;
-    let (state, resumed) = load_resume_state(resume_path, &checksum)?;
+    let (state, resumed) = load_resume_state(options.resume_path, &checksum)?;
 
     if let Err(failure) = validate_reference_order(&plan) {
-        let output = failure_output(&plan, dry_run, resumed, state.refs, failure);
-        output_apply_result(&output, format)?;
+        let output = failure_output(&plan, options.dry_run, resumed, state.refs, failure);
+        output_apply_result(&output, options.format)?;
         return Err(anyhow!(first_error(&output)));
     }
 
-    if !dry_run
-        && !allow_delete
+    if !options.dry_run
+        && !options.allow_delete
         && let Some((index, op)) = plan
             .operations
             .iter()
@@ -40,7 +41,7 @@ pub fn handle_apply(
     {
         let output = failure_output(
             &plan,
-            dry_run,
+            options.dry_run,
             resumed,
             state.refs,
             PreflightFailure {
@@ -49,7 +50,7 @@ pub fn handle_apply(
                 message: "delete_issue operations require --allow-delete".to_string(),
             },
         );
-        output_apply_result(&output, format)?;
+        output_apply_result(&output, options.format)?;
         return Err(anyhow!(first_error(&output)));
     }
 
@@ -57,15 +58,15 @@ pub fn handle_apply(
         client,
         plan: &plan,
         checksum,
-        dry_run,
-        validate,
-        resume_path,
-        default_project,
+        dry_run: options.dry_run,
+        validate: options.validate,
+        resume_path: options.resume_path,
+        default_project: options.default_project,
         resumed,
         state,
     })?;
 
-    output_apply_result(&execution.output, format)?;
+    output_apply_result(&execution.output, options.format)?;
     if execution.output.success {
         Ok(())
     } else {
@@ -294,6 +295,15 @@ struct ApplyExecution<'a> {
     state: ApplyResumeState,
 }
 
+#[derive(Clone, Copy)]
+struct OperationContext<'a> {
+    client: &'a dyn IssueTracker,
+    plan: &'a ApplyPlan,
+    dry_run: bool,
+    validate: bool,
+    default_project: Option<&'a str>,
+}
+
 struct ExecutionResult {
     output: ApplyOutput,
     error: Option<String>,
@@ -316,6 +326,13 @@ fn execute_plan(execution: ApplyExecution<'_>) -> Result<ExecutionResult> {
         .map(|result| (result.index, result))
         .collect();
     let mut output_results = Vec::new();
+    let operation_context = OperationContext {
+        client: execution.client,
+        plan: execution.plan,
+        dry_run: execution.dry_run,
+        validate: execution.validate,
+        default_project: execution.default_project,
+    };
 
     for (index, operation) in execution.plan.operations.iter().enumerate() {
         if completed.contains(&index) {
@@ -327,16 +344,7 @@ fn execute_plan(execution: ApplyExecution<'_>) -> Result<ExecutionResult> {
             continue;
         }
 
-        match execute_operation(
-            execution.client,
-            execution.plan,
-            operation,
-            index,
-            execution.dry_run,
-            execution.validate,
-            execution.default_project,
-            &mut refs,
-        ) {
+        match execute_operation(operation_context, operation, index, &mut refs) {
             Ok(result) => {
                 if !execution.dry_run {
                     completed.insert(index);
@@ -390,13 +398,9 @@ fn execute_plan(execution: ApplyExecution<'_>) -> Result<ExecutionResult> {
 }
 
 fn execute_operation(
-    client: &dyn IssueTracker,
-    plan: &ApplyPlan,
+    context: OperationContext<'_>,
     operation: &ApplyOperation,
     index: usize,
-    dry_run: bool,
-    validate: bool,
-    default_project: Option<&str>,
     refs: &mut BTreeMap<String, String>,
 ) -> Result<ApplyOperationResult> {
     match operation {
@@ -414,12 +418,12 @@ fn execute_operation(
             parent,
             dedupe,
         } => execute_create_issue(
-            client,
-            plan,
+            context.client,
+            context.plan,
             index,
-            dry_run,
-            validate,
-            default_project,
+            context.dry_run,
+            context.validate,
+            context.default_project,
             refs,
             ref_name.as_deref(),
             project.as_deref(),
@@ -446,11 +450,11 @@ fn execute_operation(
             tags,
             parent,
         } => execute_update_issue(
-            client,
-            plan,
+            context.client,
+            context.plan,
             index,
-            dry_run,
-            validate,
+            context.dry_run,
+            context.validate,
             refs,
             issue,
             summary.as_deref(),
@@ -468,11 +472,16 @@ fn execute_operation(
             let mut result = ApplyOperationResult::success(
                 index,
                 operation.op_name(),
-                if dry_run { "dry_run" } else { "commented" },
+                if context.dry_run {
+                    "dry_run"
+                } else {
+                    "commented"
+                },
             );
             result.issue = Some(issue_id.clone());
-            if !dry_run {
-                client
+            if !context.dry_run {
+                context
+                    .client
                     .add_comment(&issue_id, body)
                     .with_context(|| format!("Failed to comment on '{}'", issue_id))?;
             }
@@ -488,11 +497,11 @@ fn execute_operation(
             let mut result = ApplyOperationResult::success(
                 index,
                 operation.op_name(),
-                if dry_run { "dry_run" } else { "linked" },
+                if context.dry_run { "dry_run" } else { "linked" },
             );
             result.issue = Some(source_id.clone());
-            if !dry_run {
-                issue::link_issues_with_type(client, &source_id, &target_id, link_type)?;
+            if !context.dry_run {
+                issue::link_issues_with_type(context.client, &source_id, &target_id, link_type)?;
             }
             Ok(result)
         }
@@ -501,11 +510,16 @@ fn execute_operation(
             let mut result = ApplyOperationResult::success(
                 index,
                 operation.op_name(),
-                if dry_run { "dry_run" } else { "deleted" },
+                if context.dry_run {
+                    "dry_run"
+                } else {
+                    "deleted"
+                },
             );
             result.issue = Some(issue_id.clone());
-            if !dry_run {
-                client
+            if !context.dry_run {
+                context
+                    .client
                     .delete_issue(&issue_id)
                     .with_context(|| format!("Failed to delete '{}'", issue_id))?;
             }
