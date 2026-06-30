@@ -1,0 +1,15 @@
+/* Docs accent + surface colors come from the active theme. */
+@import "./theme.css";
+
+/* Slightly tighter mono for inline code, matching the landing terminal. */
+.sl-markdown-content code {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+    monospace;
+}
+
+/* Brand the site title in the header. */
+.site-title {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+    monospace;
+  font-weight: 700;
+}

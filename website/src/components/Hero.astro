@@ -1,0 +1,46 @@
+---
+const base = import.meta.env.BASE_URL;
+const repo = "https://github.com/OrekGames/track-cli";
+---
+
+<section class="hero">
+  <div class="container">
+    <h1>One command line for <span class="accent">every tracker and knowledge base</span></h1>
+    <p class="tagline">
+      <code>track</code> has a single goal: talk to any issue tracking system and
+      documentation site through one unified set of commands. Learn it once, use
+      it everywhere — built in Rust, fast and scriptable, designed for humans and
+      AI agents alike.
+    </p>
+
+    <div class="cta-row">
+      <a class="btn btn-primary" href={`${base}quick-start/`}>Get started →</a>
+      <a class="btn btn-secondary" href={repo}>View on GitHub</a>
+    </div>
+
+    <div class="install-pill">
+      <span class="prompt">$</span>
+      <span id="install-cmd">brew install OrekGames/tap/track</span>
+      <button id="copy-install" type="button" aria-label="Copy install command"
+        >Copy</button
+      >
+    </div>
+  </div>
+</section>
+
+<script>
+  const btn = document.getElementById("copy-install");
+  const cmd = document.getElementById("install-cmd");
+  if (btn && cmd) {
+    btn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(cmd.textContent?.trim() ?? "");
+        const original = btn.textContent;
+        btn.textContent = "Copied!";
+        setTimeout(() => (btn.textContent = original), 1500);
+      } catch {
+        /* clipboard unavailable — no-op */
+      }
+    });
+  }
+</script>

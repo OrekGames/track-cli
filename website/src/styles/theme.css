@@ -1,0 +1,54 @@
+/*
+ * Site theme: Amber/Stone — modeled on the game-analytics-platform frontend.
+ * Warm stone surfaces with an amber-gold accent; Inter + JetBrains Mono.
+ * The landing page is always dark; docs honor light + dark.
+ *
+ * Loaded by landing.css and starlight-custom.css, so editing the tokens here
+ * re-themes the whole site (landing + docs).
+ */
+
+:root {
+  /* Landing page palette (dark surfaces + amber accent) */
+  --bg: #0d0d12;
+  --bg-elevated: #18181f;
+  --border: #2c2926;
+  --text: #e8e4dd;
+  --text-muted: #8e8881;
+  --accent: #fbbf24;
+  --accent-dim: #e5a50a;
+  --accent-2: #fcd34d; /* hero gradient second stop (amber → gold) */
+  --accent-contrast: #1c1917; /* warm near-black text on amber buttons */
+  --term-green: #4ade80;
+  --term-blue: #60a5fa;
+  --term-purple: #a78bfa;
+  --term-yellow: #fcd34d;
+  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas,
+    monospace;
+
+  /* Starlight docs accent ramp (defaults; light overrides below) */
+  --sl-color-accent-low: #4a3a08;
+  --sl-color-accent: #e5a50a;
+  --sl-color-accent-high: #fcd34d;
+  --sl-color-text-accent: #fbbf24;
+}
+
+/* Starlight dark mode surfaces */
+:root[data-theme="dark"] {
+  --sl-color-bg: #0d0d12;
+  --sl-color-bg-nav: #141419;
+  --sl-color-bg-sidebar: #141419;
+  --sl-color-hairline: #2c2926;
+}
+
+/* Starlight light mode surfaces (warm cream palette) */
+:root[data-theme="light"] {
+  --sl-color-bg: #f5f3ef;
+  --sl-color-bg-nav: #fefdfb;
+  --sl-color-bg-sidebar: #faf8f5;
+  --sl-color-hairline: #e7e5e4;
+  --sl-color-accent: #b8860b;
+  --sl-color-accent-high: #8b6914;
+  --sl-color-text-accent: #8b6914;
+}
