@@ -1,0 +1,31 @@
+---
+const backends = [
+  { name: "YouTrack", color: "#5c5cff" },
+  { name: "Jira", color: "#2684ff" },
+  { name: "GitHub", color: "#e6edf3" },
+  { name: "GitLab", color: "#fc6d26" },
+  { name: "Linear", color: "#5e6ad2" },
+];
+---
+
+<section class="section backends">
+  <div class="container">
+    <h2>Compatible with the tools you already use</h2>
+    <p class="section-sub">
+      Switch backends with a config file, an environment variable, or a single
+      <code>-b</code> flag. Documentation included — YouTrack Knowledge Base and
+      Jira/Confluence articles work through the same commands. More backends on
+      the way.
+    </p>
+    <div class="backend-row">
+      {
+        backends.map((b) => (
+          <span class="backend-chip">
+            <span class="swatch" style={`background:${b.color}`} />
+            {b.name}
+          </span>
+        ))
+      }
+    </div>
+  </div>
+</section>

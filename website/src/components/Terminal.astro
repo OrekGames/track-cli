@@ -1,0 +1,30 @@
+---
+// Static, colorized terminal demo of real `track` commands.
+---
+
+<section class="section">
+  <div class="container">
+    <div class="terminal">
+      <div class="titlebar">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+        <span class="title">zsh — track</span>
+      </div>
+      <pre><code><span class="c-muted"># Look up an issue (shortcut for `issue get`)</span>
+<span class="c-prompt">$</span> <span class="c-cmd">track</span> PROJ-123
+<span class="c-key">PROJ-123</span>  Fix flaky pagination test  <span class="c-yellow">[In Progress]</span>
+  Assignee: you · Priority: Major
+
+<span class="c-muted"># Search across any backend with the same command</span>
+<span class="c-prompt">$</span> <span class="c-cmd">track</span> i s <span class="c-str">"project: PROJ #Unresolved"</span> <span class="c-flag">--all</span>
+<span class="c-key">PROJ-201</span>  Add Linear backend support       <span class="c-yellow">[Open]</span>
+<span class="c-key">PROJ-198</span>  Document --all pagination flag   <span class="c-yellow">[Open]</span>
+
+<span class="c-muted"># Create an issue and pipe JSON to your tooling</span>
+<span class="c-prompt">$</span> <span class="c-cmd">track</span> <span class="c-flag">-o</span> json i new <span class="c-flag">-p</span> PROJ <span class="c-flag">-s</span> <span class="c-str">"Ship docs site"</span>
+<span class="c-muted">{</span> <span class="c-key">"id"</span><span class="c-muted">:</span> <span class="c-str">"PROJ-204"</span><span class="c-muted">,</span> <span class="c-key">"summary"</span><span class="c-muted">:</span> <span class="c-str">"Ship docs site"</span> <span class="c-muted">}</span>
+</code></pre>
+    </div>
+  </div>
+</section>

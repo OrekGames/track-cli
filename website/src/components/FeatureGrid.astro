@@ -1,0 +1,55 @@
+---
+const features = [
+  {
+    icon: "🔌",
+    title: "Unified Interface",
+    body: "One command set that works the same against any supported issue tracker or knowledge base.",
+  },
+  {
+    icon: "📚",
+    title: "Issues & Documentation",
+    body: "Manage issues and knowledge-base articles from the same tool — trackers and docs in one workflow.",
+  },
+  {
+    icon: "⚡",
+    title: "Batch & Bulk Operations",
+    body: "Update, delete, or complete many issues at once, plus declarative bulk apply.",
+  },
+  {
+    icon: "📄",
+    title: "Transparent Pagination",
+    body: "The --all flag auto-paginates to fetch every result, no manual offsets.",
+  },
+  {
+    icon: "🤖",
+    title: "AI-Optimized",
+    body: "Context aggregation, query templates, and JSON output built for coding agents.",
+  },
+  {
+    icon: "🧰",
+    title: "Text or JSON",
+    body: "Human-readable text by default, machine-readable JSON for scripting.",
+  },
+];
+---
+
+<section class="section" id="features">
+  <div class="container">
+    <h2>One workflow for issues and docs, everywhere</h2>
+    <p class="section-sub">
+      Learn a single command set and use it against any supported tracker or
+      knowledge base — no per-tool relearning.
+    </p>
+    <div class="feature-grid">
+      {
+        features.map((f) => (
+          <div class="feature-card">
+            <div class="icon">{f.icon}</div>
+            <h3>{f.title}</h3>
+            <p>{f.body}</p>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
