@@ -10,12 +10,12 @@ Configuration is resolved from highest to lowest priority:
 1. **CLI flags** — `--url`, `--token`, `--backend`, etc.
 2. **Environment variables** — backend-specific (see below)
 3. **Project config** — `.track.toml` in the current directory
-4. **Global config** — `~/.config/track/config.toml`
+4. **Global config** — `~/.tracker-cli/.track.toml`
 
 ## Config file format
 
 Create `.track.toml` in your project directory or
-`~/.config/track/config.toml`.
+`~/.tracker-cli/.track.toml` for global defaults.
 
 ### YouTrack
 
