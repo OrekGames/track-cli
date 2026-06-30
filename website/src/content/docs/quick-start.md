@@ -6,7 +6,7 @@ description: Configure a backend and run your first track commands.
 ## 1. Initialize configuration
 
 Create a `.track.toml` in your project directory (or
-`~/.config/track/config.toml` for global config):
+`~/.tracker-cli/.track.toml` for global config):
 
 ```bash
 # YouTrack (default)

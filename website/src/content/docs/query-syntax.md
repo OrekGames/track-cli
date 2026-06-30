@@ -34,8 +34,8 @@ GitHub uses GitHub's search query syntax (not traditional issue queries).
 ## GitLab
 
 ```bash
-track -b gitlab i s "bug fix" --state opened
-track -b gitlab i s "performance" --labels "priority::high"
+track -b gitlab i s "state=opened&search=bug fix"
+track -b gitlab i s "labels=priority::high&search=performance"
 ```
 
 GitLab uses project-scoped search with filter parameters.
