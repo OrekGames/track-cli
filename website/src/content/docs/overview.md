@@ -27,8 +27,8 @@ and update issues is the same no matter which backend your team uses.
 
 ## Next steps
 
-- [Installation](/track-cli/installation/) — install via Homebrew, Cargo, or a
-  prebuilt binary.
+- [Installation](/track-cli/installation/) — install with the native installer,
+  Homebrew, Cargo, or a prebuilt binary.
 - [Quick Start](/track-cli/quick-start/) — configure a backend and run your
   first commands.
 - [Configuration](/track-cli/configuration/) — config files, environment

@@ -152,39 +152,116 @@ a:hover {
   border-color: var(--text-muted);
 }
 
-/* ---- Install command pill ---- */
-.install-pill {
-  display: inline-flex;
+/* ---- Install commands ---- */
+.install-picker {
+  width: min(100%, 860px);
+  margin: 0 auto;
+  text-align: left;
+}
+
+.install-picker-header {
+  display: flex;
   align-items: center;
-  gap: 0.75rem;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.install-platform {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.install-docs-link {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.install-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.install-option {
+  min-width: 0;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0.6rem 0.6rem 0.6rem 1rem;
-  font-family: var(--font-mono);
-  font-size: 0.95rem;
+  padding: 1rem;
+}
+
+.install-option-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.install-option h3 {
+  margin: 0;
   color: var(--text);
-  margin: 0 auto;
+  font-size: 1rem;
+  line-height: 1.2;
+  letter-spacing: 0;
 }
 
-.install-pill .prompt {
-  color: var(--accent);
+.install-option p {
+  margin: 0.25rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
 }
 
-.install-pill button {
+.install-copy {
+  flex: 0 0 auto;
+  min-width: 4.25rem;
   background: var(--border);
   border: none;
   color: var(--text);
   border-radius: 6px;
   padding: 0.35rem 0.6rem;
+  font-family: var(--font-sans);
   font-size: 0.8rem;
   cursor: pointer;
-  font-family: var(--font-sans);
   transition: background 0.15s ease;
 }
 
-.install-pill button:hover {
+.install-copy:hover {
   background: #3d444d;
+}
+
+.install-command {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  min-height: 3.1rem;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  background: #0b0f14;
+  color: var(--text);
+  padding: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.install-command .prompt {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.install-command code {
+  min-width: 0;
+  font: inherit;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 /* ---- Section scaffolding ---- */
@@ -366,5 +443,16 @@ a:hover {
   }
   .hero {
     padding: 3rem 0 2rem;
+  }
+  .install-picker-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .install-options {
+    grid-template-columns: 1fr;
+  }
+  .install-command {
+    font-size: 0.8rem;
   }
 }

@@ -18,28 +18,192 @@ const repo = "https://github.com/OrekGames/track-cli";
       <a class="btn btn-secondary" href={repo}>View on GitHub</a>
     </div>
 
-    <div class="install-pill">
-      <span class="prompt">$</span>
-      <span id="install-cmd">brew install OrekGames/tap/track</span>
-      <button id="copy-install" type="button" aria-label="Copy install command"
-        >Copy</button
-      >
+    <div class="install-picker" data-install-picker>
+      <div class="install-picker-header">
+        <span class="install-platform" data-install-platform>Install for your OS</span>
+        <a class="install-docs-link" href={`${base}installation/`}>All install options</a>
+      </div>
+
+      <div class="install-options" aria-label="Install commands">
+        <article class="install-option" data-install-option="primary">
+          <div class="install-option-top">
+            <div>
+              <h3 data-install-title="primary">Homebrew</h3>
+              <p data-install-note="primary">Package-manager install</p>
+            </div>
+            <button
+              class="install-copy"
+              type="button"
+              data-install-copy="primary"
+              aria-label="Copy Homebrew install command">Copy</button
+            >
+          </div>
+          <pre class="install-command"><span class="prompt" data-install-prompt="primary">$</span><code data-install-command="primary">brew install OrekGames/tap/track</code></pre>
+        </article>
+
+        <article class="install-option" data-install-option="secondary">
+          <div class="install-option-top">
+            <div>
+              <h3 data-install-title="secondary">Native install</h3>
+              <p data-install-note="secondary">Verified release script</p>
+            </div>
+            <button
+              class="install-copy"
+              type="button"
+              data-install-copy="secondary"
+              aria-label="Copy native install command">Copy</button
+            >
+          </div>
+          <pre class="install-command"><span class="prompt" data-install-prompt="secondary">$</span><code data-install-command="secondary">curl -fsSL https://raw.githubusercontent.com/OrekGames/track-cli/main/scripts/install.sh | bash</code></pre>
+        </article>
+      </div>
     </div>
   </div>
 </section>
 
 <script>
-  const btn = document.getElementById("copy-install");
-  const cmd = document.getElementById("install-cmd");
-  if (btn && cmd) {
-    btn.addEventListener("click", async () => {
+  const commands = {
+    mac: {
+      platform: "Detected macOS",
+      primary: {
+        title: "Homebrew",
+        note: "Package-manager install",
+        prompt: "$",
+        command: "brew install OrekGames/tap/track",
+        label: "Copy Homebrew install command",
+      },
+      secondary: {
+        title: "Native install",
+        note: "Verified release script",
+        prompt: "$",
+        command:
+          "curl -fsSL https://raw.githubusercontent.com/OrekGames/track-cli/main/scripts/install.sh | bash",
+        label: "Copy native install command",
+      },
+    },
+    linux: {
+      platform: "Detected Linux",
+      primary: {
+        title: "Homebrew",
+        note: "Linuxbrew package-manager install",
+        prompt: "$",
+        command: "brew install OrekGames/tap/track",
+        label: "Copy Homebrew install command",
+      },
+      secondary: {
+        title: "Native install",
+        note: "Verified release script",
+        prompt: "$",
+        command:
+          "curl -fsSL https://raw.githubusercontent.com/OrekGames/track-cli/main/scripts/install.sh | bash",
+        label: "Copy native install command",
+      },
+    },
+    windows: {
+      platform: "Detected Windows",
+      primary: {
+        title: "Homebrew (WSL)",
+        note: "For a Linux shell inside WSL",
+        prompt: "$",
+        command: "brew install OrekGames/tap/track",
+        label: "Copy WSL Homebrew install command",
+      },
+      secondary: {
+        title: "PowerShell",
+        note: "Native Windows install",
+        prompt: "PS>",
+        command:
+          "irm https://raw.githubusercontent.com/OrekGames/track-cli/main/scripts/install.ps1 | iex",
+        label: "Copy PowerShell install command",
+      },
+    },
+    other: {
+      platform: "Choose your install path",
+      primary: {
+        title: "Homebrew",
+        note: "macOS, Linux, or WSL",
+        prompt: "$",
+        command: "brew install OrekGames/tap/track",
+        label: "Copy Homebrew install command",
+      },
+      secondary: {
+        title: "Native install",
+        note: "macOS or Linux release script",
+        prompt: "$",
+        command:
+          "curl -fsSL https://raw.githubusercontent.com/OrekGames/track-cli/main/scripts/install.sh | bash",
+        label: "Copy native install command",
+      },
+    },
+  };
+
+  function platformKey() {
+    const nav = window.navigator;
+    const platform = `${nav.userAgentData?.platform ?? nav.platform ?? ""} ${nav.userAgent ?? ""}`;
+
+    if (/windows|win32|win64/i.test(platform)) return "windows";
+    if (/macintosh|macintel|mac os x|darwin/i.test(platform)) return "mac";
+    if (/linux|x11/i.test(platform)) return "linux";
+
+    return "other";
+  }
+
+  function setText(selector, text) {
+    const element = document.querySelector(selector);
+    if (element) element.textContent = text;
+  }
+
+  function applyInstallCommands() {
+    const config = commands[platformKey()] ?? commands.other;
+
+    setText("[data-install-platform]", config.platform);
+
+    for (const key of ["primary", "secondary"]) {
+      const option = config[key];
+      setText(`[data-install-title="${key}"]`, option.title);
+      setText(`[data-install-note="${key}"]`, option.note);
+      setText(`[data-install-prompt="${key}"]`, option.prompt);
+      setText(`[data-install-command="${key}"]`, option.command);
+
+      const button = document.querySelector(`[data-install-copy="${key}"]`);
+      if (button) {
+        button.setAttribute("aria-label", option.label);
+        button.dataset.command = option.command;
+      }
+    }
+  }
+
+  async function copyCommand(text) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+
+  applyInstallCommands();
+
+  for (const button of document.querySelectorAll("[data-install-copy]")) {
+    button.addEventListener("click", async () => {
+      const command = button.dataset.command ?? "";
+      if (!command) return;
+
       try {
-        await navigator.clipboard.writeText(cmd.textContent?.trim() ?? "");
-        const original = btn.textContent;
-        btn.textContent = "Copied!";
-        setTimeout(() => (btn.textContent = original), 1500);
+        await copyCommand(command);
+        const original = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => (button.textContent = original), 1500);
       } catch {
-        /* clipboard unavailable — no-op */
+        /* clipboard unavailable - no-op */
       }
     });
   }
