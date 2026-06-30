@@ -1014,7 +1014,6 @@ pub fn resolve_extra_fields(
                 }
             }
             CustomFieldUpdate::MultiEnum { name, values } => {
-                let joined = values.join(",");
                 if is_reserved_field(name) {
                     if let Some(msg) = dropped_reserved_field_warning(name, silently_handled) {
                         eprintln!("Warning: {}", msg);
@@ -1023,7 +1022,19 @@ pub fn resolve_extra_fields(
                 }
                 if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
                     let schema = schema_map.get(field_id.as_str()).copied();
-                    insert_resolved_field(&mut extra, field_id, &joined, schema)?;
+                    if values.is_empty() {
+                        // An empty array clears the field. Jira needs [] for an
+                        // array/multi field and null for a scalar; detect it here,
+                        // before the lossy join(",") below (which would otherwise
+                        // collapse [] and [""] to the same single-element value).
+                        let cleared = match schema.map(|s| s.field_type.as_str()) {
+                            Some("array") => serde_json::Value::Array(vec![]),
+                            _ => serde_json::Value::Null,
+                        };
+                        extra.insert(field_id.clone(), cleared);
+                    } else {
+                        insert_resolved_field(&mut extra, field_id, &values.join(","), schema)?;
+                    }
                 }
             }
         }
@@ -1224,6 +1235,52 @@ mod tests {
             extra["customfield_12954"],
             serde_json::json!([{ "name": "Group A" }, { "name": "Group B" }])
         );
+    }
+
+    #[test]
+    fn resolve_extra_fields_clears_array_field_with_empty_values() {
+        // An empty MultiEnum on an array field (e.g. a multi-group picker) must
+        // serialize to [] so Jira clears it — not [{"name":""}].
+        let custom_fields = vec![CustomFieldUpdate::MultiEnum {
+            name: "Partner".to_string(),
+            values: vec![],
+        }];
+        let jira_fields = vec![JiraField {
+            id: "customfield_12954".to_string(),
+            name: "Partner".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "array".to_string(),
+                custom: None,
+                items: Some("group".to_string()),
+            }),
+        }];
+
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields, &[]).unwrap();
+        assert_eq!(extra["customfield_12954"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn resolve_extra_fields_clears_scalar_field_with_empty_values_as_null() {
+        // An empty MultiEnum on a non-array (scalar) field clears via null,
+        // which is how Jira empties a scalar custom field.
+        let custom_fields = vec![CustomFieldUpdate::MultiEnum {
+            name: "Single Select".to_string(),
+            values: vec![],
+        }];
+        let jira_fields = vec![JiraField {
+            id: "customfield_20001".to_string(),
+            name: "Single Select".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "option".to_string(),
+                custom: None,
+                items: None,
+            }),
+        }];
+
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields, &[]).unwrap();
+        assert_eq!(extra["customfield_20001"], serde_json::Value::Null);
     }
 
     #[test]

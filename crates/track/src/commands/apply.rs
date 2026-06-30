@@ -755,9 +755,10 @@ fn build_custom_field_updates(
                 schema,
             )),
             PlanFieldValue::Multi(values) => {
-                if values.is_empty() {
-                    bail!("Field '{}' array cannot be empty", name);
-                }
+                // An empty array is an intentional "clear this field" request:
+                // forward it as an empty MultiEnum and let each backend serialize
+                // the clear (Jira -> [] / null; YouTrack -> value: []; Linear
+                // labels -> labelIds: []). A non-empty array sets those values.
                 updates.push(issue::build_custom_field_update(
                     name.clone(),
                     values.clone(),
@@ -1170,6 +1171,23 @@ mod tests {
             &updates[1],
             CustomFieldUpdate::SingleEnum { name, value }
                 if name == "Priority" && value == "Major"
+        ));
+    }
+
+    #[test]
+    fn empty_array_field_forwards_as_clear_not_error() {
+        // An empty array means "clear this field": it must no longer error, and
+        // should forward as an empty MultiEnum for the backend to serialize.
+        let mut fields = BTreeMap::new();
+        fields.insert("Platform".to_string(), PlanFieldValue::Multi(vec![]));
+
+        let updates = build_custom_field_updates(&fields, &[], None, None, None, None).unwrap();
+
+        assert_eq!(updates.len(), 1);
+        assert!(matches!(
+            &updates[0],
+            CustomFieldUpdate::MultiEnum { name, values }
+                if name == "Platform" && values.is_empty()
         ));
     }
 
