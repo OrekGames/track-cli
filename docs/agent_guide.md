@@ -392,6 +392,8 @@ Local refs from create operations are written as `$name` and resolve to the crea
 }
 ```
 
+**Field values** in `fields`: a string sets one value, an array sets multiple, and an **empty array (`[]`) clears the field**.
+
 ### Batch Output Format
 
 Text output shows success/failure summary:

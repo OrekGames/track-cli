@@ -477,6 +477,8 @@ Minimal plan:
 }
 ```
 
+**Field values** in `fields`: a string sets one value (`"Priority": "Major"`), an array sets multiple (`"Platform": ["macOS", "Linux"]`), and an **empty array clears the field** (`"Platform": []`).
+
 JSON output includes `success`, `dry_run`, `resumed`, summary counts, `refs`, and per-operation results with `index`, `op`, `status`, `issue`, `ref`, `error`, and `warnings`. Stop on the first failed operation; resume skips completed operations when the checksum still matches.
 
 ---
