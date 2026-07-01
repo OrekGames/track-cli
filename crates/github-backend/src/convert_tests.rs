@@ -71,7 +71,7 @@ mod tests {
                 "event": "labeled",
                 "created_at": "2024-01-02T10:00:00Z",
                 "actor": { "login": "alice", "id": 1 },
-                "label": { "id": 9, "name": "bug", "color": "fc2929", "description": null }
+                "label": { "name": "bug", "color": "fc2929" }
             })),
             event_from_json(serde_json::json!({
                 "event": "renamed",
@@ -99,6 +99,47 @@ mod tests {
         assert_eq!(assigned.field, "assignee");
         assert_eq!(assigned.from, None);
         assert_eq!(assigned.to.as_deref(), Some("dave"));
+    }
+
+    // ------------------------------------------------------------------
+    // Regression tests for issue #265: the timeline API's `labeled` and
+    // `milestoned` events send narrower objects than the full issue-API
+    // `label`/`milestone` (no `id`/`number`), which used to fail
+    // deserialization with "missing field `id`".
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn github_timeline_labeled_event_without_id_deserializes() {
+        let value = serde_json::json!({
+            "event": "labeled",
+            "created_at": "2024-01-02T10:00:00Z",
+            "actor": { "login": "alice", "id": 1 },
+            "label": { "name": "bug", "color": "fc2929" }
+        });
+
+        let event = GitHubTimelineEvent::from_value(value).unwrap();
+        let out = github_timeline_to_events(vec![event]);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].field, "labels");
+        assert_eq!(out[0].to.as_deref(), Some("bug"));
+    }
+
+    #[test]
+    fn github_timeline_milestoned_event_without_id_deserializes() {
+        let value = serde_json::json!({
+            "event": "milestoned",
+            "created_at": "2024-01-02T10:00:00Z",
+            "actor": { "login": "alice", "id": 1 },
+            "milestone": { "title": "v1.0" }
+        });
+
+        let event = GitHubTimelineEvent::from_value(value).unwrap();
+        let out = github_timeline_to_events(vec![event]);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].field, "milestone");
+        assert_eq!(out[0].to.as_deref(), Some("v1.0"));
     }
 
     #[test]

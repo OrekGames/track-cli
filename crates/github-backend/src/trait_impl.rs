@@ -735,7 +735,7 @@ mod slugify_tests {
         let hajimeni = slugify("はじめに");
         assert!(!hajimeni.is_empty(), "CJK slug should not be empty");
         assert!(
-            hajimeni.chars().all(|c| c.is_ascii()),
+            hajimeni.is_ascii(),
             "slug should be all ASCII: {hajimeni:?}"
         );
 
