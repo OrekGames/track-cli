@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trait_search_short_page_infers_total_without_counting() {
+    async fn test_trait_search_nonempty_short_page_infers_total_without_counting() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -194,6 +194,103 @@ mod tests {
 
         assert_eq!(result.items.len(), 2);
         assert_eq!(result.total, Some(7));
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_empty_page_after_skip_uses_count_not_skip() {
+        let mock_server = MockServer::start().await;
+
+        // Items matching the query were deleted since an earlier page
+        // suggested more results existed, so skip=10 now lands past the
+        // (now smaller) true total -- the page comes back empty.
+        Mock::given(method("GET"))
+            .and(path("/api/issues"))
+            .and(query_param("query", "project: PROJ"))
+            .and(query_param("$top", "5"))
+            .and(query_param("$skip", "10"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 7
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = IssueTracker::search_issues(&client, "project: PROJ", 5, 10).unwrap();
+
+        assert!(result.items.is_empty());
+        // Must reflect the real count (7), not the skip value (10).
+        assert_eq!(result.total, Some(7));
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_empty_page_after_skip_count_fails_returns_none() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues"))
+            .and(query_param("query", "project: PROJ"))
+            .and(query_param("$top", "5"))
+            .and(query_param("$skip", "10"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // count == -1 means YouTrack is still counting; the interactive
+        // search path only gets one no-sleep attempt, so this resolves to
+        // "count unavailable" rather than retrying.
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": -1
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = IssueTracker::search_issues(&client, "project: PROJ", 5, 10).unwrap();
+
+        assert!(result.items.is_empty());
+        assert_eq!(result.total, None);
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_empty_page_no_skip_infers_zero_total() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues"))
+            .and(query_param("query", "project: PROJ"))
+            .and(query_param("$top", "5"))
+            .and(query_param("$skip", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issuesGetter/count"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 0
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let result = IssueTracker::search_issues(&client, "project: PROJ", 5, 0).unwrap();
+
+        assert!(result.items.is_empty());
+        assert_eq!(result.total, Some(0));
     }
 
     #[tokio::test]
