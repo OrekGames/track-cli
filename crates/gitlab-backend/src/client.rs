@@ -5,7 +5,18 @@ use ureq::Agent;
 use ureq::unversioned::multipart::{Form, Part};
 
 use crate::error::{GitLabError, Result};
+use crate::filters::GitLabIssueFilters;
 use crate::models::*;
+
+/// Append `&key=value` (URL-encoded) to `url` if `value` is `Some`.
+fn push_opt(url: &mut String, key: &str, value: Option<&str>) {
+    if let Some(v) = value {
+        url.push('&');
+        url.push_str(key);
+        url.push('=');
+        url.push_str(&urlencoding::encode(v));
+    }
+}
 
 /// GitLab REST API client
 pub struct GitLabClient {
@@ -152,29 +163,68 @@ impl GitLabClient {
         Ok(issue)
     }
 
+    /// Build the `/issues?...` query string for a page of issues matching
+    /// `filters`. All filter dimensions are applied here so list/search and
+    /// count can never diverge in which filters they honor.
+    fn issues_url(
+        &self,
+        filters: &GitLabIssueFilters,
+        per_page: usize,
+        page: usize,
+    ) -> Result<String> {
+        let mut url = self.project_url(&format!("/issues?per_page={}&page={}", per_page, page))?;
+        if !filters.search.is_empty() {
+            url.push_str(&format!("&search={}", urlencoding::encode(&filters.search)));
+        }
+        push_opt(&mut url, "state", filters.state.as_deref());
+        push_opt(&mut url, "labels", filters.labels.as_deref());
+        push_opt(
+            &mut url,
+            "assignee_username",
+            filters.assignee_username.as_deref(),
+        );
+        push_opt(
+            &mut url,
+            "author_username",
+            filters.author_username.as_deref(),
+        );
+        push_opt(&mut url, "milestone", filters.milestone.as_deref());
+        push_opt(&mut url, "order_by", filters.order_by.as_deref());
+        push_opt(&mut url, "sort", filters.sort.as_deref());
+        Ok(url)
+    }
+
+    /// Read the `X-Total` header GitLab returns on list/search/count
+    /// responses, if present.
+    fn read_total_header(response: &ureq::http::Response<ureq::Body>) -> Option<u64> {
+        response
+            .headers()
+            .get("x-total")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+    }
+
     /// List issues for the project
     pub fn list_issues(
         &self,
-        state: Option<&str>,
+        filters: &GitLabIssueFilters,
         per_page: usize,
         page: usize,
     ) -> Result<Vec<GitLabIssue>> {
-        let (issues, _total) = self.list_issues_with_total(state, per_page, page)?;
+        let (issues, _total) = self.list_issues_with_total(filters, per_page, page)?;
         Ok(issues)
     }
 
-    /// List issues and also return the X-Total header count (if present).
-    /// This avoids a separate count API call.
+    /// List/search issues (all `GitLabIssueFilters` dimensions applied) and
+    /// also return the X-Total header count (if present). This avoids a
+    /// separate count API call.
     pub fn list_issues_with_total(
         &self,
-        state: Option<&str>,
+        filters: &GitLabIssueFilters,
         per_page: usize,
         page: usize,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
-        let mut url = self.project_url(&format!("/issues?per_page={}&page={}", per_page, page))?;
-        if let Some(s) = state {
-            url.push_str(&format!("&state={}", urlencoding::encode(s)));
-        }
+        let url = self.issues_url(filters, per_page, page)?;
 
         let response = self
             .agent
@@ -184,67 +234,7 @@ impl GitLabClient {
             .call()
             .map_err(|e| self.handle_error(e))?;
 
-        let total = response
-            .headers()
-            .get("x-total")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-
-        let mut response = self.check_response(response)?;
-        let issues: Vec<GitLabIssue> = response.body_mut().read_json()?;
-        Ok((issues, total))
-    }
-
-    /// Search issues with query text, state, and labels
-    pub fn search_issues(
-        &self,
-        search: &str,
-        state: Option<&str>,
-        labels: Option<&str>,
-        per_page: usize,
-        page: usize,
-    ) -> Result<Vec<GitLabIssue>> {
-        let (issues, _total) =
-            self.search_issues_with_total(search, state, labels, per_page, page)?;
-        Ok(issues)
-    }
-
-    /// Search issues and also return the X-Total header count (if present).
-    /// This avoids a separate count API call.
-    pub fn search_issues_with_total(
-        &self,
-        search: &str,
-        state: Option<&str>,
-        labels: Option<&str>,
-        per_page: usize,
-        page: usize,
-    ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
-        let mut url = self.project_url(&format!(
-            "/issues?search={}&per_page={}&page={}",
-            urlencoding::encode(search),
-            per_page,
-            page
-        ))?;
-        if let Some(s) = state {
-            url.push_str(&format!("&state={}", urlencoding::encode(s)));
-        }
-        if let Some(l) = labels {
-            url.push_str(&format!("&labels={}", urlencoding::encode(l)));
-        }
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let total = response
-            .headers()
-            .get("x-total")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
+        let total = Self::read_total_header(&response);
 
         let mut response = self.check_response(response)?;
         let issues: Vec<GitLabIssue> = response.body_mut().read_json()?;
@@ -656,17 +646,13 @@ impl GitLabClient {
 
     // ==================== Count Operations ====================
 
-    /// Count issues matching search criteria by reading the X-Total header.
-    /// Makes a minimal request with per_page=1 to get the count without
-    /// transferring significant data.
-    pub fn count_issues_by_query(&self, search: &str, state: Option<&str>) -> Result<Option<u64>> {
-        let mut url = format!("{}?per_page=1&page=1", self.project_url("/issues")?);
-        if !search.is_empty() {
-            url.push_str(&format!("&search={}", urlencoding::encode(search)));
-        }
-        if let Some(s) = state {
-            url.push_str(&format!("&state={}", urlencoding::encode(s)));
-        }
+    /// Count issues matching `filters` by reading the X-Total header. Makes a
+    /// minimal request with per_page=1 to get the count without transferring
+    /// significant data. Uses the same `issues_url` builder as
+    /// `list_issues_with_total`, so a count is guaranteed to apply identical
+    /// filters to what a matching search would apply.
+    pub fn count_issues_by_query(&self, filters: &GitLabIssueFilters) -> Result<Option<u64>> {
+        let url = self.issues_url(filters, 1, 1)?;
 
         let response = self
             .agent
@@ -677,11 +663,7 @@ impl GitLabClient {
             .map_err(|e| self.handle_error(e))?;
 
         // Read X-Total header before check_response takes ownership
-        let total = response
-            .headers()
-            .get("x-total")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
+        let total = Self::read_total_header(&response);
 
         // Validate the response status
         let _response = self.check_response(response)?;

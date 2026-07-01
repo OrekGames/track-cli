@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::client::GitLabClient;
+    use crate::filters::GitLabIssueFilters;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tracker_core::{AttachmentUpload, AttachmentUploadFile, IssueTracker, KnowledgeBase};
@@ -118,7 +119,8 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let issues = client.list_issues(None, 20, 1).unwrap();
+        let filters = GitLabIssueFilters::default();
+        let issues = client.list_issues(&filters, 20, 1).unwrap();
 
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0].iid, 1);
@@ -128,7 +130,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_search_issues() {
+    async fn test_list_issues_with_search_text() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -142,9 +144,12 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let issues = client
-            .search_issues("login", Some("opened"), None, 20, 1)
-            .unwrap();
+        let filters = GitLabIssueFilters {
+            search: "login".to_string(),
+            state: Some("opened".to_string()),
+            ..Default::default()
+        };
+        let issues = client.list_issues(&filters, 20, 1).unwrap();
 
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].title, "Bug in login");
@@ -665,13 +670,18 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let result = client.count_issues_by_query("bug", Some("opened")).unwrap();
+        let filters = GitLabIssueFilters {
+            search: "bug".to_string(),
+            state: Some("opened".to_string()),
+            ..Default::default()
+        };
+        let result = client.count_issues_by_query(&filters).unwrap();
 
         assert_eq!(result, Some(847));
     }
 
     #[tokio::test]
-    async fn test_search_issues_with_total_reads_header() {
+    async fn test_list_issues_with_total_reads_header_with_search_text() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -690,16 +700,18 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let (issues, total) = client
-            .search_issues_with_total("bug", None, None, 20, 1)
-            .unwrap();
+        let filters = GitLabIssueFilters {
+            search: "bug".to_string(),
+            ..Default::default()
+        };
+        let (issues, total) = client.list_issues_with_total(&filters, 20, 1).unwrap();
 
         assert_eq!(issues.len(), 2);
         assert_eq!(total, Some(42));
     }
 
     #[tokio::test]
-    async fn test_search_issues_with_total_without_header() {
+    async fn test_list_issues_with_total_with_search_text_without_header() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -714,9 +726,11 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let (issues, total) = client
-            .search_issues_with_total("bug", None, None, 20, 1)
-            .unwrap();
+        let filters = GitLabIssueFilters {
+            search: "bug".to_string(),
+            ..Default::default()
+        };
+        let (issues, total) = client.list_issues_with_total(&filters, 20, 1).unwrap();
 
         assert_eq!(issues.len(), 1);
         assert_eq!(total, None);
@@ -741,9 +755,11 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let (issues, total) = client
-            .list_issues_with_total(Some("opened"), 20, 1)
-            .unwrap();
+        let filters = GitLabIssueFilters {
+            state: Some("opened".to_string()),
+            ..Default::default()
+        };
+        let (issues, total) = client.list_issues_with_total(&filters, 20, 1).unwrap();
 
         assert_eq!(issues.len(), 2);
         assert_eq!(total, Some(100));
@@ -762,9 +778,114 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let result = client.count_issues_by_query("", None).unwrap();
+        let filters = GitLabIssueFilters::default();
+        let result = client.count_issues_by_query(&filters).unwrap();
 
         assert_eq!(result, None);
+    }
+
+    /// This is the critical regression test for issue #255: the outgoing
+    /// request built without free-text search (exactly the `my_issues`
+    /// cache-template shape) must still carry `state`/`assignee_username`.
+    /// Before the fix, this branch (`list_issues_with_total`) could not
+    /// express those filters at all, so they were silently dropped.
+    #[tokio::test]
+    async fn test_list_issues_with_total_carries_filters_without_search_text() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("state", "opened"))
+            .and(query_param("assignee_username", "@me"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([mock_gitlab_issue(7, "My issue")])),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let filters = GitLabIssueFilters {
+            state: Some("opened".to_string()),
+            assignee_username: Some("@me".to_string()),
+            ..Default::default()
+        };
+        let (issues, _total) = client.list_issues_with_total(&filters, 20, 1).unwrap();
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].title, "My issue");
+    }
+
+    /// Proves every `GitLabIssueFilters` dimension reaches the outgoing HTTP
+    /// request when free-text search is also present.
+    #[tokio::test]
+    async fn test_list_issues_with_total_carries_all_filters_with_search_text() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("search", "login"))
+            .and(query_param("state", "opened"))
+            .and(query_param("labels", "bug"))
+            .and(query_param("assignee_username", "@me"))
+            .and(query_param("order_by", "updated_at"))
+            .and(query_param("sort", "desc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([mock_gitlab_issue(9, "Login bug")])),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let filters = GitLabIssueFilters {
+            search: "login".to_string(),
+            state: Some("opened".to_string()),
+            labels: Some("bug".to_string()),
+            assignee_username: Some("@me".to_string()),
+            order_by: Some("updated_at".to_string()),
+            sort: Some("desc".to_string()),
+            ..Default::default()
+        };
+        let (issues, _total) = client.list_issues_with_total(&filters, 20, 1).unwrap();
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].title, "Login bug");
+    }
+
+    /// Proves `count_issues_by_query` applies the same filters (via the
+    /// shared `issues_url` builder) as a matching search would, so a count
+    /// can never silently disagree with its search.
+    #[tokio::test]
+    async fn test_count_issues_by_query_carries_labels_and_assignee() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("per_page", "1"))
+            .and(query_param("page", "1"))
+            .and(query_param("labels", "bug"))
+            .and(query_param("assignee_username", "@me"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-total", "3")
+                    .set_body_json(serde_json::json!([])),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let filters = GitLabIssueFilters {
+            labels: Some("bug".to_string()),
+            assignee_username: Some("@me".to_string()),
+            ..Default::default()
+        };
+        let result = client.count_issues_by_query(&filters).unwrap();
+
+        assert_eq!(result, Some(3));
     }
 
     // ==================== Work Item Parent Operations ====================

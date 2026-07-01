@@ -7,6 +7,7 @@ use tracker_core::{
     canonical_field_name,
 };
 
+use crate::filters::GitLabIssueFilters;
 use crate::models::*;
 
 /// Convert a GitLab issue to a tracker-core Issue.
@@ -581,11 +582,15 @@ pub fn gitlab_events_to_history_events(
 /// URL-param format is detected when the query contains `=` with no whitespace
 /// before the first `=`.
 ///
-/// Returns `(search_text, state, labels)`.
-pub fn convert_query_to_gitlab_params(query: &str) -> (String, Option<String>, Option<String>) {
+/// Returns `(filters, unsupported)`, where `unsupported` lists the URL-param
+/// keys that were present but not recognized (in the order encountered).
+/// Token-based queries can never produce unsupported keys, since a token
+/// query's "no match" case is intentional free-text handling, not filter-key
+/// rejection.
+pub fn convert_query_to_gitlab_params(query: &str) -> (GitLabIssueFilters, Vec<String>) {
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return (String::new(), None, None);
+        return (GitLabIssueFilters::default(), Vec::new());
     }
 
     // Detect URL-param format: contains '=' with no whitespace before the first '='
@@ -600,39 +605,44 @@ pub fn convert_query_to_gitlab_params(query: &str) -> (String, Option<String>, O
     if is_url_param {
         parse_url_params(trimmed)
     } else {
-        parse_token_query(trimmed)
+        (parse_token_query(trimmed), Vec::new())
     }
 }
 
 /// Parse URL-param format: `key=value&key=value`
-fn parse_url_params(query: &str) -> (String, Option<String>, Option<String>) {
+fn parse_url_params(query: &str) -> (GitLabIssueFilters, Vec<String>) {
+    let mut filters = GitLabIssueFilters::default();
     let mut search_parts = Vec::new();
-    let mut state: Option<String> = None;
-    let mut labels: Option<String> = None;
+    let mut unsupported = Vec::new();
 
     for pair in query.split('&') {
         if let Some((key, value)) = pair.split_once('=') {
             match key {
-                "state" => state = Some(value.to_string()),
-                "labels" => labels = Some(value.to_string()),
+                "state" => filters.state = Some(value.to_string()),
+                "labels" => filters.labels = Some(value.to_string()),
+                "assignee_username" => filters.assignee_username = Some(value.to_string()),
+                "author_username" => filters.author_username = Some(value.to_string()),
+                "milestone" => filters.milestone = Some(value.to_string()),
+                "order_by" => filters.order_by = Some(value.to_string()),
+                "sort" => filters.sort = Some(value.to_string()),
                 "search" => {
                     if !value.is_empty() {
                         search_parts.push(value.to_string());
                     }
                 }
-                _ => {} // ignore order_by, sort, assignee_username, etc.
+                other => unsupported.push(other.to_string()),
             }
         }
     }
 
-    (search_parts.join(" "), state, labels)
+    filters.search = search_parts.join(" ");
+    (filters, unsupported)
 }
 
 /// Parse token-based format: `#open label:bug some text`
-fn parse_token_query(query: &str) -> (String, Option<String>, Option<String>) {
+fn parse_token_query(query: &str) -> GitLabIssueFilters {
+    let mut filters = GitLabIssueFilters::default();
     let mut search_parts = Vec::new();
-    let mut state: Option<String> = None;
-    let mut labels: Option<String> = None;
 
     let tokens: Vec<&str> = query.split_whitespace().collect();
     for token in &tokens {
@@ -641,11 +651,11 @@ fn parse_token_query(query: &str) -> (String, Option<String>, Option<String>) {
                 || hash_tag.eq_ignore_ascii_case("open")
                 || hash_tag.eq_ignore_ascii_case("opened")
             {
-                state = Some("opened".to_string());
+                filters.state = Some("opened".to_string());
             } else if hash_tag.eq_ignore_ascii_case("resolved")
                 || hash_tag.eq_ignore_ascii_case("closed")
             {
-                state = Some("closed".to_string());
+                filters.state = Some("closed".to_string());
             } else {
                 search_parts.push(*token);
             }
@@ -653,13 +663,14 @@ fn parse_token_query(query: &str) -> (String, Option<String>, Option<String>) {
             // Skip project: prefix for GitLab (project is already scoped via project_id)
             let _ = rest;
         } else if let Some(rest) = token.strip_prefix("label:") {
-            labels = Some(rest.to_string());
+            filters.labels = Some(rest.to_string());
         } else {
             search_parts.push(*token);
         }
     }
 
-    (search_parts.join(" "), state, labels)
+    filters.search = search_parts.join(" ");
+    filters
 }
 
 #[cfg(test)]
@@ -670,77 +681,131 @@ mod tests {
 
     #[test]
     fn url_param_state_only() {
-        let (search, state, labels) = convert_query_to_gitlab_params("state=opened");
-        assert_eq!(search, "");
-        assert_eq!(state, Some("opened".to_string()));
-        assert_eq!(labels, None);
+        let (filters, unsupported) = convert_query_to_gitlab_params("state=opened");
+        assert_eq!(filters.search, "");
+        assert_eq!(filters.state, Some("opened".to_string()));
+        assert_eq!(filters.labels, None);
+        assert!(unsupported.is_empty());
     }
 
     #[test]
     fn url_param_state_and_labels() {
-        let (search, state, labels) = convert_query_to_gitlab_params("state=opened&labels=bug");
-        assert_eq!(search, "");
-        assert_eq!(state, Some("opened".to_string()));
-        assert_eq!(labels, Some("bug".to_string()));
+        let (filters, unsupported) =
+            convert_query_to_gitlab_params("state=opened&labels=bug");
+        assert_eq!(filters.search, "");
+        assert_eq!(filters.state, Some("opened".to_string()));
+        assert_eq!(filters.labels, Some("bug".to_string()));
+        assert!(unsupported.is_empty());
     }
 
     #[test]
     fn url_param_with_search() {
-        let (search, state, labels) = convert_query_to_gitlab_params("state=opened&search=foo");
-        assert_eq!(search, "foo");
-        assert_eq!(state, Some("opened".to_string()));
-        assert_eq!(labels, None);
+        let (filters, unsupported) = convert_query_to_gitlab_params("state=opened&search=foo");
+        assert_eq!(filters.search, "foo");
+        assert_eq!(filters.state, Some("opened".to_string()));
+        assert_eq!(filters.labels, None);
+        assert!(unsupported.is_empty());
     }
 
     #[test]
-    fn url_param_ignores_unknown_keys() {
-        let (search, state, labels) =
-            convert_query_to_gitlab_params("state=opened&order_by=updated_at");
-        assert_eq!(search, "");
-        assert_eq!(state, Some("opened".to_string()));
-        assert_eq!(labels, None);
+    fn url_param_reports_unsupported_keys() {
+        let (filters, unsupported) =
+            convert_query_to_gitlab_params("state=opened&totally_bogus_key=updated_at");
+        assert_eq!(filters.search, "");
+        assert_eq!(filters.state, Some("opened".to_string()));
+        assert_eq!(filters.labels, None);
+        assert_eq!(unsupported, vec!["totally_bogus_key".to_string()]);
+    }
+
+    #[test]
+    fn url_param_assignee_username() {
+        let (filters, unsupported) = convert_query_to_gitlab_params("assignee_username=@me");
+        assert_eq!(filters.assignee_username, Some("@me".to_string()));
+        assert!(unsupported.is_empty());
+    }
+
+    #[test]
+    fn url_param_author_username() {
+        let (filters, unsupported) = convert_query_to_gitlab_params("author_username=octocat");
+        assert_eq!(filters.author_username, Some("octocat".to_string()));
+        assert!(unsupported.is_empty());
+    }
+
+    #[test]
+    fn url_param_milestone() {
+        let (filters, unsupported) = convert_query_to_gitlab_params("milestone=v1.0");
+        assert_eq!(filters.milestone, Some("v1.0".to_string()));
+        assert!(unsupported.is_empty());
+    }
+
+    #[test]
+    fn url_param_order_by_and_sort() {
+        let (filters, unsupported) =
+            convert_query_to_gitlab_params("order_by=updated_at&sort=desc");
+        assert_eq!(filters.order_by, Some("updated_at".to_string()));
+        assert_eq!(filters.sort, Some("desc".to_string()));
+        assert!(unsupported.is_empty());
+    }
+
+    /// Regression test for issue #255: the built-in `my_issues` GitLab cache
+    /// template (see `crates/track/src/cache.rs`) uses this exact query
+    /// string. Previously `assignee_username` was silently dropped, so the
+    /// template returned every open issue instead of just the current
+    /// user's.
+    #[test]
+    fn my_issues_template_query_is_fully_supported() {
+        let (filters, unsupported) =
+            convert_query_to_gitlab_params("state=opened&assignee_username=@me");
+        assert_eq!(filters.state, Some("opened".to_string()));
+        assert_eq!(filters.assignee_username, Some("@me".to_string()));
+        assert!(unsupported.is_empty());
     }
 
     // Token-based format tests
 
     #[test]
     fn token_hash_open() {
-        let (search, state, labels) = convert_query_to_gitlab_params("#open");
-        assert_eq!(search, "");
-        assert_eq!(state, Some("opened".to_string()));
-        assert_eq!(labels, None);
+        let (filters, unsupported) = convert_query_to_gitlab_params("#open");
+        assert_eq!(filters.search, "");
+        assert_eq!(filters.state, Some("opened".to_string()));
+        assert_eq!(filters.labels, None);
+        assert!(unsupported.is_empty());
     }
 
     #[test]
     fn token_hash_unresolved() {
-        let (search, state, labels) = convert_query_to_gitlab_params("#unresolved");
-        assert_eq!(search, "");
-        assert_eq!(state, Some("opened".to_string()));
-        assert_eq!(labels, None);
+        let (filters, unsupported) = convert_query_to_gitlab_params("#unresolved");
+        assert_eq!(filters.search, "");
+        assert_eq!(filters.state, Some("opened".to_string()));
+        assert_eq!(filters.labels, None);
+        assert!(unsupported.is_empty());
     }
 
     #[test]
     fn token_label() {
-        let (search, state, labels) = convert_query_to_gitlab_params("label:bug");
-        assert_eq!(search, "");
-        assert_eq!(state, None);
-        assert_eq!(labels, Some("bug".to_string()));
+        let (filters, unsupported) = convert_query_to_gitlab_params("label:bug");
+        assert_eq!(filters.search, "");
+        assert_eq!(filters.state, None);
+        assert_eq!(filters.labels, Some("bug".to_string()));
+        assert!(unsupported.is_empty());
     }
 
     #[test]
     fn token_free_text() {
-        let (search, state, labels) = convert_query_to_gitlab_params("hello world");
-        assert_eq!(search, "hello world");
-        assert_eq!(state, None);
-        assert_eq!(labels, None);
+        let (filters, unsupported) = convert_query_to_gitlab_params("hello world");
+        assert_eq!(filters.search, "hello world");
+        assert_eq!(filters.state, None);
+        assert_eq!(filters.labels, None);
+        assert!(unsupported.is_empty());
     }
 
     #[test]
     fn empty_string() {
-        let (search, state, labels) = convert_query_to_gitlab_params("");
-        assert_eq!(search, "");
-        assert_eq!(state, None);
-        assert_eq!(labels, None);
+        let (filters, unsupported) = convert_query_to_gitlab_params("");
+        assert_eq!(filters.search, "");
+        assert_eq!(filters.state, None);
+        assert_eq!(filters.labels, None);
+        assert!(unsupported.is_empty());
     }
 
     // gitlab_link_to_core tests
@@ -763,7 +828,7 @@ mod tests {
         assert_eq!(core_link.direction, Some("outward".to_string()));
         assert_eq!(core_link.link_type.id, "blocks");
         assert_eq!(core_link.link_type.name, "Blocks");
-        assert_eq!(core_link.link_type.directed, true);
+        assert!(core_link.link_type.directed);
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "123");
         assert_eq!(core_link.issues[0].id_readable, Some("#456".to_string()));
@@ -789,7 +854,7 @@ mod tests {
         assert_eq!(core_link.direction, Some("inward".to_string()));
         assert_eq!(core_link.link_type.id, "is_blocked_by");
         assert_eq!(core_link.link_type.name, "Is Blocked By");
-        assert_eq!(core_link.link_type.directed, true);
+        assert!(core_link.link_type.directed);
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "124");
         assert_eq!(core_link.issues[0].id_readable, Some("#457".to_string()));
@@ -815,7 +880,7 @@ mod tests {
         assert_eq!(core_link.direction, Some("both".to_string()));
         assert_eq!(core_link.link_type.id, "relates_to");
         assert_eq!(core_link.link_type.name, "Relates");
-        assert_eq!(core_link.link_type.directed, false);
+        assert!(!core_link.link_type.directed);
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "125");
         assert_eq!(core_link.issues[0].id_readable, Some("#458".to_string()));
@@ -842,7 +907,7 @@ mod tests {
         assert_eq!(core_link.direction, Some("both".to_string()));
         assert_eq!(core_link.link_type.id, "relates_to");
         assert_eq!(core_link.link_type.name, "Relates");
-        assert_eq!(core_link.link_type.directed, false);
+        assert!(!core_link.link_type.directed);
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "126");
         assert_eq!(core_link.issues[0].id_readable, Some("#459".to_string()));

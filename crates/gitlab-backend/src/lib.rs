@@ -1,6 +1,7 @@
 pub mod client;
 mod convert;
 pub mod error;
+pub mod filters;
 pub mod models;
 mod trait_impl;
 
@@ -9,6 +10,7 @@ mod client_tests;
 
 pub use client::GitLabClient;
 pub use error::{GitLabError, Result};
+pub use filters::GitLabIssueFilters;
 pub use models::*;
 
 pub use tracker_core::{IssueTracker, KnowledgeBase, TrackerError};
