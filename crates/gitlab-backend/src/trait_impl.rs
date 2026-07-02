@@ -502,6 +502,9 @@ impl KnowledgeBase for GitLabClient {
         {
             return Ok(Vec::new());
         }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
 
         Ok(self
             .list_wiki_pages(true)?
@@ -513,6 +516,10 @@ impl KnowledgeBase for GitLabClient {
     }
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let query = query.to_lowercase();
         Ok(self
             .list_wiki_pages(true)?
@@ -528,51 +535,6 @@ impl KnowledgeBase for GitLabClient {
             })
             .skip(skip)
             .take(limit)
-            .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
-            .collect())
-    }
-
-    fn list_all_articles(
-        &self,
-        project_id: Option<&str>,
-        max_results: usize,
-    ) -> Result<Vec<Article>> {
-        if let Some(project) = project_id
-            && project != self.project_id_str()
-        {
-            return Ok(Vec::new());
-        }
-        if max_results == 0 {
-            return Ok(Vec::new());
-        }
-
-        Ok(self
-            .list_wiki_pages(true)?
-            .into_iter()
-            .take(max_results)
-            .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
-            .collect())
-    }
-
-    fn search_all_articles(&self, query: &str, max_results: usize) -> Result<Vec<Article>> {
-        if max_results == 0 {
-            return Ok(Vec::new());
-        }
-
-        let query = query.to_lowercase();
-        Ok(self
-            .list_wiki_pages(true)?
-            .into_iter()
-            .filter(|page| {
-                page.title.to_lowercase().contains(&query)
-                    || page
-                        .content
-                        .as_deref()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .contains(&query)
-            })
-            .take(max_results)
             .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
             .collect())
     }
