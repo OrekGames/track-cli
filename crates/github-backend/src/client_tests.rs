@@ -521,7 +521,7 @@ mod tests {
                     "event": "labeled",
                     "created_at": created_at,
                     "actor": { "login": "alice", "id": 1 },
-                    "label": { "id": i, "name": format!("label-{i}"), "color": "ffffff", "description": null }
+                    "label": { "name": format!("label-{i}"), "color": "ffffff" }
                 })
             })
             .collect();

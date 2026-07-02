@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::issue::{GitHubMilestone, GitHubUser};
-use super::label::GitHubLabel;
+use super::issue::GitHubUser;
 
 /// A single GitHub issue timeline event.
 ///
@@ -37,12 +36,12 @@ pub enum GitHubTimelineEvent {
     Labeled {
         created_at: Option<String>,
         actor: Option<GitHubUser>,
-        label: Option<GitHubLabel>,
+        label: Option<TimelineLabel>,
     },
     Unlabeled {
         created_at: Option<String>,
         actor: Option<GitHubUser>,
-        label: Option<GitHubLabel>,
+        label: Option<TimelineLabel>,
     },
     Renamed {
         created_at: Option<String>,
@@ -52,12 +51,12 @@ pub enum GitHubTimelineEvent {
     Milestoned {
         created_at: Option<String>,
         actor: Option<GitHubUser>,
-        milestone: Option<GitHubMilestone>,
+        milestone: Option<TimelineMilestone>,
     },
     Demilestoned {
         created_at: Option<String>,
         actor: Option<GitHubUser>,
-        milestone: Option<GitHubMilestone>,
+        milestone: Option<TimelineMilestone>,
     },
     /// Any event type we don't translate (commented, referenced, ...).
     Other,
@@ -68,6 +67,28 @@ pub enum GitHubTimelineEvent {
 pub struct GitHubRename {
     pub from: Option<String>,
     pub to: Option<String>,
+}
+
+/// The `label` payload on a `labeled`/`unlabeled` timeline event.
+///
+/// The timeline API sends a narrower object than the full issue-API label
+/// (no `id`/`description`), so this is a dedicated subset type rather than
+/// reusing [`super::label::GitHubLabel`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TimelineLabel {
+    pub name: String,
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+/// The `milestone` payload on a `milestoned`/`demilestoned` timeline event.
+///
+/// The timeline API sends a narrower object than the full issue-API
+/// milestone (no `id`/`number`), so this is a dedicated subset type rather
+/// than reusing [`super::issue::GitHubMilestone`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TimelineMilestone {
+    pub title: String,
 }
 
 /// Flattened representation of the raw timeline event JSON, used as a
@@ -81,9 +102,9 @@ struct RawTimelineEvent {
     created_at: Option<String>,
     actor: Option<GitHubUser>,
     assignee: Option<GitHubUser>,
-    label: Option<GitHubLabel>,
+    label: Option<TimelineLabel>,
     rename: Option<GitHubRename>,
-    milestone: Option<GitHubMilestone>,
+    milestone: Option<TimelineMilestone>,
 }
 
 impl GitHubTimelineEvent {
