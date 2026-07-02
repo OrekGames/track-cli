@@ -932,55 +932,100 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_all_articles_fetches_wiki_once_and_truncates() {
+    async fn test_list_articles_slices_full_wiki_response_past_first_hundred() {
         let mock_server = MockServer::start().await;
+
+        // GitLab's GET /projects/:id/wikis does not support pagination --
+        // `per_page`/`page` aren't documented parameters and are ignored;
+        // the endpoint always returns the full collection in one response
+        // (confirmed against the live API). `with_content` is the only
+        // supported query param, so the mock must not require per_page/page.
+        let wiki_pages: Vec<_> = (1..=105)
+            .map(|n| mock_wiki_page(&format!("wiki-{n}"), &format!("Page {n}"), "body"))
+            .collect();
 
         Mock::given(method("GET"))
             .and(path("/projects/123/wikis"))
             .and(header("PRIVATE-TOKEN", "test-token"))
             .and(query_param("with_content", "1"))
-            .and(query_param("per_page", "100"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                mock_wiki_page("first", "First", "alpha"),
-                mock_wiki_page("second", "Second", "beta"),
-                mock_wiki_page("third", "Third", "gamma")
-            ])))
+            .respond_with(ResponseTemplate::new(200).set_body_json(wiki_pages))
             .expect(1)
             .mount(&mock_server)
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let articles = client.list_all_articles(Some("123"), 2).unwrap();
+        // skip=99 starts past the first 100 items that a (nonexistent) 100-
+        // item page cap would have returned.
+        let articles = client.list_articles(Some("123"), 5, 99).unwrap();
 
-        assert_eq!(articles.len(), 2);
-        assert_eq!(articles[0].id, "first");
-        assert_eq!(articles[1].id, "second");
+        assert_eq!(articles.len(), 5);
+        assert_eq!(articles[0].id, "wiki-100");
+        assert_eq!(articles[4].id, "wiki-104");
     }
 
     #[tokio::test]
-    async fn test_search_all_articles_fetches_wiki_once_filters_and_truncates() {
+    async fn test_list_all_articles_returns_articles_past_first_hundred() {
         let mock_server = MockServer::start().await;
+
+        // Every call returns the same full 105-item collection (GitLab's
+        // wiki-list endpoint has no pagination); `list_all_articles`'s
+        // default windowed implementation calls `list_articles` twice
+        // (offset 0 and offset 100) and must combine them without dropping
+        // or duplicating anything.
+        let wiki_pages: Vec<_> = (1..=105)
+            .map(|n| mock_wiki_page(&format!("wiki-{n}"), &format!("Page {n}"), "body"))
+            .collect();
 
         Mock::given(method("GET"))
             .and(path("/projects/123/wikis"))
             .and(header("PRIVATE-TOKEN", "test-token"))
             .and(query_param("with_content", "1"))
-            .and(query_param("per_page", "100"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                mock_wiki_page("install", "Install Guide", "alpha"),
-                mock_wiki_page("deploy", "Deploy", "contains guide details"),
-                mock_wiki_page("other", "Other", "guide appendix")
-            ])))
+            .respond_with(ResponseTemplate::new(200).set_body_json(wiki_pages))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let articles = client.list_all_articles(Some("123"), 1000).unwrap();
+
+        assert_eq!(articles.len(), 105);
+        assert_eq!(articles[0].id, "wiki-1");
+        // The 101st-105th wiki pages only surface once the second windowed
+        // call slices past offset 100 -- exactly what silently dropping the
+        // rest of the collection would have missed.
+        assert_eq!(articles[100].id, "wiki-101");
+        assert_eq!(articles[104].id, "wiki-105");
+    }
+
+    #[tokio::test]
+    async fn test_search_all_articles_finds_match_past_first_hundred_wiki_pages() {
+        let mock_server = MockServer::start().await;
+
+        // The only match ("needle") sits at the end of a 105-item
+        // collection returned in a single response.
+        let mut wiki_pages: Vec<_> = (1..=104)
+            .map(|n| mock_wiki_page(&format!("wiki-{n}"), &format!("Page {n}"), "haystack"))
+            .collect();
+        wiki_pages.push(mock_wiki_page(
+            "wiki-105",
+            "Needle Page",
+            "contains the needle",
+        ));
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/wikis"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("with_content", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(wiki_pages))
             .expect(1)
             .mount(&mock_server)
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let articles = client.search_all_articles("guide", 2).unwrap();
+        let articles = client.search_all_articles("needle", 1000).unwrap();
 
-        assert_eq!(articles.len(), 2);
-        assert_eq!(articles[0].id, "install");
-        assert_eq!(articles[1].id, "deploy");
+        assert_eq!(articles.len(), 1);
+        assert_eq!(articles[0].id, "wiki-105");
     }
 
     // ==================== Issue History (3-endpoint merge) Tests ====================

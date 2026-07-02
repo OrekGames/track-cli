@@ -789,9 +789,15 @@ impl GitLabClient {
     // ==================== Wiki Operations ====================
 
     /// List project wiki pages.
+    ///
+    /// GitLab's `GET /projects/:id/wikis` endpoint does not support
+    /// pagination (`per_page`/`page` are not documented parameters and are
+    /// silently ignored -- confirmed against the live API, which returns
+    /// the full collection in a single response regardless). Callers that
+    /// need a subset should slice the returned `Vec` themselves.
     pub fn list_wiki_pages(&self, with_content: bool) -> Result<Vec<GitLabWikiPage>> {
         let url = self.project_url(&format!(
-            "/wikis?with_content={}&per_page=100",
+            "/wikis?with_content={}",
             if with_content { 1 } else { 0 }
         ))?;
 

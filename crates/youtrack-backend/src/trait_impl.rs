@@ -30,6 +30,22 @@ impl IssueTracker for YouTrackClient {
         let item_count = items.len();
 
         if item_count < limit {
+            // An empty page after a nonzero skip doesn't reliably mean the
+            // true total equals skip -- matching issues may have been
+            // deleted or reprioritized since an earlier page suggested more
+            // results existed. Fall back to a best-effort count rather than
+            // asserting total == skip.
+            if skip > 0 && item_count == 0 {
+                let total = self
+                    .count_issues_with_retry(query, 1, std::time::Duration::ZERO)
+                    .ok()
+                    .flatten();
+                return Ok(match total {
+                    Some(count) => SearchResult::with_total(items, count),
+                    None => SearchResult::from_items(items),
+                });
+            }
+
             return Ok(SearchResult::with_total(items, (skip + item_count) as u64));
         }
 
