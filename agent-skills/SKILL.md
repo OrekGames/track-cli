@@ -156,6 +156,19 @@ track config clear [-g]        # Delete a config file
 - `link_mappings` tables (`[youtrack.link_mappings]`, `[jira.link_mappings]`, `[gitlab.link_mappings]`, `[linear.link_mappings]`) are **config-file-only** — `config set/get` rejects them; edit `.track.toml` directly.
 - Secret keys are **redacted on read**: `config get token` prints `(set - hidden)`. You can verify a token is set but never read it back.
 
+### Doctor (Capability Audit)
+
+```bash
+track doctor -o json                 # Audit the effective backend
+track doctor --all-backends -o json  # Audit every backend configured in .track.toml/global/env
+track -b gitlab doctor -o json       # Audit a specific backend (global -b flag)
+track doctor --project PROJ         # Use PROJ for project-scoped checks
+track doctor --write-check          # + local write-payload validation (never mutates remote trackers)
+track doctor --all-backends --strict # Exit non-zero if any check failed (degraded still exits 0)
+```
+
+**`config test` vs `doctor`**: `config test` is a single connectivity probe (`list_projects`). `doctor` reports per-check capability statuses — `config_valid`, `auth_connectivity`, `project_resolution`, `issue_search`, `issue_read`, `comments_read`, `links_read`, `field_schema`, `field_admin`, `articles`, `write_validation` — each `ok`/`degraded`/`failed`/`skipped`. `degraded` usually means a scope-limited token (403); `skipped` means the backend doesn't support the capability. A backend with failing checks but working search/read is reported `degraded`, not `failed`. JSON shape: `{summary: {backends_checked, ok, degraded, failed}, backends: [{backend, status, config, checks: [{name, status, message?, sample_count?}], recommendation?}]}`. Run `track doctor --all-backends -o json` at session start to learn which backends are trustworthy before drawing conclusions from individual command failures.
+
 ---
 
 ## Command Reference
@@ -608,7 +621,8 @@ Caveat: the GitLab `my_issues` template relies on `assignee_username`, which the
 
 ```bash
 # 1. Verify connection
-track config test                  # Uses configured backend
+track doctor --all-backends -o json  # Per-backend capability audit (recommended)
+track config test                  # Quick single-probe alternative
 track -b gh config test            # Override to test specific backend
 
 # 2. Get aggregated context (recommended)
