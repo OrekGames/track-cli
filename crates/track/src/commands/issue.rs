@@ -132,6 +132,34 @@ pub fn handle_issue(
             };
             handle_search(client, &args, format, default_project)
         }
+        IssueCommands::Inspect {
+            ids,
+            ids_file,
+            query,
+            template,
+            project,
+            limit,
+            skip,
+            all,
+            include,
+            jsonl,
+            strict,
+        } => {
+            let args = super::inspect::InspectArgs {
+                ids,
+                ids_file: ids_file.as_deref(),
+                query: query.as_deref(),
+                template: template.as_deref(),
+                project: project.as_deref(),
+                limit: *limit,
+                skip: *skip,
+                all: *all,
+                include,
+                jsonl: *jsonl,
+                strict: *strict,
+            };
+            super::inspect::handle_inspect(client, &args, format, default_project)
+        }
         IssueCommands::Delete { ids } => handle_delete_batch(client, ids, format),
         IssueCommands::Attachments { id } => handle_attachments(client, id, format),
         IssueCommands::Attach {
@@ -949,7 +977,7 @@ fn try_cached_count(query: &str, skip: usize) -> Option<(u64, String)> {
 }
 
 /// Resolve search query from either direct query or template
-fn resolve_search_query(
+pub(crate) fn resolve_search_query(
     query: Option<&str>,
     template: Option<&str>,
     project: Option<&str>,

@@ -232,6 +232,7 @@ track config get default_project
 | Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Subtask/parent only | `track -b gl i link PROJ-1 PROJ-2` |
 | Unlink | `track i ul PROJ-1 <link-id>` | `track -b j i ul PROJ-1 <link-id>` | Not supported | `track -b gl i ul #42 <link-id>` |
 | History | `track i history PROJ-123` | `track -b j i history PROJ-123 --field status --since 7d` | `track -b gh i history 42` | `track -b gl i history 42` |
+| Inspect (multi) | `track i ix PROJ-1,PROJ-2 --include comments,links` | `track -b j i ix --query "project = PROJ" --include all` | `track -b gh i ix 42,43 --include comments` | `track -b gl i ix 42,43 --include links` |
 
 **GitHub/GitLab notes**:
 - GitHub and GitLab use numeric issue IDs (e.g., `42`), not project-prefixed keys
@@ -301,6 +302,7 @@ track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fix
 | `track issue create` | `track i new`, `track i c` |
 | `track issue update` | `track i u` |
 | `track issue search` | `track i s`, `track i find` |
+| `track issue inspect` | `track i ix` |
 | `track issue delete` | `track i rm`, `track i del` |
 | `track issue comment` | `track i cmt` |
 | `track issue comments` | `track i comments` |
@@ -358,6 +360,37 @@ track i done PROJ-1,PROJ-2 --state Done
 # Delete multiple issues
 track i del PROJ-1,PROJ-2,PROJ-3
 ```
+
+### Batch Inspect
+
+`track issue inspect` (alias `track i ix`) fetches full context for many issues
+in one invocation with per-issue success/failure results — no shell loops
+around `track issue get --full`. A failing issue is recorded in the report's
+`errors` array instead of aborting the run; pass `--strict` to exit non-zero
+after the full report when any issue failed.
+
+```bash
+# Comma-separated IDs with opt-in context (default is fast: issue fields only)
+track i ix PROJ-1,PROJ-2,PROJ-3 --include comments,links -o json
+
+# IDs from a file (one per line; "-" reads stdin), all context
+track i ix --ids ids.txt --include all -o json
+
+# Select issues by query or template (same resolution as issue search)
+track i ix --query "project: PROJ #Unresolved" --all --include comments -o json
+track i ix --template unresolved --project PROJ --limit 50 -o json
+
+# JSON Lines: one result object per line (overrides -o)
+track i ix --ids - --include comments --jsonl < ids.txt
+```
+
+The JSON report shape is
+`{"total": N, "succeeded": N, "failed": N, "issues": [...], "errors": [{"id", "error"}]}`.
+Each entry in `issues` is the issue object plus `comments`/`links`/`subtasks`/`history`
+arrays for the requested includes; an include the backend cannot serve becomes a
+structured entry in that issue's `warnings` array (never a command failure).
+`subtasks` is a links-derived view: the subset of issue links whose type is a
+subtask/parent relationship.
 
 ### Declarative Apply Plans
 

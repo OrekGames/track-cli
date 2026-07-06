@@ -8,6 +8,7 @@ pub mod context;
 pub mod eval;
 pub mod field;
 pub mod init;
+pub(crate) mod inspect;
 pub mod issue;
 pub mod open;
 pub mod project;
