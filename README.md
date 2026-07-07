@@ -490,7 +490,7 @@ track doctor --all-backends        # Audit every configured backend
 track -b gitlab doctor             # Audit a specific backend
 track doctor --project PROJ       # Use a specific project for scoped checks
 track doctor --write-check         # Also validate write payloads locally (no remote writes)
-track doctor --all-backends --strict -o json  # CI-friendly: non-zero exit if any check failed
+track doctor --all-backends --strict -o json  # CI-friendly: non-zero exit if any check or backend failed
 ```
 
 **`config test` vs `doctor`:** `config test` runs a single connectivity probe
@@ -503,8 +503,10 @@ comments, links, field schema, field admin, and articles, and reports each as
 lack scopes for specific operations — or fail `config test` while search/read
 still work; `doctor` distinguishes those cases and never mutates remote
 trackers (`--write-check` only validates against the locally fetched field
-schema). Exit code is 0 unless `--strict` is passed and a check `failed`
-(degraded stays 0).
+schema). A backend rolls up `failed` only when nothing practical works — bad
+credentials, or a broken read path (e.g. every call 404s under a wrong
+project id). Exit code is 0 unless `--strict` is passed and a check or
+backend `failed` (degraded stays 0).
 
 ### Cache
 

@@ -207,7 +207,7 @@ track doctor --all-backends -o json        # Audit every configured backend
 track -b gitlab doctor -o json             # Audit a specific backend
 track doctor --project PROJ -o json        # Use PROJ for project-scoped checks
 track doctor --write-check -o json         # + local write-payload validation (never mutates)
-track doctor --all-backends --strict       # Non-zero exit if any check failed
+track doctor --all-backends --strict       # Non-zero exit if any check or backend failed
 ```
 
 Checks: `config_valid`, `auth_connectivity`, `project_resolution`,
@@ -228,10 +228,13 @@ Notes:
   create/update payloads can be checked against the locally fetched project
   field schema; no writes are sent.
 - Exit code is 0 even with failures unless `--strict` is passed; under
-  `--strict` any `failed` check exits non-zero (`degraded` still exits 0).
+  `--strict` any `failed` check or `failed` backend exits non-zero
+  (`degraded` still exits 0).
 - A backend is reported `degraded` (not `failed`) when read/search workflows
   still work despite failing checks — e.g. a token that 403s on
-  `list_projects` but can still search and read issues.
+  `list_projects` but can still search and read issues. It rolls up `failed`
+  when nothing practical works: bad credentials/config/connectivity, or a
+  broken read path (e.g. every call 404s under a wrong project id).
 
 ### Config Management
 

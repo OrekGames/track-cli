@@ -158,12 +158,22 @@ fn classify_error(err: &TrackerError) -> (CheckStatus, String) {
 
 /// Roll per-check statuses up into a backend status.
 ///
-/// A backend is `failed` only when nothing practical works; if read/search
+/// A backend is `failed` only when nothing practical works: a check failed
+/// with no usable reads, or the read path itself (`issue_search`/`issue_read`)
+/// is broken — e.g. everything 404s under a wrong project id. If read/search
 /// workflows are usable despite failing checks, it is merely `degraded`.
 fn overall_status(checks: &[CheckResult]) -> CheckStatus {
     let status_of = |name: &str| checks.iter().find(|c| c.name == name).map(|c| c.status);
-    let reads_usable = matches!(status_of("issue_search"), Some(CheckStatus::Ok))
-        || matches!(status_of("issue_read"), Some(CheckStatus::Ok));
+    let search = status_of("issue_search");
+    let read = status_of("issue_read");
+    let reads_usable =
+        matches!(search, Some(CheckStatus::Ok)) || matches!(read, Some(CheckStatus::Ok));
+    // Reads are broken only when a read check actually ran and did not pass;
+    // Skipped-only reads (no sample issue, no client) don't count as broken.
+    let reads_broken = !reads_usable
+        && [search, read]
+            .iter()
+            .any(|s| matches!(s, Some(CheckStatus::Degraded | CheckStatus::Failed)));
 
     let any_failed = checks.iter().any(|c| c.status == CheckStatus::Failed);
     let any_degraded = checks.iter().any(|c| c.status == CheckStatus::Degraded);
@@ -174,6 +184,8 @@ fn overall_status(checks: &[CheckResult]) -> CheckStatus {
         } else {
             CheckStatus::Failed
         }
+    } else if reads_broken {
+        CheckStatus::Failed
     } else if any_degraded {
         CheckStatus::Degraded
     } else {
@@ -224,11 +236,17 @@ const REMOTE_CHECKS: [&str; 9] = [
 ];
 
 pub fn handle_doctor(cli: &Cli, opts: DoctorOptions) -> Result<()> {
+    let effective = effective_backend(cli);
     let backends = select_backends(cli, opts.all_backends)?;
 
     let mut reports = Vec::new();
     for backend in &backends {
-        reports.push(audit_backend(cli, *backend, &opts));
+        reports.push(audit_backend(
+            cli,
+            *backend,
+            cli_overrides_apply(*backend, effective),
+            &opts,
+        ));
     }
 
     let summary = Summary {
@@ -263,14 +281,35 @@ pub fn handle_doctor(cli: &Cli, opts: DoctorOptions) -> Result<()> {
             .flat_map(|b| &b.checks)
             .filter(|c| c.status == CheckStatus::Failed)
             .count();
-        if failed_checks > 0 {
+        // A backend can roll up failed without any individual check failing
+        // (e.g. every remote call 404s, so reads are broken but only
+        // degraded); --strict must catch that too.
+        let failed_backends: usize = report
+            .backends
+            .iter()
+            .filter(|b| b.status == CheckStatus::Failed)
+            .count();
+        if failed_checks > 0 || failed_backends > 0 {
             return Err(anyhow!(
-                "doctor: {} check(s) failed under --strict",
-                failed_checks
+                "doctor: {} check(s) and {} backend(s) failed under --strict",
+                failed_checks,
+                failed_backends
             ));
         }
     }
     Ok(())
+}
+
+/// The effective backend: global `-b` flag, then config chain, then default.
+fn effective_backend(cli: &Cli) -> Backend {
+    cli.backend.unwrap_or_else(crate::config::resolve_backend)
+}
+
+/// The global `--url`/`--token` flags belong to the effective backend only;
+/// under `--all-backends` they must not leak into other backends' audits
+/// (e.g. running the GitLab audit against a YouTrack URL/token).
+fn cli_overrides_apply(backend: Backend, effective: Backend) -> bool {
+    backend == effective
 }
 
 /// Determine which backends to audit: `--all-backends` enumerates every
@@ -279,18 +318,38 @@ pub fn handle_doctor(cli: &Cli, opts: DoctorOptions) -> Result<()> {
 fn select_backends(cli: &Cli, all_backends: bool) -> Result<Vec<Backend>> {
     if all_backends {
         let raw = Config::load_raw(cli.config.clone())?;
-        let mut configured = raw.configured_backends();
-        if configured.is_empty() {
-            // CLI-flag-only setups (e.g. --url/--token) have empty raw config;
-            // fall back to the effective backend so there is something to audit.
-            configured.push(cli.backend.unwrap_or_else(crate::config::resolve_backend));
-        }
-        Ok(configured)
+        Ok(all_backends_selection(
+            raw.configured_backends(),
+            cli.backend,
+            effective_backend(cli),
+        ))
     } else {
-        Ok(vec![
-            cli.backend.unwrap_or_else(crate::config::resolve_backend),
-        ])
+        Ok(vec![effective_backend(cli)])
     }
+}
+
+/// Union the configured backends with an explicitly requested `-b` backend,
+/// deduped in `Backend::ALL` order. CLI-flag-only setups (e.g. --url/--token)
+/// have empty raw config; fall back to the effective backend so there is
+/// something to audit.
+fn all_backends_selection(
+    configured: Vec<Backend>,
+    explicit: Option<Backend>,
+    effective: Backend,
+) -> Vec<Backend> {
+    let mut selected = configured;
+    if let Some(backend) = explicit
+        && !selected.contains(&backend)
+    {
+        selected.push(backend);
+    }
+    if selected.is_empty() {
+        selected.push(effective);
+    }
+    Backend::ALL
+        .into_iter()
+        .filter(|b| selected.contains(b))
+        .collect()
 }
 
 fn config_source(cli: &Cli) -> String {
@@ -315,13 +374,21 @@ fn config_source(cli: &Cli) -> String {
     }
 }
 
-fn audit_backend(cli: &Cli, backend: Backend, opts: &DoctorOptions) -> BackendReport {
+fn audit_backend(
+    cli: &Cli,
+    backend: Backend,
+    apply_cli_overrides: bool,
+    opts: &DoctorOptions,
+) -> BackendReport {
     let mut checks: Vec<CheckResult> = Vec::new();
 
-    // Load and collapse config for this backend.
+    // Load and collapse config for this backend. Global --url/--token apply
+    // only to the effective backend (see cli_overrides_apply).
     let config = match Config::load(cli.config.clone(), backend) {
         Ok(mut c) => {
-            c.merge_with_cli(cli.url.clone(), cli.token.clone());
+            if apply_cli_overrides {
+                c.merge_with_cli(cli.url.clone(), cli.token.clone());
+            }
             Some(c)
         }
         Err(e) => {
@@ -779,12 +846,93 @@ mod tests {
     }
 
     #[test]
+    fn overall_all_degraded_reads_is_failed() {
+        // Every remote call 404s (e.g. GitLab with a wrong project_id):
+        // nothing practical works, so the backend is failed, not degraded.
+        let checks = vec![
+            check("config_valid", CheckStatus::Ok),
+            check("auth_connectivity", CheckStatus::Degraded),
+            check("issue_search", CheckStatus::Degraded),
+            check("issue_read", CheckStatus::Degraded),
+            check("articles", CheckStatus::Degraded),
+        ];
+        assert_eq!(overall_status(&checks), CheckStatus::Failed);
+    }
+
+    #[test]
+    fn overall_scope_limited_token_with_working_reads_is_degraded() {
+        // 403s on non-read checks while reads work: scope-limited token.
+        let checks = vec![
+            check("auth_connectivity", CheckStatus::Degraded),
+            check("issue_search", CheckStatus::Ok),
+            check("issue_read", CheckStatus::Ok),
+            check("field_admin", CheckStatus::Degraded),
+        ];
+        assert_eq!(overall_status(&checks), CheckStatus::Degraded);
+    }
+
+    #[test]
+    fn overall_unauthorized_everywhere_is_failed() {
+        // 401 on every remote call: bad credentials.
+        let checks = vec![
+            check("config_valid", CheckStatus::Ok),
+            check("auth_connectivity", CheckStatus::Failed),
+            check("issue_search", CheckStatus::Failed),
+            check("issue_read", CheckStatus::Failed),
+        ];
+        assert_eq!(overall_status(&checks), CheckStatus::Failed);
+    }
+
+    #[test]
+    fn overall_skipped_reads_alone_do_not_fail() {
+        // Reads that never ran (no sample issue) are not "broken".
+        let checks = vec![
+            check("auth_connectivity", CheckStatus::Ok),
+            check("issue_search", CheckStatus::Skipped),
+            check("issue_read", CheckStatus::Skipped),
+            check("articles", CheckStatus::Degraded),
+        ];
+        assert_eq!(overall_status(&checks), CheckStatus::Degraded);
+    }
+
+    #[test]
     fn recommendation_only_when_not_ok() {
         assert!(recommendation(CheckStatus::Ok, &[]).is_none());
         assert!(recommendation(CheckStatus::Failed, &[]).is_some());
         let checks = vec![check("issue_search", CheckStatus::Ok)];
         let rec = recommendation(CheckStatus::Degraded, &checks).unwrap();
         assert!(rec.contains("Read/search workflows are usable"), "{rec}");
+    }
+
+    #[test]
+    fn cli_overrides_apply_only_to_effective_backend() {
+        assert!(cli_overrides_apply(Backend::YouTrack, Backend::YouTrack));
+        assert!(!cli_overrides_apply(Backend::GitLab, Backend::YouTrack));
+    }
+
+    #[test]
+    fn all_backends_selection_unions_explicit_backend() {
+        // `-b jira` with only [youtrack] configured must still audit jira.
+        let selected =
+            all_backends_selection(vec![Backend::YouTrack], Some(Backend::Jira), Backend::Jira);
+        assert_eq!(selected, vec![Backend::YouTrack, Backend::Jira]);
+    }
+
+    #[test]
+    fn all_backends_selection_dedups_explicit_backend() {
+        let selected = all_backends_selection(
+            vec![Backend::YouTrack, Backend::GitLab],
+            Some(Backend::GitLab),
+            Backend::GitLab,
+        );
+        assert_eq!(selected, vec![Backend::YouTrack, Backend::GitLab]);
+    }
+
+    #[test]
+    fn all_backends_selection_falls_back_to_effective() {
+        // CLI-flag-only setups have empty raw config.
+        let selected = all_backends_selection(vec![], None, Backend::YouTrack);
+        assert_eq!(selected, vec![Backend::YouTrack]);
     }
 
     #[test]

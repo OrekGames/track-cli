@@ -276,6 +276,101 @@ project_id = "123"
 }
 
 #[test]
+fn doctor_all_backends_scopes_cli_overrides_to_effective_backend() {
+    // Global --url/--token belong to the effective backend only; other
+    // audited backends must keep their own configured URL.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    fs::write(
+        dir.join(".track.toml"),
+        r#"
+backend = "youtrack"
+
+[youtrack]
+url = "https://yt.mock.test"
+token = "yt-token"
+
+[gitlab]
+url = "https://gitlab.mock.test/api/v4"
+token = "gl-token"
+project_id = "123"
+"#,
+    )
+    .unwrap();
+
+    let output = track_in(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args([
+            "--url",
+            "https://override.test",
+            "--token",
+            "override-token",
+        ])
+        .args(["-o", "json", "doctor", "--all-backends"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(report["backends"][0]["backend"], "youtrack");
+    assert_eq!(
+        report["backends"][0]["config"]["url"],
+        "https://override.test"
+    );
+    assert_eq!(report["backends"][1]["backend"], "gitlab");
+    assert_eq!(
+        report["backends"][1]["config"]["url"],
+        "https://gitlab.mock.test/api/v4"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn doctor_all_backends_includes_explicit_backend_flag() {
+    // An explicit -b backend must be audited under --all-backends even when
+    // the config only names other backends.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    fs::write(
+        dir.join(".track.toml"),
+        r#"
+[youtrack]
+url = "https://yt.mock.test"
+token = "yt-token"
+"#,
+    )
+    .unwrap();
+
+    let output = track_in(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["-b", "gitlab"])
+        .args([
+            "--url",
+            "https://gitlab.mock.test/api/v4",
+            "--token",
+            "gl-token",
+        ])
+        .args(["-o", "json", "doctor", "--all-backends"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    let backends: Vec<&str> = report["backends"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["backend"].as_str().unwrap())
+        .collect();
+    assert_eq!(backends, vec!["youtrack", "gitlab"]);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn doctor_invalid_config_fails_only_under_strict() {
     // No config at all: config_valid fails, remote checks are skipped, and no
     // network is touched. Non-strict still exits 0; strict exits non-zero.

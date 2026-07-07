@@ -63,6 +63,12 @@ impl BackendConfig {
     pub fn is_empty(&self) -> bool {
         self.url.is_none() && self.token.is_none() && self.link_mappings.is_empty()
     }
+
+    /// Connection-relevant keys only: cosmetic settings like link_mappings
+    /// must not make a backend count as configured.
+    pub fn has_connection_config(&self) -> bool {
+        self.url.is_some() || self.token.is_some()
+    }
 }
 
 /// Jira-specific configuration
@@ -84,6 +90,11 @@ impl JiraConfig {
             && self.email.is_none()
             && self.token.is_none()
             && self.link_mappings.is_empty()
+    }
+
+    /// Connection-relevant keys only (excludes link_mappings).
+    pub fn has_connection_config(&self) -> bool {
+        self.url.is_some() || self.email.is_some() || self.token.is_some()
     }
 }
 
@@ -107,6 +118,12 @@ impl GitHubConfig {
             && self.owner.is_none()
             && self.repo.is_none()
             && self.api_url.is_none()
+    }
+
+    /// Connection-relevant keys (GitHub has no cosmetic-only keys today, but
+    /// this keeps backend enumeration uniform across sections).
+    pub fn has_connection_config(&self) -> bool {
+        !self.is_empty()
     }
 }
 
@@ -132,6 +149,14 @@ impl GitLabConfig {
             && self.project_id.is_none()
             && self.namespace.is_none()
             && self.link_mappings.is_empty()
+    }
+
+    /// Connection-relevant keys only (excludes link_mappings).
+    pub fn has_connection_config(&self) -> bool {
+        self.token.is_some()
+            || self.url.is_some()
+            || self.project_id.is_some()
+            || self.namespace.is_some()
     }
 }
 
@@ -164,6 +189,15 @@ impl LinearConfig {
             && self.default_team.is_none()
             && self.default_linear_project.is_none()
             && self.link_mappings.is_empty()
+    }
+
+    /// Connection-relevant keys only (excludes link_mappings).
+    pub fn has_connection_config(&self) -> bool {
+        self.token.is_some()
+            || self.api_url.is_some()
+            || self.url.is_some()
+            || self.default_team.is_some()
+            || self.default_linear_project.is_some()
     }
 }
 
@@ -299,23 +333,24 @@ impl Config {
     /// Must be called on a raw config (see [`Config::load_raw`]): once
     /// `apply_backend_config` has collapsed a backend's section into the flat
     /// url/token fields, that section is partially consumed. A backend counts
-    /// as configured when its nested section has any keys, or when it is the
-    /// default backend and only flat url/token settings exist.
+    /// as configured when its nested section has connection-relevant keys
+    /// (link_mappings alone don't count), or when it is the default backend
+    /// and only flat url/token settings exist.
     pub fn configured_backends(&self) -> Vec<Backend> {
         let mut found = Vec::new();
-        if !self.youtrack.is_empty() {
+        if self.youtrack.has_connection_config() {
             found.push(Backend::YouTrack);
         }
-        if !self.jira.is_empty() {
+        if self.jira.has_connection_config() {
             found.push(Backend::Jira);
         }
-        if !self.github.is_empty() {
+        if self.github.has_connection_config() {
             found.push(Backend::GitHub);
         }
-        if !self.gitlab.is_empty() {
+        if self.gitlab.has_connection_config() {
             found.push(Backend::GitLab);
         }
-        if !self.linear.is_empty() {
+        if self.linear.has_connection_config() {
             found.push(Backend::Linear);
         }
 
@@ -861,6 +896,26 @@ token = "secret"
     fn test_configured_backends_empty_config() {
         let config = Config::default();
         assert!(config.configured_backends().is_empty());
+    }
+
+    #[test]
+    fn test_configured_backends_ignores_link_mappings_only_sections() {
+        // A cosmetic link_mappings table alone must not enumerate the backend
+        // (it has no url/token, so auditing it would always fail).
+        let toml_str = r#"
+[youtrack.link_mappings]
+"parent for" = "subtask of"
+
+[gitlab]
+url = "https://gitlab.com/api/v4"
+token = "gl-secret"
+project_id = "123"
+
+[linear.link_mappings]
+blocks = "blocked by"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.configured_backends(), vec![Backend::GitLab]);
     }
 
     #[test]
