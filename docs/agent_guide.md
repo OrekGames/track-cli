@@ -386,11 +386,16 @@ track i ix --ids - --include comments --jsonl < ids.txt
 
 The JSON report shape is
 `{"total": N, "succeeded": N, "failed": N, "issues": [...], "errors": [{"id", "error"}]}`.
+`total` counts the results in this report; in query mode a `query_total` field
+carries the backend-reported match count when known (it can exceed `total` if
+the page was truncated by `--limit`; text mode prints a truncation note).
 Each entry in `issues` is the issue object plus `comments`/`links`/`subtasks`/`history`
 arrays for the requested includes; an include the backend cannot serve becomes a
 structured entry in that issue's `warnings` array (never a command failure).
 `subtasks` is a links-derived view: the subset of issue links whose type is a
-subtask/parent relationship.
+subtask/parent relationship (including types mapped to the canonical `subtask`
+or `parent` keywords via `[backend.link_mappings]`). Positional IDs and
+`--ids` can be combined; the merged list is deduplicated in input order.
 
 ### Declarative Apply Plans
 

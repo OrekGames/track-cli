@@ -11,9 +11,10 @@ use crate::output::{output_json, output_progress};
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::io::Read;
+use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::Path;
-use tracker_core::{Issue, IssueLink, IssueTracker, get_max_results};
+use tracker_core::{Issue, IssueLink, IssueTracker, get_max_results, unicode_eq_ignore_case};
 
 /// Arguments for `issue inspect`.
 pub(crate) struct InspectArgs<'a> {
@@ -61,17 +62,48 @@ enum InspectOutcome {
     Failure(InspectError),
 }
 
+/// Borrowing JSONL success line: a `success` flag plus the flattened issue
+/// object, serialized without cloning the (potentially large) issue map.
+#[derive(Serialize)]
+struct JsonlSuccess<'a> {
+    success: bool,
+    #[serde(flatten)]
+    issue: &'a Map<String, Value>,
+}
+
 pub(crate) fn handle_inspect(
     client: &dyn IssueTracker,
     args: &InspectArgs,
     format: OutputFormat,
     default_project: Option<&str>,
+    link_mappings: &HashMap<String, String>,
 ) -> Result<()> {
     let includes = parse_includes(args.include)?;
 
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    // Outcomes buffered for the JSON/text reports; --jsonl instead streams
+    // each result line as soon as its issue is processed and buffers nothing.
+    let mut outcomes: Vec<InspectOutcome> = Vec::new();
+    let mut record = |outcome: InspectOutcome| -> Result<()> {
+        match &outcome {
+            InspectOutcome::Success(_) => succeeded += 1,
+            InspectOutcome::Failure(_) => failed += 1,
+        }
+        if args.jsonl {
+            output_jsonl_line(&outcome)
+        } else {
+            outcomes.push(outcome);
+            Ok(())
+        }
+    };
+
+    // Backend-reported match count in query mode; may exceed the fetched page.
+    let mut query_total: Option<u64> = None;
+
     // Resolve the issue set. Query/template mode returns full issues from
     // search (no per-issue get_issue round-trip); ID mode fetches each issue.
-    let outcomes: Vec<InspectOutcome> = if args.query.is_some() || args.template.is_some() {
+    if args.query.is_some() || args.template.is_some() {
         let query = super::issue::resolve_search_query(
             args.query,
             args.template,
@@ -85,18 +117,16 @@ pub(crate) fn handle_inspect(
             output_progress(&format!("Fetched {} issues", res.len()), format);
             res
         } else {
-            client
+            let result = client
                 .search_issues(&query, args.limit, args.skip)
-                .context("Failed to search issues")?
-                .items
+                .context("Failed to search issues")?;
+            query_total = result.total;
+            result.items
         };
-        issues
-            .into_iter()
-            .map(|issue| {
-                let id = issue.id_readable.clone();
-                inspect_issue(client, &id, issue, includes)
-            })
-            .collect()
+        for issue in issues {
+            let id = issue.id_readable.clone();
+            record(inspect_issue(client, &id, issue, includes, link_mappings))?;
+        }
     } else {
         let ids = collect_ids(args.ids, args.ids_file)?;
         if ids.is_empty() {
@@ -104,29 +134,28 @@ pub(crate) fn handle_inspect(
                 "No issue IDs given. Provide positional IDs, --ids <path>, --query, or --template"
             ));
         }
-        ids.iter()
-            .map(|id| match client.get_issue(id) {
-                Ok(issue) => inspect_issue(client, id, issue, includes),
+        for id in ids {
+            let outcome = match client.get_issue(&id) {
+                Ok(issue) => inspect_issue(client, &id, issue, includes, link_mappings),
                 Err(e) => InspectOutcome::Failure(InspectError {
-                    id: id.clone(),
+                    id,
                     error: e.to_string(),
                 }),
-            })
-            .collect()
-    };
+            };
+            record(outcome)?;
+        }
+    }
 
-    let (succeeded, failed) = outcomes.iter().fold((0usize, 0usize), |(s, f), o| match o {
-        InspectOutcome::Success(_) => (s + 1, f),
-        InspectOutcome::Failure(_) => (s, f + 1),
-    });
-    let total = outcomes.len();
+    let total = succeeded + failed;
 
-    if args.jsonl {
-        output_jsonl(&outcomes)?;
-    } else {
+    if !args.jsonl {
         match format {
-            OutputFormat::Json => output_report_json(&outcomes, total, succeeded, failed)?,
-            OutputFormat::Text => output_report_text(&outcomes, total, succeeded, failed),
+            OutputFormat::Json => {
+                output_report_json(&outcomes, total, succeeded, failed, query_total)?
+            }
+            OutputFormat::Text => {
+                output_report_text(&outcomes, total, succeeded, failed, query_total)
+            }
         }
     }
 
@@ -148,6 +177,7 @@ fn inspect_issue(
     id: &str,
     issue: Issue,
     includes: Includes,
+    link_mappings: &HashMap<String, String>,
 ) -> InspectOutcome {
     let mut warnings: Vec<IncludeWarning> = Vec::new();
 
@@ -180,8 +210,10 @@ fn inspect_issue(
         match client.get_issue_links(id) {
             Ok(links) => {
                 if includes.subtasks {
-                    let subtasks: Vec<&IssueLink> =
-                        links.iter().filter(|l| is_subtask_link(l)).collect();
+                    let subtasks: Vec<&IssueLink> = links
+                        .iter()
+                        .filter(|l| is_subtask_link(l, link_mappings))
+                        .collect();
                     obj.insert(
                         "subtasks".to_string(),
                         serde_json::to_value(subtasks).unwrap_or(Value::Null),
@@ -236,11 +268,21 @@ fn inspect_issue(
     InspectOutcome::Success(obj)
 }
 
-/// A link counts as a subtask/parent relationship if its type or direction
-/// descriptions mention subtask, parent, or child (covers YouTrack "Subtask" /
-/// "is parent for", Jira "Subtask", Linear "Subtask" / "is subtask of").
-fn is_subtask_link(link: &IssueLink) -> bool {
+/// A link counts as a subtask/parent relationship if the user's
+/// `[backend.link_mappings]` config maps the canonical `subtask` or `parent`
+/// keyword to the link's type name, or if the type or direction descriptions
+/// mention subtask, parent, or child (covers YouTrack "Subtask" / "is parent
+/// for", Jira "Subtask", Linear "Subtask" / "is subtask of"). Renamed or
+/// localized hierarchy link types without a mapping entry are not recognized.
+fn is_subtask_link(link: &IssueLink, link_mappings: &HashMap<String, String>) -> bool {
     let lt = &link.link_type;
+    if ["subtask", "parent"].iter().any(|key| {
+        link_mappings
+            .get(*key)
+            .is_some_and(|mapped| unicode_eq_ignore_case(mapped, &lt.name))
+    }) {
+        return true;
+    }
     let mut hay = lt.name.to_lowercase();
     for part in [&lt.source_to_target, &lt.target_to_source]
         .into_iter()
@@ -326,12 +368,15 @@ fn dedup_preserve_order(ids: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// Emit the stable top-level JSON report object.
+/// Emit the stable top-level JSON report object. `total` counts the results
+/// in this report; `query_total` is the backend-reported match count (query
+/// mode only, omitted when unknown).
 fn output_report_json(
     outcomes: &[InspectOutcome],
     total: usize,
     succeeded: usize,
     failed: usize,
+    query_total: Option<u64>,
 ) -> Result<()> {
     let mut issues: Vec<&Map<String, Value>> = Vec::new();
     let mut errors: Vec<&InspectError> = Vec::new();
@@ -341,37 +386,48 @@ fn output_report_json(
             InspectOutcome::Failure(err) => errors.push(err),
         }
     }
-    let report = serde_json::json!({
+    let mut report = serde_json::json!({
         "total": total,
         "succeeded": succeeded,
         "failed": failed,
         "issues": issues,
         "errors": errors,
     });
+    if let Some(matched) = query_total
+        && let Some(obj) = report.as_object_mut()
+    {
+        obj.insert("query_total".to_string(), matched.into());
+    }
     output_json(&report)
 }
 
-/// Emit one compact JSON object per issue result, in input order.
-fn output_jsonl(outcomes: &[InspectOutcome]) -> Result<()> {
-    for outcome in outcomes {
-        let line = match outcome {
-            InspectOutcome::Success(obj) => {
-                let mut with_flag = obj.clone();
-                with_flag.insert("success".to_string(), Value::Bool(true));
-                serde_json::to_string(&with_flag)?
-            }
-            InspectOutcome::Failure(err) => serde_json::to_string(&serde_json::json!({
-                "success": false,
-                "id": err.id,
-                "error": err.error,
-            }))?,
-        };
-        println!("{}", line);
-    }
+/// Emit one compact JSON object for a single issue result, flushed
+/// immediately so `--jsonl` streams results as they are processed.
+fn output_jsonl_line(outcome: &InspectOutcome) -> Result<()> {
+    let line = match outcome {
+        InspectOutcome::Success(obj) => serde_json::to_string(&JsonlSuccess {
+            success: true,
+            issue: obj,
+        })?,
+        InspectOutcome::Failure(err) => serde_json::to_string(&serde_json::json!({
+            "success": false,
+            "id": err.id,
+            "error": err.error,
+        }))?,
+    };
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "{}", line)?;
+    stdout.flush()?;
     Ok(())
 }
 
-fn output_report_text(outcomes: &[InspectOutcome], total: usize, succeeded: usize, failed: usize) {
+fn output_report_text(
+    outcomes: &[InspectOutcome],
+    total: usize,
+    succeeded: usize,
+    failed: usize,
+    query_total: Option<u64>,
+) {
     use colored::Colorize;
 
     println!(
@@ -381,6 +437,14 @@ fn output_report_text(outcomes: &[InspectOutcome], total: usize, succeeded: usiz
         succeeded,
         failed
     );
+    if let Some(matched) = query_total
+        && matched > total as u64
+    {
+        println!(
+            "Query matched {} issues; this report covers {} (use --limit/--skip or --all to fetch more)",
+            matched, total
+        );
+    }
 
     for outcome in outcomes {
         let InspectOutcome::Success(obj) = outcome else {
@@ -507,10 +571,9 @@ mod tests {
         assert!(err.to_string().contains("Failed to read issue IDs"));
     }
 
-    #[test]
-    fn is_subtask_link_matches_by_type_name_and_directions() {
+    fn mk_link(name: &str, s2t: Option<&str>, t2s: Option<&str>) -> IssueLink {
         use tracker_core::IssueLinkType;
-        let mk = |name: &str, s2t: Option<&str>, t2s: Option<&str>| IssueLink {
+        IssueLink {
             id: "l".to_string(),
             direction: None,
             link_type: IssueLinkType {
@@ -521,24 +584,47 @@ mod tests {
                 directed: true,
             },
             issues: vec![],
-        };
+        }
+    }
 
-        assert!(is_subtask_link(&mk("Subtask", None, None)));
-        assert!(is_subtask_link(&mk(
-            "Hierarchy",
-            Some("is parent for"),
-            Some("is subtask of")
-        )));
-        assert!(!is_subtask_link(&mk(
-            "Relates",
-            Some("relates to"),
-            Some("relates to")
-        )));
-        assert!(!is_subtask_link(&mk(
-            "Depend",
-            Some("is required for"),
-            Some("depends on")
-        )));
+    #[test]
+    fn is_subtask_link_matches_by_type_name_and_directions() {
+        let no_mappings = HashMap::new();
+
+        assert!(is_subtask_link(
+            &mk_link("Subtask", None, None),
+            &no_mappings
+        ));
+        assert!(is_subtask_link(
+            &mk_link("Hierarchy", Some("is parent for"), Some("is subtask of")),
+            &no_mappings
+        ));
+        assert!(!is_subtask_link(
+            &mk_link("Relates", Some("relates to"), Some("relates to")),
+            &no_mappings
+        ));
+        assert!(!is_subtask_link(
+            &mk_link("Depend", Some("is required for"), Some("depends on")),
+            &no_mappings
+        ));
+    }
+
+    #[test]
+    fn is_subtask_link_honors_custom_link_mappings() {
+        let link = mk_link("Blocks Chain", Some("blocks"), Some("is blocked by"));
+
+        // Without a mapping the custom name is not recognized as hierarchy
+        assert!(!is_subtask_link(&link, &HashMap::new()));
+
+        // Canonical subtask/parent keys mapped to the custom name (any case) match
+        let subtask_map = HashMap::from([("subtask".to_string(), "blocks chain".to_string())]);
+        assert!(is_subtask_link(&link, &subtask_map));
+        let parent_map = HashMap::from([("parent".to_string(), "Blocks Chain".to_string())]);
+        assert!(is_subtask_link(&link, &parent_map));
+
+        // Other canonical keys mapped to this name do not classify it
+        let depends_map = HashMap::from([("depends".to_string(), "Blocks Chain".to_string())]);
+        assert!(!is_subtask_link(&link, &depends_map));
     }
 
     #[test]

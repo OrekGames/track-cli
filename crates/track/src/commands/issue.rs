@@ -41,6 +41,7 @@ pub fn handle_issue(
     format: OutputFormat,
     default_project: Option<&str>,
     verbose: bool,
+    link_mappings: &std::collections::HashMap<String, String>,
 ) -> Result<()> {
     match action {
         IssueCommands::Get { id, full } => handle_get(client, id, *full, format),
@@ -158,7 +159,7 @@ pub fn handle_issue(
                 jsonl: *jsonl,
                 strict: *strict,
             };
-            super::inspect::handle_inspect(client, &args, format, default_project)
+            super::inspect::handle_inspect(client, &args, format, default_project, link_mappings)
         }
         IssueCommands::Delete { ids } => handle_delete_batch(client, ids, format),
         IssueCommands::Attachments { id } => handle_attachments(client, id, format),

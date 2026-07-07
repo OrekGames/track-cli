@@ -1715,6 +1715,8 @@ fn test_issue_inspect_positional_ids_json_shape() {
     assert_eq!(report["succeeded"], 1);
     assert_eq!(report["failed"], 0);
     assert!(report["errors"].as_array().unwrap().is_empty());
+    // query_total is query-mode only
+    assert!(report.get("query_total").is_none());
 
     let issue = &report["issues"][0];
     assert_eq!(issue["id_readable"], "DEMO-1");
@@ -1757,6 +1759,41 @@ fn test_issue_inspect_ids_file() {
     assert_eq!(report["total"], 2);
     assert_eq!(report["succeeded"], 2);
     assert_eq!(report["failed"], 0);
+    assert_eq!(report["issues"][0]["id_readable"], "DEMO-1");
+    assert_eq!(report["issues"][1]["id_readable"], "DEMO-2");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_inspect_positional_ids_combine_with_ids_file() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+    add_second_basic_issue(&scenario);
+    let demo2 = scenario.join("responses/get_issue_DEMO-2.json");
+    let patched = fs::read_to_string(&demo2)
+        .unwrap()
+        .replace("\"DEMO-1\"", "\"DEMO-2\"");
+    fs::write(&demo2, patched).unwrap();
+
+    let ids_file = dir.join("ids.txt");
+    fs::write(&ids_file, "DEMO-2\nDEMO-1\n").unwrap();
+
+    let output = track_mock(&dir, &scenario)
+        .args(["issue", "inspect", "DEMO-1", "--ids"])
+        .arg(&ids_file)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "positional IDs must combine with --ids: {output:?}"
+    );
+
+    let report = parse_json_stdout(&output);
+    // Positional IDs come first; the file's duplicate DEMO-1 is deduplicated
+    assert_eq!(report["total"], 2);
+    assert_eq!(report["succeeded"], 2);
     assert_eq!(report["issues"][0]["id_readable"], "DEMO-1");
     assert_eq!(report["issues"][1]["id_readable"], "DEMO-2");
 
@@ -1807,6 +1844,8 @@ fn test_issue_inspect_query_uses_search_not_get() {
     assert_eq!(report["succeeded"], 2);
     assert_eq!(report["issues"][0]["id_readable"], "DEMO-1");
     assert_eq!(report["issues"][1]["id_readable"], "DEMO-2");
+    // Backend did not report a match count -> no query_total field
+    assert!(report.get("query_total").is_none());
 
     // Search results already carry full issues: no per-issue get_issue calls
     let methods = mock_call_methods(&scenario);
@@ -1815,6 +1854,59 @@ fn test_issue_inspect_query_uses_search_not_get() {
         !methods.iter().any(|m| m == "get_issue"),
         "query mode must not re-fetch issues via get_issue, got: {methods:?}"
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_inspect_query_total_reports_backend_match_count() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    // Wrap the search fixture in a SearchResult shape whose total exceeds the
+    // returned page, simulating a truncated query.
+    let search = scenario.join("responses/search_issues_DEMO.json");
+    let items: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&search).unwrap()).unwrap();
+    fs::write(
+        &search,
+        serde_json::json!({ "items": items, "total": 42 }).to_string(),
+    )
+    .unwrap();
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "inspect",
+            "--query",
+            "project: DEMO",
+            "--limit",
+            "2",
+            "-o",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "expected success: {output:?}");
+
+    let report = parse_json_stdout(&output);
+    // total stays "results in this report"; query_total carries the backend count
+    assert_eq!(report["total"], 2);
+    assert_eq!(report["query_total"], 42);
+
+    // Text mode surfaces the truncation
+    track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "inspect",
+            "--query",
+            "project: DEMO",
+            "--limit",
+            "2",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Query matched 42 issues"));
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1965,6 +2057,69 @@ fn test_issue_inspect_subtasks_derived_from_links() {
     assert_eq!(subtasks[0]["link_type"]["name"], "Subtask");
     // links itself was not requested, only the subtasks view
     assert!(issue.get("links").is_none());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_inspect_subtasks_honor_link_mappings() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    // Rename the hierarchy link type to something the default name heuristic
+    // cannot recognize.
+    let links = scenario.join("responses/get_issue_links_DEMO-1.json");
+    let patched = fs::read_to_string(&links)
+        .unwrap()
+        .replace("\"Subtask\"", "\"Blocks Chain\"")
+        .replace("\"is parent for\"", "\"blocks\"")
+        .replace("\"is subtask of\"", "\"is blocked by\"");
+    fs::write(&links, patched).unwrap();
+
+    let inspect_args = [
+        "issue",
+        "inspect",
+        "DEMO-1",
+        "--include",
+        "subtasks",
+        "-o",
+        "json",
+    ];
+
+    // Without a mapping the renamed type is not classified as a subtask link
+    let output = track_mock(&dir, &scenario)
+        .args(inspect_args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "expected success: {output:?}");
+    let report = parse_json_stdout(&output);
+    assert!(
+        report["issues"][0]["subtasks"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "renamed link type must not match without a mapping: {report}"
+    );
+
+    // Mapping the canonical subtask keyword to the custom name classifies it
+    fs::write(
+        dir.join(".track.toml"),
+        "backend = \"youtrack\"\n[youtrack.link_mappings]\nsubtask = \"Blocks Chain\"\n",
+    )
+    .unwrap();
+    let output = track_mock(&dir, &scenario)
+        .args(inspect_args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "expected success: {output:?}");
+    let report = parse_json_stdout(&output);
+    let subtasks = report["issues"][0]["subtasks"].as_array().unwrap();
+    assert_eq!(
+        subtasks.len(),
+        1,
+        "mapped link type must classify: {report}"
+    );
+    assert_eq!(subtasks[0]["link_type"]["name"], "Blocks Chain");
 
     let _ = fs::remove_dir_all(&dir);
 }

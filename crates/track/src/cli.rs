@@ -495,10 +495,11 @@ pub enum IssueCommands {
     #[command(visible_alias = "ix")]
     Inspect {
         /// Issue ID(s) - comma-separated (e.g., PROJ-1,PROJ-2,PROJ-3)
-        #[arg(value_delimiter = ',', conflicts_with_all = ["ids_file", "query", "template"])]
+        #[arg(value_delimiter = ',', conflicts_with_all = ["query", "template"])]
         ids: Vec<String>,
 
-        /// Read issue IDs from a file, one per line ("-" for stdin)
+        /// Read issue IDs from a file, one per line ("-" for stdin);
+        /// merged (deduplicated) with positional IDs
         #[arg(long = "ids", value_name = "PATH", conflicts_with_all = ["query", "template"])]
         ids_file: Option<PathBuf>,
 

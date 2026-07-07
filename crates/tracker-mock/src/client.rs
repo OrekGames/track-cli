@@ -255,8 +255,21 @@ impl IssueTracker for MockClient {
         ]
         .into_iter()
         .collect();
-        let issues: Vec<Issue> = self.get_response("search_issues", args, None)?;
-        Ok(SearchResult::from_items(issues))
+        // Fixtures are either a bare issue array (total unknown) or a
+        // SearchResult-shaped object ({"items": [...], "total": N}) when the
+        // scenario needs a backend-reported match count.
+        let response: serde_json::Value = self.get_response("search_issues", args, None)?;
+        let parsed = if response.is_array() {
+            serde_json::from_value(response).map(SearchResult::from_items)
+        } else {
+            serde_json::from_value(response)
+        };
+        parsed.map_err(|e| {
+            TrackerError::Parse(format!(
+                "Failed to parse mock search_issues response: {}",
+                e
+            ))
+        })
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
