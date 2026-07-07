@@ -1,0 +1,49 @@
+# State Field Resolution Scenario
+# Tests: issue start/complete resolve the project's actual state field name
+# (issue #308: some YouTrack projects call it "State", others "Stage")
+
+[scenario]
+name = "state-field-resolution"
+description = "Complete issues across projects whose workflow state fields have different names"
+backend = "youtrack"
+difficulty = "easy"
+tags = ["state", "workflow", "transitions", "schema"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with two projects:
+- ALPHA, whose workflow state field is named "State"
+- BETA, whose workflow state field is named "Stage"
+
+Task:
+1. Complete issue ALPHA-1 (transition to "Done")
+2. Complete issue BETA-1 (transition to "Done")
+
+Use the track issue complete command without specifying --field;
+the state field name must be resolved from each project's schema.
+"""
+default_project = "ALPHA"
+cache_available = true
+context = """
+ALPHA state field: "State"
+BETA state field: "Stage"
+Default complete state: "Done"
+"""
+
+[expected_outcomes]
+alpha_completed = { method_called = "update_issue", issue = "ALPHA-1" }
+beta_completed = { method_called = "update_issue", issue = "BETA-1" }
+
+[scoring]
+min_commands = 1
+max_commands = 4
+optimal_commands = 1
+base_score = 100
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

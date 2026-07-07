@@ -1,0 +1,21 @@
+[
+  {
+    "id": "field-b1",
+    "name": "Priority",
+    "field_type": "enum[1]",
+    "required": true,
+    "values": ["Low", "Normal", "High", "Critical"]
+  },
+  {
+    "id": "field-b2",
+    "name": "Stage",
+    "field_type": "state[1]",
+    "required": true,
+    "values": ["Open", "Develop", "Done"],
+    "state_values": [
+      { "name": "Open", "is_resolved": false, "ordinal": 0 },
+      { "name": "Develop", "is_resolved": false, "ordinal": 1 },
+      { "name": "Done", "is_resolved": true, "ordinal": 2 }
+    ]
+  }
+]
