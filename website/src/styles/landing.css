@@ -327,6 +327,8 @@ a:hover {
   font-size: 0.88rem;
   line-height: 1.7;
   overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--text);
 }
 
@@ -337,6 +339,168 @@ a:hover {
 .terminal .c-key { color: var(--term-green); }
 .terminal .c-muted { color: var(--text-muted); }
 .terminal .c-yellow { color: var(--term-yellow); }
+
+/* ---- Documentation workflows ---- */
+.knowledge-docs {
+  padding-top: 3rem;
+}
+
+.knowledge-docs-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.15fr);
+  gap: 2.5rem;
+  align-items: center;
+}
+
+.knowledge-copy .section-label {
+  margin: 0 0 0.75rem;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.knowledge-docs h2 {
+  text-align: left;
+  margin-bottom: 1rem;
+}
+
+.knowledge-copy > p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 1.05rem;
+}
+
+.knowledge-copy code {
+  color: var(--accent-2);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.doc-flow-list {
+  display: grid;
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+.doc-flow {
+  padding-left: 1rem;
+  border-left: 2px solid rgba(251, 191, 36, 0.35);
+}
+
+.doc-flow h3 {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+  line-height: 1.3;
+}
+
+.doc-flow p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+}
+
+.docs-terminal {
+  max-width: none;
+}
+
+/* ---- Agent workflow pitch ---- */
+.agent-workflows {
+  padding-top: 2rem;
+}
+
+.agent-workflows-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.15fr);
+  gap: 2.5rem;
+  align-items: start;
+}
+
+.agent-workflows-copy .section-label {
+  margin: 0 0 0.75rem;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-workflows h2 {
+  text-align: left;
+  margin-bottom: 1rem;
+}
+
+.agent-workflows h2 code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  color: var(--accent-2);
+}
+
+.agent-workflows-copy > p:last-child {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 1.05rem;
+}
+
+.workflow-list {
+  border-top: 1px solid var(--border);
+}
+
+.workflow-item {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: 1.25rem;
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.workflow-stat {
+  align-self: start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.4rem;
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-radius: 6px;
+  background: rgba(251, 191, 36, 0.08);
+  color: var(--accent-2);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.workflow-item:nth-child(2) .workflow-stat {
+  border-color: rgba(74, 222, 128, 0.26);
+  background: rgba(74, 222, 128, 0.08);
+  color: var(--term-green);
+}
+
+.workflow-item:nth-child(3) .workflow-stat {
+  border-color: rgba(96, 165, 250, 0.26);
+  background: rgba(96, 165, 250, 0.08);
+  color: var(--term-blue);
+}
+
+.workflow-item:nth-child(4) .workflow-stat {
+  border-color: rgba(167, 139, 250, 0.26);
+  background: rgba(167, 139, 250, 0.08);
+  color: var(--term-purple);
+}
+
+.workflow-item h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  line-height: 1.3;
+}
+
+.workflow-item p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
 
 /* ---- Feature grid ---- */
 .feature-grid {
@@ -437,7 +601,14 @@ a:hover {
 }
 
 @media (max-width: 600px) {
+  .site-nav .container {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 0.85rem;
+    padding: 0 1.5rem !important;
+  }
   .site-nav .nav-links {
+    flex-wrap: wrap;
     gap: 1rem;
     font-size: 0.85rem;
   }
@@ -454,5 +625,22 @@ a:hover {
   }
   .install-command {
     font-size: 0.8rem;
+  }
+  .knowledge-docs-inner {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
+  .agent-workflows-inner {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
+  .workflow-item {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+  .workflow-stat {
+    width: fit-content;
+    min-width: 6.5rem;
+    padding: 0 0.85rem;
   }
 }

@@ -8,6 +8,10 @@ description: Configure a backend and run your first track commands.
 Create a `.track.toml` in your project directory (or
 `~/.tracker-cli/.track.toml` for global config):
 
+Project configs can contain API tokens. For local init, `track init` updates an
+existing `.gitignore` with `.track.toml` and `.tracker-cache/`. If your project
+doesn't have a `.gitignore` yet, add those entries before committing.
+
 ```bash
 # YouTrack (default)
 track init --url https://youtrack.example.com --token YOUR_TOKEN
@@ -21,19 +25,43 @@ track init --url https://linear.app/your-workspace --token YOUR_LINEAR_API_KEY \
   --backend linear --project PROJ
 ```
 
-## 2. Set a default project (optional)
+## 2. Install agent skills (recommended for AI sessions)
+
+`track init --skills` installs the bundled `track` skill reference so AI
+coding assistants know the command aliases, JSON output mode, cache/context
+workflow, backend quirks, and safe batch patterns.
+
+```bash
+track init --skills           # Install skills only; no tracker config change
+track init --skills --url ... # Combine with configuration initialization
+```
+
+Supported agent destinations:
+
+| Agent | Installed path |
+| --- | --- |
+| Claude Code | `~/.claude/skills/track/SKILL.md` |
+| GitHub Copilot | `~/.copilot/skills/track/SKILL.md` |
+| Cursor | `~/.cursor/skills/track/SKILL.md` |
+| Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
+
+The skill files do not store tracker credentials. They are documentation for
+agents; `.track.toml` remains the config file that contains tokens and backend
+settings.
+
+## 3. Set a default project (optional)
 
 ```bash
 track config project PROJ
 ```
 
-## 3. Test the connection
+## 4. Test the connection
 
 ```bash
 track config test
 ```
 
-## 4. Basic usage
+## 5. Basic usage
 
 ```bash
 track PROJ-123              # Get an issue (shortcut for `issue get`)

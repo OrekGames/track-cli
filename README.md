@@ -51,7 +51,9 @@ curl -fsSL https://raw.githubusercontent.com/OrekGames/track-cli/v1.15.1/scripts
 $env:TRACK_VERSION = "1.15.1"; irm https://raw.githubusercontent.com/OrekGames/track-cli/v1.15.1/scripts/install.ps1 | iex
 ```
 
-Agent skills are optional and installed explicitly after the CLI is available:
+Agent skills are optional and installed explicitly after the CLI is available.
+`track init --skills` installs the bundled `track` reference for Claude Code,
+GitHub Copilot, Cursor, and Gemini CLI:
 
 ```bash
 track init --skills
@@ -80,7 +82,8 @@ Download prebuilt binaries from the [latest release](https://github.com/OrekGame
 
 ### 1. Initialize Configuration
 
-Create a `.track.toml` file in your project directory or `~/.config/track/config.toml` for global configuration:
+Create a `.track.toml` file in your project directory or `~/.tracker-cli/.track.toml` for global configuration.
+Project configs can contain API tokens. If a `.gitignore` exists in the current directory, local `track init` adds `.track.toml` and `.tracker-cache/` automatically; otherwise add those entries before committing:
 
 ```bash
 # Initialize with YouTrack (default)
@@ -92,6 +95,14 @@ track init --url https://your-domain.atlassian.net --token YOUR_TOKEN --backend 
 # Or initialize with Linear (URL is the Linear workspace URL used by `track open`)
 track init --url https://linear.app/your-workspace --token YOUR_LINEAR_API_KEY --backend linear --project PROJ
 ```
+
+For AI-assisted workflows, install the agent skill reference once per user:
+
+```bash
+track init --skills
+```
+
+This installs guidance for Claude Code, GitHub Copilot, Cursor, and Gemini CLI.
 
 ### 2. Set Default Project (Optional)
 

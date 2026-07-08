@@ -1,0 +1,64 @@
+---
+const docFlows = [
+  {
+    title: "Markdown in, native wiki out",
+    body: "Jira/Confluence pages can be authored as Markdown files and converted to Confluence storage format on publish.",
+  },
+  {
+    title: "Docs stay attached to work",
+    body: "Agents can update the issue, publish the runbook, add a page comment, and attach evidence from the same CLI surface.",
+  },
+  {
+    title: "Wiki inventory is scriptable",
+    body: "List or search every article with `--all`, emit JSON, and use it for stale-doc reports, migration plans, or release audits.",
+  },
+];
+---
+
+<section class="section knowledge-docs" id="docs-workflows">
+  <div class="container knowledge-docs-inner">
+    <div class="knowledge-copy">
+      <p class="section-label">Documentation workflows</p>
+      <h2>Write Markdown. Publish real wiki pages.</h2>
+      <p>
+        For Jira teams, <code>track</code> makes Confluence feel like a
+        developer-friendly documentation target. Agents can draft Markdown in
+        the repo, review it like any other file, then publish it through
+        standard article commands without hand-building wiki storage markup.
+      </p>
+
+      <div class="doc-flow-list" aria-label="Documentation workflow advantages">
+        {
+          docFlows.map((flow) => (
+            <article class="doc-flow">
+              <h3>{flow.title}</h3>
+              <p>{flow.body}</p>
+            </article>
+          ))
+        }
+      </div>
+    </div>
+
+    <div class="terminal docs-terminal">
+      <div class="titlebar">
+        <span class="dot red"></span>
+        <span class="dot yellow"></span>
+        <span class="dot green"></span>
+        <span class="title">zsh - wiki</span>
+      </div>
+      <pre><code><span class="c-muted"># Publish agent-authored Markdown to Confluence</span>
+<span class="c-prompt">$</span> <span class="c-cmd">track</span> <span class="c-flag">-b</span> j wiki create <span class="c-flag">-p</span> 65957 \
+  <span class="c-flag">-s</span> <span class="c-str">"Rollback runbook"</span> <span class="c-flag">--body-file</span> ./runbook.md
+<span class="c-key">123456</span>  Rollback runbook  <span class="c-muted">published</span>
+
+<span class="c-muted"># Update an existing page from the reviewed file</span>
+<span class="c-prompt">$</span> <span class="c-cmd">track</span> <span class="c-flag">-b</span> j wiki update 123456 \
+  <span class="c-flag">--body-file</span> ./runbook.md <span class="c-flag">--tag</span> release
+
+<span class="c-muted"># Audit docs at the same scale as issues</span>
+<span class="c-prompt">$</span> <span class="c-cmd">track</span> <span class="c-flag">-o</span> json wiki search <span class="c-str">"rollback"</span> <span class="c-flag">--all</span>
+<span class="c-muted">[</span><span class="c-key">"123456"</span><span class="c-muted">,</span> <span class="c-key">"123987"</span><span class="c-muted">,</span> <span class="c-key">"124018"</span><span class="c-muted">]</span>
+</code></pre>
+    </div>
+  </div>
+</section>

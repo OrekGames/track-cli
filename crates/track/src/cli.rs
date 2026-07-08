@@ -188,7 +188,7 @@ pub enum Commands {
     /// Use 'track config keys' to see all available configuration keys.
     /// You can later modify the file with 'track config set'.
     ///
-    /// Use --skills to install agent skill files globally for Claude, Copilot, Cursor, and Gemini.
+    /// Use --skills to install agent skill files globally for Claude Code, Copilot, Cursor, and Gemini CLI.
     Init {
         /// Tracker URL (e.g., https://youtrack.example.com, https://company.atlassian.net, https://api.github.com, https://gitlab.com/api/v4, or https://linear.app/workspace)
         #[arg(long, required_unless_present = "skills")]
@@ -205,7 +205,7 @@ pub enum Commands {
         /// Email for Jira authentication (required for Jira backend, ignored for YouTrack)
         #[arg(long, short = 'e')]
         email: Option<String>,
-        /// Install agent skill files globally for Claude, Copilot, Cursor, and Gemini
+        /// Install agent skill files globally for Claude Code, Copilot, Cursor, and Gemini CLI
         #[arg(long)]
         skills: bool,
         /// Create config at global level (~/.tracker-cli/.track.toml) instead of local

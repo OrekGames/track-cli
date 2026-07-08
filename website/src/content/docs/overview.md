@@ -34,9 +34,3 @@ and update issues is the same no matter which backend your team uses.
 - [Configuration](/track-cli/configuration/) — config files, environment
   variables, and backend selection.
 - [Commands](/track-cli/commands/) — full command reference and aliases.
-
-:::note
-Documentation links use the `/track-cli/` base path because the site is served
-from GitHub project pages. If a custom domain is configured later, that prefix
-goes away.
-:::
