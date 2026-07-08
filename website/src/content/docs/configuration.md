@@ -226,3 +226,22 @@ track -b j   PROJ-123       # Jira (short alias)
 ```
 
 **Priority:** CLI flag > environment variable > config file > default (YouTrack).
+
+## Validate capabilities
+
+Use `config test` for a quick URL/token probe, then `doctor` when you need to
+know what the selected backend can actually do.
+
+```bash
+track config test                     # Single connectivity check
+track doctor                          # Capability audit for the effective backend
+track doctor --all-backends           # Audit every configured backend
+track -b github doctor                # Audit one backend with the global selector
+track doctor --project PROJ           # Use a project for scoped checks
+track doctor --write-check            # Local schema validation only; no remote writes
+track doctor --all-backends --strict -o json
+```
+
+`doctor` reports `ok`, `degraded`, `failed`, or `skipped` per check. A
+scope-limited token may be `degraded` while search/read workflows still work;
+bad credentials or a broken read path roll the backend up as `failed`.

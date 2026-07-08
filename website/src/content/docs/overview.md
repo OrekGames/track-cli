@@ -20,6 +20,8 @@ and update issues is the same no matter which backend your team uses.
   validation.
 - **Comments & Links** — comment on issues and link them together.
 - **Knowledge Base** — manage articles (YouTrack and Jira/Confluence).
+- **Capability Audit** — `track doctor` reports what each configured backend can
+  actually do before you rely on it.
 - **AI-Optimized** — context aggregation, query templates, and workflow hints
   designed for coding agents.
 - **Output Formats** — human-readable text and machine-readable JSON.
