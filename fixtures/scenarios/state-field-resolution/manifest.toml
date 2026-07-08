@@ -1,0 +1,105 @@
+# Request-to-Response Mapping for state-field-resolution scenario
+#
+# Two projects with differently named workflow state fields:
+#   ALPHA (0-10) -> "State"
+#   BETA  (0-20) -> "Stage"
+#
+# The update_issue mappings match on the custom_fields summary recorded by the
+# mock client, so a transition sent with the wrong field name finds no mapping
+# and fails - asserting that the CLI resolved the field name per project.
+
+# =============================================================================
+# Project Operations
+# =============================================================================
+
+[[responses]]
+method = "list_projects"
+file = "list_projects.json"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields_ALPHA.json"
+[responses.args]
+project_id = "0-10"
+
+[[responses]]
+method = "get_project_custom_fields"
+file = "project_custom_fields_BETA.json"
+[responses.args]
+project_id = "0-20"
+
+# =============================================================================
+# Issue Operations
+# =============================================================================
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_ALPHA-1.json"
+[responses.args]
+id = "ALPHA-1"
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_ALPHA-2.json"
+[responses.args]
+id = "ALPHA-2"
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_BETA-1.json"
+[responses.args]
+id = "BETA-1"
+
+# Auto-resolved: ALPHA issues transition via the "State" field
+[[responses]]
+method = "update_issue"
+file = "update_issue_ALPHA-1.json"
+[responses.args]
+id = "ALPHA-1"
+custom_fields = "State=Done"
+
+[[responses]]
+method = "update_issue"
+file = "update_issue_ALPHA-2.json"
+[responses.args]
+id = "ALPHA-2"
+custom_fields = "State=Done"
+
+# Auto-resolved: BETA issues transition via the "Stage" field
+[[responses]]
+method = "update_issue"
+file = "update_issue_BETA-1.json"
+[responses.args]
+id = "BETA-1"
+custom_fields = "Stage=Done"
+
+[[responses]]
+method = "update_issue"
+file = "update_issue_BETA-1_develop.json"
+[responses.args]
+id = "BETA-1"
+custom_fields = "Stage=Develop"
+
+# Explicit --field override: honored verbatim, no schema lookup
+[[responses]]
+method = "update_issue"
+file = "update_issue_ALPHA-1.json"
+[responses.args]
+id = "ALPHA-1"
+custom_fields = "Kanban State=Done"
+
+# Explicit --field Stage override on an ALPHA issue (schema says "State")
+[[responses]]
+method = "update_issue"
+file = "update_issue_ALPHA-1.json"
+[responses.args]
+id = "ALPHA-1"
+custom_fields = "Stage=Done"
+
+# =============================================================================
+# Supporting Operations
+# =============================================================================
+
+[[responses]]
+method = "list_tags"
+file = "list_tags.json"

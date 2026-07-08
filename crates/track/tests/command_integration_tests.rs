@@ -668,6 +668,10 @@ fn test_init_creates_config_and_guide() {
     // Verify files were created
     assert!(dir.join(".track.toml").exists(), ".track.toml should exist");
     assert!(
+        !dir.join(".gitignore").exists(),
+        "init should not create .gitignore when one is not already present"
+    );
+    assert!(
         dir.join("AGENT_GUIDE.md").exists(),
         "AGENT_GUIDE.md should exist"
     );
@@ -676,6 +680,67 @@ fn test_init_creates_config_and_guide() {
     let content = fs::read_to_string(dir.join(".track.toml")).unwrap();
     assert!(content.contains("youtrack.example.com"));
     assert!(content.contains("perm:test-token"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_init_updates_existing_gitignore() {
+    let dir = temp_dir();
+    fs::write(dir.join(".gitignore"), "target/\n").unwrap();
+
+    track_in(&dir)
+        .args([
+            "init",
+            "--url",
+            "https://youtrack.example.com",
+            "--token",
+            "perm:test-token",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".gitignore"));
+
+    let content = fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert!(content.contains("target/"));
+    assert!(content.lines().any(|line| line == ".track.toml"));
+    assert!(content.lines().any(|line| line == ".tracker-cache/"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_init_does_not_duplicate_gitignore_entries() {
+    let dir = temp_dir();
+    fs::write(dir.join(".gitignore"), ".track.toml\n.tracker-cache/\n").unwrap();
+
+    track_in(&dir)
+        .args([
+            "init",
+            "--url",
+            "https://youtrack.example.com",
+            "--token",
+            "perm:test-token",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".gitignore").not());
+
+    let content = fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert_eq!(
+        content
+            .lines()
+            .filter(|line| *line == ".track.toml")
+            .count(),
+        1
+    );
+    assert_eq!(
+        content
+            .lines()
+            .filter(|line| line.trim_end_matches('/') == ".tracker-cache")
+            .count(),
+        1
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1666,6 +1731,186 @@ fn test_content_file_backward_compat_still_parses() {
         "--content-file should be accepted as a hidden flag, got: {}",
         stderr
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// issue start/complete state field resolution (issue #308)
+// =============================================================================
+
+/// Read the full call log entries (method + args) for a scenario.
+fn mock_call_entries(scenario: &Path) -> Vec<serde_json::Value> {
+    let log = fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default();
+    log.lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect()
+}
+
+/// Collect (issue id, custom_fields summary) pairs for all update_issue calls.
+fn update_issue_calls(scenario: &Path) -> Vec<(String, String)> {
+    mock_call_entries(scenario)
+        .iter()
+        .filter(|entry| entry["method"] == "update_issue")
+        .map(|entry| {
+            (
+                entry["args"]["id"].as_str().unwrap_or_default().to_string(),
+                entry["args"]["custom_fields"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+fn track_mock(dir: &Path, scenario: &Path) -> assert_cmd::Command {
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.current_dir(dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .args(["--url", "https://mock.test", "--token", "mock-token"]);
+    cmd
+}
+
+#[test]
+fn test_issue_complete_resolves_state_field_from_schema() {
+    // Issue #308: a project whose workflow field is named "State" must not
+    // receive a hardcoded "Stage" transition.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "state-field-resolution");
+
+    track_mock(&dir, &scenario)
+        .args(["issue", "complete", "ALPHA-1", "--state", "Done"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("completed"))
+        .stdout(predicate::str::contains("State=Done"));
+
+    assert_eq!(
+        update_issue_calls(&scenario),
+        vec![("ALPHA-1".to_string(), "State=Done".to_string())]
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_complete_resolves_stage_field_from_schema() {
+    // A project whose workflow field is named "Stage" still transitions via "Stage".
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "state-field-resolution");
+
+    track_mock(&dir, &scenario)
+        .args(["issue", "complete", "BETA-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("completed"))
+        .stdout(predicate::str::contains("Stage=Done"));
+
+    assert_eq!(
+        update_issue_calls(&scenario),
+        vec![("BETA-1".to_string(), "Stage=Done".to_string())]
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_complete_explicit_field_skips_schema_lookup() {
+    // An explicit --field is honored verbatim without any schema resolution.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "state-field-resolution");
+
+    track_mock(&dir, &scenario)
+        .args(["issue", "complete", "ALPHA-1", "--field", "Stage"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stage=Done"));
+
+    let methods = mock_call_methods(&scenario);
+    assert!(
+        !methods
+            .iter()
+            .any(|m| m == "get_project_custom_fields" || m == "get_issue"),
+        "explicit --field must not trigger schema resolution, got methods: {:?}",
+        methods
+    );
+    assert_eq!(
+        update_issue_calls(&scenario),
+        vec![("ALPHA-1".to_string(), "Stage=Done".to_string())]
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_complete_explicit_non_state_field_is_enum_update() {
+    // A --field name outside State/Stage/Status stays a plain enum update.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "state-field-resolution");
+
+    track_mock(&dir, &scenario)
+        .args(["issue", "complete", "ALPHA-1", "--field", "Kanban State"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Kanban State=Done"));
+
+    assert_eq!(
+        update_issue_calls(&scenario),
+        vec![("ALPHA-1".to_string(), "Kanban State=Done".to_string())]
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_complete_batch_resolves_per_project_with_cached_schema() {
+    // A batch spanning two projects resolves each issue's own state field and
+    // fetches each project's schema exactly once.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "state-field-resolution");
+
+    track_mock(&dir, &scenario)
+        .args(["issue", "complete", "ALPHA-1,BETA-1,ALPHA-2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3 issues completed"));
+
+    assert_eq!(
+        update_issue_calls(&scenario),
+        vec![
+            ("ALPHA-1".to_string(), "State=Done".to_string()),
+            ("BETA-1".to_string(), "Stage=Done".to_string()),
+            ("ALPHA-2".to_string(), "State=Done".to_string()),
+        ]
+    );
+
+    let methods = mock_call_methods(&scenario);
+    let schema_lookups = methods
+        .iter()
+        .filter(|m| m.as_str() == "get_project_custom_fields")
+        .count();
+    assert_eq!(
+        schema_lookups, 2,
+        "schema lookups must be cached per project in a batch, got methods: {:?}",
+        methods
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_start_resolves_state_field_from_schema() {
+    // `issue start` shares the transition path and must resolve the field too.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "state-field-resolution");
+
+    track_mock(&dir, &scenario)
+        .args(["issue", "start", "BETA-1", "--state", "Develop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("started"))
+        .stdout(predicate::str::contains("Stage=Develop"));
 
     let _ = fs::remove_dir_all(&dir);
 }

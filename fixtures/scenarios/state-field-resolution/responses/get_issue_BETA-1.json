@@ -1,0 +1,22 @@
+{
+  "id": "2-201",
+  "id_readable": "BETA-1",
+  "summary": "Beta issue one",
+  "project": {
+    "id": "0-20",
+    "short_name": "BETA"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "Stage",
+        "value": "Develop",
+        "is_resolved": false
+      }
+    }
+  ],
+  "created": "2024-01-12T09:00:00Z",
+  "updated": "2024-01-12T09:00:00Z",
+  "tags": [],
+  "description": null
+}

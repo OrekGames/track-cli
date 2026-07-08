@@ -270,8 +270,33 @@ impl IssueTracker for MockClient {
         self.get_response("create_issue", args, None)
     }
 
-    fn update_issue(&self, id: &str, _update: &UpdateIssue) -> Result<Issue> {
-        let args = [("id".to_string(), id.to_string())].into_iter().collect();
+    fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
+        let mut args: HashMap<String, String> =
+            [("id".to_string(), id.to_string())].into_iter().collect();
+        // Record a "Name=Value" summary of the custom field updates so
+        // manifests can match on (and tests can assert) the exact fields sent.
+        let custom_fields = update
+            .custom_fields
+            .iter()
+            .map(|cf| match cf {
+                tracker_core::CustomFieldUpdate::SingleEnum { name, value } => {
+                    format!("{}={}", name, value)
+                }
+                tracker_core::CustomFieldUpdate::MultiEnum { name, values } => {
+                    format!("{}={}", name, values.join("|"))
+                }
+                tracker_core::CustomFieldUpdate::State { name, value } => {
+                    format!("{}={}", name, value)
+                }
+                tracker_core::CustomFieldUpdate::SingleUser { name, login } => {
+                    format!("{}={}", name, login)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        if !custom_fields.is_empty() {
+            args.insert("custom_fields".to_string(), custom_fields);
+        }
         // Note: UpdateIssue doesn't implement Serialize, so we just pass None for body
         self.get_response("update_issue", args, None)
     }

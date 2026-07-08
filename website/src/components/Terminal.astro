@@ -11,19 +11,22 @@
         <span class="dot green"></span>
         <span class="title">zsh — track</span>
       </div>
-      <pre><code><span class="c-muted"># Look up an issue (shortcut for `issue get`)</span>
-<span class="c-prompt">$</span> <span class="c-cmd">track</span> PROJ-123
-<span class="c-key">PROJ-123</span>  Fix flaky pagination test  <span class="c-yellow">[In Progress]</span>
-  Assignee: you · Priority: Major
+      <pre><code><span class="c-muted"># Pull every unresolved issue into a repeatable audit</span>
+<span class="c-prompt">$</span> <span class="c-cmd">track</span> <span class="c-flag">-o</span> json i s <span class="c-str">"project: PROJ #Unresolved"</span> <span class="c-flag">--all</span> \
+  <span class="c-muted">| jq</span> <span class="c-str">'group_by(.state.name)[] | "\(.[0].state.name) \(length)"'</span>
+<span class="c-key">Open</span>         84
+<span class="c-key">In Progress</span>  12
+<span class="c-key">Review</span>        7
 
-<span class="c-muted"># Search across any backend with the same command</span>
-<span class="c-prompt">$</span> <span class="c-cmd">track</span> i s <span class="c-str">"project: PROJ #Unresolved"</span> <span class="c-flag">--all</span>
-<span class="c-key">PROJ-201</span>  Add Linear backend support       <span class="c-yellow">[Open]</span>
-<span class="c-key">PROJ-198</span>  Document --all pagination flag   <span class="c-yellow">[Open]</span>
+<span class="c-muted"># Preview a multi-step change plan before it mutates anything</span>
+<span class="c-prompt">$</span> <span class="c-cmd">track</span> apply cleanup-plan.json <span class="c-flag">--dry-run</span> <span class="c-flag">--validate</span>
+<span class="c-key">Apply completed</span> <span class="c-muted">(dry run)</span>
+  14 operations: 6 update_issue, 5 comment, 3 link
 
-<span class="c-muted"># Create an issue and pipe JSON to your tooling</span>
-<span class="c-prompt">$</span> <span class="c-cmd">track</span> <span class="c-flag">-o</span> json i new <span class="c-flag">-p</span> PROJ <span class="c-flag">-s</span> <span class="c-str">"Ship docs site"</span>
-<span class="c-muted">{</span> <span class="c-key">"id"</span><span class="c-muted">:</span> <span class="c-str">"PROJ-204"</span><span class="c-muted">,</span> <span class="c-key">"summary"</span><span class="c-muted">:</span> <span class="c-str">"Ship docs site"</span> <span class="c-muted">}</span>
+<span class="c-muted"># Resume the same plan after an interrupted run</span>
+<span class="c-prompt">$</span> <span class="c-cmd">track</span> <span class="c-flag">-o</span> json apply cleanup-plan.json \
+  <span class="c-flag">--resume</span> /tmp/track-apply-state.json
+<span class="c-muted">&#123;</span> <span class="c-key">"resumed"</span><span class="c-muted">:</span> true<span class="c-muted">,</span> <span class="c-key">"succeeded"</span><span class="c-muted">:</span> 14<span class="c-muted">,</span> <span class="c-key">"failed"</span><span class="c-muted">:</span> 0 <span class="c-muted">&#125;</span>
 </code></pre>
     </div>
   </div>

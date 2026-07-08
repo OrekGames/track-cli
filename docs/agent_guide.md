@@ -112,6 +112,11 @@ relates = "similar"
 
 Creates a `.track.toml` in the current directory:
 
+Project configs can contain API tokens. When a `.gitignore` exists in the
+current directory, local `track init` adds `.track.toml` and `.tracker-cache/`
+automatically. If the project has no `.gitignore`, add those entries before
+committing.
+
 ```bash
 track init --url https://youtrack.example.com --token YOUR_TOKEN --project PROJ
 track init --url https://company.atlassian.net --token API_TOKEN --backend jira --email you@example.com
@@ -130,7 +135,18 @@ track init --skills
 track init --url https://youtrack.example.com --token YOUR_TOKEN --skills
 ```
 
-This installs the `track` skill reference to `~/.claude/skills/track/`, `~/.copilot/skills/track/`, `~/.cursor/skills/track/`, and `~/.gemini/skills/track/`.
+This installs the same `track` skill reference for Claude Code, GitHub Copilot,
+Cursor, and Gemini CLI:
+
+| Agent | Installed path |
+|-------|----------------|
+| Claude Code | `~/.claude/skills/track/SKILL.md` |
+| GitHub Copilot | `~/.copilot/skills/track/SKILL.md` |
+| Cursor | `~/.cursor/skills/track/SKILL.md` |
+| Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
+
+The installed skill is guidance only. It does not store tracker credentials;
+tokens remain in `.track.toml`, environment variables, or CLI flags.
 
 ### Environment Variables (alternative)
 
