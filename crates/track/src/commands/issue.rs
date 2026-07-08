@@ -215,10 +215,10 @@ pub fn handle_issue(
         } => handle_link(client, source, target, link_type, format),
         IssueCommands::Unlink { source, link_id } => handle_unlink(client, source, link_id, format),
         IssueCommands::Start { ids, field, state } => {
-            handle_state_transition_batch(client, ids, field, state, "started", format)
+            handle_state_transition_batch(client, ids, field.as_deref(), state, "started", format)
         }
         IssueCommands::Complete { ids, field, state } => {
-            handle_state_transition_batch(client, ids, field, state, "completed", format)
+            handle_state_transition_batch(client, ids, field.as_deref(), state, "completed", format)
         }
     }
 }
@@ -1392,6 +1392,53 @@ fn handle_unlink(
     Ok(())
 }
 
+/// Fallback state field name when no schema information is available.
+///
+/// Only reached when the project schema can't be fetched or has no state-typed
+/// field. All non-YouTrack backends route any State-typed update to their
+/// workflow machinery regardless of the name ("State"/"Status"/"Stage" are all
+/// accepted), so the fallback only matters for YouTrack, where "State" is the
+/// built-in default field name for new projects.
+const DEFAULT_STATE_FIELD: &str = "State";
+
+/// Pick the workflow state field from a project schema: the first field whose
+/// type contains "state" (case-insensitive), e.g. YouTrack "state[1]".
+pub(crate) fn state_field_name(fields: &[ProjectCustomField]) -> Option<&str> {
+    fields
+        .iter()
+        .find(|f| f.field_type.to_ascii_lowercase().contains("state"))
+        .map(|f| f.name.as_str())
+}
+
+/// Resolve the actual state field name for an issue's project when the user
+/// didn't pass `--field` explicitly (issue #308: the field is "State" on some
+/// YouTrack projects, "Stage" on others — a hardcoded name 400s).
+///
+/// Schema lookups are cached per project id so batches spanning multiple
+/// projects don't re-fetch the same schema. Falls back to
+/// [`DEFAULT_STATE_FIELD`] when the issue or schema can't be fetched or the
+/// schema has no state-typed field.
+fn resolve_state_field(
+    client: &dyn IssueTracker,
+    id: &str,
+    cache: &mut std::collections::HashMap<String, Option<String>>,
+) -> String {
+    let resolved = client.get_issue(id).ok().and_then(|issue| {
+        let project_id = issue.project.id;
+        cache
+            .entry(project_id.clone())
+            .or_insert_with(|| {
+                let fields = client.get_project_custom_fields(&project_id).ok();
+                fields
+                    .as_deref()
+                    .and_then(state_field_name)
+                    .map(str::to_string)
+            })
+            .clone()
+    });
+    resolved.unwrap_or_else(|| DEFAULT_STATE_FIELD.to_string())
+}
+
 /// Build the custom field update for a state transition (`issue start`/`issue complete`).
 ///
 /// State-typed field names get the State variant so backends route them to their
@@ -1417,15 +1464,21 @@ fn build_state_field_update(field: &str, state: &str) -> CustomFieldUpdate {
 fn handle_state_transition(
     client: &dyn IssueTracker,
     id: &str,
-    field: &str,
+    field_update: CustomFieldUpdate,
     state: &str,
     action: &str,
     format: OutputFormat,
 ) -> Result<()> {
+    let field = match &field_update {
+        CustomFieldUpdate::SingleEnum { name, .. }
+        | CustomFieldUpdate::MultiEnum { name, .. }
+        | CustomFieldUpdate::State { name, .. }
+        | CustomFieldUpdate::SingleUser { name, .. } => name.clone(),
+    };
     let update = UpdateIssue {
         summary: None,
         description: None,
-        custom_fields: vec![build_state_field_update(field, state)],
+        custom_fields: vec![field_update],
         tags: vec![],
         parent: None,
     };
@@ -1605,28 +1658,42 @@ fn handle_delete_batch(
 fn handle_state_transition_batch(
     client: &dyn IssueTracker,
     ids: &[String],
-    field: &str,
+    field: Option<&str>,
     state: &str,
     action: &str,
     format: OutputFormat,
 ) -> Result<()> {
+    // Explicit --field wins; otherwise resolve the state field name from each
+    // issue's project schema, caching lookups per project id. Auto-resolved
+    // fields are state-typed by construction, so they always get the State
+    // variant (routing YouTrack to its commands API) even under exotic names.
+    let mut schema_cache: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    let mut update_for = |id: &str| match field {
+        Some(f) => build_state_field_update(f, state),
+        None => CustomFieldUpdate::State {
+            name: resolve_state_field(client, id, &mut schema_cache),
+            value: state.to_string(),
+        },
+    };
+
     // Single issue - delegate to original handler
     if ids.len() == 1 {
-        return handle_state_transition(client, &ids[0], field, state, action, format);
+        let field_update = update_for(&ids[0]);
+        return handle_state_transition(client, &ids[0], field_update, state, action, format);
     }
-
-    let update = UpdateIssue {
-        summary: None,
-        description: None,
-        custom_fields: vec![build_state_field_update(field, state)],
-        tags: vec![],
-        parent: None,
-    };
 
     // Batch state transition
     let mut results = Vec::new();
 
     for id in ids {
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            custom_fields: vec![update_for(id)],
+            tags: vec![],
+            parent: None,
+        };
         let result = client.update_issue(id, &update);
 
         match result {
@@ -2055,6 +2122,79 @@ mod tests {
             }
             other => panic!("Platform should be detected as MultiEnum, got: {:?}", other),
         }
+    }
+
+    fn schema_field(name: &str, field_type: &str) -> ProjectCustomField {
+        ProjectCustomField {
+            id: name.to_lowercase(),
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            required: false,
+            values: vec![],
+            state_values: vec![],
+        }
+    }
+
+    #[test]
+    fn state_field_name_finds_state_typed_field_regardless_of_name() {
+        // Issue #308: the workflow field may be named "State", "Stage", or
+        // anything else - detection must go by field type, not name.
+        let schema = vec![
+            schema_field("Priority", "enum[1]"),
+            schema_field("Stage", "state[1]"),
+        ];
+        assert_eq!(state_field_name(&schema), Some("Stage"));
+
+        let schema = vec![
+            schema_field("Assignee", "user[1]"),
+            schema_field("Workflow Step", "state[1]"),
+        ];
+        assert_eq!(state_field_name(&schema), Some("Workflow Step"));
+    }
+
+    #[test]
+    fn state_field_name_matches_field_type_case_insensitively() {
+        let schema = vec![schema_field("State", "State[1]")];
+        assert_eq!(state_field_name(&schema), Some("State"));
+    }
+
+    #[test]
+    fn state_field_name_returns_none_without_state_typed_field() {
+        let schema = vec![
+            schema_field("Priority", "enum[1]"),
+            schema_field("Assignee", "user[1]"),
+        ];
+        assert_eq!(state_field_name(&schema), None);
+        assert_eq!(state_field_name(&[]), None);
+    }
+
+    #[test]
+    fn state_field_name_picks_first_of_multiple_state_fields() {
+        let schema = vec![
+            schema_field("State", "state[1]"),
+            schema_field("Stage", "state[1]"),
+        ];
+        assert_eq!(state_field_name(&schema), Some("State"));
+    }
+
+    #[test]
+    fn state_transition_update_routes_known_names_to_state_variant() {
+        assert!(matches!(
+            build_state_field_update("State", "Done"),
+            CustomFieldUpdate::State { .. }
+        ));
+        assert!(matches!(
+            build_state_field_update("stage", "Done"),
+            CustomFieldUpdate::State { .. }
+        ));
+        assert!(matches!(
+            build_state_field_update("Status", "Done"),
+            CustomFieldUpdate::State { .. }
+        ));
+        assert!(matches!(
+            build_state_field_update("Kanban State", "Done"),
+            CustomFieldUpdate::SingleEnum { .. }
+        ));
     }
 
     #[test]

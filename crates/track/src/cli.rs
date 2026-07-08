@@ -647,9 +647,10 @@ pub enum IssueCommands {
         /// Issue ID(s) - comma-separated for batch (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
         #[arg(value_delimiter = ',')]
         ids: Vec<String>,
-        /// State field name; "State"/"Stage"/"Status" route to workflow transitions (default: "Stage")
-        #[arg(long, default_value = "Stage")]
-        field: String,
+        /// State field name; auto-detected from the project schema when omitted.
+        /// "State"/"Stage"/"Status" route to workflow transitions
+        #[arg(long)]
+        field: Option<String>,
         /// State value for in-progress (default: "Develop")
         #[arg(long, default_value = "Develop")]
         state: String,
@@ -660,9 +661,10 @@ pub enum IssueCommands {
         /// Issue ID(s) - comma-separated for batch (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
         #[arg(value_delimiter = ',')]
         ids: Vec<String>,
-        /// State field name; "State"/"Stage"/"Status" route to workflow transitions (default: "Stage")
-        #[arg(long, default_value = "Stage")]
-        field: String,
+        /// State field name; auto-detected from the project schema when omitted.
+        /// "State"/"Stage"/"Status" route to workflow transitions
+        #[arg(long)]
+        field: Option<String>,
         /// State value for done (default: "Done")
         #[arg(long, default_value = "Done")]
         state: String,
@@ -1631,7 +1633,7 @@ mod tests {
             Commands::Issue { action } => match action {
                 IssueCommands::Start { ids, field, state } => {
                     assert_eq!(ids, vec!["PROJ-123"]);
-                    assert_eq!(field, "Stage");
+                    assert_eq!(field, None, "field defaults to schema auto-resolution");
                     assert_eq!(state, "Develop");
                 }
                 _ => panic!("expected issue start"),
@@ -1650,7 +1652,7 @@ mod tests {
             Commands::Issue { action } => match action {
                 IssueCommands::Complete { ids, field, state } => {
                     assert_eq!(ids, vec!["PROJ-123"]);
-                    assert_eq!(field, "State");
+                    assert_eq!(field.as_deref(), Some("State"));
                     assert_eq!(state, "Resolved");
                 }
                 _ => panic!("expected issue complete"),
@@ -2333,7 +2335,7 @@ mod tests {
             Commands::Issue { action } => match action {
                 IssueCommands::Start { ids, field, state } => {
                     assert_eq!(ids, vec!["PROJ-1", "PROJ-2", "PROJ-3"]);
-                    assert_eq!(field, "Stage");
+                    assert_eq!(field, None, "field defaults to schema auto-resolution");
                     assert_eq!(state, "Develop");
                 }
                 _ => panic!("expected issue start"),

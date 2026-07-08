@@ -1,0 +1,24 @@
+[
+  {
+    "id": "field-a1",
+    "name": "State",
+    "field_type": "state[1]",
+    "required": true,
+    "values": ["Open", "In Progress", "In Review", "On hold", "Done", "Canceled"],
+    "state_values": [
+      { "name": "Open", "is_resolved": false, "ordinal": 0 },
+      { "name": "In Progress", "is_resolved": false, "ordinal": 1 },
+      { "name": "In Review", "is_resolved": false, "ordinal": 2 },
+      { "name": "On hold", "is_resolved": false, "ordinal": 3 },
+      { "name": "Done", "is_resolved": true, "ordinal": 4 },
+      { "name": "Canceled", "is_resolved": true, "ordinal": 5 }
+    ]
+  },
+  {
+    "id": "field-a2",
+    "name": "Priority",
+    "field_type": "enum[1]",
+    "required": true,
+    "values": ["Low", "Normal", "High", "Critical"]
+  }
+]
