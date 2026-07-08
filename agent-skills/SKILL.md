@@ -115,10 +115,19 @@ Note: `init` does NOT set `default_project` for GitHub/GitLab (scope comes from 
 ### Install Agent Skills
 
 ```bash
-track init --skills    # Install skill files globally for Claude, Copilot, Cursor, and Gemini
+track init --skills    # Install skill files globally for Claude Code, Copilot, Cursor, and Gemini CLI
 ```
 
 Can be combined: `track init --url ... --token ... --skills`
+
+Installed destinations:
+
+| Agent | Path |
+|-------|------|
+| Claude Code | `~/.claude/skills/track/SKILL.md` |
+| GitHub Copilot | `~/.copilot/skills/track/SKILL.md` |
+| Cursor | `~/.cursor/skills/track/SKILL.md` |
+| Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
 
 ### Environment Variables (alternative)
 
@@ -724,4 +733,4 @@ Setting `TRACK_MOCK_DIR=./fixtures/scenarios/<name>` routes **every** command to
 17. **Resolution vs closed**: the JSON `resolved` field is a timestamp that can be null on Done issues — use the State field's `is_resolved` for closedness
 18. **Error handling**: exit code 1 + `Error:` on stderr (text even in JSON mode); check `track config test` first; common issues are expired tokens and wrong URLs
 19. **Mock mode**: `TRACK_MOCK_DIR` silently redirects all commands to fixtures — verify it is unset when results look canned
-20. **Agent skills**: `track init --skills` installs this skill file globally for Claude, Copilot, Cursor, and Gemini
+20. **Agent skills**: `track init --skills` installs this skill file globally for Claude Code, GitHub Copilot, Cursor, and Gemini CLI

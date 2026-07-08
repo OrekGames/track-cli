@@ -1,0 +1,53 @@
+---
+const workflows = [
+  {
+    stat: "--all",
+    title: "Backlog-scale reads",
+    body: "Fetch every matching issue or article page in one command, then pipe JSON into jq, CI checks, reports, or notebooks.",
+  },
+  {
+    stat: "dry-run",
+    title: "Reviewable bulk changes",
+    body: "Turn create, update, comment, link, and guarded delete operations into a plan file that can be validated before it touches the tracker.",
+  },
+  {
+    stat: "resume",
+    title: "Long-running execution",
+    body: "Use an explicit state file to continue after a network failure, auth refresh, or partial run instead of replaying completed operations.",
+  },
+  {
+    stat: "JSON",
+    title: "Automation contracts",
+    body: "Every workflow can emit machine-readable output with stable exit behavior, so agents and scripts can reason from results instead of chat text.",
+  },
+];
+---
+
+<section class="section agent-workflows" id="agent-workflows">
+  <div class="container agent-workflows-inner">
+    <div class="agent-workflows-copy">
+      <p class="section-label">Why a CLI still matters</p>
+      <h2>MCP is an interface. <code>track</code> is an execution surface.</h2>
+      <p>
+        MCP integrations are useful for interactive lookup and one-off edits.
+        <code>track</code> covers the work that needs a contract: repeatable
+        commands, shell pipelines, dry-runs, resumable state, and auditable JSON
+        that can move from an agent session into a script, PR, or CI job.
+      </p>
+    </div>
+
+    <div class="workflow-list" aria-label="CLI workflow advantages">
+      {
+        workflows.map((workflow) => (
+          <article class="workflow-item">
+            <span class="workflow-stat">{workflow.stat}</span>
+            <div>
+              <h3>{workflow.title}</h3>
+              <p>{workflow.body}</p>
+            </div>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>
