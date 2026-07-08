@@ -1,0 +1,22 @@
+{
+  "id": "2-101",
+  "id_readable": "ALPHA-1",
+  "summary": "Alpha issue one",
+  "project": {
+    "id": "0-10",
+    "short_name": "ALPHA"
+  },
+  "custom_fields": [
+    {
+      "State": {
+        "name": "State",
+        "value": "Done",
+        "is_resolved": true
+      }
+    }
+  ],
+  "created": "2024-01-10T09:00:00Z",
+  "updated": "2024-01-20T10:00:00Z",
+  "tags": [],
+  "description": null
+}

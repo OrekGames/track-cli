@@ -1,0 +1,14 @@
+[
+  {
+    "id": "0-10",
+    "name": "Alpha Project",
+    "short_name": "ALPHA",
+    "description": "Project whose workflow state field is named State"
+  },
+  {
+    "id": "0-20",
+    "name": "Beta Project",
+    "short_name": "BETA",
+    "description": "Project whose workflow state field is named Stage"
+  }
+]
