@@ -58,8 +58,14 @@ track config project PROJ
 ## 4. Test the connection
 
 ```bash
-track config test
+track config test    # Quick URL/token check
+track doctor         # Deeper capability audit
 ```
+
+`config test` proves the configured backend can answer a basic connectivity
+probe. `doctor` checks the practical capabilities you will rely on: search,
+issue reads, comments, links, field schema, field admin, articles, and optional
+local write validation.
 
 ## 5. Basic usage
 

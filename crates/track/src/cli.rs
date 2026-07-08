@@ -59,6 +59,17 @@ pub enum Backend {
     Linear,
 }
 
+impl Backend {
+    /// All known backends, in stable display order.
+    pub const ALL: [Backend; 5] = [
+        Backend::YouTrack,
+        Backend::Jira,
+        Backend::GitHub,
+        Backend::GitLab,
+        Backend::Linear,
+    ];
+}
+
 impl std::fmt::Display for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -139,6 +150,35 @@ pub enum Commands {
     Bundle {
         #[command(subcommand)]
         action: BundleCommands,
+    },
+    /// Audit what each configured backend can actually do (capability checks)
+    ///
+    /// Goes beyond 'config test': runs non-mutating checks for auth, project
+    /// resolution, search, issue/comment/link reads, field schema, field admin,
+    /// and articles, and reports per-check ok/degraded/failed/skipped statuses.
+    /// Use the global -b/--backend flag to audit a specific backend.
+    Doctor {
+        /// Audit every backend configured in .track.toml / global config / env
+        #[arg(long)]
+        all_backends: bool,
+
+        /// Project to use for project-scoped checks (defaults to the configured default project)
+        #[arg(long, short = 'p')]
+        project: Option<String>,
+
+        /// Run write-capability validation (local schema validation only; never mutates remote trackers)
+        #[arg(
+            long,
+            value_name = "MODE",
+            num_args = 0..=1,
+            default_missing_value = "dry-run",
+            value_parser = ["dry-run"],
+        )]
+        write_check: Option<String>,
+
+        /// Exit non-zero if any check failed (degraded checks still exit 0)
+        #[arg(long)]
+        strict: bool,
     },
     /// Aggregate context for AI assistants (projects, fields, users, queries)
     #[command(visible_alias = "ctx")]

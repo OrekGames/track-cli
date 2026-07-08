@@ -113,7 +113,8 @@ track config project PROJ
 ### 3. Test Connection
 
 ```bash
-track config test
+track config test    # Quick connectivity check (URL + token)
+track doctor         # Deeper capability audit (search, reads, fields, articles, ...)
 ```
 
 ### 4. Basic Usage
@@ -491,6 +492,32 @@ track config keys           # List all available config keys
 track config clear          # Clear default project and backend
 track config path           # Show config file path
 ```
+
+### Doctor (Backend Capability Audit)
+
+```bash
+track doctor                       # Audit the configured backend
+track doctor --all-backends        # Audit every configured backend
+track -b gitlab doctor             # Audit a specific backend
+track doctor --project PROJ       # Use a specific project for scoped checks
+track doctor --write-check         # Also validate write payloads locally (no remote writes)
+track doctor --all-backends --strict -o json  # CI-friendly: non-zero exit if any check or backend failed
+```
+
+**`config test` vs `doctor`:** `config test` runs a single connectivity probe
+(`list_projects`) and tells you whether the URL and token work at all.
+`doctor` audits what the backend can *actually do*: it runs non-mutating checks
+for config validity, auth/connectivity, project resolution, issue search/read,
+comments, links, field schema, field admin, and articles, and reports each as
+`ok`, `degraded` (e.g. valid token missing a scope), `failed`, or `skipped`
+(capability not supported by the backend). A token can pass `config test` but
+lack scopes for specific operations — or fail `config test` while search/read
+still work; `doctor` distinguishes those cases and never mutates remote
+trackers (`--write-check` only validates against the locally fetched field
+schema). A backend rolls up `failed` only when nothing practical works — bad
+credentials, or a broken read path (e.g. every call 404s under a wrong
+project id). Exit code is 0 unless `--strict` is passed and a check or
+backend `failed` (degraded stays 0).
 
 ### Cache
 

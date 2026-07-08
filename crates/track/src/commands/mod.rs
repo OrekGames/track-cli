@@ -5,6 +5,7 @@ pub mod bundle;
 pub mod cache;
 pub mod config;
 pub mod context;
+pub mod doctor;
 pub mod eval;
 pub mod field;
 pub mod init;

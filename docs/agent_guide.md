@@ -209,6 +209,49 @@ track -b gl config test        # Override to test GitLab
 track -b lin config test       # Override to test Linear
 ```
 
+### Capability Audit (`track doctor`)
+
+`config test` only proves the URL and token can reach the tracker (a single
+`list_projects` call). `track doctor` audits *practical* capabilities: it runs
+a battery of non-mutating checks and reports each as `ok`, `degraded`,
+`failed`, or `skipped`, so you can tell scope-specific failures apart from
+dead backends before starting work.
+
+```bash
+track doctor -o json                       # Audit the effective backend
+track doctor --all-backends -o json        # Audit every configured backend
+track -b gitlab doctor -o json             # Audit a specific backend
+track doctor --project PROJ -o json        # Use PROJ for project-scoped checks
+track doctor --write-check -o json         # + local write-payload validation (never mutates)
+track doctor --all-backends --strict       # Non-zero exit if any check or backend failed
+```
+
+Checks: `config_valid`, `auth_connectivity`, `project_resolution`,
+`issue_search`, `issue_read`, `comments_read`, `links_read`, `field_schema`,
+`field_admin`, `articles`, `write_validation`.
+
+Status meanings:
+
+| Status | Meaning |
+|--------|---------|
+| `ok` | The call worked |
+| `degraded` | Reachable but limited (e.g. 403 = token missing a scope, 404 = resource missing) |
+| `failed` | Bad credentials, bad config, or connectivity failure |
+| `skipped` | Capability not supported by the backend, or prerequisite unavailable |
+
+Notes:
+- `doctor` never mutates remote trackers. `--write-check` only validates that
+  create/update payloads can be checked against the locally fetched project
+  field schema; no writes are sent.
+- Exit code is 0 even with failures unless `--strict` is passed; under
+  `--strict` any `failed` check or `failed` backend exits non-zero
+  (`degraded` still exits 0).
+- A backend is reported `degraded` (not `failed`) when read/search workflows
+  still work despite failing checks — e.g. a token that 403s on
+  `list_projects` but can still search and read issues. It rolls up `failed`
+  when nothing practical works: bad credentials/config/connectivity, or a
+  broken read path (e.g. every call 404s under a wrong project id).
+
 ### Config Management
 
 ```bash
@@ -815,7 +858,8 @@ track -b gl i ul 42 789
 
 ```bash
 # 1. Verify connection
-track config test                  # YouTrack (default)
+track doctor --all-backends -o json  # One command: per-backend capability audit
+track config test                  # Quick single-probe alternative (YouTrack default)
 track -b jira config test          # Jira
 track -b gh config test            # GitHub
 track -b gl config test            # GitLab
@@ -1085,6 +1129,7 @@ Common errors and solutions:
 ```bash
 # === SETUP & CONTEXT ===
 track config test                  # Test connection
+track doctor --all-backends        # Audit backend capabilities (ok/degraded/failed/skipped)
 track cache refresh                # Refresh cache (recommended first step)
 track cache show                   # View cached context (projects, fields, users, query templates, issue counts)
 
