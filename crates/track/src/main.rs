@@ -19,7 +19,22 @@ use tracker_core::{IssueTracker, KnowledgeBase};
 use tracker_mock::MockClient;
 use youtrack_backend::YouTrackClient;
 
+/// Debug builds of the command dispatch need more stack than Windows' 1 MiB
+/// main-thread default, so the CLI runs on a thread with an explicit size.
+const MAIN_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 fn main() -> ExitCode {
+    std::thread::Builder::new()
+        .stack_size(MAIN_STACK_SIZE)
+        .spawn(cli_main)
+        .expect("failed to spawn CLI thread")
+        .join()
+        // A panic on the CLI thread already printed its message; exit with
+        // the same code a panicking main thread would.
+        .unwrap_or(ExitCode::from(101))
+}
+
+fn cli_main() -> ExitCode {
     let cli = Cli::parse();
 
     // Initialize color mode based on CLI flag and environment
