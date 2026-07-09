@@ -40,10 +40,64 @@ track i s "project: PROJ State: Open"
 track i s --template unresolved --project PROJ  # Use query template
 track i s "project: PROJ #Unresolved" --all     # Fetch all pages
 
+# Inspect many issues with opt-in context
+track issue inspect PROJ-1,PROJ-2,PROJ-3 -o json
+track i ix --ids ids.txt --include comments,links -o json
+track i ix --query "project: PROJ #Unresolved" --all --include all -o json
+track i ix --template unresolved --project PROJ --limit 50 --jsonl
+
 # Delete (single or batch)
 track issue delete PROJ-123
 track i del PROJ-1,PROJ-2,PROJ-3        # Batch delete
 ```
+
+## Batch inspect
+
+Use `track issue inspect` when you need one structured context capture for a
+set of issues before reviewing, summarizing, auditing, or bulk-editing them. It
+fills the gap between `issue search` (many issues, base fields only) and
+`issue get --full` (one issue with extra context).
+
+```bash
+# Comma-separated IDs; default is fast issue fields only
+track i ix PROJ-1,PROJ-2,PROJ-3 -o json
+
+# IDs from a file, with selected context
+track i ix --ids ids.txt --include comments,links -o json
+track i ix --ids - --include all --jsonl < ids.txt
+
+# Query/template-selected issue sets
+track i ix --query "project: PROJ #Unresolved" --all --include comments,links -o json
+track i ix --template unresolved --project PROJ --limit 50 --include history -o json
+```
+
+Supported issue-set modes:
+
+- Positional comma-separated IDs.
+- `--ids <path>` with one issue ID per line, or `--ids -` for stdin.
+- `--query <query>` with `--limit`, `--skip`, or `--all`.
+- `--template <name> --project <project>` using cached query templates.
+
+Context is opt-in with `--include comments,links,subtasks,history,all`. The
+JSON report is shaped for automation:
+
+```json
+{
+  "total": 3,
+  "succeeded": 2,
+  "failed": 1,
+  "issues": [{ "id_readable": "PROJ-1", "comments": [], "links": [] }],
+  "errors": [{ "id": "PROJ-404", "error": "Issue not found: PROJ-404" }]
+}
+```
+
+`total` counts results in this report. Query mode may also include
+`query_total`, the backend-reported number of matches, so limited pages are not
+mistaken for the full result set. Unsupported include capabilities appear as
+per-issue `warnings`; other include fetch failures become per-issue errors.
+Pass `--strict` when a script should exit non-zero if any issue failed after
+the full report is emitted. Use `--jsonl` for streaming one compact JSON object
+per issue result.
 
 ## Comments
 
@@ -215,6 +269,7 @@ track -o json context          # JSON for parsing
 | `track issue create`  | `track i new`, `track i c`       |
 | `track issue update`  | `track i u`                      |
 | `track issue search`  | `track i s`, `track i find`      |
+| `track issue inspect` | `track i ix`                     |
 | `track issue delete`  | `track i rm`, `track i del`      |
 | `track issue comment` | `track i cmt`                    |
 | `track issue history` | `track i history`, `track i hist`|

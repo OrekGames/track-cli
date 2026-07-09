@@ -12,8 +12,8 @@ and update issues is the same no matter which backend your team uses.
 
 - **Multi-Backend** — five trackers, one command set.
 - **Issue Management** — get, create, update, delete, and search issues.
-- **Batch Operations** — update, delete, or complete many issues at once, plus
-  declarative bulk `apply`.
+- **Batch Operations** — inspect, update, delete, or complete many issues at
+  once, plus declarative bulk `apply`.
 - **Transparent Pagination** — the `--all` flag auto-paginates to fetch every
   result.
 - **Custom Fields** — set priority, state, assignee, and any field with
