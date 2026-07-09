@@ -449,8 +449,9 @@ The JSON report shape is
 carries the backend-reported match count when known (it can exceed `total` if
 the page was truncated by `--limit`; text mode prints a truncation note).
 Each entry in `issues` is the issue object plus `comments`/`links`/`subtasks`/`history`
-arrays for the requested includes; an include the backend cannot serve becomes a
-structured entry in that issue's `warnings` array (never a command failure).
+arrays for the requested includes; an unsupported include capability becomes a
+structured entry in that issue's `warnings` array. Other include fetch failures
+are per-issue errors.
 `subtasks` is a links-derived view: the subset of issue links whose type is a
 subtask/parent relationship (including types mapped to the canonical `subtask`
 or `parent` keywords via `[backend.link_mappings]`). Positional IDs and

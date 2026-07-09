@@ -14,7 +14,11 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
-use tracker_core::{Issue, IssueLink, IssueTracker, get_max_results, unicode_eq_ignore_case};
+use tracker_core::{
+    Issue, IssueLink, IssueTracker, TrackerError, get_max_results, unicode_eq_ignore_case,
+};
+
+const DEFAULT_QUERY_LIMIT: usize = 20;
 
 /// Arguments for `issue inspect`.
 pub(crate) struct InspectArgs<'a> {
@@ -23,8 +27,8 @@ pub(crate) struct InspectArgs<'a> {
     pub query: Option<&'a str>,
     pub template: Option<&'a str>,
     pub project: Option<&'a str>,
-    pub limit: usize,
-    pub skip: usize,
+    pub limit: Option<usize>,
+    pub skip: Option<usize>,
     pub all: bool,
     pub include: &'a [String],
     pub jsonl: bool,
@@ -40,8 +44,8 @@ struct Includes {
     history: bool,
 }
 
-/// A structured warning attached to one issue's result (e.g. an include the
-/// backend does not support). Warnings never fail the issue.
+/// A structured warning attached to one issue's result when a requested include
+/// is unavailable because the backend does not support it.
 #[derive(Debug, Serialize)]
 struct IncludeWarning {
     include: &'static str,
@@ -79,6 +83,7 @@ pub(crate) fn handle_inspect(
     link_mappings: &HashMap<String, String>,
 ) -> Result<()> {
     let includes = parse_includes(args.include)?;
+    let query_mode = validate_input_mode(args)?;
 
     let mut succeeded = 0usize;
     let mut failed = 0usize;
@@ -103,7 +108,7 @@ pub(crate) fn handle_inspect(
 
     // Resolve the issue set. Query/template mode returns full issues from
     // search (no per-issue get_issue round-trip); ID mode fetches each issue.
-    if args.query.is_some() || args.template.is_some() {
+    if query_mode {
         let query = super::issue::resolve_search_query(
             args.query,
             args.template,
@@ -118,7 +123,11 @@ pub(crate) fn handle_inspect(
             res
         } else {
             let result = client
-                .search_issues(&query, args.limit, args.skip)
+                .search_issues(
+                    &query,
+                    args.limit.unwrap_or(DEFAULT_QUERY_LIMIT),
+                    args.skip.unwrap_or(0),
+                )
                 .context("Failed to search issues")?;
             query_total = result.total;
             result.items
@@ -199,10 +208,10 @@ fn inspect_issue(
                     serde_json::to_value(comments).unwrap_or(Value::Null),
                 );
             }
-            Err(e) => warnings.push(IncludeWarning {
-                include: "comments",
-                message: e.to_string(),
-            }),
+            Err(e) => match unsupported_include_warning("comments", &e) {
+                Some(warning) => warnings.push(warning),
+                None => return include_failure(id, "comments", e),
+            },
         }
     }
 
@@ -227,17 +236,20 @@ fn inspect_issue(
                 }
             }
             Err(e) => {
+                let include_name = match (includes.links, includes.subtasks) {
+                    (true, true) => "links/subtasks",
+                    (true, false) => "links",
+                    (false, true) => "subtasks",
+                    (false, false) => "links",
+                };
+                if !is_unsupported_include_error(&e) {
+                    return include_failure(id, include_name, e);
+                }
                 if includes.links {
-                    warnings.push(IncludeWarning {
-                        include: "links",
-                        message: e.to_string(),
-                    });
+                    warnings.push(unsupported_include_warning("links", &e).unwrap());
                 }
                 if includes.subtasks {
-                    warnings.push(IncludeWarning {
-                        include: "subtasks",
-                        message: e.to_string(),
-                    });
+                    warnings.push(unsupported_include_warning("subtasks", &e).unwrap());
                 }
             }
         }
@@ -251,10 +263,10 @@ fn inspect_issue(
                     serde_json::to_value(events).unwrap_or(Value::Null),
                 );
             }
-            Err(e) => warnings.push(IncludeWarning {
-                include: "history",
-                message: e.to_string(),
-            }),
+            Err(e) => match unsupported_include_warning("history", &e) {
+                Some(warning) => warnings.push(warning),
+                None => return include_failure(id, "history", e),
+            },
         }
     }
 
@@ -266,6 +278,58 @@ fn inspect_issue(
     }
 
     InspectOutcome::Success(obj)
+}
+
+fn validate_input_mode(args: &InspectArgs) -> Result<bool> {
+    let query_mode = args.query.is_some() || args.template.is_some();
+    if !query_mode {
+        let mut invalid = Vec::new();
+        if args.project.is_some() {
+            invalid.push("--project");
+        }
+        if args.limit.is_some() {
+            invalid.push("--limit");
+        }
+        if args.skip.is_some() {
+            invalid.push("--skip");
+        }
+        if args.all {
+            invalid.push("--all");
+        }
+        if !invalid.is_empty() {
+            return Err(anyhow!(
+                "{} {} only valid with --query or --template",
+                invalid.join(", "),
+                if invalid.len() == 1 { "is" } else { "are" }
+            ));
+        }
+    }
+    Ok(query_mode)
+}
+
+fn unsupported_include_warning(
+    include: &'static str,
+    error: &TrackerError,
+) -> Option<IncludeWarning> {
+    if is_unsupported_include_error(error) {
+        Some(IncludeWarning {
+            include,
+            message: error.to_string(),
+        })
+    } else {
+        None
+    }
+}
+
+fn is_unsupported_include_error(error: &TrackerError) -> bool {
+    matches!(error, TrackerError::InvalidInput(message) if message.to_ascii_lowercase().contains("not supported"))
+}
+
+fn include_failure(id: &str, include: &str, error: TrackerError) -> InspectOutcome {
+    InspectOutcome::Failure(InspectError {
+        id: id.to_string(),
+        error: format!("Failed to fetch {include}: {error}"),
+    })
 }
 
 /// A link counts as a subtask/parent relationship if the user's
@@ -531,6 +595,29 @@ mod tests {
     fn parse_includes_empty_is_default_fast() {
         let inc = parse_includes(&[]).unwrap();
         assert_eq!(inc, Includes::default());
+    }
+
+    #[test]
+    fn unsupported_include_warning_accepts_not_supported_invalid_input() {
+        let err = TrackerError::InvalidInput(
+            "Issue history is not supported by this backend".to_string(),
+        );
+        let warning = unsupported_include_warning("history", &err).unwrap();
+        assert_eq!(warning.include, "history");
+        assert!(
+            warning.message.contains("not supported"),
+            "warning should preserve backend message: {}",
+            warning.message
+        );
+    }
+
+    #[test]
+    fn unsupported_include_warning_rejects_operational_errors() {
+        let err = TrackerError::Api {
+            status: 500,
+            message: "backend unavailable".to_string(),
+        };
+        assert!(unsupported_include_warning("comments", &err).is_none());
     }
 
     #[test]

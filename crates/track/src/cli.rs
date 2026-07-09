@@ -555,13 +555,13 @@ pub enum IssueCommands {
         #[arg(long, short = 'p')]
         project: Option<String>,
 
-        /// Maximum number of results (query mode only)
-        #[arg(long, default_value_t = 20, conflicts_with = "all")]
-        limit: usize,
+        /// Maximum number of results (default: 20; query mode only)
+        #[arg(long, conflicts_with = "all")]
+        limit: Option<usize>,
 
         /// Number of results to skip (query mode only)
-        #[arg(long, default_value_t = 0, conflicts_with = "all")]
-        skip: usize,
+        #[arg(long, conflicts_with = "all")]
+        skip: Option<usize>,
 
         /// Fetch all query results (paginate automatically)
         #[arg(long)]

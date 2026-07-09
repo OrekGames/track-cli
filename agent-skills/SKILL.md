@@ -442,13 +442,13 @@ track completions zsh      # Shell completions (bash|zsh|fish|powershell|elvish)
   "issues": [
     { "id": "10234", "id_readable": "PROJ-123", "summary": "...",   // full issue fields, flattened
       "comments": [...], "links": [...], "subtasks": [...], "history": [...],  // only requested includes
-      "warnings": [{"include": "history", "message": "..."}] }      // include the backend couldn't serve
+      "warnings": [{"include": "history", "message": "..."}] }      // unsupported include capability
   ],
   "errors": [{"id": "PROJ-404", "error": "Issue not found: ..."}]
 }
 ```
 
-- Each `issues[]` entry is the standard Issue shape plus one array per requested `--include`; keys for includes that failed are omitted and explained in that issue's `warnings` (never a command failure).
+- Each `issues[]` entry is the standard Issue shape plus one array per requested `--include`; unsupported include capabilities are explained in that issue's `warnings`, while other include fetch failures become per-issue errors.
 - `subtasks` is a links-derived view: the subset of `links` whose type is a subtask/parent relationship.
 - Exit code is 0 even with failures unless `--strict` (reports everything first, then exits 1).
 - **`--jsonl`** (overrides `-o`): one compact object per line — success lines are the `issues[]` entry plus `"success": true`; failures are `{"success": false, "id", "error"}`.

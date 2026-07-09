@@ -2190,12 +2190,12 @@ fn test_issue_inspect_subtasks_honor_link_mappings() {
 }
 
 #[test]
-fn test_issue_inspect_unsupported_include_is_warning_not_failure() {
+fn test_issue_inspect_include_fetch_failure_is_issue_failure() {
     let dir = temp_dir();
     let scenario = copy_scenario(&dir, "basic-workflow");
 
-    // basic-workflow has no get_issue_history mapping -> the include fails,
-    // but the issue itself must still succeed with a structured warning.
+    // basic-workflow has no get_issue_history mapping, which simulates an
+    // operational include fetch failure rather than an unsupported capability.
     let output = track_mock(&dir, &scenario)
         .args([
             "issue",
@@ -2211,14 +2211,68 @@ fn test_issue_inspect_unsupported_include_is_warning_not_failure() {
     assert!(output.status.success(), "expected success: {output:?}");
 
     let report = parse_json_stdout(&output);
-    assert_eq!(report["succeeded"], 1);
-    assert_eq!(report["failed"], 0);
-    let issue = &report["issues"][0];
-    assert!(issue.get("history").is_none());
-    let warnings = issue["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0]["include"], "history");
-    assert!(warnings[0]["message"].is_string());
+    assert_eq!(report["succeeded"], 0);
+    assert_eq!(report["failed"], 1);
+    assert!(report["issues"].as_array().unwrap().is_empty());
+    let errors = report["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["id"], "DEMO-1");
+    assert!(
+        errors[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to fetch history"),
+        "error should identify the failed include: {}",
+        errors[0]["error"]
+    );
+
+    let strict_output = track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "inspect",
+            "DEMO-1",
+            "--include",
+            "history",
+            "--strict",
+            "-o",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !strict_output.status.success(),
+        "--strict should fail when a requested include cannot be fetched"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_inspect_rejects_query_only_flags_in_id_mode() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let limit_output = track_mock(&dir, &scenario)
+        .args(["issue", "inspect", "DEMO-1", "--limit", "1"])
+        .output()
+        .unwrap();
+    assert!(!limit_output.status.success());
+    let stderr = String::from_utf8_lossy(&limit_output.stderr);
+    assert!(
+        stderr.contains("--limit is only valid with --query or --template"),
+        "should reject query-only --limit in ID mode: {stderr}"
+    );
+
+    let all_output = track_mock(&dir, &scenario)
+        .args(["issue", "inspect", "DEMO-1", "--all"])
+        .output()
+        .unwrap();
+    assert!(!all_output.status.success());
+    let stderr = String::from_utf8_lossy(&all_output.stderr);
+    assert!(
+        stderr.contains("--all is only valid with --query or --template"),
+        "should reject query-only --all in ID mode: {stderr}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
