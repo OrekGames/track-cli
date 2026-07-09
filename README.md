@@ -334,6 +334,13 @@ track i s "project: PROJ State: Open"
 track i s --template unresolved --project PROJ  # Use query template
 track i s "project: PROJ #Unresolved" --all     # Fetch all pages
 
+# Inspect many issues at once (per-issue success/failure, opt-in context)
+track issue inspect PROJ-1,PROJ-2,PROJ-3 -o json
+track i ix --ids ids.txt --include comments,links -o json   # IDs from file ("-" for stdin)
+track i ix --query "project: PROJ #Unresolved" --all --include all -o json
+track i ix --template unresolved --project PROJ --limit 50 --jsonl  # One JSON object per line
+track i ix PROJ-1,PROJ-404 --strict     # Exit non-zero if any issue fails (after full report)
+
 # Delete (single or batch)
 track issue delete PROJ-123
 track i del PROJ-1,PROJ-2,PROJ-3        # Batch delete
@@ -559,6 +566,7 @@ Single command to get all relevant data: projects, fields, users, query template
 | `track issue create` | `track i new`, `track i c` |
 | `track issue update` | `track i u` |
 | `track issue search` | `track i s`, `track i find` |
+| `track issue inspect` | `track i ix` |
 | `track issue delete` | `track i rm`, `track i del` |
 | `track issue comment` | `track i cmt` |
 | `track issue history` | `track i history`, `track i hist` |

@@ -578,6 +578,20 @@ impl Config {
     pub fn get_backend(&self) -> Backend {
         self.backend.unwrap_or_default()
     }
+
+    /// Link-type mappings (canonical keyword -> backend link type name) for
+    /// the given backend. GitHub has no configurable link types.
+    pub fn link_mappings_for(&self, backend: Backend) -> &HashMap<String, String> {
+        static NO_MAPPINGS: std::sync::LazyLock<HashMap<String, String>> =
+            std::sync::LazyLock::new(HashMap::new);
+        match backend {
+            Backend::YouTrack => &self.youtrack.link_mappings,
+            Backend::Jira => &self.jira.link_mappings,
+            Backend::GitHub => &NO_MAPPINGS,
+            Backend::GitLab => &self.gitlab.link_mappings,
+            Backend::Linear => &self.linear.link_mappings,
+        }
+    }
 }
 
 fn config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {

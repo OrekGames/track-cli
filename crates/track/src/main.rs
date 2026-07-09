@@ -299,13 +299,17 @@ fn run_with_client(
     config: &Config,
 ) -> Result<()> {
     match &cli.command {
-        Commands::Issue { action } => commands::issue::handle_issue(
-            issue_client,
-            action,
-            cli.format,
-            config.default_project.as_deref(),
-            cli.verbose,
-        ),
+        Commands::Issue { action } => {
+            let backend = cli.backend.unwrap_or_else(|| config.get_backend());
+            commands::issue::handle_issue(
+                issue_client,
+                action,
+                cli.format,
+                config.default_project.as_deref(),
+                cli.verbose,
+                config.link_mappings_for(backend),
+            )
+        }
         Commands::Project { action } => {
             commands::project::handle_project(issue_client, action, cli.format)
         }

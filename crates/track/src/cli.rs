@@ -531,6 +531,60 @@ pub enum IssueCommands {
         #[arg(long)]
         all: bool,
     },
+    /// Inspect many issues at once with per-issue success/failure results
+    #[command(visible_alias = "ix")]
+    Inspect {
+        /// Issue ID(s) - comma-separated (e.g., PROJ-1,PROJ-2,PROJ-3)
+        #[arg(value_delimiter = ',', conflicts_with_all = ["query", "template"])]
+        ids: Vec<String>,
+
+        /// Read issue IDs from a file, one per line ("-" for stdin);
+        /// merged (deduplicated) with positional IDs
+        #[arg(long = "ids", value_name = "PATH", conflicts_with_all = ["query", "template"])]
+        ids_file: Option<PathBuf>,
+
+        /// Search query to select issues (e.g., "project: PROJ #Unresolved")
+        #[arg(long, short = 'q', conflicts_with = "template")]
+        query: Option<String>,
+
+        /// Use a pre-built query template (see: track cache show for available templates)
+        #[arg(long, short = 'T')]
+        template: Option<String>,
+
+        /// Project for template substitution (replaces {PROJECT} in template)
+        #[arg(long, short = 'p')]
+        project: Option<String>,
+
+        /// Maximum number of results (default: 20; query mode only)
+        #[arg(long, conflicts_with = "all")]
+        limit: Option<usize>,
+
+        /// Number of results to skip (query mode only)
+        #[arg(long, conflicts_with = "all")]
+        skip: Option<usize>,
+
+        /// Fetch all query results (paginate automatically)
+        #[arg(long)]
+        all: bool,
+
+        /// Context to include: comments, links, subtasks, history, all
+        /// (comma-separated and/or repeated)
+        #[arg(
+            long = "include",
+            short = 'I',
+            value_delimiter = ',',
+            value_name = "KIND"
+        )]
+        include: Vec<String>,
+
+        /// Emit one JSON object per issue result (JSON Lines; overrides -o)
+        #[arg(long)]
+        jsonl: bool,
+
+        /// Exit non-zero if any issue fails to inspect (after reporting all results)
+        #[arg(long)]
+        strict: bool,
+    },
     /// Delete issue(s) by ID - supports comma-separated IDs for batch deletion
     #[command(visible_alias = "rm", visible_alias = "del")]
     Delete {
