@@ -164,6 +164,28 @@ track config keys            # List available config keys
 track config path            # Show config file path
 ```
 
+## Doctor (Backend Capability Audit)
+
+`track doctor` goes beyond `config test`. It runs non-mutating checks for
+configuration validity, auth/connectivity, project resolution, issue search and
+read, comments, links, field schema, field admin, articles, and optional local
+write validation.
+
+```bash
+track doctor                              # Audit the configured backend
+track doctor --all-backends               # Audit every configured backend
+track -b gitlab doctor                    # Audit a specific backend
+track doctor --project PROJ               # Use a project for scoped checks
+track doctor --write-check                # Validate write payloads locally only
+track doctor --all-backends --strict -o json  # CI-friendly failure on failed checks
+```
+
+Each check reports `ok`, `degraded`, `failed`, or `skipped`. `degraded` usually
+means the backend is reachable but a token scope or optional capability is
+limited; `skipped` means the backend does not support that capability. `doctor`
+never mutates remote trackers, and `--write-check` only validates against the
+fetched project schema.
+
 ## Cache
 
 ```bash

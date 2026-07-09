@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 
 use crate::cli::{self, Backend};
 use crate::config::{self, Config};
@@ -24,6 +25,8 @@ const SKILL_TOOL_DIRS: &[(&str, &str)] = &[
     ("Cursor", ".cursor"),
     ("Gemini CLI", ".gemini"),
 ];
+
+const LOCAL_GITIGNORE_ENTRIES: &[&str] = &[".track.toml", ".tracker-cache/"];
 
 #[derive(Debug, Clone)]
 enum InitProject {
@@ -161,6 +164,47 @@ fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn gitignore_contains_entry(content: &str, entry: &str) -> bool {
+    content.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == entry
+            || (entry.ends_with('/')
+                && trimmed.trim_end_matches('/') == entry.trim_end_matches('/'))
+    })
+}
+
+fn update_gitignore_if_present(config_path: &Path) -> Result<Option<PathBuf>> {
+    let Some(config_dir) = config_path.parent() else {
+        return Ok(None);
+    };
+    let gitignore_path = config_dir.join(".gitignore");
+    if !gitignore_path.exists() {
+        return Ok(None);
+    }
+
+    let mut content = std::fs::read_to_string(&gitignore_path)?;
+    let missing: Vec<&str> = LOCAL_GITIGNORE_ENTRIES
+        .iter()
+        .copied()
+        .filter(|entry| !gitignore_contains_entry(&content, entry))
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(None);
+    }
+
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    for entry in missing {
+        content.push_str(entry);
+        content.push('\n');
+    }
+    std::fs::write(&gitignore_path, content)?;
+
+    Ok(Some(gitignore_path))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -371,7 +415,7 @@ fn create_config_and_finish(
     backend: Backend,
     skills: bool,
     global: bool,
-    config_path: std::path::PathBuf,
+    config_path: PathBuf,
     validated_project: Option<InitProject>,
 ) -> Result<()> {
     use colored::Colorize;
@@ -427,6 +471,12 @@ fn create_config_and_finish(
 
     config.save(&config_path)?;
 
+    let gitignore_path = if !global {
+        update_gitignore_if_present(&config_path)?
+    } else {
+        None
+    };
+
     // Write agent guide to the same directory as the config (skip for global init)
     let guide_path = if !global {
         let path = config_path
@@ -456,6 +506,9 @@ fn create_config_and_finish(
             if let Some(guide) = &guide_path {
                 result["guide_path"] = serde_json::json!(guide.display().to_string());
             }
+            if let Some(gitignore) = &gitignore_path {
+                result["gitignore_path"] = serde_json::json!(gitignore.display().to_string());
+            }
             if let Some(project) = &validated_project {
                 result["project"] = serde_json::json!(project.display_name());
             }
@@ -482,6 +535,14 @@ fn create_config_and_finish(
                     tag,
                     "Created agent guide:".green(),
                     guide.display()
+                );
+            }
+            if let Some(gitignore) = &gitignore_path {
+                println!(
+                    "{} {} {}",
+                    tag,
+                    "Updated .gitignore:".green(),
+                    gitignore.display()
                 );
             }
             println!(

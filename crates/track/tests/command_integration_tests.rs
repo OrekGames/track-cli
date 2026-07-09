@@ -668,6 +668,10 @@ fn test_init_creates_config_and_guide() {
     // Verify files were created
     assert!(dir.join(".track.toml").exists(), ".track.toml should exist");
     assert!(
+        !dir.join(".gitignore").exists(),
+        "init should not create .gitignore when one is not already present"
+    );
+    assert!(
         dir.join("AGENT_GUIDE.md").exists(),
         "AGENT_GUIDE.md should exist"
     );
@@ -676,6 +680,67 @@ fn test_init_creates_config_and_guide() {
     let content = fs::read_to_string(dir.join(".track.toml")).unwrap();
     assert!(content.contains("youtrack.example.com"));
     assert!(content.contains("perm:test-token"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_init_updates_existing_gitignore() {
+    let dir = temp_dir();
+    fs::write(dir.join(".gitignore"), "target/\n").unwrap();
+
+    track_in(&dir)
+        .args([
+            "init",
+            "--url",
+            "https://youtrack.example.com",
+            "--token",
+            "perm:test-token",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".gitignore"));
+
+    let content = fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert!(content.contains("target/"));
+    assert!(content.lines().any(|line| line == ".track.toml"));
+    assert!(content.lines().any(|line| line == ".tracker-cache/"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_init_does_not_duplicate_gitignore_entries() {
+    let dir = temp_dir();
+    fs::write(dir.join(".gitignore"), ".track.toml\n.tracker-cache/\n").unwrap();
+
+    track_in(&dir)
+        .args([
+            "init",
+            "--url",
+            "https://youtrack.example.com",
+            "--token",
+            "perm:test-token",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".gitignore").not());
+
+    let content = fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert_eq!(
+        content
+            .lines()
+            .filter(|line| *line == ".track.toml")
+            .count(),
+        1
+    );
+    assert_eq!(
+        content
+            .lines()
+            .filter(|line| line.trim_end_matches('/') == ".tracker-cache")
+            .count(),
+        1
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

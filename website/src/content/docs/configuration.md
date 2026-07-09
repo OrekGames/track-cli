@@ -70,9 +70,7 @@ url = "https://your-domain.atlassian.net"
 email = "you@example.com"
 token = "your-api-token"
 
-# Optional: override link type name mappings per backend
-# [jira.link_mappings]
-# depends = "Requires"
+# Link type mappings are covered below.
 ```
 
 ```bash
@@ -82,6 +80,82 @@ track -b lin ORE-123        # Uses Linear
 
 track config backend jira   # Or change the default backend
 track config backend linear
+```
+
+### Link type mappings
+
+`track issue link` accepts a small set of canonical link names so commands can
+stay portable across trackers:
+
+`relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, and
+`parent`.
+
+Backends then translate those names into the native link type expected by the
+remote API. This matters when your tracker admins rename issue link types, add
+custom relationship names, or use different words for the same workflow. For
+example, one Jira instance might call a dependency link `Blocks`, while another
+calls it `Requires`.
+
+`subtask` and `parent` use backend-native hierarchy APIs where available. Link
+type mappings apply to the general issue-link path used by `relates`, `depends`,
+`required`, `duplicates`, `duplicated-by`, and any custom type name you pass with
+`-t`.
+
+#### Defaults
+
+| CLI link type | YouTrack | Jira | GitLab | Linear |
+| --- | --- | --- | --- | --- |
+| `relates` | `Relates` | `Relates` | `relates_to` | `related` |
+| `depends` | `Depend` | `Blocks` | `blocks` | `blocks` |
+| `required` | `Depend` | `Blocks` | `is_blocked_by` | `blocks` |
+| `duplicates` | `Duplicate` | `Duplicate` | `relates_to` | `duplicate` |
+| `duplicated-by` | `Duplicate` | `Duplicate` | `relates_to` | `duplicate` |
+
+#### Override mappings
+
+Add a backend-specific `link_mappings` table to `.track.toml`. Keys are the CLI
+link type names you want to use; values are the native backend names.
+
+```toml
+[jira.link_mappings]
+depends = "Requires"
+required = "Requires"
+duplicates = "Cloners"
+
+[youtrack.link_mappings]
+depends = "Is required for"
+
+[gitlab.link_mappings]
+duplicates = "blocks"
+
+[linear.link_mappings]
+relates = "similar"
+```
+
+With that config, agents and scripts keep using the same command shape:
+
+```bash
+track -b j  i link PROJ-10 PROJ-11 -t depends
+track -b yt i link PROJ-10 PROJ-11 -t depends
+track -b gl i link 42 43 -t duplicates
+track -b lin i link ORE-10 ORE-11 -t relates
+```
+
+You can also create local aliases for custom relationship names. Unrecognized
+types are passed through by default, but a mapping lets your team expose a stable
+CLI vocabulary even if the backend's native name is awkward:
+
+```toml
+[jira.link_mappings]
+qa-blocker = "Blocks"
+
+[linear.link_mappings]
+design-related = "similar"
+```
+
+```bash
+track -b j   i link PROJ-20 PROJ-21 -t qa-blocker
+track -b lin i link ORE-20 ORE-21 -t design-related
 ```
 
 ## Environment variables
@@ -152,3 +226,22 @@ track -b j   PROJ-123       # Jira (short alias)
 ```
 
 **Priority:** CLI flag > environment variable > config file > default (YouTrack).
+
+## Validate capabilities
+
+Use `config test` for a quick URL/token probe, then `doctor` when you need to
+know what the selected backend can actually do.
+
+```bash
+track config test                     # Single connectivity check
+track doctor                          # Capability audit for the effective backend
+track doctor --all-backends           # Audit every configured backend
+track -b github doctor                # Audit one backend with the global selector
+track doctor --project PROJ           # Use a project for scoped checks
+track doctor --write-check            # Local schema validation only; no remote writes
+track doctor --all-backends --strict -o json
+```
+
+`doctor` reports `ok`, `degraded`, `failed`, or `skipped` per check. A
+scope-limited token may be `degraded` while search/read workflows still work;
+bad credentials or a broken read path roll the backend up as `failed`.

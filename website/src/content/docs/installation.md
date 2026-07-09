@@ -43,7 +43,9 @@ curl -fsSL https://raw.githubusercontent.com/OrekGames/track-cli/v1.15.1/scripts
 $env:TRACK_VERSION = "1.15.1"; irm https://raw.githubusercontent.com/OrekGames/track-cli/v1.15.1/scripts/install.ps1 | iex
 ```
 
-Agent skills are optional and installed explicitly after the CLI is available:
+Agent skills are optional and installed explicitly after the CLI is available.
+They install the bundled `track` reference for Claude Code, GitHub Copilot,
+Cursor, and Gemini CLI:
 
 ```bash
 track init --skills

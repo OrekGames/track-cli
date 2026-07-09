@@ -41,6 +41,23 @@ track cache refresh --if-stale 1h
 track cache status
 ```
 
+## Capability audit
+
+Run `track doctor` at session start when you need to know which backend
+operations are trustworthy. It audits the effective backend, or every configured
+backend with `--all-backends`, and reports per-check statuses in text or JSON.
+
+```bash
+track doctor -o json
+track doctor --all-backends -o json
+track doctor --all-backends --strict
+```
+
+`config test` is only a single connectivity probe. `doctor` checks practical
+capabilities such as issue search/read, comments, links, field schema, field
+admin, articles, and local write validation. It never mutates remote trackers;
+`--write-check` validates payloads against fetched schema only.
+
 ## Batch operations
 
 Operate on many issues in one command — ideal for agents applying a plan:
@@ -74,9 +91,22 @@ track i cmt PROJ-123 --body-file ./comment.md
 `track` ships installable agent skills that teach assistants how to use the CLI:
 
 ```bash
-track init --skills           # Install skills (no config change)
-track init --skills --url ... # Combine with config initialization
+track init --skills           # Install skills only; no tracker config change
+track init --skills --url ... # Combine with configuration initialization
 ```
+
+The command installs the same `track` skill reference for these agents:
+
+| Agent | Installed path |
+| --- | --- |
+| Claude Code | `~/.claude/skills/track/SKILL.md` |
+| GitHub Copilot | `~/.copilot/skills/track/SKILL.md` |
+| Cursor | `~/.cursor/skills/track/SKILL.md` |
+| Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
+
+The installed skill is guidance only. It teaches agents the command surface,
+JSON mode, context/cache workflow, backend differences, and batch-operation
+patterns; credentials stay in `.track.toml` or environment variables.
 
 ## Workflow hints
 

@@ -115,10 +115,19 @@ Note: `init` does NOT set `default_project` for GitHub/GitLab (scope comes from 
 ### Install Agent Skills
 
 ```bash
-track init --skills    # Install skill files globally for Claude, Copilot, Cursor, and Gemini
+track init --skills    # Install skill files globally for Claude Code, Copilot, Cursor, and Gemini CLI
 ```
 
 Can be combined: `track init --url ... --token ... --skills`
+
+Installed destinations:
+
+| Agent | Path |
+|-------|------|
+| Claude Code | `~/.claude/skills/track/SKILL.md` |
+| GitHub Copilot | `~/.copilot/skills/track/SKILL.md` |
+| Cursor | `~/.cursor/skills/track/SKILL.md` |
+| Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
 
 ### Environment Variables (alternative)
 
@@ -155,6 +164,19 @@ track config clear [-g]        # Delete a config file
 **Notes**:
 - `link_mappings` tables (`[youtrack.link_mappings]`, `[jira.link_mappings]`, `[gitlab.link_mappings]`, `[linear.link_mappings]`) are **config-file-only** — `config set/get` rejects them; edit `.track.toml` directly.
 - Secret keys are **redacted on read**: `config get token` prints `(set - hidden)`. You can verify a token is set but never read it back.
+
+### Doctor (Capability Audit)
+
+```bash
+track doctor -o json                 # Audit the effective backend
+track doctor --all-backends -o json  # Audit every backend configured in .track.toml/global/env
+track -b gitlab doctor -o json       # Audit a specific backend (global -b flag)
+track doctor --project PROJ         # Use PROJ for project-scoped checks
+track doctor --write-check          # + local write-payload validation (never mutates remote trackers)
+track doctor --all-backends --strict # Exit non-zero if any check or backend failed (degraded still exits 0)
+```
+
+**`config test` vs `doctor`**: `config test` is a single connectivity probe (`list_projects`). `doctor` reports per-check capability statuses — `config_valid`, `auth_connectivity`, `project_resolution`, `issue_search`, `issue_read`, `comments_read`, `links_read`, `field_schema`, `field_admin`, `articles`, `write_validation` — each `ok`/`degraded`/`failed`/`skipped`. `degraded` usually means a scope-limited token (403); `skipped` means the backend doesn't support the capability. A backend with failing checks but working search/read is reported `degraded`, not `failed`; it rolls up `failed` when nothing practical works (bad credentials, or a broken read path — e.g. every call 404s under a wrong project id). JSON shape: `{summary: {backends_checked, ok, degraded, failed}, backends: [{backend, status, config, checks: [{name, status, message?, sample_count?}], recommendation?}]}`. Run `track doctor --all-backends -o json` at session start to learn which backends are trustworthy before drawing conclusions from individual command failures.
 
 ---
 
@@ -630,7 +652,8 @@ Caveat: the GitLab `my_issues` template relies on `assignee_username`, which the
 
 ```bash
 # 1. Verify connection
-track config test                  # Uses configured backend
+track doctor --all-backends -o json  # Per-backend capability audit (recommended)
+track config test                  # Quick single-probe alternative
 track -b gh config test            # Override to test specific backend
 
 # 2. Get aggregated context (recommended)
@@ -746,4 +769,4 @@ Setting `TRACK_MOCK_DIR=./fixtures/scenarios/<name>` routes **every** command to
 17. **Resolution vs closed**: the JSON `resolved` field is a timestamp that can be null on Done issues — use the State field's `is_resolved` for closedness
 18. **Error handling**: exit code 1 + `Error:` on stderr (text even in JSON mode); check `track config test` first; common issues are expired tokens and wrong URLs
 19. **Mock mode**: `TRACK_MOCK_DIR` silently redirects all commands to fixtures — verify it is unset when results look canned
-20. **Agent skills**: `track init --skills` installs this skill file globally for Claude, Copilot, Cursor, and Gemini
+20. **Agent skills**: `track init --skills` installs this skill file globally for Claude Code, GitHub Copilot, Cursor, and Gemini CLI

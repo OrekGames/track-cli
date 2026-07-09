@@ -20,6 +20,8 @@ and update issues is the same no matter which backend your team uses.
   validation.
 - **Comments & Links** — comment on issues and link them together.
 - **Knowledge Base** — manage articles (YouTrack and Jira/Confluence).
+- **Capability Audit** — `track doctor` reports what each configured backend can
+  actually do before you rely on it.
 - **AI-Optimized** — context aggregation, query templates, and workflow hints
   designed for coding agents.
 - **Output Formats** — human-readable text and machine-readable JSON.
@@ -34,9 +36,3 @@ and update issues is the same no matter which backend your team uses.
 - [Configuration](/track-cli/configuration/) — config files, environment
   variables, and backend selection.
 - [Commands](/track-cli/commands/) — full command reference and aliases.
-
-:::note
-Documentation links use the `/track-cli/` base path because the site is served
-from GitHub project pages. If a custom domain is configured later, that prefix
-goes away.
-:::

@@ -5,7 +5,7 @@ mod commands;
 mod config;
 mod output;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use cli::{Backend, Cli, Commands};
 use config::Config;
@@ -104,6 +104,26 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
 
+    // Handle doctor command - audits one or many backends, so it doesn't fit
+    // the single-client dispatch below
+    if let Commands::Doctor {
+        all_backends,
+        project,
+        write_check,
+        strict,
+    } = &cli.command
+    {
+        return commands::doctor::handle_doctor(
+            &cli,
+            commands::doctor::DoctorOptions {
+                all_backends: *all_backends,
+                project: project.as_deref(),
+                write_check: write_check.is_some(),
+                strict: *strict,
+            },
+        );
+    }
+
     // Handle external commands (shortcuts) early if they are clearly invalid
     // to provide better error messages when config is missing
     if let Commands::External(args) = &cli.command {
@@ -138,44 +158,121 @@ fn run(cli: Cli) -> Result<()> {
     config.validate(effective_backend)?;
 
     // Create the appropriate backend client
-    match effective_backend {
+    let client = build_client(effective_backend, &config)?;
+    run_with_client(
+        client.issue_tracker(),
+        client.knowledge_base(),
+        &cli,
+        &config,
+    )
+}
+
+/// A constructed backend client, exposing the issue-tracker and knowledge-base
+/// trait objects it implements. Jira is the only backend that splits the two
+/// across separate clients (Jira + Confluence).
+pub enum BackendClient {
+    YouTrack(YouTrackClient),
+    Jira {
+        issues: JiraClient,
+        confluence: ConfluenceClient,
+    },
+    GitHub(GitHubClient),
+    GitLab(GitLabClient),
+    Linear(LinearClient),
+    Mock(MockClient),
+}
+
+impl BackendClient {
+    pub fn issue_tracker(&self) -> &dyn IssueTracker {
+        match self {
+            BackendClient::YouTrack(c) => c,
+            BackendClient::Jira { issues, .. } => issues,
+            BackendClient::GitHub(c) => c,
+            BackendClient::GitLab(c) => c,
+            BackendClient::Linear(c) => c,
+            BackendClient::Mock(c) => c,
+        }
+    }
+
+    pub fn knowledge_base(&self) -> &dyn KnowledgeBase {
+        match self {
+            BackendClient::YouTrack(c) => c,
+            BackendClient::Jira { confluence, .. } => confluence,
+            BackendClient::GitHub(c) => c,
+            BackendClient::GitLab(c) => c,
+            BackendClient::Linear(c) => c,
+            BackendClient::Mock(c) => c,
+        }
+    }
+}
+
+/// Build a client for `backend` from an already backend-collapsed [`Config`]
+/// (i.e. one produced by `Config::load(_, backend)`).
+///
+/// The config should normally be validated with `config.validate(backend)`
+/// first; missing settings surface as errors rather than panics so callers
+/// like `track doctor` can probe multiple backends safely.
+pub fn build_client(backend: Backend, config: &Config) -> Result<BackendClient> {
+    let missing = |what: &str| anyhow!("{} not configured", what);
+    match backend {
         Backend::YouTrack => {
-            let client =
-                YouTrackClient::new(config.url.as_ref().unwrap(), config.token.as_ref().unwrap())
-                    .with_link_mappings(config.youtrack.link_mappings.clone());
-            run_with_client(&client, &client, &cli, &config)
+            let url = config.url.as_ref().ok_or_else(|| missing("YouTrack URL"))?;
+            let token = config
+                .token
+                .as_ref()
+                .ok_or_else(|| missing("YouTrack token"))?;
+            let client = YouTrackClient::new(url, token)
+                .with_link_mappings(config.youtrack.link_mappings.clone());
+            Ok(BackendClient::YouTrack(client))
         }
         Backend::Jira => {
-            let url = config.url.as_ref().unwrap();
-            let email = config.email.as_ref().unwrap();
-            let token = config.token.as_ref().unwrap();
+            let url = config.url.as_ref().ok_or_else(|| missing("Jira URL"))?;
+            let email = config.email.as_ref().ok_or_else(|| missing("Jira email"))?;
+            let token = config.token.as_ref().ok_or_else(|| missing("Jira token"))?;
 
-            let client = JiraClient::new(url, email, token)
+            let issues = JiraClient::new(url, email, token)
                 .with_link_mappings(config.jira.link_mappings.clone());
             let confluence = ConfluenceClient::new(url, email, token);
-            run_with_client(&client, &confluence, &cli, &config)
+            Ok(BackendClient::Jira { issues, confluence })
         }
         Backend::GitHub => {
-            let owner = config.github.owner.as_deref().unwrap();
-            let repo = config.github.repo.as_deref().unwrap();
-            let token = config.token.as_ref().unwrap();
+            let owner = config
+                .github
+                .owner
+                .as_deref()
+                .ok_or_else(|| missing("GitHub owner"))?;
+            let repo = config
+                .github
+                .repo
+                .as_deref()
+                .ok_or_else(|| missing("GitHub repo"))?;
+            let token = config
+                .token
+                .as_ref()
+                .ok_or_else(|| missing("GitHub token"))?;
             let client = if let Some(api_url) = config.url.as_deref() {
                 GitHubClient::with_base_url(api_url, owner, repo, token)
             } else {
                 GitHubClient::new(owner, repo, token)
             };
-            run_with_client(&client, &client, &cli, &config)
+            Ok(BackendClient::GitHub(client))
         }
         Backend::GitLab => {
-            let base_url = config.url.as_ref().unwrap();
-            let token = config.token.as_ref().unwrap();
+            let base_url = config.url.as_ref().ok_or_else(|| missing("GitLab URL"))?;
+            let token = config
+                .token
+                .as_ref()
+                .ok_or_else(|| missing("GitLab token"))?;
             let project_id = config.gitlab.project_id.as_deref();
             let client = GitLabClient::new(base_url, token, project_id)
                 .with_link_mappings(config.gitlab.link_mappings.clone());
-            run_with_client(&client, &client, &cli, &config)
+            Ok(BackendClient::GitLab(client))
         }
         Backend::Linear => {
-            let token = config.token.as_ref().unwrap();
+            let token = config
+                .token
+                .as_ref()
+                .ok_or_else(|| missing("Linear token"))?;
             let api_url = config
                 .linear
                 .api_url
@@ -189,7 +286,7 @@ fn run(cli: Cli) -> Result<()> {
             let client = LinearClient::with_base_url(api_url, token)
                 .with_defaults(default_team, config.linear.default_linear_project.clone())
                 .with_link_mappings(config.linear.link_mappings.clone());
-            run_with_client(&client, &client, &cli, &config)
+            Ok(BackendClient::Linear(client))
         }
     }
 }
@@ -303,6 +400,9 @@ fn run_with_client(
         }
         Commands::Eval { .. } => {
             unreachable!("Eval command should be handled before API validation")
+        }
+        Commands::Doctor { .. } => {
+            unreachable!("Doctor command should be handled before API validation")
         }
     }
 }
