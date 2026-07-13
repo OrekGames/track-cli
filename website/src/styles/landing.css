@@ -38,30 +38,43 @@ a:hover {
 .site-nav {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 1.25rem 0;
+  min-height: var(--site-nav-height);
+  padding: var(--site-nav-pad-y) var(--site-nav-pad-x);
+  background: var(--site-nav-bg);
   border-bottom: 1px solid var(--border);
 }
 
-.site-nav .brand {
+.site-nav .site-nav-inner {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  justify-content: space-between;
+  width: 100%;
+  gap: 1rem;
+}
+
+.site-nav .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--site-brand-gap);
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 1.25rem;
-  color: var(--text);
-}
-
-.site-nav .brand img,
-.site-nav .brand .brand-mark {
-  width: 28px;
-  height: 28px;
-}
-
-/* Inline logo glyph follows the active theme accent. */
-.site-nav .brand .brand-mark {
+  font-size: var(--site-brand-font-size);
+  line-height: 1;
   color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.site-nav .brand:hover {
+  text-decoration: none;
+}
+
+.site-nav .brand .brand-mark {
+  width: auto;
+  height: var(--site-brand-logo-height);
+  display: block;
+  object-fit: contain;
+  object-position: 0 50%;
 }
 
 .site-nav .nav-links {
@@ -584,6 +597,18 @@ a:hover {
   gap: 1rem;
   justify-content: space-between;
   align-items: center;
+}
+
+.site-footer .footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.site-footer .footer-brand img {
+  width: auto;
+  height: 36px;
+  display: block;
 }
 
 .site-footer .footer-links {

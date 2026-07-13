@@ -27,6 +27,15 @@
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas,
     monospace;
 
+  /* Shared header brand (landing nav + Starlight docs title) */
+  --site-nav-height: 4rem;
+  --site-nav-pad-y: 0.75rem;
+  --site-nav-pad-x: 1rem;
+  --site-nav-bg: #141419;
+  --site-brand-gap: 1rem;
+  --site-brand-font-size: 1.25rem;
+  --site-brand-logo-height: 2.5rem;
+
   /* Starlight docs accent ramp (defaults; light overrides below) */
   --sl-color-accent-low: #4a3a08;
   --sl-color-accent: #e5a50a;
@@ -51,4 +60,13 @@
   --sl-color-accent: #b8860b;
   --sl-color-accent-high: #8b6914;
   --sl-color-text-accent: #8b6914;
+}
+
+@media (min-width: 50rem) {
+  :root {
+    --site-nav-height: 4.5rem;
+    --site-nav-pad-x: 1.5rem;
+    --site-brand-gap: 1.5rem;
+    --site-brand-font-size: 1.5rem;
+  }
 }

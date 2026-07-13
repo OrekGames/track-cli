@@ -16,6 +16,11 @@ export default defineConfig({
       title: "track",
       description:
         "One CLI for every issue tracker — YouTrack, Jira, GitHub, GitLab, and Linear.",
+      logo: {
+        src: "./src/assets/orek-logo.png",
+        alt: "OrekGames",
+      },
+      favicon: "/favicon.png",
       customCss: ["./src/styles/starlight-custom.css"],
       social: {
         github: "https://github.com/OrekGames/track-cli",
