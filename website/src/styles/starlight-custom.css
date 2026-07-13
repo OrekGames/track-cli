@@ -9,9 +9,18 @@
 
 /* Brand the site title in the header. */
 .site-title {
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
-    monospace;
+  font-family: var(--font-mono);
   font-weight: 700;
+  font-size: var(--site-brand-font-size);
+  gap: var(--site-brand-gap);
+}
+
+/* OrekGames mark is portrait; keep height consistent with the title. */
+.site-title img {
+  height: var(--site-brand-logo-height);
+  width: auto;
+  object-fit: contain;
+  object-position: 0 50%;
 }
 
 /* Backend docs: make long backend notes scannable without relying on bullets. */
