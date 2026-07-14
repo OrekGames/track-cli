@@ -186,7 +186,9 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                 if let Some((key, content)) = block_stack.pop() {
                     let node = if let Some(state_suffix) = key.strip_prefix("taskItem:") {
                         // ADF taskItem takes inline content directly — no paragraph wrapper.
-                        let state = Some(state_suffix).filter(|s| !s.is_empty()).unwrap_or("TODO");
+                        let state = Some(state_suffix)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("TODO");
                         json!({
                             "type": "taskItem",
                             "attrs": { "localId": next_id(), "state": state },
