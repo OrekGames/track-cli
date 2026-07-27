@@ -694,6 +694,23 @@ impl JiraClient {
         let statuses: Vec<ProjectIssueTypeStatuses> = response.body_mut().read_json()?;
         Ok(statuses)
     }
+
+    /// GET /rest/api/3/project/{projectIdOrKey}/components
+    pub fn list_project_components(&self, project_key: &str) -> Result<Vec<JiraComponent>> {
+        let url = self.api_url(&format!("/project/{}/components", project_key));
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let components: Vec<JiraComponent> = response.body_mut().read_json()?;
+        Ok(components)
+    }
 }
 
 /// Simple base64 encoding function

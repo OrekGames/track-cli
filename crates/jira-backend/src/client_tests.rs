@@ -420,6 +420,7 @@ mod tests {
                 priority: None,
                 labels: None,
                 parent: None,
+                assignee: None,
                 extra: std::collections::HashMap::new(),
             },
         };
@@ -472,6 +473,7 @@ mod tests {
                 priority: None,
                 labels: None,
                 parent: None,
+                assignee: None,
                 extra,
             },
         };

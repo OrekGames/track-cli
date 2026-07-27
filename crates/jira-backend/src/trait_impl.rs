@@ -298,6 +298,16 @@ impl IssueTracker for JiraClient {
             }
         }
 
+        // Try to fetch real project components and splice them into the "components" field
+        if let Ok(components) = self.list_project_components(project_id) {
+            let values: Vec<String> = components.into_iter().map(|c| c.name).collect();
+            if !values.is_empty()
+                && let Some(components_field) = standard.iter_mut().find(|f| f.id == "components")
+            {
+                components_field.values = values;
+            }
+        }
+
         let instance_fields: Vec<ProjectCustomField> = self
             .get_fields_cached()
             .iter()

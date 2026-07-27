@@ -599,6 +599,15 @@ pub fn update_issue_to_jira(
         _ => None,
     });
 
+    let assignee = update.custom_fields.iter().find_map(|cf| match cf {
+        CustomFieldUpdate::SingleUser { name, login } if name.eq_ignore_ascii_case("assignee") => {
+            Some(AssigneeId {
+                account_id: Some(login.clone()),
+            })
+        }
+        _ => None,
+    });
+
     let extra = resolve_extra_fields(&update.custom_fields, jira_fields, UPDATE_HANDLED_FIELDS)?;
 
     Ok(UpdateJiraIssue {
@@ -615,6 +624,7 @@ pub fn update_issue_to_jira(
                 id: None,
                 key: Some(key.clone()),
             }),
+            assignee,
             extra,
         },
     })
@@ -656,6 +666,14 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             field_type: "user[1]".to_string(),
             required: false,
             values: vec![], // Users are fetched separately
+            state_values: vec![],
+        },
+        ProjectCustomField {
+            id: "components".to_string(),
+            name: "Components".to_string(),
+            field_type: "enum[*]".to_string(),
+            required: false,
+            values: vec![], // Per-project components are spliced in by the caller
             state_values: vec![],
         },
         ProjectCustomField {
@@ -832,10 +850,10 @@ fn custom_field_to_json(
                         .collect();
                     serde_json::Value::Array(items)
                 }
-                // Multi-group pickers (schema items == "group") must be written as
-                // an array of group objects keyed by `name`. Jira rejects bare
-                // strings with: "Operation value must be an array of group objects".
-                Some("group") => {
+                // Multi-group pickers, components, and versions must be written
+                // as an array of objects keyed by `name`. Jira rejects bare
+                // strings with: "Operation value must be an array of ... objects".
+                Some("group") | Some("component") | Some("version") => {
                     let items: Vec<serde_json::Value> = values
                         .iter()
                         .map(|v| serde_json::json!({ "name": *v }))
@@ -915,7 +933,7 @@ const CREATE_HANDLED_FIELDS: &[&str] = &["priority", "type", "issuetype"];
 /// `CustomFieldUpdate::State` is partitioned out upstream and routed to the
 /// /transitions endpoint, so a status-named field seen here was mistyped
 /// (e.g. SingleEnum) and is about to be dropped.
-const UPDATE_HANDLED_FIELDS: &[&str] = &["priority"];
+const UPDATE_HANDLED_FIELDS: &[&str] = &["priority", "assignee"];
 
 /// Warning for a reserved-name field that is about to be silently dropped, or
 /// None when the caller's typed struct already carries it.
@@ -1214,6 +1232,30 @@ mod tests {
     }
 
     #[test]
+    fn resolve_extra_fields_serializes_components_as_name_objects() {
+        let custom_fields = vec![CustomFieldUpdate::MultiEnum {
+            name: "Components".to_string(),
+            values: vec!["clpp".to_string()],
+        }];
+        let jira_fields = vec![JiraField {
+            id: "components".to_string(),
+            name: "Components".to_string(),
+            custom: false,
+            schema: Some(JiraFieldSchema {
+                field_type: "array".to_string(),
+                custom: None,
+                items: Some("component".to_string()),
+            }),
+        }];
+
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields, &[]).unwrap();
+        assert_eq!(
+            extra.get("components"),
+            Some(&serde_json::json!([{ "name": "clpp" }]))
+        );
+    }
+
+    #[test]
     fn resolve_extra_fields_serializes_multi_group_picker_as_name_objects() {
         let custom_fields = vec![CustomFieldUpdate::MultiEnum {
             name: "Partner".to_string(),
@@ -1424,6 +1466,9 @@ mod tests {
         // priority is consumed by the typed struct on both paths
         assert!(dropped_reserved_field_warning("Priority", UPDATE_HANDLED_FIELDS).is_none());
         assert!(dropped_reserved_field_warning("priority", CREATE_HANDLED_FIELDS).is_none());
+        // assignee is consumed by the typed struct on update, but not yet at create
+        assert!(dropped_reserved_field_warning("Assignee", UPDATE_HANDLED_FIELDS).is_none());
+        assert!(dropped_reserved_field_warning("assignee", CREATE_HANDLED_FIELDS).is_some());
         // issue type is only consumed at create; dropping it from an update is a real loss
         assert!(dropped_reserved_field_warning("Type", CREATE_HANDLED_FIELDS).is_none());
         assert!(dropped_reserved_field_warning("issuetype", CREATE_HANDLED_FIELDS).is_none());
@@ -1433,11 +1478,26 @@ mod tests {
     }
 
     #[test]
-    fn dropped_assignee_warns_without_transition_hint() {
-        let msg = dropped_reserved_field_warning("Assignee", UPDATE_HANDLED_FIELDS)
-            .expect("dropping an assignee field edit must warn");
-        assert!(msg.contains("Assignee"));
-        assert!(!msg.contains("transition"));
+    fn update_issue_to_jira_maps_assignee_to_account_id() {
+        let update = UpdateIssue {
+            summary: None,
+            description: None,
+            tags: vec![],
+            parent: None,
+            custom_fields: vec![CustomFieldUpdate::SingleUser {
+                name: "Assignee".to_string(),
+                login: "608b11992911000071b5b0bd".to_string(),
+            }],
+        };
+        let jira_update = update_issue_to_jira(&update, &[]).expect("conversion should succeed");
+        let assignee = jira_update
+            .fields
+            .assignee
+            .expect("assignee should be set on the typed struct");
+        assert_eq!(
+            assignee.account_id.as_deref(),
+            Some("608b11992911000071b5b0bd")
+        );
     }
 
     #[test]
