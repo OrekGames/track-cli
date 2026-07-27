@@ -306,6 +306,14 @@ pub struct ParentId {
     pub key: Option<String>,
 }
 
+/// Assignee identifier for requests (Jira Cloud uses account IDs, not usernames)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssigneeId {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
 /// Request to update an issue
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -327,6 +335,8 @@ pub struct UpdateJiraIssueFields {
     pub labels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<ParentId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<AssigneeId>,
     /// Arbitrary custom fields (e.g., "customfield_10016": 5)
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,
