@@ -234,10 +234,10 @@ pub fn handle_context(
                 println!();
                 println!("{}:", "Issue Counts".white().bold());
                 // Group by project
-                let mut projects_seen: Vec<String> = Vec::new();
+                // ⚡ Bolt: Use a HashSet to avoid O(n^2) Vec lookup and borrow string references to remove redundant clones on the hot path
+                let mut projects_seen = std::collections::HashSet::new();
                 for ic in &context.issue_counts {
-                    if !projects_seen.contains(&ic.project_short_name) {
-                        projects_seen.push(ic.project_short_name.clone());
+                    if projects_seen.insert(&ic.project_short_name) {
                         let counts: Vec<String> = context
                             .issue_counts
                             .iter()
