@@ -12,7 +12,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 urlencoding = "2.1"
-git2 = { version = "0.21", features = ["vendored-openssl"] }
+git2 = { version = "0.21", features = ["https", "vendored-openssl"] }
 walkdir = "2"
 serde_yaml = "0.9"
 deunicode = "1"
