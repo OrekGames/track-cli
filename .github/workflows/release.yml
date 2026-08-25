@@ -27,7 +27,7 @@ jobs:
       should_release: ${{ steps.detect.outputs.should_release }}
       version: ${{ steps.detect.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -141,7 +141,7 @@ jobs:
     needs: [detect-release]
     if: needs.detect-release.outputs.should_release == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache cargo dependencies
         uses: actions/cache@v4
@@ -163,7 +163,7 @@ jobs:
     needs: [detect-release]
     if: needs.detect-release.outputs.should_release == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust components
         run: rustup component add clippy rustfmt
@@ -224,7 +224,7 @@ jobs:
             archive: zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
@@ -329,7 +329,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -408,7 +408,7 @@ jobs:
     needs: [detect-release, release]
     if: needs.detect-release.outputs.should_release == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download checksums from release
         run: |
