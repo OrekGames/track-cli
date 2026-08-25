@@ -689,7 +689,8 @@ mod tests {
 
     #[test]
     fn url_param_state_and_labels() {
-        let (search, state, labels, assignee) = convert_query_to_gitlab_params("state=opened&labels=bug");
+        let (search, state, labels, assignee) =
+            convert_query_to_gitlab_params("state=opened&labels=bug");
         assert_eq!(search, "");
         assert_eq!(state, Some("opened".to_string()));
         assert_eq!(labels, Some("bug".to_string()));
@@ -698,7 +699,8 @@ mod tests {
 
     #[test]
     fn url_param_with_search() {
-        let (search, state, labels, assignee) = convert_query_to_gitlab_params("state=opened&search=foo");
+        let (search, state, labels, assignee) =
+            convert_query_to_gitlab_params("state=opened&search=foo");
         assert_eq!(search, "foo");
         assert_eq!(state, Some("opened".to_string()));
         assert_eq!(labels, None);

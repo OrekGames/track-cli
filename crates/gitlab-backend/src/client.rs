@@ -152,7 +152,6 @@ impl GitLabClient {
         Ok(issue)
     }
 
-
     fn append_assignee_filter(url: &mut String, assignee_username: Option<&str>) {
         let Some(raw) = assignee_username.filter(|s| !s.is_empty()) else {
             return;
@@ -161,10 +160,7 @@ impl GitLabClient {
             url.push_str("&assignee_id=me");
         } else {
             let name = raw.strip_prefix('@').unwrap_or(raw);
-            url.push_str(&format!(
-                "&assignee_username={}",
-                urlencoding::encode(name)
-            ));
+            url.push_str(&format!("&assignee_username={}", urlencoding::encode(name)));
         }
     }
 

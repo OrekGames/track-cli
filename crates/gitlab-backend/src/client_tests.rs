@@ -665,7 +665,9 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let result = client.count_issues_by_query("bug", Some("opened"), None).unwrap();
+        let result = client
+            .count_issues_by_query("bug", Some("opened"), None)
+            .unwrap();
 
         assert_eq!(result, Some(847));
     }
