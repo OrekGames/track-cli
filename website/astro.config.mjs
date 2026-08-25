@@ -22,9 +22,13 @@ export default defineConfig({
       },
       favicon: "/favicon.png",
       customCss: ["./src/styles/starlight-custom.css"],
-      social: {
-        github: "https://github.com/OrekGames/track-cli",
-      },
+      social: [
+        {
+          icon: "github",
+          label: "GitHub",
+          href: "https://github.com/OrekGames/track-cli",
+        },
+      ],
       sidebar: [
         {
           label: "Getting Started",

@@ -229,6 +229,8 @@ impl WikiManager {
                 .map_err(|e| GitHubError::Wiki(format!("Failed to find HEAD: {}", e)))?;
             let branch_ref_name = head
                 .symbolic_target()
+                .ok()
+                .flatten()
                 .unwrap_or("refs/heads/master")
                 .to_string();
             let mut branch_ref = repo
