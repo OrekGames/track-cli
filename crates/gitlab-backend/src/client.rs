@@ -152,6 +152,22 @@ impl GitLabClient {
         Ok(issue)
     }
 
+
+    fn append_assignee_filter(url: &mut String, assignee_username: Option<&str>) {
+        let Some(raw) = assignee_username.filter(|s| !s.is_empty()) else {
+            return;
+        };
+        if raw == "@me" || raw.eq_ignore_ascii_case("me") {
+            url.push_str("&assignee_id=me");
+        } else {
+            let name = raw.strip_prefix('@').unwrap_or(raw);
+            url.push_str(&format!(
+                "&assignee_username={}",
+                urlencoding::encode(name)
+            ));
+        }
+    }
+
     /// List issues for the project
     pub fn list_issues(
         &self,
@@ -159,7 +175,7 @@ impl GitLabClient {
         per_page: usize,
         page: usize,
     ) -> Result<Vec<GitLabIssue>> {
-        let (issues, _total) = self.list_issues_with_total(state, per_page, page)?;
+        let (issues, _total) = self.list_issues_with_total(state, per_page, page, None)?;
         Ok(issues)
     }
 
@@ -170,11 +186,13 @@ impl GitLabClient {
         state: Option<&str>,
         per_page: usize,
         page: usize,
+        assignee_username: Option<&str>,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
         let mut url = self.project_url(&format!("/issues?per_page={}&page={}", per_page, page))?;
         if let Some(s) = state {
             url.push_str(&format!("&state={}", urlencoding::encode(s)));
         }
+        Self::append_assignee_filter(&mut url, assignee_username);
 
         let response = self
             .agent
@@ -205,7 +223,7 @@ impl GitLabClient {
         page: usize,
     ) -> Result<Vec<GitLabIssue>> {
         let (issues, _total) =
-            self.search_issues_with_total(search, state, labels, per_page, page)?;
+            self.search_issues_with_total(search, state, labels, None, per_page, page)?;
         Ok(issues)
     }
 
@@ -216,6 +234,7 @@ impl GitLabClient {
         search: &str,
         state: Option<&str>,
         labels: Option<&str>,
+        assignee_username: Option<&str>,
         per_page: usize,
         page: usize,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
@@ -231,6 +250,7 @@ impl GitLabClient {
         if let Some(l) = labels {
             url.push_str(&format!("&labels={}", urlencoding::encode(l)));
         }
+        Self::append_assignee_filter(&mut url, assignee_username);
 
         let response = self
             .agent
@@ -659,7 +679,12 @@ impl GitLabClient {
     /// Count issues matching search criteria by reading the X-Total header.
     /// Makes a minimal request with per_page=1 to get the count without
     /// transferring significant data.
-    pub fn count_issues_by_query(&self, search: &str, state: Option<&str>) -> Result<Option<u64>> {
+    pub fn count_issues_by_query(
+        &self,
+        search: &str,
+        state: Option<&str>,
+        assignee_username: Option<&str>,
+    ) -> Result<Option<u64>> {
         let mut url = format!("{}?per_page=1&page=1", self.project_url("/issues")?);
         if !search.is_empty() {
             url.push_str(&format!("&search={}", urlencoding::encode(search)));
@@ -667,6 +692,7 @@ impl GitLabClient {
         if let Some(s) = state {
             url.push_str(&format!("&state={}", urlencoding::encode(s)));
         }
+        Self::append_assignee_filter(&mut url, assignee_username);
 
         let response = self
             .agent

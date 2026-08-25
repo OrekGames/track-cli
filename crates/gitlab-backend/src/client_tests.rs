@@ -665,7 +665,7 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let result = client.count_issues_by_query("bug", Some("opened")).unwrap();
+        let result = client.count_issues_by_query("bug", Some("opened"), None).unwrap();
 
         assert_eq!(result, Some(847));
     }
@@ -691,7 +691,7 @@ mod tests {
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let (issues, total) = client
-            .search_issues_with_total("bug", None, None, 20, 1)
+            .search_issues_with_total("bug", None, None, None, 20, 1)
             .unwrap();
 
         assert_eq!(issues.len(), 2);
@@ -715,7 +715,7 @@ mod tests {
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let (issues, total) = client
-            .search_issues_with_total("bug", None, None, 20, 1)
+            .search_issues_with_total("bug", None, None, None, 20, 1)
             .unwrap();
 
         assert_eq!(issues.len(), 1);
@@ -742,7 +742,7 @@ mod tests {
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let (issues, total) = client
-            .list_issues_with_total(Some("opened"), 20, 1)
+            .list_issues_with_total(Some("opened"), 20, 1, None)
             .unwrap();
 
         assert_eq!(issues.len(), 2);
@@ -762,7 +762,7 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let result = client.count_issues_by_query("", None).unwrap();
+        let result = client.count_issues_by_query("", None, None).unwrap();
 
         assert_eq!(result, None);
     }
