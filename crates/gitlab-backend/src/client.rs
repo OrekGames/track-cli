@@ -157,7 +157,8 @@ impl GitLabClient {
             return;
         };
         if raw == "@me" || raw.eq_ignore_ascii_case("me") {
-            url.push_str("&assignee_id=me");
+            // Issues API: current user is scope=assigned_to_me, not assignee_id=me.
+            url.push_str("&scope=assigned_to_me");
         } else {
             let name = raw.strip_prefix('@').unwrap_or(raw);
             url.push_str(&format!("&assignee_username={}", urlencoding::encode(name)));
