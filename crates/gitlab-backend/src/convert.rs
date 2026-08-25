@@ -701,6 +701,37 @@ mod tests {
         assert_eq!(labels, None);
     }
 
+    /// Issue #255: `parse_url_params` must honor `assignee_username`.
+    /// The built-in GitLab `my_issues` template is `state=opened&assignee_username=@me`.
+    #[test]
+    fn url_param_honors_assignee_username() {
+        let cases = [
+            ("assignee_username=@me", "@me"),
+            ("state=opened&assignee_username=@me", "@me"),
+            ("labels=bug&assignee_username=someuser", "someuser"),
+        ];
+
+        for (query, assignee) in cases {
+            let parsed = convert_query_to_gitlab_params(query);
+            let stripped = query
+                .split('&')
+                .filter(|pair| !pair.starts_with("assignee_username="))
+                .collect::<Vec<_>>()
+                .join("&");
+            let without_assignee = convert_query_to_gitlab_params(&stripped);
+            assert_ne!(
+                parsed, without_assignee,
+                "assignee_username={assignee} must be honored on `{query}` \
+                 (must not parse like `{stripped}`)"
+            );
+            assert!(
+                format!("{parsed:?}").contains(assignee),
+                "assignee_username={assignee} must be preserved on the parsed query `{query}`, \
+                 got {parsed:?}"
+            );
+        }
+    }
+
     // Token-based format tests
 
     #[test]
