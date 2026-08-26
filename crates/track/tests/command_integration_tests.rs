@@ -2168,6 +2168,47 @@ fn test_issue_search_select_jsonl_projects_fields() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// #292 / #351: `-o jsonl` is wired for `issue search` only. Unwired commands
+/// must reject it (today `CliFormat::output()` silently remaps to pretty JSON).
+#[test]
+fn test_unwired_command_rejects_jsonl_format() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args(["project", "list", "-o", "jsonl"])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "unwired -o jsonl must fail, not remap to pretty JSON: {output:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let err = format!("{stdout}{stderr}").to_ascii_lowercase();
+    assert!(
+        err.contains("jsonl"),
+        "rejection must name jsonl: stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        err.contains("unsupported"),
+        "rejection must name unsupported: stdout={stdout:?} stderr={stderr:?}"
+    );
+
+    let trimmed = stdout.trim();
+    let is_pretty_json_document = serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
+        && (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && trimmed.contains('\n');
+    assert!(
+        !is_pretty_json_document,
+        "stdout must not be a pretty JSON document: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_issue_inspect_subtasks_derived_from_links() {
     let dir = temp_dir();

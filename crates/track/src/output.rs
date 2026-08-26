@@ -1122,4 +1122,36 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn project_sparse_array_fields_keep_source_indices() {
+        // filter_map + index merge collapses [{"a":1},{"b":2}] into one object.
+        // Projection must keep source length, order, and indices.
+        let value = serde_json::json!({
+            "items": [{"a": 1}, {"b": 2}]
+        });
+        let paths = parse_select_paths("items.a,items.b");
+        let projected = project_value(&value, &paths);
+        assert_eq!(
+            projected,
+            serde_json::json!({
+                "items": [{"a": 1}, {"b": 2}]
+            })
+        );
+    }
+
+    #[test]
+    fn project_empty_array_stays_empty() {
+        let value = serde_json::json!({
+            "items": []
+        });
+        let paths = parse_select_paths("items.a");
+        let projected = project_value(&value, &paths);
+        assert_eq!(
+            projected,
+            serde_json::json!({
+                "items": []
+            })
+        );
+    }
 }
