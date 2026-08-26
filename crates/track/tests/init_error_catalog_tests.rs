@@ -116,16 +116,17 @@ fn local_config_path(dir: &Path) -> PathBuf {
     dir.join(".track.toml")
 }
 
-/// Path text as `track init` reports it via `current_dir()`.
-/// macOS temp dirs are under `/var`, which `current_dir()` resolves to `/private/var`.
-fn cli_path_display(path: &Path) -> String {
-    path.canonicalize()
-        .ok()
-        .map(|canonical| {
-            let text = canonical.display().to_string();
-            text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
-        })
-        .unwrap_or_else(|| path.display().to_string())
+/// True when `reported` is the same file as `expected`.
+/// macOS may print `/private/var` vs `/var`; Windows may print 8.3 `RUNNER~1`.
+fn same_reported_file(reported: &str, expected: &Path) -> bool {
+    let reported = Path::new(reported);
+    if reported.file_name() != expected.file_name() {
+        return false;
+    }
+    match (reported.canonicalize(), expected.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => reported == expected,
+    }
 }
 
 fn write_local_config(dir: &Path, contents: &str) {
@@ -277,11 +278,21 @@ fn config_already_exists_uses_catalog_copy_and_leaves_file_unchanged() {
 
     let output = run_init(&dir, "https://example.com");
     let stderr = failed_stderr(&output);
-    let expected = format!(
-        "Error: Initialization stopped: config already exists at '{}'. No files were changed. Update it with 'track config set' or remove it only if you intend to replace the configuration.",
-        cli_path_display(&config_path)
+    let line = primary_error_line(&stderr);
+    let prefix = "Error: Initialization stopped: config already exists at '";
+    let suffix = "'. No files were changed. Update it with 'track config set' or remove it only if you intend to replace the configuration.";
+    assert!(
+        line.starts_with(prefix) && line.ends_with(suffix),
+        "expected catalog wrapper, got {line:?}"
     );
-    assert_eq!(primary_error_line(&stderr), expected);
+    let reported = line
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(suffix))
+        .unwrap();
+    assert!(
+        same_reported_file(reported, &config_path),
+        "reported config path {reported:?} is not {config_path:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(&config_path).unwrap(),
         original,
@@ -299,15 +310,23 @@ fn gitignore_update_failure_after_local_write_uses_catalog_copy() {
 
     let output = run_init(&dir, "https://example.com");
     let stderr = failed_stderr(&output);
-    let prefix = format!(
-        "Error: Config was created at '{}', but '{}' could not be updated:",
-        cli_path_display(&config_path),
-        cli_path_display(&gitignore_path)
+    let line = primary_error_line(&stderr);
+    let Some((config_reported, rest)) = line
+        .strip_prefix("Error: Config was created at '")
+        .and_then(|rest| rest.split_once("', but '"))
+    else {
+        panic!("expected gitignore catalog prefix, got {line:?}");
+    };
+    let Some((gitignore_reported, _)) = rest.split_once("' could not be updated:") else {
+        panic!("expected gitignore catalog suffix, got {line:?}");
+    };
+    assert!(
+        same_reported_file(config_reported, &config_path),
+        "reported config path {config_reported:?} is not {config_path:?}"
     );
     assert!(
-        primary_error_line(&stderr).starts_with(&prefix),
-        "expected prefix {prefix:?}, got {:?}",
-        primary_error_line(&stderr)
+        same_reported_file(gitignore_reported, &gitignore_path),
+        "reported gitignore path {gitignore_reported:?} is not {gitignore_path:?}"
     );
     assert!(
         stderr.contains("Add '.track.toml' and '.tracker-cache/' manually before committing."),
