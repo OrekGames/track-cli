@@ -158,6 +158,40 @@ track -b j   i link PROJ-20 PROJ-21 -t qa-blocker
 track -b lin i link ORE-20 ORE-21 -t design-related
 ```
 
+## Workflow packs
+
+One `[workflow_pack]` table defines local query templates that overlay cached
+built-ins. Selection is whole-pack (not field-merged): `--config` /
+`TRACKER_CONFIG` inspects only that file; otherwise `./.track.toml` if it has
+`[workflow_pack]`; otherwise `~/.tracker-cli/.track.toml`. There is no parent
+directory walk.
+
+```toml
+[workflow_pack]
+name = "Orek backlog"
+description = "Project-local views for backlog work."
+default_project = "PROJ"
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Issues ready for implementation."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+```
+
+Rules:
+
+- `name` is required and non-empty. `description` and `default_project` are
+  optional; if present they must be non-empty. At least one query is required.
+- Each query needs non-empty `name`, `description`, and `query`.
+- Query names are `^[a-z][a-z0-9_]*$` and unique case-insensitively.
+- Unknown fields on the pack or a query record are rejected.
+- Only exact `{PROJECT}` is substituted: `--project`, then pack
+  `default_project`, then top-level `default_project`.
+- Pack queries win on name collision with built-ins. Duplicate names inside one
+  pack are an error. An invalid pack fails `-T` search and `workflow` commands.
+- The section is preserved by `config set` / `Config::save`, but it is not
+  editable via `track config set`. Packs are not written into `.tracker-cache/`.
+
 ## Environment variables
 
 Environment variables override config-file settings:

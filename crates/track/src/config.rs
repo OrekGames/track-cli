@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
+use tracker_core::unicode_eq_ignore_case;
 
 use std::io::Write;
 #[cfg(unix)]
@@ -46,6 +47,79 @@ pub struct Config {
     /// Linear-specific configuration
     #[serde(default, skip_serializing_if = "LinearConfig::is_empty")]
     pub linear: LinearConfig,
+    /// Raw `[workflow_pack]` table from this config file.
+    ///
+    /// Kept as TOML so ordinary [`Config::load`] / [`Config::save`] and
+    /// `config set` do not fail on, or drop, unknown or invalid pack keys.
+    /// Pack-consuming commands parse the selected file via [`load_workflow_pack`]
+    /// (whole-pack source selection; not field-merged across files).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_pack: Option<toml::Value>,
+}
+
+/// Source of the effective workflow pack. Not serialized into config files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowPackSource {
+    Repo,
+    User,
+    Explicit,
+}
+
+impl WorkflowPackSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Repo => "repo",
+            Self::User => "user",
+            Self::Explicit => "explicit",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkflowPackSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A parsed `[workflow_pack]` used by pack-consuming commands.
+///
+/// Ordinary config load/save keep the section as raw TOML on [`Config`].
+/// [`parse_workflow_pack_table`] is the strict parser (unknown fields denied).
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct WorkflowPack {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_project: Option<String>,
+    #[serde(default)]
+    pub queries: Vec<WorkflowPackQuery>,
+}
+
+/// One `[[workflow_pack.queries]]` record.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct WorkflowPackQuery {
+    pub name: String,
+    pub description: String,
+    pub query: String,
+}
+
+/// A semantically valid pack plus the file it was selected from.
+#[derive(Debug, Clone)]
+pub struct LoadedWorkflowPack {
+    pub source: WorkflowPackSource,
+    pub pack: WorkflowPack,
+}
+
+/// Result of whole-pack discovery for the current process.
+#[derive(Debug, Clone)]
+pub enum WorkflowPackState {
+    None,
+    Valid(LoadedWorkflowPack),
+    Invalid {
+        source: WorkflowPackSource,
+        errors: Vec<String>,
+    },
 }
 
 /// Backend-specific configuration
@@ -594,7 +668,7 @@ impl Config {
     }
 }
 
-fn config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
+pub(crate) fn config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     if let Some(path) = explicit {
@@ -700,6 +774,211 @@ pub fn resolve_backend() -> Backend {
         .ok()
         .and_then(|c| c.backend)
         .unwrap_or_default()
+}
+
+/// Load the effective workflow pack using whole-pack source selection.
+///
+/// Path order reuses the same helpers as [`config_paths`],
+/// [`local_track_config_path`], and [`global_config_path`]:
+/// 1. `--config` / `TRACKER_CONFIG` inspects only that file (`Explicit`)
+/// 2. else `./.track.toml` if it contains `[workflow_pack]` (`Repo`)
+/// 3. else `~/.tracker-cli/.track.toml` if it contains `[workflow_pack]` (`User`)
+/// 4. else no pack
+///
+/// Repo replaces user; query arrays and metadata are never merged.
+pub fn load_workflow_pack(explicit: Option<&Path>) -> Result<WorkflowPackState> {
+    let Some((path, source)) = select_workflow_pack_file(explicit)? else {
+        return Ok(WorkflowPackState::None);
+    };
+    if !path.exists() {
+        if source == WorkflowPackSource::Explicit {
+            return Err(anyhow!("Config file not found: {}", path.display()));
+        }
+        return Ok(WorkflowPackState::None);
+    }
+
+    let table = read_toml_table(&path)?;
+    let Some(pack_value) = table.get("workflow_pack") else {
+        return Ok(WorkflowPackState::None);
+    };
+
+    match parse_workflow_pack_table(pack_value) {
+        Ok(pack) => match validate_workflow_pack(&pack) {
+            Ok(()) => Ok(WorkflowPackState::Valid(LoadedWorkflowPack {
+                source,
+                pack,
+            })),
+            Err(errors) => Ok(WorkflowPackState::Invalid { source, errors }),
+        },
+        Err(errors) => Ok(WorkflowPackState::Invalid { source, errors }),
+    }
+}
+
+/// Require a valid pack for pack-consuming commands. `None` means no pack.
+pub fn require_valid_workflow_pack(explicit: Option<&Path>) -> Result<Option<LoadedWorkflowPack>> {
+    match load_workflow_pack(explicit)? {
+        WorkflowPackState::None => Ok(None),
+        WorkflowPackState::Valid(loaded) => Ok(Some(loaded)),
+        WorkflowPackState::Invalid { errors, .. } => Err(anyhow!("{}", errors.join("\n"))),
+    }
+}
+
+fn select_workflow_pack_file(
+    explicit: Option<&Path>,
+) -> Result<Option<(PathBuf, WorkflowPackSource)>> {
+    if let Some(path) = explicit {
+        return Ok(Some((path.to_path_buf(), WorkflowPackSource::Explicit)));
+    }
+
+    if let Some(path) = get_local_track_config_path()
+        && path.exists()
+        && toml_has_workflow_pack(&path)?
+    {
+        return Ok(Some((path, WorkflowPackSource::Repo)));
+    }
+
+    if let Some(path) = get_global_config_path()
+        && path.exists()
+        && toml_has_workflow_pack(&path)?
+    {
+        return Ok(Some((path, WorkflowPackSource::User)));
+    }
+
+    Ok(None)
+}
+
+fn read_toml_table(path: &Path) -> Result<toml::Table> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| anyhow!("Failed to read {}: {}", path.display(), e))?;
+    content
+        .parse::<toml::Table>()
+        .map_err(|e| anyhow!("Failed to parse {}: {}", path.display(), e))
+}
+
+fn toml_has_workflow_pack(path: &Path) -> Result<bool> {
+    Ok(read_toml_table(path)?.contains_key("workflow_pack"))
+}
+
+/// Parse a `[workflow_pack]` table, rejecting unknown fields.
+fn parse_workflow_pack_table(value: &toml::Value) -> Result<WorkflowPack, Vec<String>> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct StrictPack {
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        default_project: Option<String>,
+        #[serde(default)]
+        queries: Vec<StrictQuery>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct StrictQuery {
+        name: String,
+        description: String,
+        query: String,
+    }
+
+    let strict: StrictPack = value
+        .clone()
+        .try_into()
+        .map_err(|e: toml::de::Error| vec![format!("Invalid workflow_pack: {e}")])?;
+
+    Ok(WorkflowPack {
+        name: strict.name,
+        description: strict.description,
+        default_project: strict.default_project,
+        queries: strict
+            .queries
+            .into_iter()
+            .map(|q| WorkflowPackQuery {
+                name: q.name,
+                description: q.description,
+                query: q.query,
+            })
+            .collect(),
+    })
+}
+
+fn is_valid_query_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {
+            chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        }
+        _ => false,
+    }
+}
+
+/// Semantic validation for a parsed pack (required fields, name syntax, dupes).
+pub fn validate_workflow_pack(pack: &WorkflowPack) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+
+    if pack.name.trim().is_empty() {
+        errors.push("workflow pack name must be non-empty".to_string());
+    }
+    if let Some(description) = &pack.description
+        && description.trim().is_empty()
+    {
+        errors.push("workflow pack description must be non-empty when present".to_string());
+    }
+    if let Some(project) = &pack.default_project
+        && project.trim().is_empty()
+    {
+        errors.push("workflow pack default_project must be non-empty when present".to_string());
+    }
+    if pack.queries.is_empty() {
+        errors.push("workflow_pack.queries must contain at least one query".to_string());
+    }
+
+    for (index, query) in pack.queries.iter().enumerate() {
+        if pack
+            .queries
+            .iter()
+            .take(index)
+            .any(|other| unicode_eq_ignore_case(&other.name, &query.name))
+        {
+            errors.push(format!(
+                "Duplicate query name '{}' in workflow pack (already declared)",
+                query.name
+            ));
+        }
+    }
+
+    for query in &pack.queries {
+        if query.name.trim().is_empty() {
+            errors.push("workflow pack query name must be non-empty".to_string());
+        } else if !is_valid_query_name(&query.name) {
+            errors.push(format!(
+                "Invalid query name '{}': must match ^[a-z][a-z0-9_]*$",
+                query.name
+            ));
+        }
+        if query.description.trim().is_empty() {
+            errors.push(format!(
+                "query '{}' description must be non-empty",
+                query.name
+            ));
+        }
+        if query.query.trim().is_empty() {
+            errors.push(format!("query '{}' query must be non-empty", query.name));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Whether `name` matches a pack query case-insensitively.
+pub fn pack_query_named<'a>(pack: &'a WorkflowPack, name: &str) -> Option<&'a WorkflowPackQuery> {
+    pack.queries
+        .iter()
+        .find(|query| unicode_eq_ignore_case(&query.name, name))
 }
 
 #[cfg(test)]
@@ -968,5 +1247,220 @@ repo = "repo"
             err.to_string().contains("GitLab project_id not configured"),
             "expected missing project_id error, got: {err}"
         );
+    }
+
+    fn sample_pack_toml() -> &'static str {
+        r#"
+backend = "youtrack"
+
+[workflow_pack]
+name = "Orek backlog"
+description = "Project-local views."
+default_project = "DEMO"
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Ready work."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+"#
+    }
+
+    fn pack_table_str<'a>(pack: &'a toml::Value, key: &str) -> Option<&'a str> {
+        pack.get(key).and_then(|v| v.as_str())
+    }
+
+    #[test]
+    fn workflow_pack_roundtrips_through_config_save() {
+        let config: Config = toml::from_str(sample_pack_toml()).unwrap();
+        let pack = config.workflow_pack.as_ref().unwrap();
+        assert_eq!(pack_table_str(pack, "name"), Some("Orek backlog"));
+        assert_eq!(
+            pack.get("queries")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(1)
+        );
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".track.toml");
+        config.save(&path).unwrap();
+        let reloaded = Config::load_from_path(&path).unwrap().unwrap();
+        let pack = reloaded.workflow_pack.as_ref().unwrap();
+        assert_eq!(pack_table_str(pack, "name"), Some("Orek backlog"));
+        assert_eq!(
+            pack.get("queries")
+                .and_then(|v| v.as_array())
+                .and_then(|queries| queries[0].get("name"))
+                .and_then(|v| v.as_str()),
+            Some("ready")
+        );
+    }
+
+    #[test]
+    fn ordinary_config_load_accepts_structural_pack_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".track.toml");
+        std::fs::write(
+            &path,
+            r#"
+backend = "youtrack"
+
+[workflow_pack]
+name = "Structural error pack"
+queries = "not-an-array"
+"#,
+        )
+        .unwrap();
+
+        let from_path = Config::load_from_path(&path).unwrap().unwrap();
+        assert_eq!(from_path.backend, Some(Backend::YouTrack));
+        assert_eq!(
+            pack_table_str(from_path.workflow_pack.as_ref().unwrap(), "queries"),
+            Some("not-an-array")
+        );
+
+        let loaded = Config::load(Some(path), Backend::YouTrack).unwrap();
+        assert_eq!(loaded.backend, Some(Backend::YouTrack));
+        assert_eq!(
+            pack_table_str(loaded.workflow_pack.as_ref().unwrap(), "queries"),
+            Some("not-an-array")
+        );
+    }
+
+    #[test]
+    fn config_save_preserves_unknown_or_invalid_pack_keys() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".track.toml");
+        std::fs::write(
+            &path,
+            r#"
+backend = "youtrack"
+
+[workflow_pack]
+name = "Extra fields pack"
+extra = 1
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Ready work."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+unexpected = true
+retries = "not-a-number"
+"#,
+        )
+        .unwrap();
+
+        let mut config = Config::load_from_path(&path).unwrap().unwrap();
+        config.default_project = Some("DEMO".to_string());
+        config.save(&path).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("default_project") && saved.contains("DEMO"),
+            "typed edit must be written, got:\n{saved}"
+        );
+        assert!(
+            saved.contains("extra") && saved.contains('1'),
+            "unknown top-level pack key must survive, got:\n{saved}"
+        );
+        assert!(
+            saved.contains("unexpected"),
+            "nested unknown query field must survive, got:\n{saved}"
+        );
+        assert!(
+            saved.contains("retries") && saved.contains("not-a-number"),
+            "invalid nested query type must survive, got:\n{saved}"
+        );
+    }
+
+    #[test]
+    fn parse_workflow_pack_rejects_unknown_field() {
+        let value: toml::Value = toml::from_str(
+            r#"
+name = "Broken"
+not_a_real_pack_field = "typo"
+queries = []
+"#,
+        )
+        .unwrap();
+        let err = parse_workflow_pack_table(&value).unwrap_err().join(" ");
+        assert!(
+            err.contains("not_a_real_pack_field") || err.to_ascii_lowercase().contains("unknown"),
+            "expected unknown-field error, got {err}"
+        );
+    }
+
+    #[test]
+    fn validate_workflow_pack_rejects_empty_name() {
+        let pack = WorkflowPack {
+            name: String::new(),
+            description: Some("desc".to_string()),
+            default_project: None,
+            queries: vec![WorkflowPackQuery {
+                name: "ready".to_string(),
+                description: "Ready".to_string(),
+                query: "project: {PROJECT}".to_string(),
+            }],
+        };
+        let errors = validate_workflow_pack(&pack).unwrap_err().join(" ");
+        assert!(errors.contains("name"));
+        assert!(
+            errors.contains("empty") || errors.contains("non-empty"),
+            "got {errors}"
+        );
+    }
+
+    #[test]
+    fn validate_workflow_pack_rejects_duplicate_names() {
+        let pack = WorkflowPack {
+            name: "Dupes".to_string(),
+            description: None,
+            default_project: None,
+            queries: vec![
+                WorkflowPackQuery {
+                    name: "ready".to_string(),
+                    description: "Lower".to_string(),
+                    query: "q1".to_string(),
+                },
+                WorkflowPackQuery {
+                    name: "Ready".to_string(),
+                    description: "Upper".to_string(),
+                    query: "q2".to_string(),
+                },
+            ],
+        };
+        let errors = validate_workflow_pack(&pack).unwrap_err().join(" ");
+        assert!(errors.to_ascii_lowercase().contains("ready"));
+        assert!(
+            errors.to_ascii_lowercase().contains("duplicate")
+                || errors.to_ascii_lowercase().contains("already"),
+            "got {errors}"
+        );
+    }
+
+    #[test]
+    fn load_workflow_pack_uses_explicit_file_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pack = dir.path().join("pack.toml");
+        std::fs::write(&pack, sample_pack_toml()).unwrap();
+        match load_workflow_pack(Some(&pack)).unwrap() {
+            WorkflowPackState::Valid(loaded) => {
+                assert_eq!(loaded.source, WorkflowPackSource::Explicit);
+                assert_eq!(loaded.pack.name, "Orek backlog");
+                assert_eq!(loaded.pack.queries[0].name, "ready");
+            }
+            other => panic!("expected valid pack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn is_valid_query_name_matches_snake_case() {
+        assert!(is_valid_query_name("ready"));
+        assert!(is_valid_query_name("my_issues"));
+        assert!(is_valid_query_name("a1"));
+        assert!(!is_valid_query_name("Ready"));
+        assert!(!is_valid_query_name("ready-now"));
+        assert!(!is_valid_query_name("1ready"));
+        assert!(!is_valid_query_name(""));
     }
 }

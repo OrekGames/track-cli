@@ -180,6 +180,11 @@ pub enum Commands {
         #[arg(long)]
         strict: bool,
     },
+    /// Workflow pack operations (list, show, and validate local query packs)
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowCommands,
+    },
     /// Aggregate context for AI assistants (projects, fields, users, queries)
     #[command(visible_alias = "ctx")]
     Context {
@@ -313,6 +318,16 @@ pub enum ConfigCommands {
     Path,
     /// Test connection to the tracker (validates URL and token)
     Test,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorkflowCommands {
+    /// List effective pack queries and unshadowed cached built-ins
+    List,
+    /// Show the selected workflow pack, source, and queries
+    Show,
+    /// Validate the selected workflow pack (offline; no backend calls)
+    Validate,
 }
 
 #[derive(Subcommand, Debug)]
@@ -2866,6 +2881,34 @@ mod tests {
             }
             _ => panic!("expected apply command"),
         }
+    }
+
+    #[test]
+    fn parses_workflow_list_show_validate() {
+        let list = Cli::parse_from(["track", "workflow", "list"]);
+        assert!(matches!(
+            list.command,
+            Commands::Workflow {
+                action: WorkflowCommands::List
+            }
+        ));
+
+        let show = Cli::parse_from(["track", "-o", "json", "workflow", "show"]);
+        assert!(matches!(show.format, OutputFormat::Json));
+        assert!(matches!(
+            show.command,
+            Commands::Workflow {
+                action: WorkflowCommands::Show
+            }
+        ));
+
+        let validate = Cli::parse_from(["track", "workflow", "validate"]);
+        assert!(matches!(
+            validate.command,
+            Commands::Workflow {
+                action: WorkflowCommands::Validate
+            }
+        ));
     }
 
     #[test]

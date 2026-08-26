@@ -4,10 +4,13 @@ use crate::cache::{
     TrackerCache,
 };
 use crate::cli::OutputFormat;
+use crate::config::{LoadedWorkflowPack, pack_query_named, require_valid_workflow_pack};
 use crate::output::output_json;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::Serialize;
+use serde_json::Value;
+use std::path::Path;
 use tracker_core::{Issue, IssueTracker, KnowledgeBase};
 
 /// Aggregated context for AI assistants - single JSON blob with all relevant data
@@ -27,6 +30,9 @@ pub struct AggregatedContext {
     pub tags: Vec<CachedTag>,
     /// Available issue link types
     pub link_types: Vec<CachedLinkType>,
+    /// Selected workflow pack (unexpanded queries). Not persisted in cache.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_pack: Option<Value>,
     /// Pre-built query templates for the backend
     pub query_templates: Vec<CachedQueryTemplate>,
     /// Assignable users per project
@@ -112,6 +118,7 @@ pub fn handle_context(
     backend_type: &str,
     base_url: &str,
     default_project: Option<&str>,
+    explicit_config: Option<&Path>,
 ) -> Result<()> {
     // Load or refresh cache
     let mut cache = if refresh {
@@ -138,6 +145,17 @@ pub fn handle_context(
     // Ensure full data for context output
     cache.ensure_all_loaded()?;
 
+    let loaded_pack = require_valid_workflow_pack(explicit_config)?;
+    let query_templates = super::workflow::overlay_query_templates(
+        loaded_pack.as_ref().map(|loaded| &loaded.pack),
+        &cache.query_templates,
+        backend_type,
+    );
+    let mut issue_counts = cache.issue_counts.clone();
+    if let Some(loaded) = &loaded_pack {
+        issue_counts.retain(|count| pack_query_named(&loaded.pack, &count.template_name).is_none());
+    }
+
     // Build aggregated context
     let mut context = AggregatedContext {
         generated_at: chrono::Utc::now().to_rfc3339(),
@@ -147,11 +165,12 @@ pub fn handle_context(
         project_fields: cache.project_fields.clone(),
         tags: cache.tags.clone(),
         link_types: cache.link_types.clone(),
-        query_templates: cache.query_templates.clone(),
+        workflow_pack: loaded_pack.as_ref().map(super::workflow::context_pack_json),
+        query_templates,
         assignable_users: cache.project_users.clone(),
         workflow_hints: cache.workflow_hints.clone(),
         recent_issues: cache.recent_issues.clone(),
-        issue_counts: cache.issue_counts.clone(),
+        issue_counts,
         issues: None,
     };
 
@@ -222,6 +241,10 @@ pub fn handle_context(
 
             if let Some(proj) = &context.default_project {
                 println!("  {}: {}", "Default project".dimmed(), proj.cyan().bold());
+            }
+
+            if let Some(loaded) = &loaded_pack {
+                print_workflow_pack_text(loaded);
             }
 
             println!();
@@ -304,7 +327,19 @@ pub fn handle_context(
                 println!();
                 println!("{}:", "Query Templates".white().bold());
                 for qt in &context.query_templates {
-                    println!("  {}: {}", qt.name.cyan(), qt.description.dimmed());
+                    let pack_mark = loaded_pack
+                        .as_ref()
+                        .is_some_and(|loaded| pack_query_named(&loaded.pack, &qt.name).is_some());
+                    if pack_mark {
+                        println!(
+                            "  {}: {} {}",
+                            qt.name.cyan(),
+                            qt.description.dimmed(),
+                            "[pack, higher precedence]".yellow()
+                        );
+                    } else {
+                        println!("  {}: {}", qt.name.cyan(), qt.description.dimmed());
+                    }
                     println!("    {}", qt.query.dimmed());
                 }
             }
@@ -428,4 +463,25 @@ pub fn handle_context(
     }
 
     Ok(())
+}
+
+fn print_workflow_pack_text(loaded: &LoadedWorkflowPack) {
+    println!();
+    println!("{}:", "Workflow Pack".white().bold());
+    println!(
+        "  {}: {} ({})",
+        "Name".dimmed(),
+        loaded.pack.name.cyan().bold(),
+        loaded.source.as_str()
+    );
+    if let Some(description) = &loaded.pack.description {
+        println!("  {}: {}", "Description".dimmed(), description);
+    }
+    if let Some(project) = &loaded.pack.default_project {
+        println!("  {}: {}", "Default project".dimmed(), project.cyan());
+    }
+    println!(
+        "  {}",
+        "Pack queries take precedence over cached built-ins.".yellow()
+    );
 }
