@@ -70,10 +70,26 @@ fn parse_github_project(project: &str) -> Result<(String, String)> {
     Ok((owner.to_string(), repo.to_string()))
 }
 
+fn url_has_userinfo(url: &str) -> bool {
+    if let Ok(parsed) = url.parse::<Uri>() {
+        parsed
+            .authority()
+            .is_some_and(|authority| authority.as_str().contains('@'))
+    } else {
+        url.contains('@')
+    }
+}
+
 fn invalid_init_url(url: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Invalid --url '{url}': expected an absolute https:// URL with a host. Plain http:// is allowed only for localhost. GitHub.com uses https://api.github.com. No config was written."
-    )
+    if url_has_userinfo(url) {
+        anyhow::anyhow!(
+            "Invalid --url: userinfo is not allowed in server URLs. Expected an absolute https:// URL with a host. Plain http:// is allowed only for localhost. GitHub.com uses https://api.github.com. No config was written."
+        )
+    } else {
+        anyhow::anyhow!(
+            "Invalid --url '{url}': expected an absolute https:// URL with a host. Plain http:// is allowed only for localhost. GitHub.com uses https://api.github.com. No config was written."
+        )
+    }
 }
 
 fn validate_init_url(url: &str) -> Result<()> {

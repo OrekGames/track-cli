@@ -485,12 +485,12 @@ impl Config {
         if backend == Backend::GitHub {
             if self.github.owner.is_none() {
                 return Err(anyhow!(
-                    "GitHub repository is not fully configured: missing github.owner. Set it with 'track config set github.owner' or re-run 'track init --backend github --project owner/repo'."
+                    "GitHub repository is not fully configured: missing github.owner. Set it with 'track config set github.owner <VALUE>' or re-run 'track init --backend github --project owner/repo'."
                 ));
             }
             if self.github.repo.is_none() {
                 return Err(anyhow!(
-                    "GitHub repository is not fully configured: missing github.repo. Set it with 'track config set github.repo' or re-run 'track init --backend github --project owner/repo'."
+                    "GitHub repository is not fully configured: missing github.repo. Set it with 'track config set github.repo <VALUE>' or re-run 'track init --backend github --project owner/repo'."
                 ));
             }
         }
@@ -847,10 +847,14 @@ duplicates = "blocks"
             ..Default::default()
         };
 
-        let err = config.validate(Backend::GitHub).unwrap_err();
+        let err = config.validate(Backend::GitHub).unwrap_err().to_string();
         assert!(
-            err.to_string().contains("missing github.owner"),
+            err.contains("missing github.owner"),
             "expected missing owner error, got: {err}"
+        );
+        assert!(
+            err.contains("track config set github.owner <VALUE>"),
+            "expected <VALUE> placeholder, got: {err}"
         );
 
         let config = Config {
@@ -863,10 +867,14 @@ duplicates = "blocks"
             ..Default::default()
         };
 
-        let err = config.validate(Backend::GitHub).unwrap_err();
+        let err = config.validate(Backend::GitHub).unwrap_err().to_string();
         assert!(
-            err.to_string().contains("missing github.repo"),
+            err.contains("missing github.repo"),
             "expected missing repo error, got: {err}"
+        );
+        assert!(
+            err.contains("track config set github.repo <VALUE>"),
+            "expected <VALUE> placeholder, got: {err}"
         );
     }
 
