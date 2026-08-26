@@ -189,7 +189,11 @@ fn github_project_omitted_uses_catalog_copy() {
     let stderr = failed_stderr(&output);
     assert_eq!(
         primary_error_line(&stderr),
-        "Error: GitHub setup requires --project <owner>/<repo>. Example: --project OrekGames/track-cli. No config was written."
+        concat!(
+            "Error: GitHub setup requires --project ",
+            "<owner>/<repo>",
+            ". Example: --project OrekGames/track-cli. No config was written."
+        )
     );
     assert_no_config(&dir);
     let _ = std::fs::remove_dir_all(&dir);
@@ -203,7 +207,8 @@ fn github_project_malformed_uses_catalog_copy() {
         let output = run_github_init(&dir, "https://api.github.com", &["--project", value]);
         let stderr = failed_stderr(&output);
         let expected = format!(
-            "Error: Invalid GitHub project '{value}': expected exactly <owner>/<repo>, for example OrekGames/track-cli. No config was written."
+            "Error: Invalid GitHub project '{value}': expected exactly {}, for example OrekGames/track-cli. No config was written.",
+            "<owner>/<repo>"
         );
         assert_eq!(primary_error_line(&stderr), expected, "value={value}");
         assert_no_config(&dir);
@@ -390,7 +395,11 @@ fn first_github_command_missing_token_uses_catalog_copy() {
     let stderr = failed_stderr(&run_first_github_command(&dir));
     assert_eq!(
         primary_error_line(&stderr),
-        "Error: GitHub token is not configured. Set it with 'track config set github.token <value>', set GITHUB_TOKEN, or pass --token."
+        concat!(
+            "Error: GitHub token is not configured. Set it with 'track config set github.token ",
+            "<value>",
+            "', set GITHUB_TOKEN, or pass --token."
+        )
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
