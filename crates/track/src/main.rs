@@ -326,7 +326,8 @@ fn run_with_client(
             )
         }
         Commands::Config { action } => {
-            commands::config::handle_config(issue_client, action, cli.format, config)
+            let backend = cli.backend.unwrap_or_else(|| config.get_backend());
+            commands::config::handle_config(issue_client, action, cli.format, config, backend)
         }
         Commands::Article { action } => {
             commands::article::handle_article(issue_client, kb_client, action, cli.format)

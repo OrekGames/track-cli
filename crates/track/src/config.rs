@@ -466,6 +466,11 @@ impl Config {
             ));
         }
         if self.token.is_none() {
+            if backend == Backend::GitHub {
+                return Err(anyhow!(
+                    "GitHub token is not configured. Set it with 'track config set github.token <TOKEN>', set GITHUB_TOKEN, or pass --token."
+                ));
+            }
             return Err(anyhow!(
                 "{} token not configured. Set via --token, TRACKER_TOKEN env var, or config file",
                 backend_name
@@ -480,12 +485,12 @@ impl Config {
         if backend == Backend::GitHub {
             if self.github.owner.is_none() {
                 return Err(anyhow!(
-                    "GitHub owner not configured. Set via 'track config set github.owner <OWNER>' or GITHUB_OWNER env var"
+                    "GitHub repository is not fully configured: missing github.owner. Set it with 'track config set github.owner' or re-run 'track init --backend github --project owner/repo'."
                 ));
             }
             if self.github.repo.is_none() {
                 return Err(anyhow!(
-                    "GitHub repo not configured. Set via 'track config set github.repo <REPO>' or GITHUB_REPO env var"
+                    "GitHub repository is not fully configured: missing github.repo. Set it with 'track config set github.repo' or re-run 'track init --backend github --project owner/repo'."
                 ));
             }
         }
@@ -844,7 +849,7 @@ duplicates = "blocks"
 
         let err = config.validate(Backend::GitHub).unwrap_err();
         assert!(
-            err.to_string().contains("GitHub owner not configured"),
+            err.to_string().contains("missing github.owner"),
             "expected missing owner error, got: {err}"
         );
 
@@ -860,7 +865,7 @@ duplicates = "blocks"
 
         let err = config.validate(Backend::GitHub).unwrap_err();
         assert!(
-            err.to_string().contains("GitHub repo not configured"),
+            err.to_string().contains("missing github.repo"),
             "expected missing repo error, got: {err}"
         );
     }

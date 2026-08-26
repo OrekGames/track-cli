@@ -93,7 +93,7 @@ fn global_config_path(temp_home: &Path) -> PathBuf {
     temp_home.join(".tracker-cli").join(".track.toml")
 }
 
-fn assert_init_rejects_url(url: &str, expected_message: &str) {
+fn assert_init_rejects_url(url: &str) {
     let temp_dir = create_temp_dir();
     let config_path = global_config_path(&temp_dir);
 
@@ -104,7 +104,15 @@ fn assert_init_rejects_url(url: &str, expected_message: &str) {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(expected_message));
+        .stderr(
+            predicate::str::contains(format!("Invalid --url '{url}'"))
+                .and(predicate::str::contains(
+                    "expected an absolute https:// URL",
+                ))
+                .and(predicate::str::contains(
+                    "Plain http:// is allowed only for localhost",
+                )),
+        );
 
     assert!(
         !config_path.exists(),
@@ -198,14 +206,14 @@ fn test_init_enforces_https_for_remote_urls() {
         "http://localhost.evil.com",
         "http://127.0.0.1.example.com",
     ] {
-        assert_init_rejects_url(url, "Insecure URL");
+        assert_init_rejects_url(url);
     }
 
     for url in [
         "http://localhost:token@example.com",
         "http://127.0.0.1:token@example.com",
     ] {
-        assert_init_rejects_url(url, "userinfo is not allowed");
+        assert_init_rejects_url(url);
     }
 
     for url in [
