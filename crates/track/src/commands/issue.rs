@@ -1,8 +1,8 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
 use crate::output::{
-    Displayable, output_json, output_list, output_page_hint, output_progress,
-    output_projected_list, output_result,
+    Displayable, output_json, output_list, output_page_hint, output_progress, output_projected,
+    output_result,
 };
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -52,11 +52,7 @@ pub fn handle_issue(
     verbose: bool,
     link_mappings: &std::collections::HashMap<String, String>,
 ) -> Result<()> {
-    let IssueOutput {
-        format,
-        select,
-        jsonl,
-    } = output;
+    let format = output.format;
     match action {
         IssueCommands::Get { id, full } => handle_get(client, id, *full, format),
         IssueCommands::Create {
@@ -145,7 +141,7 @@ pub fn handle_issue(
                 skip: *skip,
                 all: *all,
             };
-            handle_search(client, &args, format, default_project, select, jsonl)
+            handle_search(client, &args, output, default_project)
         }
         IssueCommands::Inspect {
             ids,
@@ -921,11 +917,14 @@ pub(crate) fn parse_custom_fields_json(
 fn handle_search(
     client: &dyn IssueTracker,
     args: &SearchArgs,
-    format: OutputFormat,
+    output: IssueOutput<'_>,
     default_project: Option<&str>,
-    select: Option<&str>,
-    jsonl: bool,
 ) -> Result<()> {
+    let IssueOutput {
+        format,
+        select,
+        jsonl,
+    } = output;
     // Resolve query from template if needed
     let actual_query =
         resolve_search_query(args.query, args.template, args.project, default_project)?;
@@ -953,7 +952,7 @@ fn handle_search(
     // JSONL or JSON `--select` uses projection. Text mode ignores `--select`
     // in this slice so existing human output stays unchanged.
     if jsonl || (select.is_some() && format != OutputFormat::Text) {
-        output_projected_list(&issues, format, select, jsonl)?;
+        output_projected(&issues, select, jsonl)?;
     } else {
         output_list(&issues, format)?;
     }

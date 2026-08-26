@@ -7,7 +7,7 @@ mod output;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use cli::{Backend, Cli, Commands};
+use cli::{Backend, Cli, Commands, IssueCommands};
 use config::Config;
 use github_backend::GitHubClient;
 use gitlab_backend::GitLabClient;
@@ -48,7 +48,22 @@ fn cli_main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `-o jsonl` is wired for `issue search` only. Other commands must not
+/// silently remap through [`cli::CliFormat::output`] to pretty JSON.
+fn command_supports_cli_jsonl(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Issue {
+            action: IssueCommands::Search { .. }
+        }
+    )
+}
+
 fn run(cli: Cli) -> Result<()> {
+    if cli.format.is_jsonl() && !command_supports_cli_jsonl(&cli.command) {
+        return Err(anyhow!("jsonl output is unsupported for this command"));
+    }
+
     // Handle completions command - no API needed
     if let Commands::Completions { shell } = &cli.command {
         Cli::generate_completions(*shell);

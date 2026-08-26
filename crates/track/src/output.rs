@@ -95,7 +95,12 @@ pub(crate) fn parse_select_paths(select: &str) -> Vec<Vec<String>> {
 ///
 /// Missing paths yield `None` (omitted; no `--strict-select` in this slice).
 /// When the walk hits an array, the remaining path is projected from each
-/// element so `custom_fields.name` stays an array of objects.
+/// element at its source index so sparse sibling fields do not collapse.
+/// Empty arrays stay empty. A miss on one element is a JSON `null` hole so
+/// later paths can merge by index.
+///
+/// Paths bind to serialized field names as-is. This slice does not unwrap
+/// externally tagged objects.
 pub(crate) fn project_one(value: &Value, path: &[String]) -> Option<Value> {
     if path.is_empty() {
         return Some(value.clone());
@@ -111,20 +116,26 @@ pub(crate) fn project_one(value: &Value, path: &[String]) -> Option<Value> {
         Value::Array(items) => {
             let projected: Vec<Value> = items
                 .iter()
-                .filter_map(|item| project_one(item, path))
+                .map(|item| project_one(item, path).unwrap_or(Value::Null))
                 .collect();
-            if projected.is_empty() {
-                None
-            } else {
-                Some(Value::Array(projected))
-            }
+            Some(Value::Array(projected))
         }
         _ => None,
     }
 }
 
-/// Deep-merge objects; merge arrays element-wise.
+/// Deep-merge objects; merge arrays element-wise by source index.
+///
+/// JSON `null` is a hole: it does not overwrite a present value, and a
+/// present value fills a hole.
 pub(crate) fn merge_projected(dst: &mut Value, src: Value) {
+    if src.is_null() {
+        return;
+    }
+    if dst.is_null() {
+        *dst = src;
+        return;
+    }
     match (dst, src) {
         (Value::Object(dst_map), Value::Object(src_map)) => {
             for (key, src_val) in src_map {
@@ -136,12 +147,11 @@ pub(crate) fn merge_projected(dst: &mut Value, src: Value) {
             }
         }
         (Value::Array(dst_items), Value::Array(src_items)) => {
+            if dst_items.len() < src_items.len() {
+                dst_items.resize(src_items.len(), Value::Null);
+            }
             for (i, src_item) in src_items.into_iter().enumerate() {
-                if i < dst_items.len() {
-                    merge_projected(&mut dst_items[i], src_item);
-                } else {
-                    dst_items.push(src_item);
-                }
+                merge_projected(&mut dst_items[i], src_item);
             }
         }
         (dst, src) => {
@@ -152,7 +162,8 @@ pub(crate) fn merge_projected(dst: &mut Value, src: Value) {
 
 /// Project `value` onto the given dotted paths.
 ///
-/// A top-level array is projected per element (the issue list).
+/// A top-level array is projected per element (the issue list). Nested
+/// arrays keep source length, order, and indices.
 pub(crate) fn project_value(value: &Value, paths: &[Vec<String>]) -> Value {
     if let Value::Array(items) = value {
         return Value::Array(
@@ -191,15 +202,18 @@ fn output_jsonl(value: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Serialize `items`, optionally project `--select` paths, then render as
-/// pretty JSON or compact JSONL (one object per line, no wrapping array).
-pub fn output_projected_list<T: Serialize>(
-    items: &[T],
-    _format: OutputFormat,
+/// Serialize `root`, optionally project `--select` paths, then render as
+/// pretty JSON or compact JSONL.
+///
+/// JSONL is root-aware: a top-level array emits one compact record per
+/// element; a top-level object (or other value) emits one compact line.
+/// Nested arrays stay inside their record.
+pub fn output_projected<T: Serialize>(
+    root: &T,
     select: Option<&str>,
     jsonl: bool,
 ) -> anyhow::Result<()> {
-    let mut value = serde_json::to_value(items)?;
+    let mut value = serde_json::to_value(root)?;
     if let Some(select) = select {
         let paths = parse_select_paths(select);
         if !paths.is_empty() {
@@ -1069,17 +1083,17 @@ mod tests {
     #[test]
     fn project_array_child_keeps_array_of_objects() {
         let value = serde_json::json!({
-            "custom_fields": [
+            "items": [
                 {"name": "State", "value": "Open"},
                 {"name": "Priority", "value": "Normal"}
             ]
         });
-        let paths = parse_select_paths("custom_fields.name");
+        let paths = parse_select_paths("items.name");
         let projected = project_value(&value, &paths);
         assert_eq!(
             projected,
             serde_json::json!({
-                "custom_fields": [
+                "items": [
                     {"name": "State"},
                     {"name": "Priority"}
                 ]
