@@ -421,6 +421,33 @@ fn github_probe_transport_uses_catalog_copy() {
 }
 
 #[test]
+fn github_probe_invalid_success_body_is_parse_not_http() {
+    let dir = create_temp_dir();
+    let (port, _server) = start_mock_http(200, "OK", &[], "not-json");
+    let url = format!("http://127.0.0.1:{port}");
+    let output = run_github_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
+    let stderr = failed_stderr(&output);
+    let line = primary_error_line(&stderr);
+    assert!(
+        !line.starts_with("Error: Could not reach the GitHub API"),
+        "decode failure must not use transport copy, got {line:?}"
+    );
+    assert!(
+        !stderr.contains("HTTP error"),
+        "decode failure must not be wrapped as Http:\n{stderr}"
+    );
+    let prefix = format!(
+        "Error: The API at '{url}' returned an invalid GitHub repository response. Verify the API base URL or proxy. No config was written."
+    );
+    assert!(
+        line.starts_with(&prefix),
+        "expected parse prefix {prefix:?}, got {line:?}\n{stderr}"
+    );
+    assert_no_config(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn first_github_command_missing_token_uses_catalog_copy() {
     let dir = create_temp_dir();
     write_local_config(
@@ -457,7 +484,8 @@ fn first_github_command_missing_owner_or_repo_uses_catalog_copy() {
         );
         let stderr = failed_stderr(&run_first_github_command(&dir));
         let expected = format!(
-            "Error: GitHub repository is not fully configured: missing github.{field}. Set it with 'track config set github.{field}' or re-run 'track init --backend github --project owner/repo'."
+            "Error: GitHub repository is not fully configured: missing github.{field}. Set it with 'track config set github.{field} {}' or re-run 'track init --backend github --project owner/repo'.",
+            "<VALUE>"
         );
         assert_eq!(primary_error_line(&stderr), expected, "missing {field}");
         let _ = std::fs::remove_dir_all(&dir);
