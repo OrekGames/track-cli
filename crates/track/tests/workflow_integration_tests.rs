@@ -2,8 +2,10 @@
 //!
 //! Spec: `docs/design/294-workflow-query-packs.md` (design-only PR #352).
 //! These tests encode pack selection, collision, validation, and offline
-//! `workflow` commands. They must fail on current main and go green when
-//! the slice is implemented. No production code lives here.
+//! `workflow` commands. The first five go green with the overlay slice.
+//! The Config blast-radius pins at the bottom fail until ordinary
+//! `Config::load` / `Config::save` stop treating pack structure as
+//! required or known-only. No production code lives here.
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::Value;
@@ -567,6 +569,165 @@ query = "project: {PROJECT} #Unresolved State: {Ready}"
                 || err_text.contains("invalid")),
         "validate must name the empty pack name, got: {}",
         combined_output(&validate_err)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// 6. Structural pack errors must not brick ordinary Config::load
+// =============================================================================
+
+fn structural_pack_error_toml() -> &'static str {
+    r#"backend = "youtrack"
+
+[youtrack]
+url = "https://mock.test"
+token = "mock-token"
+
+[workflow_pack]
+name = "Structural error pack"
+description = "queries has the wrong type."
+queries = "not-an-array"
+"#
+}
+
+fn extra_field_pack_toml() -> &'static str {
+    r#"backend = "youtrack"
+
+[workflow_pack]
+name = "Extra fields pack"
+description = "Unknown keys must survive config set."
+extra = 1
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Issues ready for implementation."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+unexpected = true
+retries = "not-a-number"
+"#
+}
+
+#[test]
+fn structural_pack_error_does_not_fail_ordinary_config_load() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+    let pack = dir.join("pack.toml");
+    write_config(&pack, structural_pack_error_toml());
+    // `config set` edits ./.track.toml (it does not rewrite --config).
+    write_config(&dir.join(".track.toml"), structural_pack_error_toml());
+
+    // Mock fixture is DEMO-1 (PROJ-1 is not in basic-workflow).
+    let get = track_mock(&dir, &scenario)
+        .args(["--config"])
+        .arg(&pack)
+        .args(["issue", "get", "DEMO-1", "-o", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "`issue get` must not fail because of pack validation, got: {}",
+        combined_output(&get)
+    );
+    assert_eq!(
+        parse_json_stdout(&get)["id_readable"],
+        "DEMO-1",
+        "issue get must proceed past Config::load, got: {}",
+        combined_output(&get)
+    );
+
+    let set = track_in(&dir)
+        .args(["--config"])
+        .arg(&pack)
+        .args(["config", "set", "default_project", "DEMO"])
+        .output()
+        .unwrap();
+    assert!(
+        set.status.success(),
+        "`config set` must get past Config::load / local TOML parse, got: {}",
+        combined_output(&set)
+    );
+
+    let validate = track_in(&dir)
+        .args(["-o", "json", "--config"])
+        .arg(&pack)
+        .args(["workflow", "validate"])
+        .output()
+        .unwrap();
+    assert!(
+        !validate.status.success(),
+        "workflow validate must still fail via the strict pack parser, got: {}",
+        combined_output(&validate)
+    );
+    let validate_text = combined_output(&validate);
+    let validate_lower = validate_text.to_ascii_lowercase();
+    assert!(
+        !validate_lower.contains("failed to load config"),
+        "validate must not die as a generic serde Config::load brick, got: {validate_text}"
+    );
+    assert!(
+        !validate_lower.contains("missing field in config"),
+        "validate error must be the pack/validate report, not missing field in Config, got: {validate_text}"
+    );
+
+    let json = parse_json_stdout(&validate);
+    assert_eq!(
+        json["valid"], false,
+        "strict parser must report valid:false: {json}"
+    );
+    let errors = json["errors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("validate JSON must include errors array: {json}"));
+    assert!(
+        errors.iter().any(|error| {
+            let text = error.as_str().unwrap_or("").to_ascii_lowercase();
+            text.contains("workflow_pack") || text.contains("queries") || text.contains("invalid")
+        }),
+        "validate must blame the pack structure, got {json}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// 7. config set / Config::save must keep unknown or invalid pack content
+// =============================================================================
+
+#[test]
+fn config_set_preserves_unknown_or_invalid_pack_content() {
+    let dir = temp_dir();
+    let pack = dir.join(".track.toml");
+    write_config(&pack, extra_field_pack_toml());
+
+    let output = track_in(&dir)
+        .args(["--config"])
+        .arg(&pack)
+        .args(["config", "set", "default_project", "DEMO"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "`config set` must succeed with an extra-field pack, got: {}",
+        combined_output(&output)
+    );
+
+    let saved = fs::read_to_string(&pack).unwrap();
+    assert!(
+        saved.contains("default_project") && saved.contains("DEMO"),
+        "config set must write default_project, got:\n{saved}"
+    );
+    assert!(
+        saved.contains("extra") && saved.contains('1'),
+        "unknown top-level pack key `extra` must survive Config::save, got:\n{saved}"
+    );
+    assert!(
+        saved.contains("unexpected"),
+        "nested unknown query field `unexpected` must survive Config::save, got:\n{saved}"
+    );
+    assert!(
+        saved.contains("retries") && saved.contains("not-a-number"),
+        "nested query field with a non-schema type must survive Config::save, got:\n{saved}"
     );
 
     let _ = fs::remove_dir_all(&dir);
