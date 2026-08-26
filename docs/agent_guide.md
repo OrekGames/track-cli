@@ -108,6 +108,33 @@ depends = "is_blocked_by"
 relates = "similar"
 ```
 
+**Workflow pack** (optional — repo-local query templates that overlay cached built-ins):
+```toml
+[workflow_pack]
+name = "Orek backlog"
+description = "Project-local views for backlog work."
+default_project = "PROJ"
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Issues ready for implementation."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+
+[[workflow_pack.queries]]
+name = "blocked"
+description = "Issues blocked by dependencies."
+query = "project: {PROJECT} #Unresolved tag: blocked"
+```
+
+Query names are lowercase snake_case (`^[a-z][a-z0-9_]*$`). Only exact `{PROJECT}` is substituted (`--project`, then pack `default_project`, then config `default_project`). One pack is selected whole: `--config` / `TRACKER_CONFIG`, else `./.track.toml`, else `~/.tracker-cli/.track.toml`. Pack queries win over cached built-ins on name collision; `track workflow validate` warns `shadows_builtin`. An invalid pack fails `-T` search and `workflow` commands (no silent built-in fallback). Packs are not written into `.tracker-cache/`.
+
+```bash
+track workflow list                 # Pack queries, then unshadowed built-ins
+track workflow show                 # Selected pack + source (repo/user/explicit)
+track workflow validate             # Offline; collision is a warning
+track i s -T ready -p PROJ          # Uses the pack query when defined
+```
+
 ### Quick Setup with `track init`
 
 Creates a `.track.toml` in the current directory:
@@ -962,18 +989,26 @@ track context --issue-limit 25       # Limit included issues (default: 10)
 track -o json context                # JSON output for parsing
 ```
 
-**Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, query templates, assignable users, workflow hints (state transitions), issue counts per project/template, recent issues.
+**Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, the selected workflow pack (if any), query templates (pack first, then unshadowed built-ins), assignable users, workflow hints (state transitions), issue counts per project/template, recent issues. Pack queries are marked as higher precedence; shadowed built-in counts are omitted.
 
 ### Template-Based Search
 
-Use pre-built query templates instead of raw queries (avoids backend syntax errors):
+`-T` / `--template` matches a `[workflow_pack]` query first (case-insensitive), then cached built-ins. Prefer a pack in `.track.toml` for repo-specific views such as `ready` or `blocked`.
 
 ```bash
-# Use template with project
+# Pack query (when [workflow_pack] defines ready)
+track i s -T ready -p PROJ
+
+# Built-in template with project
 track i s --template unresolved --project PROJ
 track i s -T my_issues -p PROJ
 
-# Available templates (see: track cache show)
+# Inspect the overlay without tracker credentials
+track workflow list
+track workflow show
+track workflow validate
+
+# Available built-in templates (see: track cache show / track workflow list)
 # - unresolved: All unresolved issues
 # - my_issues: Assigned to current user
 # - recent: Recently updated (7 days)
@@ -1328,7 +1363,7 @@ default_linear_project = "Track CLI"
 5. **Default project**: `track config project PROJ` to skip `-p` flag
 6. **Field discovery**: `track p f PROJ` or `track cache show` lists custom fields with valid values
 7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, issue counts, and articles
-8. **Query templates**: Cache includes pre-built queries - check `track cache show` for available templates
+8. **Query templates**: `[workflow_pack]` in `.track.toml` overlays cached built-ins; `track workflow list` shows the effective set. Cache still holds built-in queries — check `track cache show`
 9. **Jira limitations**: No project creation, no custom field admin
 10. **GitHub limitations**: No issue delete (close instead), no general issue links (only subtask/parent; use `#N` references for others), no knowledge base
 11. **GitLab limitations**: No project creation, no knowledge base

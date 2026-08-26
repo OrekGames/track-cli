@@ -1,10 +1,12 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
+use crate::config::require_valid_workflow_pack;
 use crate::output::{
     Displayable, output_json, output_list, output_page_hint, output_progress, output_result,
 };
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
+use std::path::Path;
 use tracker_core::{
     CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
     canonical_field_name, get_max_results, unicode_eq_ignore_case,
@@ -42,6 +44,7 @@ pub fn handle_issue(
     default_project: Option<&str>,
     verbose: bool,
     link_mappings: &std::collections::HashMap<String, String>,
+    explicit_config: Option<&Path>,
 ) -> Result<()> {
     match action {
         IssueCommands::Get { id, full } => handle_get(client, id, *full, format),
@@ -131,7 +134,7 @@ pub fn handle_issue(
                 skip: *skip,
                 all: *all,
             };
-            handle_search(client, &args, format, default_project)
+            handle_search(client, &args, format, default_project, explicit_config)
         }
         IssueCommands::Inspect {
             ids,
@@ -159,7 +162,14 @@ pub fn handle_issue(
                 jsonl: *jsonl,
                 strict: *strict,
             };
-            super::inspect::handle_inspect(client, &args, format, default_project, link_mappings)
+            super::inspect::handle_inspect(
+                client,
+                &args,
+                format,
+                default_project,
+                link_mappings,
+                explicit_config,
+            )
         }
         IssueCommands::Delete { ids } => handle_delete_batch(client, ids, format),
         IssueCommands::Attachments { id } => handle_attachments(client, id, format),
@@ -909,10 +919,16 @@ fn handle_search(
     args: &SearchArgs,
     format: OutputFormat,
     default_project: Option<&str>,
+    explicit_config: Option<&Path>,
 ) -> Result<()> {
     // Resolve query from template if needed
-    let actual_query =
-        resolve_search_query(args.query, args.template, args.project, default_project)?;
+    let actual_query = resolve_search_query(
+        args.query,
+        args.template,
+        args.project,
+        default_project,
+        explicit_config,
+    )?;
 
     let (issues, inline_total) = if args.all {
         // Auto-paginate; backends with cursor-based search override
@@ -983,52 +999,97 @@ pub(crate) fn resolve_search_query(
     template: Option<&str>,
     project: Option<&str>,
     default_project: Option<&str>,
+    explicit_config: Option<&Path>,
 ) -> Result<String> {
     match (query, template) {
-        // Direct query provided
         (Some(q), _) => Ok(q.to_string()),
-
-        // Template provided - resolve from cache
         (None, Some(tmpl)) => {
-            let cache = TrackerCache::load_all(None)?;
-
-            // Find the template
-            let template_def = cache
-                .query_templates
-                .iter()
-                .find(|qt| unicode_eq_ignore_case(&qt.name, tmpl))
-                .ok_or_else(|| {
-                    let available: Vec<&str> = cache
-                        .query_templates
-                        .iter()
-                        .map(|t| t.name.as_str())
-                        .collect();
-                    anyhow!(
-                        "Template '{}' not found. Available templates: {}",
-                        tmpl,
-                        if available.is_empty() {
-                            "(none - run 'track cache refresh')".to_string()
-                        } else {
-                            available.join(", ")
-                        }
-                    )
-                })?;
-
-            // Get project for substitution
-            let proj = project.or(default_project).ok_or_else(|| {
-                anyhow!(
-                    "Project required for template '{}'. Use --project or set default with 'track config project <ID>'",
-                    tmpl
-                )
-            })?;
-
-            // Substitute {PROJECT} placeholder
-            Ok(template_def.query.replace("{PROJECT}", proj))
+            resolve_template_query(tmpl, project, default_project, explicit_config)
         }
-
-        // Neither provided
         (None, None) => Err(anyhow!("Either a search query or --template is required")),
     }
+}
+
+fn resolve_template_query(
+    tmpl: &str,
+    project: Option<&str>,
+    default_project: Option<&str>,
+    explicit_config: Option<&Path>,
+) -> Result<String> {
+    let loaded = require_valid_workflow_pack(explicit_config)?;
+
+    if let Some(loaded) = &loaded
+        && let Some(pack_query) = loaded
+            .pack
+            .queries
+            .iter()
+            .find(|query| unicode_eq_ignore_case(&query.name, tmpl))
+    {
+        return expand_template_query(
+            &pack_query.query,
+            tmpl,
+            project,
+            loaded.pack.default_project.as_deref(),
+            default_project,
+            true,
+        );
+    }
+
+    let cache = TrackerCache::load_all(None)?;
+    if let Some(template_def) = cache
+        .query_templates
+        .iter()
+        .find(|qt| unicode_eq_ignore_case(&qt.name, tmpl))
+    {
+        return expand_template_query(
+            &template_def.query,
+            tmpl,
+            project,
+            None,
+            default_project,
+            false,
+        );
+    }
+
+    let mut available: Vec<&str> = Vec::new();
+    if let Some(loaded) = &loaded {
+        available.extend(loaded.pack.queries.iter().map(|query| query.name.as_str()));
+    }
+    available.extend(cache.query_templates.iter().map(|t| t.name.as_str()));
+    Err(anyhow!(
+        "Template '{}' not found. Available templates: {}",
+        tmpl,
+        if available.is_empty() {
+            "(none - run 'track cache refresh' or add a [workflow_pack] to .track.toml)".to_string()
+        } else {
+            available.join(", ")
+        }
+    ))
+}
+
+fn expand_template_query(
+    query: &str,
+    tmpl: &str,
+    project: Option<&str>,
+    pack_default: Option<&str>,
+    config_default: Option<&str>,
+    use_pack_default: bool,
+) -> Result<String> {
+    if !query.contains("{PROJECT}") {
+        return Ok(query.to_string());
+    }
+    let proj = if use_pack_default {
+        project.or(pack_default).or(config_default)
+    } else {
+        project.or(config_default)
+    }
+    .ok_or_else(|| {
+        anyhow!(
+            "Project required for template '{}'. Use --project or set default with 'track config project <ID>'",
+            tmpl
+        )
+    })?;
+    Ok(query.replace("{PROJECT}", proj))
 }
 
 fn handle_delete(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> Result<()> {
@@ -2199,14 +2260,14 @@ mod tests {
 
     #[test]
     fn resolve_query_returns_direct_query() {
-        let result = resolve_search_query(Some("project: PROJ"), None, None, None);
+        let result = resolve_search_query(Some("project: PROJ"), None, None, None, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "project: PROJ");
     }
 
     #[test]
     fn resolve_query_requires_query_or_template() {
-        let result = resolve_search_query(None, None, None, None);
+        let result = resolve_search_query(None, None, None, None, None);
         assert!(result.is_err());
         assert!(
             result
@@ -2214,6 +2275,50 @@ mod tests {
                 .to_string()
                 .contains("Either a search query")
         );
+    }
+
+    #[test]
+    fn resolve_query_uses_pack_template_and_expands_project() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pack = dir.path().join("pack.toml");
+        std::fs::write(
+            &pack,
+            r#"
+[workflow_pack]
+name = "Test pack"
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Ready work."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+"#,
+        )
+        .unwrap();
+
+        let result = resolve_search_query(None, Some("ready"), Some("DEMO"), None, Some(&pack));
+        assert_eq!(result.unwrap(), "project: DEMO #Unresolved State: {Ready}");
+    }
+
+    #[test]
+    fn resolve_query_skips_project_when_placeholder_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pack = dir.path().join("pack.toml");
+        std::fs::write(
+            &pack,
+            r#"
+[workflow_pack]
+name = "Test pack"
+
+[[workflow_pack.queries]]
+name = "opened"
+description = "Open issues."
+query = "state=opened"
+"#,
+        )
+        .unwrap();
+
+        let result = resolve_search_query(None, Some("opened"), None, None, Some(&pack));
+        assert_eq!(result.unwrap(), "state=opened");
     }
 
     #[test]

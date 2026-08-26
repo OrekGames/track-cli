@@ -623,10 +623,25 @@ Jira fragments above must be embedded in a full query containing `=`/`AND`/`OR` 
 
 ### Query Templates
 
-Templates resolve from the **local cache** — run `track cache refresh` first, or `-T` fails with "Template not found".
+`-T` / `--template` matches a `[workflow_pack]` query in config first (case-insensitive), then cached built-ins. Pack queries are not written into `.tracker-cache/`. Built-ins still resolve from the **local cache** — run `track cache refresh` if no pack defines the name, or `-T` fails with "Template not found".
+
+```toml
+[workflow_pack]
+name = "Orek backlog"
+default_project = "PROJ"
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Issues ready for implementation."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+```
 
 ```bash
-track i s -T unresolved -p PROJ     # All unresolved issues
+track workflow list                 # Pack first, then unshadowed built-ins (offline)
+track workflow show                 # Selected pack + source
+track workflow validate             # Offline; shadows_builtin is a warning
+track i s -T ready -p PROJ          # Pack query when defined
+track i s -T unresolved -p PROJ     # All unresolved issues (or pack override)
 track i s -T my_issues -p PROJ      # Assigned to current user
 track i s -T recent -p PROJ         # Recently updated
 track i s -T high_priority -p PROJ  # High-priority issues
@@ -684,7 +699,7 @@ track context --issue-limit 25       # Limit issues (default: 10)
 track -o json context                # JSON for parsing
 ```
 
-**Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, query templates, assignable users, workflow hints, issue counts, recent issues.
+**Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, optional `workflow_pack`, query templates (pack first, then unshadowed built-ins), assignable users, workflow hints, issue counts (shadowed built-in names dropped), recent issues.
 
 ### Field Validation
 
@@ -756,7 +771,7 @@ Setting `TRACK_MOCK_DIR=./fixtures/scenarios/<name>` routes **every** command to
 4. **Issue shortcut**: `track PROJ-123` = `track issue get PROJ-123` (one-dash IDs only; flags go before the ID; only `--full` works after it)
 5. **Default project**: `track config set default_project PROJ` to skip `-p` flag
 6. **Field discovery**: `track -o json p f PROJ`, `track cache show`, or `track context -p PROJ` list custom fields with valid values (plain `track p f` text output omits the values)
-7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, issue counts, and articles — and is required before `-T` templates work
+7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, built-in query templates, issue counts, and articles. `-T` prefers `[workflow_pack]` in `.track.toml`; built-ins still need the cache. Use `track workflow list|show|validate` offline.
 8. **Pagination**: `--all` caps at 1000 (override `TRACK_MAX_RESULTS`); comments commands default to `--limit 10` and have no `--skip`
 9. **GitHub limitations**: No issue delete (close instead), no general issue links (only subtask/parent; use `#N` references); articles work via repo wiki (no article comments)
 10. **GitLab limitations**: No project creation; query filters limited to `state`/`labels`/`search`; articles work via wiki (no article comments)

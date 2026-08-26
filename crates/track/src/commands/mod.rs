@@ -14,6 +14,7 @@ pub mod issue;
 pub mod open;
 pub mod project;
 pub mod tags;
+pub mod workflow;
 
 use anyhow::{Context, Result};
 use std::io::Read;

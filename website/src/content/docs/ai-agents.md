@@ -23,9 +23,10 @@ track -o json i s "project: PROJ #Unresolved" --all
 ## Context aggregation
 
 `track context` returns everything an agent needs to reason about a tracker in a
-single call: projects, custom fields (with enum values), assignable users, query
-templates, workflow hints (valid state transitions), issue counts, and recently
-accessed issues.
+single call: projects, custom fields (with enum values), assignable users, the
+selected workflow pack (if configured), query templates (pack queries first,
+then unshadowed built-ins), workflow hints (valid state transitions), issue
+counts, and recently accessed issues.
 
 ```bash
 track context                  # Aggregated context
@@ -133,6 +134,25 @@ The command installs the same `track` skill reference for these agents:
 The installed skill is guidance only. It teaches agents the command surface,
 JSON mode, context/cache workflow, backend differences, and batch-operation
 patterns; credentials stay in `.track.toml` or environment variables.
+
+## Workflow packs
+
+A `[workflow_pack]` in `.track.toml` defines repo-local query templates
+(`ready`, `blocked`, …) that overlay cached built-ins at command time. Pack
+queries are not written into `.tracker-cache/`. `-T` / `--template` matches the
+pack first; a colliding built-in name is a `workflow validate` warning, not an
+error.
+
+```bash
+track workflow list       # Offline effective queries
+track workflow show       # Selected pack + source (repo / user / explicit)
+track workflow validate   # Schema, names, and shadows_builtin warnings
+track i s -T ready -p PROJ
+```
+
+`track context` includes the pack with unexpanded queries and marks pack
+templates as higher precedence. An invalid pack fails pack-consuming commands
+(`issue search -T`, `workflow *`) instead of silently falling back to built-ins.
 
 ## Workflow hints
 

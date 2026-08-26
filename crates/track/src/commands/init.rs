@@ -434,6 +434,7 @@ fn create_config_and_finish(
         github: Default::default(),
         gitlab: Default::default(),
         linear: Default::default(),
+        workflow_pack: None,
     };
 
     match &validated_project {

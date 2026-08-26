@@ -76,7 +76,8 @@ Supported issue-set modes:
 - Positional comma-separated IDs.
 - `--ids <path>` with one issue ID per line, or `--ids -` for stdin.
 - `--query <query>` with `--limit`, `--skip`, or `--all`.
-- `--template <name> --project <project>` using cached query templates.
+- `--template <name> --project <project>` using a `[workflow_pack]` query first,
+  then cached built-in templates.
 
 Context is opt-in with `--include comments,links,subtasks,history,all`. The
 JSON report is shaped for automation:
@@ -250,6 +251,23 @@ track cache show                    # Show cached data
 track cache path                    # Show cache location
 ```
 
+## Workflow packs
+
+Offline commands. No tracker credentials required.
+
+```bash
+track workflow list                 # Pack queries, then unshadowed built-ins
+track -o json workflow list
+track workflow show                 # Selected pack + source; JSON null if none
+track workflow validate             # Collision is a warning; semantic errors exit 1
+```
+
+`list` JSON items include `name`, `description`, `query`, `source`, and
+`shadows_builtin`. `validate` JSON is
+`{valid, source, errors, warnings:[{code, query, message}]}`. See
+[configuration](/configuration/#workflow-packs) for the `[workflow_pack]`
+schema.
+
 ## Context (AI-optimized)
 
 ```bash
@@ -283,6 +301,7 @@ track -o json context          # JSON for parsing
 | `track tags`          | `track t`                        |
 | `track article`       | `track a`, `track wiki`          |
 | `track config`        | `track cfg`                      |
+| `track workflow`      |                                  |
 | `track context`       | `track ctx`                      |
 | `track field list`    | `track field ls`                 |
 | `track field create`  | `track field c`                  |
