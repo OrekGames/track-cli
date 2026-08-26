@@ -57,7 +57,7 @@ fn run(cli: Cli) -> Result<()> {
 
     // Handle eval command - no API needed (uses mock system)
     if let Commands::Eval { action } = &cli.command {
-        return commands::eval::handle_eval(action, cli.format);
+        return commands::eval::handle_eval(action, cli.format.output());
     }
 
     // Handle init command - creates config, no existing auth needed
@@ -76,7 +76,7 @@ fn run(cli: Cli) -> Result<()> {
             token.as_deref(),
             project.as_deref(),
             email.as_deref(),
-            cli.format,
+            cli.format.output(),
             *backend,
             *skills,
             *global,
@@ -93,10 +93,10 @@ fn run(cli: Cli) -> Result<()> {
             | ConfigCommands::Keys
             | ConfigCommands::Set { .. }
             | ConfigCommands::Get { .. } => {
-                return commands::config::handle_config_local(action, cli.format);
+                return commands::config::handle_config_local(action, cli.format.output());
             }
             ConfigCommands::Backend { backend } => {
-                return commands::config::handle_config_backend(*backend, cli.format);
+                return commands::config::handle_config_backend(*backend, cli.format.output());
             }
             ConfigCommands::Project { .. } | ConfigCommands::Test => {
                 // These commands need API connection
@@ -304,38 +304,40 @@ fn run_with_client(
             commands::issue::handle_issue(
                 issue_client,
                 action,
-                cli.format,
+                cli.format.output(),
                 config.default_project.as_deref(),
                 cli.verbose,
                 config.link_mappings_for(backend),
+                cli.select.as_deref(),
+                cli.format.is_jsonl(),
             )
         }
         Commands::Project { action } => {
-            commands::project::handle_project(issue_client, action, cli.format)
+            commands::project::handle_project(issue_client, action, cli.format.output())
         }
-        Commands::Tags { action } => commands::tags::handle_tags(issue_client, action, cli.format),
+        Commands::Tags { action } => commands::tags::handle_tags(issue_client, action, cli.format.output()),
         Commands::Cache { action } => {
             let backend = cli.backend.unwrap_or_else(|| config.get_backend());
             commands::cache::handle_cache(
                 issue_client,
                 Some(kb_client),
                 action,
-                cli.format,
+                cli.format.output(),
                 backend,
                 config,
             )
         }
         Commands::Config { action } => {
-            commands::config::handle_config(issue_client, action, cli.format, config)
+            commands::config::handle_config(issue_client, action, cli.format.output(), config)
         }
         Commands::Article { action } => {
-            commands::article::handle_article(issue_client, kb_client, action, cli.format)
+            commands::article::handle_article(issue_client, kb_client, action, cli.format.output())
         }
         Commands::Field { action } => {
-            commands::field::handle_field(issue_client, action, cli.format)
+            commands::field::handle_field(issue_client, action, cli.format.output())
         }
         Commands::Bundle { action } => {
-            commands::bundle::handle_bundle(issue_client, action, cli.format)
+            commands::bundle::handle_bundle(issue_client, action, cli.format.output())
         }
         Commands::Context {
             project,
@@ -364,7 +366,7 @@ fn run_with_client(
                 *refresh,
                 *include_issues,
                 *issue_limit,
-                cli.format,
+                cli.format.output(),
                 &backend_type,
                 config.url.as_deref().unwrap_or("unknown"),
                 config.default_project.as_deref(),
@@ -384,7 +386,7 @@ fn run_with_client(
                 validate: *validate,
                 resume_path: resume.as_deref(),
                 allow_delete: *allow_delete,
-                format: cli.format,
+                format: cli.format.output(),
                 default_project: config.default_project.as_deref(),
             },
         ),
@@ -394,9 +396,9 @@ fn run_with_client(
         Commands::Init { .. } => {
             unreachable!("Init command should be handled before API validation")
         }
-        Commands::Open { id } => commands::open::handle_open(id.as_deref(), config, cli.format),
+        Commands::Open { id } => commands::open::handle_open(id.as_deref(), config, cli.format.output()),
         Commands::External(args) => {
-            commands::open::handle_issue_shortcut(issue_client, args, cli.format)
+            commands::open::handle_issue_shortcut(issue_client, args, cli.format.output())
         }
         Commands::Eval { .. } => {
             unreachable!("Eval command should be handled before API validation")

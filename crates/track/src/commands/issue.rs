@@ -1,7 +1,8 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
 use crate::output::{
-    Displayable, output_json, output_list, output_page_hint, output_progress, output_result,
+    Displayable, output_json, output_list, output_page_hint, output_progress, output_projected_list,
+    output_result,
 };
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -42,6 +43,8 @@ pub fn handle_issue(
     default_project: Option<&str>,
     verbose: bool,
     link_mappings: &std::collections::HashMap<String, String>,
+    select: Option<&str>,
+    jsonl: bool,
 ) -> Result<()> {
     match action {
         IssueCommands::Get { id, full } => handle_get(client, id, *full, format),
@@ -131,7 +134,7 @@ pub fn handle_issue(
                 skip: *skip,
                 all: *all,
             };
-            handle_search(client, &args, format, default_project)
+            handle_search(client, &args, format, default_project, select, jsonl)
         }
         IssueCommands::Inspect {
             ids,
@@ -909,6 +912,8 @@ fn handle_search(
     args: &SearchArgs,
     format: OutputFormat,
     default_project: Option<&str>,
+    select: Option<&str>,
+    jsonl: bool,
 ) -> Result<()> {
     // Resolve query from template if needed
     let actual_query =
@@ -934,7 +939,13 @@ fn handle_search(
         record_issue_access(first);
     }
 
-    output_list(&issues, format)?;
+    // JSONL or JSON `--select` uses projection. Text mode ignores `--select`
+    // in this slice so existing human output stays unchanged.
+    if jsonl || (select.is_some() && format != OutputFormat::Text) {
+        output_projected_list(&issues, format, select, jsonl)?;
+    } else {
+        output_list(&issues, format)?;
+    }
 
     // Pagination hint — priority cascade: inline total > cached total > heuristic
     if !args.all {
