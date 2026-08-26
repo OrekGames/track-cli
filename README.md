@@ -85,6 +85,29 @@ Download prebuilt binaries from the [latest release](https://github.com/OrekGame
 Create a `.track.toml` file in your project directory or `~/.tracker-cli/.track.toml` for global configuration.
 Project configs can contain API tokens. If a `.gitignore` exists in the current directory, local `track init` adds `.track.toml` and `.tracker-cache/` automatically; otherwise add those entries before committing:
 
+#### GitHub
+
+Create a [GitHub personal access token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+that can access issues in the target repository. Replace
+`YOUR_GITHUB_TOKEN` and `owner/repo` below; `owner/repo` is the repository
+path, for example `OrekGames/track-cli`.
+
+```bash
+track init \
+  --backend github \
+  --url https://api.github.com \
+  --token YOUR_GITHUB_TOKEN \
+  --project owner/repo
+
+track i s "is:open"
+```
+
+`track init` validates the repository and writes a local `.track.toml`; the
+next command searches open issues using that saved GitHub configuration. See
+the [GitHub backend notes](https://orekgames.github.io/track-cli/backends/#github)
+and [configuration reference](https://orekgames.github.io/track-cli/configuration/)
+for backend behavior and other configuration methods.
+
 ```bash
 # Initialize with YouTrack (default)
 track init --url https://youtrack.example.com --token YOUR_TOKEN
