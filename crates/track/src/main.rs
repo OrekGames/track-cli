@@ -304,18 +304,22 @@ fn run_with_client(
             commands::issue::handle_issue(
                 issue_client,
                 action,
-                cli.format.output(),
+                commands::issue::IssueOutput {
+                    format: cli.format.output(),
+                    select: cli.select.as_deref(),
+                    jsonl: cli.format.is_jsonl(),
+                },
                 config.default_project.as_deref(),
                 cli.verbose,
                 config.link_mappings_for(backend),
-                cli.select.as_deref(),
-                cli.format.is_jsonl(),
             )
         }
         Commands::Project { action } => {
             commands::project::handle_project(issue_client, action, cli.format.output())
         }
-        Commands::Tags { action } => commands::tags::handle_tags(issue_client, action, cli.format.output()),
+        Commands::Tags { action } => {
+            commands::tags::handle_tags(issue_client, action, cli.format.output())
+        }
         Commands::Cache { action } => {
             let backend = cli.backend.unwrap_or_else(|| config.get_backend());
             commands::cache::handle_cache(
@@ -396,7 +400,9 @@ fn run_with_client(
         Commands::Init { .. } => {
             unreachable!("Init command should be handled before API validation")
         }
-        Commands::Open { id } => commands::open::handle_open(id.as_deref(), config, cli.format.output()),
+        Commands::Open { id } => {
+            commands::open::handle_open(id.as_deref(), config, cli.format.output())
+        }
         Commands::External(args) => {
             commands::open::handle_issue_shortcut(issue_client, args, cli.format.output())
         }

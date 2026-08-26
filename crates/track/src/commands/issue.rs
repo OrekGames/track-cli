@@ -1,8 +1,8 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
 use crate::output::{
-    Displayable, output_json, output_list, output_page_hint, output_progress, output_projected_list,
-    output_result,
+    Displayable, output_json, output_list, output_page_hint, output_progress,
+    output_projected_list, output_result,
 };
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -36,16 +36,27 @@ struct SearchArgs<'a> {
     all: bool,
 }
 
+/// CLI output options shared by issue commands. Bundled so `handle_issue`
+/// stays under clippy's argument limit.
+pub struct IssueOutput<'a> {
+    pub format: OutputFormat,
+    pub select: Option<&'a str>,
+    pub jsonl: bool,
+}
+
 pub fn handle_issue(
     client: &dyn IssueTracker,
     action: &IssueCommands,
-    format: OutputFormat,
+    output: IssueOutput<'_>,
     default_project: Option<&str>,
     verbose: bool,
     link_mappings: &std::collections::HashMap<String, String>,
-    select: Option<&str>,
-    jsonl: bool,
 ) -> Result<()> {
+    let IssueOutput {
+        format,
+        select,
+        jsonl,
+    } = output;
     match action {
         IssueCommands::Get { id, full } => handle_get(client, id, *full, format),
         IssueCommands::Create {
