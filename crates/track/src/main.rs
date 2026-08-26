@@ -7,13 +7,13 @@ mod output;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use cli::{Backend, Cli, Commands, IssueCommands};
+use cli::{Backend, Cli, CliFormat, Commands, IssueCommands};
 use config::Config;
 use github_backend::GitHubClient;
 use gitlab_backend::GitLabClient;
 use jira_backend::{ConfluenceClient, JiraClient};
 use linear_backend::LinearClient;
-use output::output_error;
+use output::{output_error, parse_select_paths};
 use std::process::ExitCode;
 use tracker_core::{IssueTracker, KnowledgeBase};
 use tracker_mock::MockClient;
@@ -62,6 +62,21 @@ fn command_supports_cli_jsonl(command: &Commands) -> bool {
 fn run(cli: Cli) -> Result<()> {
     if cli.format.is_jsonl() && !command_supports_cli_jsonl(&cli.command) {
         return Err(anyhow!("jsonl output is unsupported for this command"));
+    }
+
+    // `--select` is wired for `issue search` JSON/JSONL only. Other commands
+    // and text mode must not silently print the full document, and a present
+    // flag with no usable paths is not a successful no-op projection.
+    if let Some(select) = cli.select.as_deref() {
+        if !command_supports_cli_jsonl(&cli.command) {
+            return Err(anyhow!("select is unsupported for this command"));
+        }
+        if cli.format == CliFormat::Text {
+            return Err(anyhow!("--select is unsupported in text mode"));
+        }
+        if parse_select_paths(select).is_empty() {
+            return Err(anyhow!("--select requires at least one field path"));
+        }
     }
 
     // Handle completions command - no API needed
