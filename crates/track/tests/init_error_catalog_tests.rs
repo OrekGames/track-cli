@@ -546,3 +546,64 @@ fn github_config_test_names_github() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn invalid_or_transport_url_omits_query_and_fragment_from_stderr() {
+    let suffix = "?access_token=leak#frag";
+    let forbidden = ["access_token", "leak", "?", "#", "frag"];
+    for kind in ["invalid-remote", "transport"] {
+        let dir = create_temp_dir();
+        let output = match kind {
+            "invalid-remote" => run_init(&dir, &format!("http://example.com/{suffix}")),
+            "transport" => {
+                let url = format!("{}{suffix}", closed_localhost_url());
+                run_github_init(&dir, &url, &["--project", FIXTURE_PROJECT])
+            }
+            _ => unreachable!(),
+        };
+        let stderr = failed_stderr_hiding(&output, &forbidden);
+        let line = primary_error_line(&stderr);
+        for fragment in forbidden {
+            assert!(
+                !line.contains(fragment),
+                "{kind}: primary line must omit query/fragment"
+            );
+        }
+        assert_no_config(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn github_config_test_does_not_print_token_when_wrapping_error() {
+    let dir = create_temp_dir();
+    write_local_config(
+        &dir,
+        &format!(
+            "backend = \"github\"\n\n[github]\nowner = \"{FIXTURE_OWNER}\"\nrepo = \"{FIXTURE_REPO}\"\n"
+        ),
+    );
+    let body = format!(r#"{{"message":"token {DUMMY_CREDENTIAL} rejected"}}"#);
+    let (port, _server) = start_mock_http(403, "Forbidden", &[], &body);
+    let url = format!("http://127.0.0.1:{port}");
+    let output = track_with_home(&dir)
+        .args([
+            "-b",
+            "github",
+            "--url",
+            &url,
+            "--token",
+            DUMMY_CREDENTIAL,
+            "config",
+            "test",
+        ])
+        .timeout(Duration::from_secs(10))
+        .output()
+        .unwrap();
+    let stderr = failed_stderr(&output);
+    assert!(
+        !stderr.contains(DUMMY_CREDENTIAL),
+        "wrapper must not interpolate a token-bearing cause"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
