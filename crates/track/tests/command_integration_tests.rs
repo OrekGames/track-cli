@@ -2272,7 +2272,13 @@ fn test_text_mode_rejects_select() {
     let scenario = copy_scenario(&dir, "basic-workflow");
 
     let output = track_mock(&dir, &scenario)
-        .args(["issue", "search", "project: DEMO", "--select", "id_readable"])
+        .args([
+            "issue",
+            "search",
+            "project: DEMO",
+            "--select",
+            "id_readable",
+        ])
         .output()
         .unwrap();
 
