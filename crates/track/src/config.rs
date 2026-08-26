@@ -47,10 +47,14 @@ pub struct Config {
     /// Linear-specific configuration
     #[serde(default, skip_serializing_if = "LinearConfig::is_empty")]
     pub linear: LinearConfig,
-    /// Workflow pack from this config file. Selection is whole-pack (not
-    /// field-merged across files); see [`load_workflow_pack`].
+    /// Raw `[workflow_pack]` table from this config file.
+    ///
+    /// Kept as TOML so ordinary [`Config::load`] / [`Config::save`] and
+    /// `config set` do not fail on, or drop, unknown or invalid pack keys.
+    /// Pack-consuming commands parse the selected file via [`load_workflow_pack`]
+    /// (whole-pack source selection; not field-merged across files).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workflow_pack: Option<WorkflowPack>,
+    pub workflow_pack: Option<toml::Value>,
 }
 
 /// Source of the effective workflow pack. Not serialized into config files.
@@ -77,11 +81,10 @@ impl std::fmt::Display for WorkflowPackSource {
     }
 }
 
-/// A `[workflow_pack]` table stored in `.track.toml`.
+/// A parsed `[workflow_pack]` used by pack-consuming commands.
 ///
-/// This type is permissive so `Config::load` / `Config::save` and `config set`
-/// do not fail (or drop the section) on unrelated commands. Pack-consuming
-/// commands parse the selected file with unknown fields denied.
+/// Ordinary config load/save keep the section as raw TOML on [`Config`].
+/// [`parse_workflow_pack_table`] is the strict parser (unknown fields denied).
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
 pub struct WorkflowPack {
     pub name: String,
@@ -1262,21 +1265,112 @@ query = "project: {PROJECT} #Unresolved State: {Ready}"
 "#
     }
 
+    fn pack_table_str<'a>(pack: &'a toml::Value, key: &str) -> Option<&'a str> {
+        pack.get(key).and_then(|v| v.as_str())
+    }
+
     #[test]
     fn workflow_pack_roundtrips_through_config_save() {
         let config: Config = toml::from_str(sample_pack_toml()).unwrap();
-        assert_eq!(config.workflow_pack.as_ref().unwrap().name, "Orek backlog");
-        assert_eq!(config.workflow_pack.as_ref().unwrap().queries.len(), 1);
+        let pack = config.workflow_pack.as_ref().unwrap();
+        assert_eq!(pack_table_str(pack, "name"), Some("Orek backlog"));
+        assert_eq!(
+            pack.get("queries")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(1)
+        );
 
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join(".track.toml");
         config.save(&path).unwrap();
         let reloaded = Config::load_from_path(&path).unwrap().unwrap();
+        let pack = reloaded.workflow_pack.as_ref().unwrap();
+        assert_eq!(pack_table_str(pack, "name"), Some("Orek backlog"));
         assert_eq!(
-            reloaded.workflow_pack.as_ref().map(|p| p.name.as_str()),
-            Some("Orek backlog")
+            pack.get("queries")
+                .and_then(|v| v.as_array())
+                .and_then(|queries| queries[0].get("name"))
+                .and_then(|v| v.as_str()),
+            Some("ready")
         );
-        assert_eq!(reloaded.workflow_pack.unwrap().queries[0].name, "ready");
+    }
+
+    #[test]
+    fn ordinary_config_load_accepts_structural_pack_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".track.toml");
+        std::fs::write(
+            &path,
+            r#"
+backend = "youtrack"
+
+[workflow_pack]
+name = "Structural error pack"
+queries = "not-an-array"
+"#,
+        )
+        .unwrap();
+
+        let from_path = Config::load_from_path(&path).unwrap().unwrap();
+        assert_eq!(from_path.backend, Some(Backend::YouTrack));
+        assert_eq!(
+            pack_table_str(from_path.workflow_pack.as_ref().unwrap(), "queries"),
+            Some("not-an-array")
+        );
+
+        let loaded = Config::load(Some(path), Backend::YouTrack).unwrap();
+        assert_eq!(loaded.backend, Some(Backend::YouTrack));
+        assert_eq!(
+            pack_table_str(loaded.workflow_pack.as_ref().unwrap(), "queries"),
+            Some("not-an-array")
+        );
+    }
+
+    #[test]
+    fn config_save_preserves_unknown_or_invalid_pack_keys() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".track.toml");
+        std::fs::write(
+            &path,
+            r#"
+backend = "youtrack"
+
+[workflow_pack]
+name = "Extra fields pack"
+extra = 1
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Ready work."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+unexpected = true
+retries = "not-a-number"
+"#,
+        )
+        .unwrap();
+
+        let mut config = Config::load_from_path(&path).unwrap().unwrap();
+        config.default_project = Some("DEMO".to_string());
+        config.save(&path).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("default_project") && saved.contains("DEMO"),
+            "typed edit must be written, got:\n{saved}"
+        );
+        assert!(
+            saved.contains("extra") && saved.contains('1'),
+            "unknown top-level pack key must survive, got:\n{saved}"
+        );
+        assert!(
+            saved.contains("unexpected"),
+            "nested unknown query field must survive, got:\n{saved}"
+        );
+        assert!(
+            saved.contains("retries") && saved.contains("not-a-number"),
+            "invalid nested query type must survive, got:\n{saved}"
+        );
     }
 
     #[test]
