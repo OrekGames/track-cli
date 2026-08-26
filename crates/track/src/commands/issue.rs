@@ -1,6 +1,6 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
-use crate::config::require_valid_workflow_pack;
+use crate::config::{pack_query_named, require_valid_workflow_pack};
 use crate::output::{
     Displayable, output_json, output_list, output_page_hint, output_progress, output_result,
 };
@@ -1019,11 +1019,7 @@ fn resolve_template_query(
     let loaded = require_valid_workflow_pack(explicit_config)?;
 
     if let Some(loaded) = &loaded
-        && let Some(pack_query) = loaded
-            .pack
-            .queries
-            .iter()
-            .find(|query| unicode_eq_ignore_case(&query.name, tmpl))
+        && let Some(pack_query) = pack_query_named(&loaded.pack, tmpl)
     {
         return expand_template_query(
             &pack_query.query,
@@ -1031,7 +1027,6 @@ fn resolve_template_query(
             project,
             loaded.pack.default_project.as_deref(),
             default_project,
-            true,
         );
     }
 
@@ -1041,14 +1036,7 @@ fn resolve_template_query(
         .iter()
         .find(|qt| unicode_eq_ignore_case(&qt.name, tmpl))
     {
-        return expand_template_query(
-            &template_def.query,
-            tmpl,
-            project,
-            None,
-            default_project,
-            false,
-        );
+        return expand_template_query(&template_def.query, tmpl, project, None, default_project);
     }
 
     let mut available: Vec<&str> = Vec::new();
@@ -1073,17 +1061,11 @@ fn expand_template_query(
     project: Option<&str>,
     pack_default: Option<&str>,
     config_default: Option<&str>,
-    use_pack_default: bool,
 ) -> Result<String> {
     if !query.contains("{PROJECT}") {
         return Ok(query.to_string());
     }
-    let proj = if use_pack_default {
-        project.or(pack_default).or(config_default)
-    } else {
-        project.or(config_default)
-    }
-    .ok_or_else(|| {
+    let proj = project.or(pack_default).or(config_default).ok_or_else(|| {
         anyhow!(
             "Project required for template '{}'. Use --project or set default with 'track config project <ID>'",
             tmpl

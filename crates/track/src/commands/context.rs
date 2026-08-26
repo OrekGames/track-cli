@@ -4,14 +4,14 @@ use crate::cache::{
     TrackerCache,
 };
 use crate::cli::OutputFormat;
-use crate::config::{LoadedWorkflowPack, require_valid_workflow_pack};
+use crate::config::{LoadedWorkflowPack, pack_query_named, require_valid_workflow_pack};
 use crate::output::output_json;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
-use tracker_core::{Issue, IssueTracker, KnowledgeBase, unicode_eq_ignore_case};
+use tracker_core::{Issue, IssueTracker, KnowledgeBase};
 
 /// Aggregated context for AI assistants - single JSON blob with all relevant data
 #[derive(Serialize)]
@@ -153,13 +153,7 @@ pub fn handle_context(
     );
     let mut issue_counts = cache.issue_counts.clone();
     if let Some(loaded) = &loaded_pack {
-        issue_counts.retain(|count| {
-            !loaded
-                .pack
-                .queries
-                .iter()
-                .any(|query| unicode_eq_ignore_case(&query.name, &count.template_name))
-        });
+        issue_counts.retain(|count| pack_query_named(&loaded.pack, &count.template_name).is_none());
     }
 
     // Build aggregated context
@@ -333,13 +327,9 @@ pub fn handle_context(
                 println!();
                 println!("{}:", "Query Templates".white().bold());
                 for qt in &context.query_templates {
-                    let pack_mark = loaded_pack.as_ref().is_some_and(|loaded| {
-                        loaded
-                            .pack
-                            .queries
-                            .iter()
-                            .any(|query| unicode_eq_ignore_case(&query.name, &qt.name))
-                    });
+                    let pack_mark = loaded_pack
+                        .as_ref()
+                        .is_some_and(|loaded| pack_query_named(&loaded.pack, &qt.name).is_some());
                     if pack_mark {
                         println!(
                             "  {}: {} {}",
