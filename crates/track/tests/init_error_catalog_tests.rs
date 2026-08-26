@@ -116,6 +116,18 @@ fn local_config_path(dir: &Path) -> PathBuf {
     dir.join(".track.toml")
 }
 
+/// Path text as `track init` reports it via `current_dir()`.
+/// macOS temp dirs are under `/var`, which `current_dir()` resolves to `/private/var`.
+fn cli_path_display(path: &Path) -> String {
+    path.canonicalize()
+        .ok()
+        .map(|canonical| {
+            let text = canonical.display().to_string();
+            text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
+        })
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 fn write_local_config(dir: &Path, contents: &str) {
     std::fs::write(local_config_path(dir), contents).unwrap();
 }
@@ -242,7 +254,7 @@ fn config_already_exists_uses_catalog_copy_and_leaves_file_unchanged() {
     let stderr = failed_stderr(&output);
     let expected = format!(
         "Error: Initialization stopped: config already exists at '{}'. No files were changed. Update it with 'track config set' or remove it only if you intend to replace the configuration.",
-        config_path.display()
+        cli_path_display(&config_path)
     );
     assert_eq!(primary_error_line(&stderr), expected);
     assert_eq!(
@@ -264,8 +276,8 @@ fn gitignore_update_failure_after_local_write_uses_catalog_copy() {
     let stderr = failed_stderr(&output);
     let prefix = format!(
         "Error: Config was created at '{}', but '{}' could not be updated:",
-        config_path.display(),
-        gitignore_path.display()
+        cli_path_display(&config_path),
+        cli_path_display(&gitignore_path)
     );
     assert!(
         primary_error_line(&stderr).starts_with(&prefix),
