@@ -827,6 +827,10 @@ pub fn handle_config(
             // is the effective backend.
             let projects = if backend == Backend::GitHub {
                 client.list_projects().map_err(|error| {
+                    let error = super::without_secret(
+                        &error.to_string(),
+                        config.token.as_deref().unwrap_or(""),
+                    );
                     anyhow::anyhow!(
                         "GitHub connection test failed while listing repositories: {error}\nCheck github.token/GITHUB_TOKEN and run 'track -b github doctor' for per-check details."
                     )

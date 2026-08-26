@@ -80,12 +80,48 @@ fn url_has_userinfo(url: &str) -> bool {
     }
 }
 
+/// Omit query and fragment from a displayed server URL.
+fn displayed_url(url: &str) -> &str {
+    match url.find(['?', '#']) {
+        Some(idx) => &url[..idx],
+        None => url,
+    }
+}
+
+/// Strip `?query` / `#fragment` tails so HTTP-client reasons cannot echo them.
+fn omit_query_and_fragment_in_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(idx) = rest.find(['?', '#']) {
+        out.push_str(&rest[..idx]);
+        rest = &rest[idx + 1..];
+        if let Some(end) = rest.find(|c: char| {
+            c.is_whitespace() || matches!(c, '\'' | '"' | ')' | ']' | ',' | ';' | ':')
+        }) {
+            rest = &rest[end..];
+        } else {
+            rest = "";
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn sanitize_transport_reason(reason: &str, url: &str, token: &str) -> String {
+    let shown = displayed_url(url);
+    super::without_secret(
+        &omit_query_and_fragment_in_text(&reason.replace(url, shown)),
+        token,
+    )
+}
+
 fn invalid_init_url(url: &str) -> anyhow::Error {
     if url_has_userinfo(url) {
         anyhow::anyhow!(
             "Invalid --url: userinfo is not allowed in server URLs. Expected an absolute https:// URL with a host. Plain http:// is allowed only for localhost. GitHub.com uses https://api.github.com. No config was written."
         )
     } else {
+        let url = displayed_url(url);
         anyhow::anyhow!(
             "Invalid --url '{url}': expected an absolute https:// URL with a host. Plain http:// is allowed only for localhost. GitHub.com uses https://api.github.com. No config was written."
         )
@@ -118,14 +154,6 @@ fn validate_init_url(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn without_secret(text: &str, secret: &str) -> String {
-    if secret.is_empty() {
-        text.to_string()
-    } else {
-        text.replace(secret, "<redacted>")
-    }
-}
-
 fn github_init_probe_error(
     url: &str,
     project: &str,
@@ -146,7 +174,7 @@ fn github_init_probe_error(
             let mut text = format!(
                 "GitHub denied access to '{project}' (403). Confirm the token can access the repository and, if applicable, is authorized for the organization. No config was written."
             );
-            let reason = without_secret(&message, token);
+            let reason = super::without_secret(&message, token);
             if !reason.is_empty() {
                 text.push_str(" GitHub said: ");
                 text.push_str(&reason);
@@ -157,15 +185,16 @@ fn github_init_probe_error(
             "GitHub could not access repository '{project}' (404). Verify the owner/repo spelling and that the token can see a private repository. No config was written."
         ),
         GitHubError::Http(source) => {
-            let reason = without_secret(&source.to_string(), token);
+            let shown_url = displayed_url(url);
+            let reason = sanitize_transport_reason(&source.to_string(), url, token);
             anyhow::anyhow!(
-                "Could not reach the GitHub API at '{url}' while validating '{project}': {reason}. Check the API URL, network, proxy, and TLS setup, then retry. No config was written."
+                "Could not reach the GitHub API at '{shown_url}' while validating '{project}': {reason}. Check the API URL, network, proxy, and TLS setup, then retry. No config was written."
             )
         }
         other => anyhow::anyhow!(
             "Failed to validate GitHub repository '{}': {}\nCheck your API URL, token, owner, and repo.",
             project,
-            without_secret(&other.to_string(), token)
+            super::without_secret(&other.to_string(), token)
         ),
     }
 }
