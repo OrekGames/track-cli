@@ -397,7 +397,7 @@ fn first_github_command_missing_token_uses_catalog_copy() {
         primary_error_line(&stderr),
         concat!(
             "Error: GitHub token is not configured. Set it with 'track config set github.token ",
-            "<value>",
+            "<TOKEN>",
             "', set GITHUB_TOKEN, or pass --token."
         )
     );
