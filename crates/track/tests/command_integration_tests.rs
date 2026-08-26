@@ -2096,6 +2096,78 @@ fn test_issue_inspect_jsonl_one_line_per_result() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// #292 first slice: issue search `--select` + `-o jsonl` for agent-friendly output.
+///
+/// `id_readable` / `summary` are the serialized tracker_core::Issue field names
+/// already emitted by `track -o json issue search`. `not_a_field` is intentionally
+/// absent so missing paths are omitted (no `--strict-select` in this slice).
+#[test]
+fn test_issue_search_select_jsonl_projects_fields() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "search",
+            "project: DEMO",
+            "--select",
+            "id_readable,summary,not_a_field",
+            "-o",
+            "jsonl",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "issue search --select -o jsonl should succeed: {output:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        !trimmed.is_empty(),
+        "jsonl stdout must contain issue records"
+    );
+    assert!(
+        !trimmed.starts_with('['),
+        "jsonl must print one object per issue, not a wrapping array: {stdout}"
+    );
+
+    let lines: Vec<&str> = stdout.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected one JSON object per search hit and no human text on stdout: {stdout}"
+    );
+
+    let expected = [
+        ("DEMO-1", "Implement user authentication"),
+        ("DEMO-2", "Add password reset feature"),
+    ];
+    for (line, (id, summary)) in lines.iter().zip(expected) {
+        let value: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("each jsonl line must be one JSON object ({e}): {line}"));
+        let obj = value
+            .as_object()
+            .unwrap_or_else(|| panic!("jsonl line must be an object, not an array: {line}"));
+
+        assert_eq!(obj["id_readable"], id);
+        assert_eq!(obj["summary"], summary);
+        assert!(
+            !obj.contains_key("not_a_field"),
+            "missing selected paths must be omitted without --strict-select: {line}"
+        );
+        assert_eq!(
+            obj.len(),
+            2,
+            "--select must project only present fields (id_readable, summary): {line}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_issue_inspect_subtasks_derived_from_links() {
     let dir = temp_dir();
