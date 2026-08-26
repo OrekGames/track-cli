@@ -149,6 +149,10 @@ fn primary_error_line(stderr: &str) -> &str {
 }
 
 fn failed_stderr(output: &Output) -> String {
+    failed_stderr_hiding(output, &[])
+}
+
+fn failed_stderr_hiding(output: &Output, extra_forbidden: &[&str]) -> String {
     assert!(
         !output.status.success(),
         "expected command failure, got success. stdout:\n{}\nstderr:\n{}",
@@ -156,10 +160,12 @@ fn failed_stderr(output: &Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert!(
-        !stderr.contains(DUMMY_CREDENTIAL),
-        "stderr must not reveal the dummy credential"
-    );
+    for fragment in std::iter::once(DUMMY_CREDENTIAL).chain(extra_forbidden.iter().copied()) {
+        assert!(
+            !stderr.contains(fragment),
+            "stderr must not reveal dummy credential or userinfo"
+        );
+    }
     stderr
 }
 
@@ -241,6 +247,25 @@ fn invalid_url_uses_catalog_copy() {
         assert_no_config(&dir);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[test]
+fn userinfo_url_is_rejected_without_echoing_authority() {
+    let dir = create_temp_dir();
+    let url = "https://user:leak@example.com";
+    let output = run_init(&dir, url);
+    let stderr = failed_stderr_hiding(&output, &["@", "user:leak", "leak", url]);
+    let line = primary_error_line(&stderr);
+    assert!(
+        line.contains("Invalid --url") || line.to_ascii_lowercase().contains("userinfo"),
+        "expected invalid-url / userinfo phase, got {line:?}"
+    );
+    assert!(
+        stderr.contains("No config was written."),
+        "expected write-status in stderr:\n{stderr}"
+    );
+    assert_no_config(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
