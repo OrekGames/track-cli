@@ -588,8 +588,12 @@ track -b gl i s "state=opened" --limit 20
 # By label
 track -b gl i s "labels=bug"
 
-# By assignee
+# By assignee (`@me` / `me` → scope=assigned_to_me; otherwise assignee_username[])
+track -b gl i s "assignee_username=@me"
 track -b gl i s "assignee_username=username"
+
+# Recently updated
+track -b gl i s "state=opened&order_by=updated_at&sort=desc"
 
 # Text search
 track -b gl i s "search=memory leak"
@@ -616,7 +620,7 @@ track -b lin i s "project: ORE priority: High"
 | Resolved | `#Resolved` | `resolution IS NOT EMPTY` | `is:closed` | `state=closed` | `#Resolved` |
 | Open status | `State: Open` | `status = Open` | `is:open` | `state=opened` |
 | In progress | `State: {In Progress}` | `status = "In Progress"` | `label:in-progress` | `labels=in-progress` |
-| Current user | `Assignee: me` | `assignee = currentUser()` | `assignee:@me` | `assignee_username=<user>` |
+| Current user | `Assignee: me` | `assignee = currentUser()` | `assignee:@me` | `assignee_username=@me` |
 | Priority | `Priority: Major` | `priority = Major` | `label:priority-major` | `labels=priority::major` |
 | Text search | `summary:~'keyword'` | `summary ~ "keyword"` | `keyword` (in query) | `search=keyword` |
 | By label | `tag: {bug}` | `labels = bug` | `label:bug` | `labels=bug` |

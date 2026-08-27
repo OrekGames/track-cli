@@ -161,8 +161,89 @@ impl GitLabClient {
             url.push_str("&scope=assigned_to_me");
         } else {
             let name = raw.strip_prefix('@').unwrap_or(raw);
-            url.push_str(&format!("&assignee_username={}", urlencoding::encode(name)));
+            // Documented type is string array (`assignee_username[]`); CE allows one value.
+            url.push_str(&format!(
+                "&assignee_username[]={}",
+                urlencoding::encode(name)
+            ));
         }
+    }
+
+    fn append_issue_list_filters(
+        url: &mut String,
+        state: Option<&str>,
+        labels: Option<&str>,
+        assignee_username: Option<&str>,
+        order_by: Option<&str>,
+        sort: Option<&str>,
+    ) {
+        if let Some(s) = state {
+            url.push_str(&format!("&state={}", urlencoding::encode(s)));
+        }
+        if let Some(l) = labels {
+            url.push_str(&format!("&labels={}", urlencoding::encode(l)));
+        }
+        if let Some(o) = order_by {
+            url.push_str(&format!("&order_by={}", urlencoding::encode(o)));
+        }
+        if let Some(s) = sort {
+            url.push_str(&format!("&sort={}", urlencoding::encode(s)));
+        }
+        Self::append_assignee_filter(url, assignee_username);
+    }
+
+    fn fetch_project_issues(
+        &self,
+        search: Option<&str>,
+        state: Option<&str>,
+        labels: Option<&str>,
+        assignee_username: Option<&str>,
+        order_by: Option<&str>,
+        sort: Option<&str>,
+        per_page: usize,
+        page: usize,
+    ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
+        let mut url = self.project_url(&format!("/issues?per_page={}&page={}", per_page, page))?;
+        if let Some(q) = search.filter(|s| !s.is_empty()) {
+            url.push_str(&format!("&search={}", urlencoding::encode(q)));
+        }
+        Self::append_issue_list_filters(&mut url, state, labels, assignee_username, order_by, sort);
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let total = response
+            .headers()
+            .get("x-total")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+
+        let mut response = self.check_response(response)?;
+        let issues: Vec<GitLabIssue> = response.body_mut().read_json()?;
+        Ok((issues, total))
+    }
+
+    pub(crate) fn issues_matching(
+        &self,
+        query: &crate::convert::GitLabQueryParams,
+        per_page: usize,
+        page: usize,
+    ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
+        self.fetch_project_issues(
+            Some(query.search.as_str()),
+            query.state.as_deref(),
+            query.labels.as_deref(),
+            query.assignee_username.as_deref(),
+            query.order_by.as_deref(),
+            query.sort.as_deref(),
+            per_page,
+            page,
+        )
     }
 
     /// List issues for the project
@@ -185,29 +266,16 @@ impl GitLabClient {
         page: usize,
         assignee_username: Option<&str>,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
-        let mut url = self.project_url(&format!("/issues?per_page={}&page={}", per_page, page))?;
-        if let Some(s) = state {
-            url.push_str(&format!("&state={}", urlencoding::encode(s)));
-        }
-        Self::append_assignee_filter(&mut url, assignee_username);
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let total = response
-            .headers()
-            .get("x-total")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-
-        let mut response = self.check_response(response)?;
-        let issues: Vec<GitLabIssue> = response.body_mut().read_json()?;
-        Ok((issues, total))
+        self.fetch_project_issues(
+            None,
+            state,
+            None,
+            assignee_username,
+            None,
+            None,
+            per_page,
+            page,
+        )
     }
 
     /// Search issues with query text, state, and labels
@@ -235,37 +303,16 @@ impl GitLabClient {
         per_page: usize,
         page: usize,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
-        let mut url = self.project_url(&format!(
-            "/issues?search={}&per_page={}&page={}",
-            urlencoding::encode(search),
+        self.fetch_project_issues(
+            Some(search),
+            state,
+            labels,
+            assignee_username,
+            None,
+            None,
             per_page,
-            page
-        ))?;
-        if let Some(s) = state {
-            url.push_str(&format!("&state={}", urlencoding::encode(s)));
-        }
-        if let Some(l) = labels {
-            url.push_str(&format!("&labels={}", urlencoding::encode(l)));
-        }
-        Self::append_assignee_filter(&mut url, assignee_username);
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let total = response
-            .headers()
-            .get("x-total")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-
-        let mut response = self.check_response(response)?;
-        let issues: Vec<GitLabIssue> = response.body_mut().read_json()?;
-        Ok((issues, total))
+            page,
+        )
     }
 
     /// Create a new issue
@@ -682,33 +729,16 @@ impl GitLabClient {
         state: Option<&str>,
         assignee_username: Option<&str>,
     ) -> Result<Option<u64>> {
-        let mut url = format!("{}?per_page=1&page=1", self.project_url("/issues")?);
-        if !search.is_empty() {
-            url.push_str(&format!("&search={}", urlencoding::encode(search)));
-        }
-        if let Some(s) = state {
-            url.push_str(&format!("&state={}", urlencoding::encode(s)));
-        }
-        Self::append_assignee_filter(&mut url, assignee_username);
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        // Read X-Total header before check_response takes ownership
-        let total = response
-            .headers()
-            .get("x-total")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-
-        // Validate the response status
-        let _response = self.check_response(response)?;
-
+        let (_issues, total) = self.fetch_project_issues(
+            Some(search),
+            state,
+            None,
+            assignee_username,
+            None,
+            None,
+            1,
+            1,
+        )?;
         Ok(total)
     }
 

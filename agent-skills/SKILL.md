@@ -589,12 +589,16 @@ track -b gh i s "is:open memory leak"
 
 ### GitLab Filters
 
-Only the keys `state`, `labels`, and `search` are honored — **anything else (`assignee_username`, `order_by`, ...) is silently dropped**, returning unfiltered results with no error:
+Honored `GET /projects/:id/issues` keys: `state`, `labels`, `search`, `assignee_username`, `order_by`, `sort`. Other keys warn on stderr and are ignored.
+
+`assignee_username=@me` or `me` becomes `scope=assigned_to_me`. Any other value is sent as `assignee_username[]` (GitLab's string-array form; CE accepts one username).
 
 ```bash
 track -b gl i s "state=opened" --limit 20
 track -b gl i s "labels=bug"
 track -b gl i s "state=opened&labels=bug,critical"
+track -b gl i s "state=opened&assignee_username=@me"
+track -b gl i s "state=opened&order_by=updated_at&sort=desc"
 track -b gl i s "search=memory leak"
 ```
 
@@ -615,7 +619,7 @@ track -b lin i s "project: ORE priority: High"
 | Unresolved | `#Unresolved` | `resolution IS EMPTY` | `is:open` | `state=opened` |
 | Resolved | `#Resolved` | `resolution IS NOT EMPTY` | `is:closed` | `state=closed` |
 | Status | `State: {In Progress}` | `status = "In Progress"` | `label:in-progress` | `labels=in-progress` |
-| Current user | `Assignee: me` | `assignee = currentUser()` | `assignee:@me` | not supported in query |
+| Current user | `Assignee: me` | `assignee = currentUser()` | `assignee:@me` | `assignee_username=@me` |
 | Priority | `Priority: Major` | `priority = Major` | `label:priority-major` | `labels=priority::major` |
 | Text search | `summary: keyword` | `summary ~ "keyword"` | `keyword` (in query) | `search=keyword` |
 
@@ -643,8 +647,6 @@ Availability and meaning vary by backend:
 | `high_priority` | ✓ (Critical/Major) | ✓ (Highest/High) | — | ✓ (`priority::high` label) | ✓ (High) |
 | `in_progress` | ✓ | ✓ | — | — | ✓ |
 | GitHub extras | | | `enhancements`, `no_assignee` | | |
-
-Caveat: the GitLab `my_issues` template relies on `assignee_username`, which the query parser currently drops — it returns all open issues.
 
 ---
 

@@ -834,7 +834,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/projects/123/issues"))
             .and(header("PRIVATE-TOKEN", "test-token"))
-            .and(query_param("assignee_username", "someuser"))
+            .and(query_param("assignee_username[]", "someuser"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("x-total", "1")
@@ -851,6 +851,65 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].title, "Theirs");
         assert_eq!(total, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_search_empty_query_sends_labels_order_by_and_sort() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("state", "opened"))
+            .and(query_param("labels", "bug"))
+            .and(query_param("order_by", "updated_at"))
+            .and(query_param("sort", "desc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-total", "1")
+                    .set_body_json(serde_json::json!([mock_gitlab_issue(9, "Bug")])),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = <GitLabClient as IssueTracker>::search_issues(
+            &client,
+            "state=opened&labels=bug&order_by=updated_at&sort=desc",
+            20,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].summary, "Bug");
+        assert_eq!(result.total, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_count_honors_labels() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(query_param("labels", "priority::high"))
+            .and(query_param("state", "opened"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-total", "4")
+                    .set_body_json(serde_json::json!([])),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let count = <GitLabClient as IssueTracker>::get_issue_count(
+            &client,
+            "state=opened&labels=priority::high",
+        )
+        .unwrap();
+        assert_eq!(count, Some(4));
     }
 
     #[tokio::test]
