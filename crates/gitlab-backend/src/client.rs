@@ -194,20 +194,22 @@ impl GitLabClient {
 
     fn fetch_project_issues(
         &self,
-        search: Option<&str>,
-        state: Option<&str>,
-        labels: Option<&str>,
-        assignee_username: Option<&str>,
-        order_by: Option<&str>,
-        sort: Option<&str>,
+        query: &crate::convert::GitLabQueryParams,
         per_page: usize,
         page: usize,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
         let mut url = self.project_url(&format!("/issues?per_page={}&page={}", per_page, page))?;
-        if let Some(q) = search.filter(|s| !s.is_empty()) {
-            url.push_str(&format!("&search={}", urlencoding::encode(q)));
+        if !query.search.is_empty() {
+            url.push_str(&format!("&search={}", urlencoding::encode(&query.search)));
         }
-        Self::append_issue_list_filters(&mut url, state, labels, assignee_username, order_by, sort);
+        Self::append_issue_list_filters(
+            &mut url,
+            query.state.as_deref(),
+            query.labels.as_deref(),
+            query.assignee_username.as_deref(),
+            query.order_by.as_deref(),
+            query.sort.as_deref(),
+        );
 
         let response = self
             .agent
@@ -234,16 +236,7 @@ impl GitLabClient {
         per_page: usize,
         page: usize,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
-        self.fetch_project_issues(
-            Some(query.search.as_str()),
-            query.state.as_deref(),
-            query.labels.as_deref(),
-            query.assignee_username.as_deref(),
-            query.order_by.as_deref(),
-            query.sort.as_deref(),
-            per_page,
-            page,
-        )
+        self.fetch_project_issues(query, per_page, page)
     }
 
     /// List issues for the project
@@ -267,12 +260,11 @@ impl GitLabClient {
         assignee_username: Option<&str>,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
         self.fetch_project_issues(
-            None,
-            state,
-            None,
-            assignee_username,
-            None,
-            None,
+            &crate::convert::GitLabQueryParams {
+                state: state.map(str::to_string),
+                assignee_username: assignee_username.map(str::to_string),
+                ..Default::default()
+            },
             per_page,
             page,
         )
@@ -304,12 +296,13 @@ impl GitLabClient {
         page: usize,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
         self.fetch_project_issues(
-            Some(search),
-            state,
-            labels,
-            assignee_username,
-            None,
-            None,
+            &crate::convert::GitLabQueryParams {
+                search: search.to_string(),
+                state: state.map(str::to_string),
+                labels: labels.map(str::to_string),
+                assignee_username: assignee_username.map(str::to_string),
+                ..Default::default()
+            },
             per_page,
             page,
         )
@@ -730,12 +723,12 @@ impl GitLabClient {
         assignee_username: Option<&str>,
     ) -> Result<Option<u64>> {
         let (_issues, total) = self.fetch_project_issues(
-            Some(search),
-            state,
-            None,
-            assignee_username,
-            None,
-            None,
+            &crate::convert::GitLabQueryParams {
+                search: search.to_string(),
+                state: state.map(str::to_string),
+                assignee_username: assignee_username.map(str::to_string),
+                ..Default::default()
+            },
             1,
             1,
         )?;
