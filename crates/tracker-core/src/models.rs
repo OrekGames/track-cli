@@ -56,11 +56,7 @@ impl Issue {
                 {
                     fields.priority = value.as_deref();
                 }
-                CustomField::SingleUser { name, login, .. }
-                    if fields.assignee.is_none()
-                        && (name.eq_ignore_ascii_case("assignee")
-                            || name.eq_ignore_ascii_case("assignees")) =>
-                {
+                CustomField::SingleUser { login, .. } if fields.assignee.is_none() => {
                     fields.assignee = login.as_deref();
                 }
                 _ => {}
@@ -74,6 +70,7 @@ impl Issue {
         fields
     }
 }
+
 
 /// Reference to a project (minimal fields)
 #[derive(Debug, Clone, Serialize, Deserialize)]
