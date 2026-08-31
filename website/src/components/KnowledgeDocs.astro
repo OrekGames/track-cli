@@ -6,7 +6,7 @@ const docFlows = [
   },
   {
     title: "Docs stay attached to work",
-    body: "Agents can update the issue, publish the runbook, add a page comment, and attach evidence from the same CLI surface.",
+    body: "Update the issue, publish the runbook, add a page comment, and attach evidence from the same unified interface.",
   },
   {
     title: "Wiki inventory is scriptable",
@@ -22,9 +22,9 @@ const docFlows = [
       <h2>Write Markdown. Publish real wiki pages.</h2>
       <p>
         For Jira teams, <code>track</code> makes Confluence feel like a
-        developer-friendly documentation target. Agents can draft Markdown in
-        the repo, review it like any other file, then publish it through
-        standard article commands without hand-building wiki storage markup.
+        developer-friendly documentation target. Draft Markdown in the repo,
+        review it like any other file, then publish it through standard
+        article commands without hand-building wiki storage markup.
       </p>
 
       <div class="doc-flow-list" aria-label="Documentation workflow advantages">
@@ -46,7 +46,7 @@ const docFlows = [
         <span class="dot green"></span>
         <span class="title">zsh - wiki</span>
       </div>
-      <pre><code><span class="c-muted"># Publish agent-authored Markdown to Confluence</span>
+      <pre><code><span class="c-muted"># Publish reviewed Markdown to Confluence</span>
 <span class="c-prompt">$</span> <span class="c-cmd">track</span> <span class="c-flag">-b</span> j wiki create <span class="c-flag">-p</span> 65957 \
   <span class="c-flag">-s</span> <span class="c-str">"Rollback runbook"</span> <span class="c-flag">--body-file</span> ./runbook.md
 <span class="c-key">123456</span>  Rollback runbook  <span class="c-muted">published</span>

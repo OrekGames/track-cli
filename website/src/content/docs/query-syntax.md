@@ -1,9 +1,11 @@
 ---
 title: Query Syntax
-description: Issue search query syntax for each track backend.
+description: Search query syntax for issues and articles on each backend.
 ---
 
-Each backend uses its native query language for `track issue search`.
+Each backend uses its native query language for `track issue search`. Article
+search and listing use backend-native filters where supported (see pagination
+below).
 
 ## YouTrack
 
