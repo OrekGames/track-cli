@@ -32,6 +32,49 @@ pub struct Issue {
     pub resolved: Option<DateTime<Utc>>,
 }
 
+/// Common fields extracted from an Issue's custom fields.
+#[derive(Debug, Clone, Default)]
+pub struct CommonFields<'a> {
+    pub state: Option<&'a str>,
+    pub priority: Option<&'a str>,
+    pub assignee: Option<&'a str>,
+}
+
+impl Issue {
+    /// Extracts commonly used fields (state, priority, assignee) from custom fields
+    /// in a single O(n) pass over the fields.
+    pub fn common_fields(&self) -> CommonFields<'_> {
+        let mut fields = CommonFields::default();
+
+        for cf in &self.custom_fields {
+            match cf {
+                CustomField::State { value, .. } if fields.state.is_none() => {
+                    fields.state = value.as_deref();
+                }
+                CustomField::SingleEnum { name, value }
+                    if fields.priority.is_none() && name.eq_ignore_ascii_case("priority") =>
+                {
+                    fields.priority = value.as_deref();
+                }
+                CustomField::SingleUser { name, login, .. }
+                    if fields.assignee.is_none()
+                        && (name.eq_ignore_ascii_case("assignee")
+                            || name.eq_ignore_ascii_case("assignees")) =>
+                {
+                    fields.assignee = login.as_deref();
+                }
+                _ => {}
+            }
+
+            if fields.state.is_some() && fields.priority.is_some() && fields.assignee.is_some() {
+                break;
+            }
+        }
+
+        fields
+    }
+}
+
 /// Reference to a project (minimal fields)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRef {
