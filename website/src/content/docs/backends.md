@@ -13,7 +13,7 @@ and which backend-native quirks matter before automating a workflow.
 <div class="backend-card-grid">
   <article class="backend-card">
     <h3>YouTrack</h3>
-    <p>Full tracker automation for issues, fields, tags, links, and Knowledge Base pages.</p>
+    <p>Full automation for issues, fields, tags, links, and Knowledge Base pages.</p>
     <p class="backend-card-meta">IDs: <code>PROJ-123</code>, articles like <code>KB-A-1</code></p>
   </article>
   <article class="backend-card">
@@ -56,7 +56,7 @@ and which backend-native quirks matter before automating a workflow.
   <article class="backend-feature-row">
     <div class="backend-feature-head">
       <h3>Issue lifecycle</h3>
-      <p>Create, inspect, update, close, or delete tracked work items.</p>
+      <p>Create, inspect, update, close, or delete work items.</p>
       <div class="backend-feature-command"><code>track i c</code><code>track i u</code><code>track i rm</code></div>
     </div>
     <div class="backend-feature-cells">
@@ -71,7 +71,7 @@ and which backend-native quirks matter before automating a workflow.
   <article class="backend-feature-row">
     <div class="backend-feature-head">
       <h3>Search and batch reads</h3>
-      <p>Fetch large result sets for reports, cleanup, triage, and agent context.</p>
+      <p>Fetch large result sets for reports, cleanup, triage, scripting, and aggregated context.</p>
       <div class="backend-feature-command"><code>track i s "..." --all</code><code>track -o json</code></div>
     </div>
     <div class="backend-feature-cells">
@@ -116,7 +116,7 @@ and which backend-native quirks matter before automating a workflow.
   <article class="backend-feature-row">
     <div class="backend-feature-head">
       <h3>Tags and labels</h3>
-      <p>Normalize tracker labels as CLI tags for filtering, reporting, and updates.</p>
+      <p>Normalize backend labels as CLI tags for filtering, reporting, and updates.</p>
       <div class="backend-feature-command"><code>track tags ls</code><code>track i u --tag</code></div>
     </div>
     <div class="backend-feature-cells">
@@ -161,7 +161,7 @@ and which backend-native quirks matter before automating a workflow.
   <article class="backend-feature-row">
     <div class="backend-feature-head">
       <h3>Wiki and docs</h3>
-      <p>Use one article command surface for tracker-native docs and repository wiki pages.</p>
+      <p>Use one article command surface for platform-native docs (Knowledge Base, Confluence) and repository wiki pages.</p>
       <div class="backend-feature-command"><code>track wiki c --body-file</code><code>track wiki u</code></div>
     </div>
     <div class="backend-feature-cells">
@@ -190,7 +190,7 @@ and which backend-native quirks matter before automating a workflow.
 
   <article class="backend-feature-row">
     <div class="backend-feature-head">
-      <h3>Agent workflows</h3>
+      <h3>Automation & scripting</h3>
       <p>Return structured output, cache context, and preview declarative changes before mutation.</p>
       <div class="backend-feature-command"><code>track -o json</code><code>track cache refresh</code><code>track apply --dry-run</code></div>
     </div>
@@ -245,13 +245,14 @@ track -b yt field list</code></pre>
   <div class="backend-detail-main">
     <p>
       Jira support targets Jira Cloud and uses Confluence for article commands.
-      It is especially useful when teams want tracker automation and wiki
-      publishing from the same agent-friendly command surface.
+      It is especially useful when teams want issue workflows and wiki
+      publishing from the same unified command interface — for people or
+      automation.
     </p>
     <div class="backend-callout">
       <strong>Markdown wiki publishing:</strong> article content passed with
       <code>--body-file</code> can be authored as Markdown and converted to
-      Confluence storage format when creating or updating pages. Agents can
+      Confluence storage format when creating or updating pages. Teams can
       draft a runbook in the repo, review it as a normal file, then publish it
       without writing Confluence XML by hand.
     </div>

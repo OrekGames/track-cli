@@ -25,14 +25,14 @@ track init --url https://linear.app/your-workspace --token YOUR_LINEAR_API_KEY \
   --backend linear --project PROJ
 ```
 
-## 2. Install agent skills (recommended for AI sessions)
+## 2. Install editor skills (optional, recommended for AI-assisted workflows)
 
 `track init --skills` installs the bundled `track` skill reference so AI
 coding assistants know the command aliases, JSON output mode, cache/context
 workflow, backend quirks, and safe batch patterns.
 
 ```bash
-track init --skills           # Install skills only; no tracker config change
+track init --skills           # Install skills only; no backend connection config change
 track init --skills --url ... # Combine with configuration initialization
 ```
 
@@ -45,9 +45,9 @@ Supported agent destinations:
 | Cursor | `~/.cursor/skills/track/SKILL.md` |
 | Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
 
-The skill files do not store tracker credentials. They are documentation for
-agents; `.track.toml` remains the config file that contains tokens and backend
-settings.
+The skill files do not store backend credentials. They are documentation for
+assistants; `.track.toml` remains the config file that contains tokens and
+backend settings.
 
 ## 3. Set a default project (optional)
 
@@ -77,6 +77,8 @@ track open PROJ-123         # Open in browser
 track i s "project: PROJ #Unresolved"          # Search
 track i new -p PROJ -s "New issue"             # Create
 track i u PROJ-123 --field "Priority=Critical" # Update
+
+track wiki list -p PROJ                        # List wiki articles in a project
 ```
 
 Add `-o json` (or `--format json`) to any command for machine-readable output:

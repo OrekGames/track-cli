@@ -237,7 +237,7 @@ track doctor --all-backends --strict -o json  # CI-friendly failure on failed ch
 Each check reports `ok`, `degraded`, `failed`, or `skipped`. `degraded` usually
 means the backend is reachable but a token scope or optional capability is
 limited; `skipped` means the backend does not support that capability. `doctor`
-never mutates remote trackers, and `--write-check` only validates against the
+never mutates remote backends, and `--write-check` only validates against the
 fetched project schema.
 
 ## Cache
@@ -250,10 +250,10 @@ track cache show                    # Show cached data
 track cache path                    # Show cache location
 ```
 
-## Context (AI-optimized)
+## Context (aggregated project context)
 
 ```bash
-track context                  # Aggregated context for AI sessions
+track context                  # Aggregated context for a project or backend
 track context --project PROJ   # Filter to a specific project
 track context --refresh        # Force refresh from API
 track context --include-issues # Include unresolved issues
