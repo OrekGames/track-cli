@@ -71,7 +71,6 @@ impl Issue {
     }
 }
 
-
 /// Reference to a project (minimal fields)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRef {
