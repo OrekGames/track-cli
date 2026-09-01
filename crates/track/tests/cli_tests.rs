@@ -96,7 +96,7 @@ fn global_config_path(temp_home: &Path) -> PathBuf {
     temp_home.join(".tracker-cli").join(".track.toml")
 }
 
-fn assert_init_rejects_url(url: &str, expected_message: &str) {
+fn assert_init_rejects_url(url: &str) {
     let temp_dir = create_temp_dir();
     let config_path = global_config_path(&temp_dir);
 
@@ -107,8 +107,50 @@ fn assert_init_rejects_url(url: &str, expected_message: &str) {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(expected_message));
+        .stderr(
+            predicate::str::contains(format!("Invalid --url '{url}'"))
+                .and(predicate::str::contains(
+                    "expected an absolute https:// URL",
+                ))
+                .and(predicate::str::contains(
+                    "Plain http:// is allowed only for localhost",
+                )),
+        );
 
+    assert!(
+        !config_path.exists(),
+        "rejected init URL should not create config: {}",
+        config_path.display()
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+fn assert_init_rejects_userinfo_url(url: &str) {
+    let temp_dir = create_temp_dir();
+    let config_path = global_config_path(&temp_dir);
+
+    let output = track_with_home(&temp_dir)
+        .args([
+            "--format", "json", "init", "--url", url, "--token", "test", "-b", "youtrack",
+            "--global",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected userinfo URL to be rejected: {url}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid --url") || stderr.to_ascii_lowercase().contains("userinfo"),
+        "expected invalid-url / userinfo phase, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains('@') && !stderr.contains(url),
+        "stderr must not echo userinfo or the raw URL:\n{stderr}"
+    );
     assert!(
         !config_path.exists(),
         "rejected init URL should not create config: {}",
@@ -201,14 +243,14 @@ fn test_init_enforces_https_for_remote_urls() {
         "http://localhost.evil.com",
         "http://127.0.0.1.example.com",
     ] {
-        assert_init_rejects_url(url, "Insecure URL");
+        assert_init_rejects_url(url);
     }
 
     for url in [
         "http://localhost:token@example.com",
         "http://127.0.0.1:token@example.com",
     ] {
-        assert_init_rejects_url(url, "userinfo is not allowed");
+        assert_init_rejects_userinfo_url(url);
     }
 
     for url in [

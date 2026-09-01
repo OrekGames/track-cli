@@ -797,7 +797,7 @@ fn test_init_rejects_invalid_url() {
         .args(["init", "--url", "not-a-url", "--token", "tok"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Invalid URL"));
+        .stderr(predicate::str::contains("Invalid --url"));
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -868,7 +868,7 @@ fn test_init_github_requires_project() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("GitHub init requires --project"));
+        .stderr(predicate::str::contains("GitHub setup requires --project"));
 
     let _ = fs::remove_dir_all(&dir);
 }
