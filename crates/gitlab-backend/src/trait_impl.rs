@@ -40,7 +40,7 @@ impl IssueTracker for GitLabClient {
     }
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
-        let (search_text, state, labels) = convert_query_to_gitlab_params(query);
+        let params = convert_query_to_gitlab_params(query);
         let project_id = self.project_id_str();
 
         if limit == 0 {
@@ -55,17 +55,7 @@ impl IssueTracker for GitLabClient {
 
         while issues.len() < limit {
             // Use combined methods that read X-Total from the search response itself
-            let (page_issues, page_total) = if search_text.is_empty() {
-                self.list_issues_with_total(state.as_deref(), per_page, page)?
-            } else {
-                self.search_issues_with_total(
-                    &search_text,
-                    state.as_deref(),
-                    labels.as_deref(),
-                    per_page,
-                    page,
-                )?
-            };
+            let (page_issues, page_total) = self.issues_matching(&params, per_page, page)?;
 
             if total.is_none() {
                 total = page_total;
@@ -95,8 +85,8 @@ impl IssueTracker for GitLabClient {
     }
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
-        let (search_text, state, _labels) = convert_query_to_gitlab_params(query);
-        Ok(self.count_issues_by_query(&search_text, state.as_deref())?)
+        let params = convert_query_to_gitlab_params(query);
+        Ok(self.issues_matching(&params, 1, 1)?.1)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {

@@ -55,7 +55,10 @@ fn create_temp_dir() -> PathBuf {
         .as_nanos();
     dir.push(format!("track-test-{}-{}", std::process::id(), nanos));
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    // GitHub Actions Windows gives `C:\Users\RUNNER~1\...` (8.3). Passing that
+    // through `--config` makes `Path::exists()` fail in the child even though
+    // the parent just wrote the file. Use the long path.
+    std::fs::canonicalize(&dir).unwrap_or(dir)
 }
 
 fn track_with_home(temp_home: &Path) -> assert_cmd::Command {
@@ -236,36 +239,12 @@ fn test_config_file_is_used_for_defaults() {
 
     let config_contents = format!("url = \"{}\"\ntoken = \"test-token\"\n", url);
     std::fs::write(&config_path, config_contents).unwrap();
+    let config_path = std::fs::canonicalize(&config_path).unwrap();
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_with_home(&temp_dir)
         .args(["--config"])
         .arg(&config_path)
         .args(["--format", "json", "project", "list"])
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("TRACKER_BACKEND")
-        .env_remove("TRACKER_CONFIG")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
-        .env_remove("JIRA_URL")
-        .env_remove("JIRA_EMAIL")
-        .env_remove("JIRA_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_OWNER")
-        .env_remove("GITHUB_REPO")
-        .env_remove("GITHUB_API_URL")
-        .env_remove("GITLAB_TOKEN")
-        .env_remove("GITLAB_URL")
-        .env_remove("GITLAB_PROJECT_ID")
-        .env_remove("GITLAB_NAMESPACE")
-        .env_remove("LINEAR_TOKEN")
-        .env_remove("LINEAR_API_URL")
-        .env_remove("LINEAR_URL")
-        .env_remove("LINEAR_DEFAULT_TEAM")
-        .env_remove("LINEAR_DEFAULT_PROJECT")
-        .env_remove("TRACK_MOCK_DIR")
-        .env("HOME", &temp_dir)
-        .env("USERPROFILE", &temp_dir)
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
