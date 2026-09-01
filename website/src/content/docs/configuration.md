@@ -85,13 +85,13 @@ track config backend linear
 ### Link type mappings
 
 `track issue link` accepts a small set of canonical link names so commands can
-stay portable across trackers:
+stay portable across backends:
 
 `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, and
 `parent`.
 
 Backends then translate those names into the native link type expected by the
-remote API. This matters when your tracker admins rename issue link types, add
+remote API. This matters when admins on your project tool rename issue link types, add
 custom relationship names, or use different words for the same workflow. For
 example, one Jira instance might call a dependency link `Blocks`, while another
 calls it `Requires`.
@@ -132,7 +132,7 @@ duplicates = "blocks"
 relates = "similar"
 ```
 
-With that config, agents and scripts keep using the same command shape:
+With that config, scripts and interactive use keep the same command shape:
 
 ```bash
 track -b j  i link PROJ-10 PROJ-11 -t depends
@@ -163,7 +163,7 @@ track -b lin i link ORE-20 ORE-21 -t design-related
 Environment variables override config-file settings:
 
 ```bash
-# Generic (any backend)
+# Generic (any backend). TRACKER_* variables configure the active backend connection.
 export TRACKER_BACKEND=youtrack
 export TRACKER_URL=https://youtrack.example.com
 export TRACKER_TOKEN=YOUR_TOKEN

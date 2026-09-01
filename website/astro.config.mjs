@@ -15,7 +15,7 @@ export default defineConfig({
     starlight({
       title: "track",
       description:
-        "One CLI for every issue tracker — YouTrack, Jira, GitHub, GitLab, and Linear.",
+        "One CLI for project management tools and wikis — YouTrack, Jira, GitHub, GitLab, and Linear.",
       logo: {
         src: "./src/assets/orek-logo.png",
         alt: "OrekGames",

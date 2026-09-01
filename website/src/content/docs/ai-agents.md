@@ -22,10 +22,10 @@ track -o json i s "project: PROJ #Unresolved" --all
 
 ## Context aggregation
 
-`track context` returns everything an agent needs to reason about a tracker in a
-single call: projects, custom fields (with enum values), assignable users, query
-templates, workflow hints (valid state transitions), issue counts, and recently
-accessed issues.
+`track context` returns everything an agent needs to reason about a configured
+backend (or project) in a single call: projects, custom fields (with enum
+values), assignable users, query templates, workflow hints (valid state
+transitions), issue counts, and recently accessed issues.
 
 ```bash
 track context                  # Aggregated context
@@ -55,7 +55,7 @@ track doctor --all-backends --strict
 
 `config test` is only a single connectivity probe. `doctor` checks practical
 capabilities such as issue search/read, comments, links, field schema, field
-admin, articles, and local write validation. It never mutates remote trackers;
+admin, articles, and local write validation. It never mutates remote backends;
 `--write-check` validates payloads against fetched schema only.
 
 ## Batch operations
@@ -117,7 +117,7 @@ track i cmt PROJ-123 --body-file ./comment.md
 `track` ships installable agent skills that teach assistants how to use the CLI:
 
 ```bash
-track init --skills           # Install skills only; no tracker config change
+track init --skills           # Install skills only; no backend connection config change
 track init --skills --url ... # Combine with configuration initialization
 ```
 
