@@ -107,7 +107,7 @@ impl IssueTracker for GitLabClient {
             Some(issue.tags.join(","))
         };
         let assignee_ids = match assignee_login(&issue.custom_fields) {
-            Some(login) if login.is_empty() => Some(Vec::new()),
+            Some("") => Some(Vec::new()),
             Some(login) => Some(vec![self.find_user_id(login)?]),
             None => None,
         };
@@ -166,7 +166,7 @@ impl IssueTracker for GitLabClient {
             Some(update.tags.join(","))
         };
         let assignee_ids = match assignee_login(&update.custom_fields) {
-            Some(login) if login.is_empty() => Some(Vec::new()),
+            Some("") => Some(Vec::new()),
             Some(login) => Some(vec![self.find_user_id(login)?]),
             None => None,
         };
