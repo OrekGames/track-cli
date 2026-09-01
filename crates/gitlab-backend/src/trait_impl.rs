@@ -32,6 +32,17 @@ fn parse_issue_iid(id: &str) -> std::result::Result<u64, TrackerError> {
     })
 }
 
+fn assignee_login(fields: &[tracker_core::CustomFieldUpdate]) -> Option<&str> {
+    fields.iter().find_map(|field| match field {
+        tracker_core::CustomFieldUpdate::SingleUser { name, login }
+            if name.eq_ignore_ascii_case("assignee") =>
+        {
+            Some(login.as_str())
+        }
+        _ => None,
+    })
+}
+
 impl IssueTracker for GitLabClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
         let iid = parse_issue_iid(id)?;
@@ -95,12 +106,17 @@ impl IssueTracker for GitLabClient {
         } else {
             Some(issue.tags.join(","))
         };
+        let assignee_ids = match assignee_login(&issue.custom_fields) {
+            Some("") => Some(Vec::new()),
+            Some(login) => Some(vec![self.find_user_id(login)?]),
+            None => None,
+        };
 
         let create = CreateGitLabIssue {
             title: issue.summary.clone(),
             description: issue.description.clone(),
             labels,
-            assignee_ids: None,
+            assignee_ids,
             milestone_id: None,
             // GitLab's work item hierarchy requires child items to be Task type
             issue_type: if issue.parent.is_some() {
@@ -149,13 +165,18 @@ impl IssueTracker for GitLabClient {
         } else {
             Some(update.tags.join(","))
         };
+        let assignee_ids = match assignee_login(&update.custom_fields) {
+            Some("") => Some(Vec::new()),
+            Some(login) => Some(vec![self.find_user_id(login)?]),
+            None => None,
+        };
 
         let gitlab_update = UpdateGitLabIssue {
             title: update.summary.clone(),
             description: update.description.clone(),
             labels,
             state_event,
-            assignee_ids: None,
+            assignee_ids,
             milestone_id: None,
         };
 
