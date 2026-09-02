@@ -303,6 +303,7 @@ impl Evaluator {
         if let Some(contains) = &outcome.contains {
             // Determine which method to check based on method_called
             let method_to_check = outcome.method_called.as_deref();
+            let contains_lower = contains.to_lowercase();
 
             let text_found = match method_to_check {
                 Some("create_issue") => {
@@ -313,7 +314,7 @@ impl Evaluator {
                                 .args
                                 .get("summary")
                                 .and_then(|v| v.as_str())
-                                .map(|t| t.to_lowercase().contains(&contains.to_lowercase()))
+                                .map(|t| t.to_lowercase().contains(&contains_lower))
                                 .unwrap_or(false)
                     })
                 }
@@ -325,7 +326,7 @@ impl Evaluator {
                                 .args
                                 .get("text")
                                 .and_then(|v| v.as_str())
-                                .map(|t| t.to_lowercase().contains(&contains.to_lowercase()))
+                                .map(|t| t.to_lowercase().contains(&contains_lower))
                                 .unwrap_or(false)
                     })
                 }
@@ -334,7 +335,7 @@ impl Evaluator {
                     calls.iter().any(|call| {
                         call.args.values().any(|v| {
                             v.as_str()
-                                .map(|t| t.to_lowercase().contains(&contains.to_lowercase()))
+                                .map(|t| t.to_lowercase().contains(&contains_lower))
                                 .unwrap_or(false)
                         })
                     })
