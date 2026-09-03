@@ -32,6 +32,46 @@ pub struct Issue {
     pub resolved: Option<DateTime<Utc>>,
 }
 
+/// Common fields extracted from an Issue's custom fields.
+#[derive(Debug, Clone, Default)]
+pub struct CommonFields<'a> {
+    pub state: Option<&'a str>,
+    pub priority: Option<&'a str>,
+    pub assignee: Option<&'a str>,
+}
+
+impl Issue {
+    /// Extracts commonly used fields (state, priority, assignee) from custom fields
+    /// in a single O(n) pass over the fields. The assignee is resolved to the
+    /// first populated `SingleUser` field found.
+    pub fn common_fields(&self) -> CommonFields<'_> {
+        let mut fields = CommonFields::default();
+
+        for cf in &self.custom_fields {
+            match cf {
+                CustomField::State { value, .. } if fields.state.is_none() => {
+                    fields.state = value.as_deref();
+                }
+                CustomField::SingleEnum { name, value }
+                    if fields.priority.is_none() && name.eq_ignore_ascii_case("priority") =>
+                {
+                    fields.priority = value.as_deref();
+                }
+                CustomField::SingleUser { login, .. } if fields.assignee.is_none() => {
+                    fields.assignee = login.as_deref();
+                }
+                _ => {}
+            }
+
+            if fields.state.is_some() && fields.priority.is_some() && fields.assignee.is_some() {
+                break;
+            }
+        }
+
+        fields
+    }
+}
+
 /// Reference to a project (minimal fields)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRef {
@@ -680,6 +720,90 @@ impl<T> SearchResult<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn issue_with_fields(custom_fields: Vec<CustomField>) -> Issue {
+        Issue {
+            id: "1".to_string(),
+            id_readable: "PROJ-1".to_string(),
+            summary: "test".to_string(),
+            description: None,
+            project: ProjectRef {
+                id: "p1".to_string(),
+                name: None,
+                short_name: None,
+            },
+            custom_fields,
+            tags: vec![],
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+            resolved: None,
+        }
+    }
+
+    #[test]
+    fn test_common_fields_extraction() {
+        let issue = issue_with_fields(vec![
+            CustomField::State {
+                name: "State".into(),
+                value: Some("Done".into()),
+                is_resolved: true,
+            },
+            CustomField::SingleEnum {
+                name: "Priority".into(),
+                value: Some("High".into()),
+            },
+            CustomField::SingleUser {
+                name: "Assignee".into(),
+                login: Some("user1".into()),
+                display_name: Some("User One".into()),
+            },
+        ]);
+
+        let fields = issue.common_fields();
+        assert_eq!(fields.state, Some("Done"));
+        assert_eq!(fields.priority, Some("High"));
+        assert_eq!(fields.assignee, Some("user1"));
+    }
+
+    #[test]
+    fn test_common_fields_first_match() {
+        let issue = issue_with_fields(vec![
+            CustomField::State {
+                name: "State".into(),
+                value: Some("Done".into()),
+                is_resolved: true,
+            },
+            CustomField::State {
+                name: "AnotherState".into(),
+                value: Some("Open".into()),
+                is_resolved: false,
+            },
+            CustomField::SingleUser {
+                name: "Reporter".into(),
+                login: Some("user1".into()),
+                display_name: Some("User One".into()),
+            },
+            CustomField::SingleUser {
+                name: "Assignee".into(),
+                login: Some("user2".into()),
+                display_name: Some("User Two".into()),
+            },
+        ]);
+
+        let fields = issue.common_fields();
+        assert_eq!(fields.state, Some("Done"));
+        // The assignee extraction should use the first SingleUser field, even if named Reporter
+        assert_eq!(fields.assignee, Some("user1"));
+    }
+
+    #[test]
+    fn test_common_fields_empty() {
+        let issue = issue_with_fields(vec![]);
+        let fields = issue.common_fields();
+        assert_eq!(fields.state, None);
+        assert_eq!(fields.priority, None);
+        assert_eq!(fields.assignee, None);
+    }
 
     #[test]
     fn search_result_from_items() {
