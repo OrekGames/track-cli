@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::{self, Backend};
 use crate::config::{self, Config};
 use crate::output::output_json;
-use github_backend::GitHubClient;
+use github_backend::{GitHubClient, GitHubError};
 use gitlab_backend::GitLabClient;
 use jira_backend::JiraClient;
 use linear_backend::LinearClient;
@@ -52,62 +52,151 @@ impl InitProject {
     }
 }
 
+fn invalid_github_project(project: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Invalid GitHub project '{project}': expected exactly <owner>/<repo>, for example OrekGames/track-cli. No config was written."
+    )
+}
+
 fn parse_github_project(project: &str) -> Result<(String, String)> {
-    let (owner, repo) = project.split_once('/').ok_or_else(|| {
-        anyhow::anyhow!(
-            "GitHub requires --project in owner/repo format, got '{}'",
-            project
-        )
-    })?;
+    let (owner, repo) = project
+        .split_once('/')
+        .ok_or_else(|| invalid_github_project(project))?;
 
     if owner.is_empty() || repo.is_empty() || repo.contains('/') {
-        return Err(anyhow::anyhow!(
-            "GitHub requires --project in owner/repo format, got '{}'",
-            project
-        ));
+        return Err(invalid_github_project(project));
     }
 
     Ok((owner.to_string(), repo.to_string()))
 }
 
+fn url_has_userinfo(url: &str) -> bool {
+    if let Ok(parsed) = url.parse::<Uri>() {
+        parsed
+            .authority()
+            .is_some_and(|authority| authority.as_str().contains('@'))
+    } else {
+        url.contains('@')
+    }
+}
+
+/// Omit query and fragment from a displayed server URL.
+fn displayed_url(url: &str) -> &str {
+    match url.find(['?', '#']) {
+        Some(idx) => &url[..idx],
+        None => url,
+    }
+}
+
+/// Strip `?query` / `#fragment` tails so HTTP-client reasons cannot echo them.
+fn omit_query_and_fragment_in_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(idx) = rest.find(['?', '#']) {
+        out.push_str(&rest[..idx]);
+        rest = &rest[idx + 1..];
+        if let Some(end) = rest.find(|c: char| {
+            c.is_whitespace() || matches!(c, '\'' | '"' | ')' | ']' | ',' | ';' | ':')
+        }) {
+            rest = &rest[end..];
+        } else {
+            rest = "";
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn sanitize_transport_reason(reason: &str, url: &str, token: &str) -> String {
+    let shown = displayed_url(url);
+    super::without_secret(
+        &omit_query_and_fragment_in_text(&reason.replace(url, shown)),
+        token,
+    )
+}
+
+fn invalid_init_url(url: &str) -> anyhow::Error {
+    if url_has_userinfo(url) {
+        anyhow::anyhow!(
+            "Invalid --url: userinfo is not allowed in server URLs. Expected an absolute https:// URL with a host. Plain http:// is allowed only for localhost. GitHub.com uses https://api.github.com. No config was written."
+        )
+    } else {
+        let url = displayed_url(url);
+        anyhow::anyhow!(
+            "Invalid --url '{url}': expected an absolute https:// URL with a host. Plain http:// is allowed only for localhost. GitHub.com uses https://api.github.com. No config was written."
+        )
+    }
+}
+
 fn validate_init_url(url: &str) -> Result<()> {
-    let parsed = url.parse::<Uri>().map_err(|_| {
-        anyhow::anyhow!("Invalid URL: must be a valid absolute http:// or https:// URL")
-    })?;
+    let parsed = url.parse::<Uri>().map_err(|_| invalid_init_url(url))?;
 
-    let scheme = parsed
-        .scheme_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid URL: must start with http:// or https://"))?;
+    let scheme = parsed.scheme_str().ok_or_else(|| invalid_init_url(url))?;
     if scheme != "http" && scheme != "https" {
-        return Err(anyhow::anyhow!(
-            "Invalid URL: must start with http:// or https://"
-        ));
+        return Err(invalid_init_url(url));
     }
 
-    let authority = parsed
-        .authority()
-        .ok_or_else(|| anyhow::anyhow!("Invalid URL: must include a host"))?;
+    let authority = parsed.authority().ok_or_else(|| invalid_init_url(url))?;
     if authority.as_str().contains('@') {
-        return Err(anyhow::anyhow!(
-            "Invalid URL: userinfo is not allowed in server URLs"
-        ));
+        return Err(invalid_init_url(url));
     }
 
-    let host = parsed
-        .host()
-        .ok_or_else(|| anyhow::anyhow!("Invalid URL: must include a host"))?;
+    let host = parsed.host().ok_or_else(|| invalid_init_url(url))?;
     let host = host
         .strip_prefix('[')
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host);
 
     if scheme == "http" && !matches!(host, "127.0.0.1" | "localhost" | "::1") {
-        return Err(anyhow::anyhow!(
-            "Insecure URL: http:// is only allowed for local addresses (127.0.0.1, localhost, [::1]). Use https:// for remote servers to protect your API token."
-        ));
+        return Err(invalid_init_url(url));
     }
 
     Ok(())
+}
+
+fn github_init_probe_error(
+    url: &str,
+    project: &str,
+    token: &str,
+    err: GitHubError,
+) -> anyhow::Error {
+    match err {
+        GitHubError::Unauthorized => anyhow::anyhow!(
+            "GitHub authentication failed while validating '{project}'. Check that the token is valid and can read this repository. No config was written."
+        ),
+        GitHubError::RateLimited => anyhow::anyhow!(
+            "GitHub rate limiting prevented validation of '{project}'. Wait for the limit to reset or use a token with available quota, then retry. No config was written."
+        ),
+        GitHubError::Api {
+            status: 403,
+            message,
+        } => {
+            let mut text = format!(
+                "GitHub denied access to '{project}' (403). Confirm the token can access the repository and, if applicable, is authorized for the organization. No config was written."
+            );
+            let reason = super::without_secret(&message, token);
+            if !reason.is_empty() {
+                text.push_str(" GitHub said: ");
+                text.push_str(&reason);
+            }
+            anyhow::anyhow!(text)
+        }
+        GitHubError::Api { status: 404, .. } => anyhow::anyhow!(
+            "GitHub could not access repository '{project}' (404). Verify the owner/repo spelling and that the token can see a private repository. No config was written."
+        ),
+        GitHubError::Http(source) => {
+            let shown_url = displayed_url(url);
+            let reason = sanitize_transport_reason(&source.to_string(), url, token);
+            anyhow::anyhow!(
+                "Could not reach the GitHub API at '{shown_url}' while validating '{project}': {reason}. Check the API URL, network, proxy, and TLS setup, then retry. No config was written."
+            )
+        }
+        other => anyhow::anyhow!(
+            "Failed to validate GitHub repository '{}': {}\nCheck your API URL, token, owner, and repo.",
+            project,
+            super::without_secret(&other.to_string(), token)
+        ),
+    }
 }
 
 fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
@@ -238,7 +327,7 @@ pub fn handle_init(
     // Check if config already exists
     if config_path.exists() {
         return Err(anyhow::anyhow!(
-            "Config file already exists: {}\nUse a text editor to modify it, or delete it first.",
+            "Initialization stopped: config already exists at '{}'. No files were changed. Update it with 'track config set' or remove it only if you intend to replace the configuration.",
             config_path.display()
         ));
     }
@@ -264,17 +353,16 @@ pub fn handle_init(
 
     let validated_project: Option<InitProject> = match backend {
         Backend::GitHub => {
-            let proj = project
-                .ok_or_else(|| anyhow::anyhow!("GitHub init requires --project owner/repo"))?;
-            let (owner, repo) = parse_github_project(proj)?;
-            let client = GitHubClient::with_base_url(url, &owner, &repo, token);
-            client.get_repo(&owner, &repo).map_err(|e| {
+            let proj = project.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Failed to validate GitHub repository '{}': {}\nCheck your API URL, token, owner, and repo.",
-                    proj,
-                    e
+                    "GitHub setup requires --project <owner>/<repo>. Example: --project OrekGames/track-cli. No config was written."
                 )
             })?;
+            let (owner, repo) = parse_github_project(proj)?;
+            let client = GitHubClient::with_base_url(url, &owner, &repo, token);
+            client
+                .get_repo(&owner, &repo)
+                .map_err(|err| github_init_probe_error(url, proj, token, err))?;
             Some(InitProject::GitHub { owner, repo })
         }
         Backend::GitLab => {
@@ -472,7 +560,20 @@ fn create_config_and_finish(
     config.save(&config_path)?;
 
     let gitignore_path = if !global {
-        update_gitignore_if_present(&config_path)?
+        match update_gitignore_if_present(&config_path) {
+            Ok(path) => path,
+            Err(error) => {
+                let gitignore = config_path
+                    .parent()
+                    .map(|dir| dir.join(".gitignore"))
+                    .unwrap_or_else(|| PathBuf::from(".gitignore"));
+                return Err(anyhow::anyhow!(
+                    "Config was created at '{}', but '{}' could not be updated: {error}\nAdd '.track.toml' and '.tracker-cache/' manually before committing.",
+                    config_path.display(),
+                    gitignore.display()
+                ));
+            }
+        }
     } else {
         None
     };
