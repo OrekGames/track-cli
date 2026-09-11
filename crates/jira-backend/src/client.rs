@@ -663,7 +663,10 @@ impl JiraClient {
         {
             return Ok(t.id.clone());
         }
-        if let Some(t) = transitions.iter().find(|t| tracker_core::unicode_eq_ignore_case(&t.name, target)) {
+        if let Some(t) = transitions
+            .iter()
+            .find(|t| tracker_core::unicode_eq_ignore_case(&t.name, target))
+        {
             return Ok(t.id.clone());
         }
 
