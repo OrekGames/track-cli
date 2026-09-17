@@ -262,9 +262,13 @@ pub const FIELD_STATUS: &str = "status";
 /// callers can filter portably. All other field names are returned trimmed but
 /// otherwise unchanged, preserving their display casing.
 pub fn canonical_field_name(raw: &str) -> String {
-    match raw.trim().to_lowercase().as_str() {
-        "status" | "state" => FIELD_STATUS.to_string(),
-        _ => raw.trim().to_string(),
+    let trimmed = raw.trim();
+    if crate::unicode_eq_ignore_case(trimmed, "status")
+        || crate::unicode_eq_ignore_case(trimmed, "state")
+    {
+        FIELD_STATUS.to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
