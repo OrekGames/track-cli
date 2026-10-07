@@ -832,6 +832,49 @@ impl GitLabClient {
         Ok(members)
     }
 
+    /// Resolve a login or numeric id to a GitLab user id.
+    ///
+    /// Prefer project members (including inherited), then `GET /users?username=`.
+    /// A purely numeric login is used as-is.
+    pub fn find_user_id(&self, username: &str) -> Result<u64> {
+        let username = username.strip_prefix('@').unwrap_or(username);
+        if let Ok(id) = username.parse::<u64>() {
+            return Ok(id);
+        }
+
+        if let Some(id) = self
+            .list_project_members()?
+            .into_iter()
+            .find(|user| user.username.eq_ignore_ascii_case(username))
+            .map(|user| user.id)
+        {
+            return Ok(id);
+        }
+
+        let url = format!(
+            "{}/users?username={}",
+            self.base_url,
+            urlencoding::encode(username)
+        );
+        let response = self
+            .agent
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+        let mut response = self.check_response(response)?;
+        let users: Vec<GitLabUser> = response.body_mut().read_json()?;
+        users
+            .into_iter()
+            .find(|user| user.username.eq_ignore_ascii_case(username))
+            .map(|user| user.id)
+            .ok_or_else(|| GitLabError::Api {
+                status: 404,
+                message: format!("GitLab user '{username}' not found"),
+            })
+    }
+
     // ==================== Wiki Operations ====================
 
     /// List project wiki pages.
