@@ -369,7 +369,7 @@ impl IssueTracker for LinearClient {
         let mut after = None;
 
         while comments.len() < limit {
-            let (page, page_info) = self.get_comments_page(&issue.id, 100, after)?;
+            let (page, page_info) = self.get_comments_page(&issue.id, 100, after.as_deref())?;
             let page_len = page.len();
 
             if remaining_skip >= page_len {
@@ -407,8 +407,8 @@ impl IssueTracker for LinearClient {
 
         for _ in 0..MAX_PAGES {
             let remaining = max_results - comments.len();
-            let prev_after = after.clone();
-            let (page, page_info) = self.get_comments_page(&issue.id, remaining.min(100), after)?;
+            let (page, page_info) =
+                self.get_comments_page(&issue.id, remaining.min(100), after.as_deref())?;
             let page_len = page.len();
 
             comments.extend(page.into_iter().map(Into::into));
@@ -425,7 +425,7 @@ impl IssueTracker for LinearClient {
             }
 
             let next_after = page_info.end_cursor;
-            if next_after.is_none() || next_after == prev_after {
+            if next_after.is_none() || next_after == after {
                 return Err(TrackerError::PaginationStalled(format!(
                     "issue '{}' comments cursor did not advance",
                     issue_id
