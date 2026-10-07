@@ -455,8 +455,8 @@ impl IssueTracker for LinearClient {
         let mut empty_pages = 0;
 
         for _ in 0..MAX_PAGES {
-            let prev_after = after.clone();
-            let (page, page_info) = self.get_issue_history_page(&issue.id, 100, after)?;
+            let (page, page_info) =
+                self.get_issue_history_page(&issue.id, 100, after.as_deref())?;
             let page_len = page.len();
             nodes.extend(page);
 
@@ -477,7 +477,7 @@ impl IssueTracker for LinearClient {
             }
 
             let next_after = page_info.end_cursor;
-            if next_after == prev_after {
+            if next_after == after {
                 return Err(TrackerError::PaginationStalled(format!(
                     "issue '{}' history cursor did not advance",
                     issue_id
