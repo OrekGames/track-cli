@@ -22,6 +22,207 @@ mod tests {
         path
     }
 
+    async fn setup_mock_client(mock_server: &MockServer) -> JiraClient {
+        JiraClient::new(&mock_server.uri(), "test@example.com", "dummy_token")
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_greek_destination() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Close",
+                        "to": {
+                            "id": "done",
+                            "name": "Κλειστός"
+                        }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let id = client
+            .resolve_transition_id("TEST-123", "  ΚΛΕΙΣΤΌΣ  ")
+            .unwrap();
+        assert_eq!(id, "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_greek_name_fallback() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Κλειστός",
+                        "to": {
+                            "id": "done",
+                            "name": "Done"
+                        }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let id = client
+            .resolve_transition_id("TEST-123", "  ΚΛΕΙΣΤΌΣ  ")
+            .unwrap();
+        assert_eq!(id, "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_greek_negative_equality() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Close",
+                        "to": {
+                            "id": "done",
+                            "name": "Κλειστόσ"
+                        }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let err = client
+            .resolve_transition_id("TEST-123", "ΚΛΕΙΣΤΌΣ")
+            .unwrap_err();
+        match err {
+            crate::error::JiraError::InvalidTransition {
+                requested,
+                available,
+            } => {
+                assert_eq!(requested, "ΚΛΕΙΣΤΌΣ");
+                assert_eq!(available, vec!["Κλειστόσ"]);
+            }
+            _ => panic!("Expected InvalidTransition error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_destination_precedence() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "10",
+                        "name": "Done",
+                        "to": {
+                            "id": "open",
+                            "name": "Open"
+                        }
+                    },
+                    {
+                        "id": "31",
+                        "name": "Close",
+                        "to": {
+                            "id": "done",
+                            "name": "Done"
+                        }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let id = client.resolve_transition_id("TEST-123", " done ").unwrap();
+        assert_eq!(id, "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_various_cases() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "1",
+                        "name": "Geöffnet",
+                        "to": { "id": "1", "name": "Geöffnet" }
+                    },
+                    {
+                        "id": "2",
+                        "name": "À faire",
+                        "to": { "id": "2", "name": "À faire" }
+                    },
+                    {
+                        "id": "3",
+                        "name": "Открыто",
+                        "to": { "id": "3", "name": "Открыто" }
+                    },
+                    {
+                        "id": "4",
+                        "name": "i\u{307}",
+                        "to": { "id": "4", "name": "i\u{307}" }
+                    },
+                    {
+                        "id": "5",
+                        "name": "K",
+                        "to": { "id": "5", "name": "K" }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+
+        assert_eq!(
+            client
+                .resolve_transition_id("TEST-123", "GEÖFFNET")
+                .unwrap(),
+            "1"
+        );
+        assert_eq!(
+            client.resolve_transition_id("TEST-123", "À FAIRE").unwrap(),
+            "2"
+        );
+        assert_eq!(
+            client.resolve_transition_id("TEST-123", "ОТКРЫТО").unwrap(),
+            "3"
+        );
+        assert_eq!(client.resolve_transition_id("TEST-123", "İ").unwrap(), "4");
+        assert_eq!(client.resolve_transition_id("TEST-123", "K").unwrap(), "5");
+
+        let err = client
+            .resolve_transition_id("TEST-123", "UNKNOWN")
+            .unwrap_err();
+        match err {
+            crate::error::JiraError::InvalidTransition {
+                requested,
+                available,
+            } => {
+                assert_eq!(requested, "UNKNOWN");
+                assert_eq!(
+                    available,
+                    vec!["Geöffnet", "À faire", "Открыто", "i\u{307}", "K"]
+                );
+            }
+            _ => panic!("Expected InvalidTransition error"),
+        }
+    }
+
     fn base64_encode_for_test(input: &str) -> String {
         const ALPHABET: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
