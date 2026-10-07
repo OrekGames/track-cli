@@ -1690,6 +1690,155 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ==================== Transition Resolution Tests ====================
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_destination_greek_sigma() {
+        let mock_server = MockServer::start().await;
+        let client = JiraClient::new(&mock_server.uri(), "a@b.com", "tok");
+
+        // Greek test: target has uppercase final sigma, response has lowercase final sigma destination.
+        // Full-string to_lowercase matches correctly, char-by-char misses because
+        // uppercase final sigma drops differently.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {"id": "31", "name": "Close", "to": {"id": "done", "name": "Κλειστός"}}
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = client
+            .resolve_transition_id("TEST-123", "  ΚΛΕΙΣΤΌΣ  ")
+            .unwrap();
+        assert_eq!(result, "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_name_fallback_greek_sigma() {
+        let mock_server = MockServer::start().await;
+        let client = JiraClient::new(&mock_server.uri(), "a@b.com", "tok");
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {"id": "31", "name": "Κλειστός", "to": {"id": "done", "name": "Done"}}
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = client
+            .resolve_transition_id("TEST-123", "  ΚΛΕΙΣΤΌΣ  ")
+            .unwrap();
+        assert_eq!(result, "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_negative_greek_sigma() {
+        let mock_server = MockServer::start().await;
+        let client = JiraClient::new(&mock_server.uri(), "a@b.com", "tok");
+
+        // Incorrect target matching - destination Κλειστόσ (ordinary sigma at end) vs ΚΛΕΙΣΤΌΣ
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {"id": "31", "name": "Close", "to": {"id": "done", "name": "Κλειστόσ"}}
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = client.resolve_transition_id("TEST-123", "ΚΛΕΙΣΤΌΣ");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::JiraError::InvalidTransition {
+                requested,
+                available,
+            } => {
+                assert_eq!(requested, "ΚΛΕΙΣΤΌΣ");
+                assert_eq!(available, vec!["Κλειστόσ"]);
+            }
+            _ => panic!("Expected InvalidTransition error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_destination_precedence() {
+        let mock_server = MockServer::start().await;
+        let client = JiraClient::new(&mock_server.uri(), "a@b.com", "tok");
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {"id": "10", "name": "Done", "to": {"id": "open", "name": "Open"}},
+                    {"id": "31", "name": "Close", "to": {"id": "done", "name": "Done"}}
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // " done " target should match destination "Done" at ID 31, not the earlier fallback name "Done" at ID 10
+        let result = client.resolve_transition_id("TEST-123", " done ").unwrap();
+        assert_eq!(result, "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_assorted_unicode() {
+        let mock_server = MockServer::start().await;
+        let client = JiraClient::new(&mock_server.uri(), "a@b.com", "tok");
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {"id": "1", "name": "Open", "to": {"id": "open", "name": "Geöffnet"}},
+                    {"id": "2", "name": "To Do", "to": {"id": "todo", "name": "À faire"}},
+                    {"id": "3", "name": "Done", "to": {"id": "done", "name": "Открыто"}},
+                    {"id": "4", "name": "İ", "to": {"id": "dot", "name": "dot"}},
+                    {"id": "5", "name": "K", "to": {"id": "kelvin", "name": "kelvin"}}
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        assert_eq!(
+            client
+                .resolve_transition_id("TEST-123", "GEÖFFNET")
+                .unwrap(),
+            "1"
+        );
+        assert_eq!(
+            client.resolve_transition_id("TEST-123", "À FAIRE").unwrap(),
+            "2"
+        );
+        assert_eq!(
+            client.resolve_transition_id("TEST-123", "ОТКРЫТО").unwrap(),
+            "3"
+        );
+        assert_eq!(
+            client
+                .resolve_transition_id("TEST-123", "i\u{307}")
+                .unwrap(),
+            "4"
+        ); // İ lowers to i + dot above
+        assert_eq!(client.resolve_transition_id("TEST-123", "k").unwrap(), "5"); // K lowers to k
+
+        let err_result = client.resolve_transition_id("TEST-123", "UNMATCHED");
+        assert!(err_result.is_err());
+        match err_result.unwrap_err() {
+            crate::error::JiraError::InvalidTransition { requested, .. } => {
+                assert_eq!(requested, "UNMATCHED");
+            }
+            _ => panic!("Expected InvalidTransition error"),
+        }
+    }
+
     // ==================== Link Type Resolution Tests ====================
 
     #[test]
