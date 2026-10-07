@@ -5,7 +5,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use tracker_core::{CreateIssue, CustomFieldUpdate, Issue, IssueTracker, UpdateIssue};
 
@@ -349,7 +351,7 @@ fn execute_plan(execution: ApplyExecution<'_>) -> Result<ExecutionResult> {
                 if !execution.dry_run {
                     completed.insert(index);
                     state_results.insert(index, result.clone());
-                    write_resume_state(
+                    save_resume_state(
                         execution.resume_path,
                         &execution.checksum,
                         &completed,
@@ -945,7 +947,7 @@ fn new_resume_state(checksum: &str) -> ApplyResumeState {
     }
 }
 
-fn write_resume_state(
+fn save_resume_state(
     resume_path: Option<&Path>,
     checksum: &str,
     completed: &BTreeSet<usize>,
@@ -975,8 +977,24 @@ fn write_resume_state(
         results: state_results.values().cloned().collect(),
     };
     let json = serde_json::to_vec_pretty(&state).context("Failed to serialize resume state")?;
-    std::fs::write(path, json)
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("Failed to open resume state file '{}'", path.display()))?;
+    file.write_all(&json)
         .with_context(|| format!("Failed to write resume state '{}'", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+
     Ok(())
 }
 
@@ -1277,5 +1295,24 @@ mod tests {
         assert!(!output.success);
         assert_eq!(output.results[0].status, "failed");
         assert_eq!(output.results[0].op, "delete_issue");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resume_state_file_uses_0600_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let state_path = dir.path().join("state.json");
+        save_resume_state(
+            Some(&state_path),
+            "test_checksum",
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let mode = std::fs::metadata(&state_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }
