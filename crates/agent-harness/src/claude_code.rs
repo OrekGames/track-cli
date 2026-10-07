@@ -150,7 +150,7 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
         "stream-json",
         "--verbose", // Required for stream-json with --print
         "--allowedTools",
-        &format!("Bash({} *)", track_bin),
+        &format_allowed_bash_pattern(&track_bin),
         "--append-system-prompt",
         &system_prompt,
         "--dangerously-skip-permissions",
@@ -316,6 +316,15 @@ fn build_task_prompt(scenario: &Scenario) -> String {
         "## Your Task\n\n{}\n\nPlease complete this task using the track CLI.",
         scenario.setup.prompt
     )
+}
+
+/// Format allowed Bash tool pattern by sanitizing track_bin
+fn format_allowed_bash_pattern(track_bin: &str) -> String {
+    let sanitized: String = track_bin
+        .chars()
+        .filter(|c| !matches!(c, '(' | ')' | ';' | '&' | '|' | '\n' | '\r'))
+        .collect();
+    format!("Bash({} *)", sanitized)
 }
 
 /// Find the track binary
@@ -565,6 +574,18 @@ impl From<ClaudeCodeResult> for SessionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_format_allowed_bash_pattern() {
+        assert_eq!(
+            format_allowed_bash_pattern("/usr/local/bin/track"),
+            "Bash(/usr/local/bin/track *)"
+        );
+        assert_eq!(
+            format_allowed_bash_pattern("/bin/track) || malicious_cmd"),
+            "Bash(/bin/track  malicious_cmd *)"
+        );
+    }
 
     #[test]
     fn test_is_track_command() {
