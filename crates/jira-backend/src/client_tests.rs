@@ -2020,4 +2020,25 @@ mod tests {
         let issue = IssueTracker::update_issue(&client, "TEST-1", &update).unwrap();
         assert_eq!(issue.id_readable, "TEST-1");
     }
+
+    #[tokio::test]
+    async fn test_get_fields_cached_recovers_from_poisoned_mutex() {
+        let client = std::sync::Arc::new(JiraClient::new(
+            "http://127.0.0.1:1234",
+            "test@test.com",
+            "test-token",
+        ));
+
+        // Poison the lock by panicking on another thread while holding the lock
+        let client_clone = std::sync::Arc::clone(&client);
+        let handle = std::thread::spawn(move || {
+            let _guard = client_clone.field_cache.lock().unwrap();
+            panic!("Intentional panic to poison mutex");
+        });
+        let _ = handle.join();
+
+        // Mutex is now poisoned; get_fields_cached should recover gracefully without panicking
+        let fields = client.get_fields_cached();
+        assert!(fields.is_empty());
+    }
 }
