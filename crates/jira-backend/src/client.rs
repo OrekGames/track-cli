@@ -652,23 +652,23 @@ impl JiraClient {
     /// Resolve a user-provided status name (case-insensitive) to a transition id
     /// available on the issue's current workflow step.
     pub fn resolve_transition_id(&self, issue_key: &str, target_status: &str) -> Result<String> {
-        // [BOLT] Optimization: Avoid string allocation on hot path when matching statuses.
-        // We use unicode_eq_ignore_case for allocation-free matching, which also prevents
-        // localization/casing bugs.
         let target = target_status.trim();
+        let target_lower = target.to_lowercase(); // once per resolver call
+        let matches_target = |name: &str| {
+            if name.is_ascii() && target.is_ascii() {
+                name.eq_ignore_ascii_case(target)
+            } else {
+                name.to_lowercase() == target_lower
+            }
+        };
+
         let transitions = self.list_transitions(issue_key)?;
 
         // Prefer exact match on the target status name, fall back to transition name.
-        if let Some(t) = transitions
-            .iter()
-            .find(|t| tracker_core::unicode_eq_ignore_case(&t.to.name, target))
-        {
+        if let Some(t) = transitions.iter().find(|t| matches_target(&t.to.name)) {
             return Ok(t.id.clone());
         }
-        if let Some(t) = transitions
-            .iter()
-            .find(|t| tracker_core::unicode_eq_ignore_case(&t.name, target))
-        {
+        if let Some(t) = transitions.iter().find(|t| matches_target(&t.name)) {
             return Ok(t.id.clone());
         }
 

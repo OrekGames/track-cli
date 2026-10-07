@@ -2020,4 +2020,157 @@ mod tests {
         let issue = IssueTracker::update_issue(&client, "TEST-1", &update).unwrap();
         assert_eq!(issue.id_readable, "TEST-1");
     }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_greek_destination_match() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Close",
+                        "to": { "id": "done", "name": "Κλειστός" }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@example.com", "token");
+        let result = client.resolve_transition_id("TEST-123", "  ΚΛΕΙΣΤΌΣ  ");
+        assert_eq!(result.unwrap(), "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_greek_name_fallback_match() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Κλειστός",
+                        "to": { "id": "done", "name": "Done" }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@example.com", "token");
+        let result = client.resolve_transition_id("TEST-123", "  ΚΛΕΙΣΤΌΣ  ");
+        assert_eq!(result.unwrap(), "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_greek_non_final_sigma_rejects() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Close",
+                        "to": { "id": "done", "name": "Κλειστόσ" }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@example.com", "token");
+        let result = client.resolve_transition_id("TEST-123", "ΚΛΕΙΣΤΌΣ");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        if let crate::error::JiraError::InvalidTransition {
+            requested,
+            available,
+        } = err
+        {
+            assert_eq!(requested, "ΚΛΕΙΣΤΌΣ");
+            assert_eq!(available, vec!["Κλειστόσ"]);
+        } else {
+            panic!("Expected InvalidTransition error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_destination_precedence() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "10",
+                        "name": "Done",
+                        "to": { "id": "open", "name": "Open" }
+                    },
+                    {
+                        "id": "31",
+                        "name": "Close",
+                        "to": { "id": "done", "name": "Done" }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@example.com", "token");
+        let result = client.resolve_transition_id("TEST-123", " done ");
+        assert_eq!(result.unwrap(), "31"); // Should match the 'to.name'="Done" over 'name'="Done"
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_localized_strings_and_trimming() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    { "id": "1", "name": "open", "to": { "id": "1", "name": "Geöffnet" } },
+                    { "id": "2", "name": "todo", "to": { "id": "2", "name": "À faire" } },
+                    { "id": "3", "name": "open", "to": { "id": "3", "name": "Открыто" } },
+                    { "id": "4", "name": "open", "to": { "id": "4", "name": "İ" } },
+                    { "id": "5", "name": "open", "to": { "id": "5", "name": "K" } }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@example.com", "token");
+
+        assert_eq!(
+            client
+                .resolve_transition_id("TEST-123", " GEÖFFNET ")
+                .unwrap(),
+            "1"
+        );
+        assert_eq!(
+            client
+                .resolve_transition_id("TEST-123", " À FAIRE ")
+                .unwrap(),
+            "2"
+        );
+        assert_eq!(
+            client
+                .resolve_transition_id("TEST-123", " ОТКРЫТО ")
+                .unwrap(),
+            "3"
+        );
+        assert_eq!(
+            client
+                .resolve_transition_id("TEST-123", "i\u{307}")
+                .unwrap(),
+            "4"
+        );
+        assert_eq!(
+            client.resolve_transition_id("TEST-123", " k ").unwrap(),
+            "5"
+        );
+    }
 }
