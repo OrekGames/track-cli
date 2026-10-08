@@ -2023,8 +2023,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_fields_cached_recovers_from_poisoned_mutex() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "customfield_10000",
+                    "name": "Owned test fixture",
+                    "custom": true,
+                    "schema": null
+                }
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
         let client = std::sync::Arc::new(JiraClient::new(
-            "http://127.0.0.1:1234",
+            &mock_server.uri(),
             "test@test.com",
             "test-token",
         ));
@@ -2035,10 +2055,64 @@ mod tests {
             let _guard = client_clone.field_cache.lock().unwrap();
             panic!("Intentional panic to poison mutex");
         });
-        let _ = handle.join();
+        assert!(handle.join().is_err());
+        assert!(client.field_cache.is_poisoned());
 
-        // Mutex is now poisoned; get_fields_cached should recover gracefully without panicking
+        // Mutex is now poisoned; get_fields_cached should recover gracefully without panicking,
+        // fetch fields via GET /rest/api/3/field, and return them.
         let fields = client.get_fields_cached();
-        assert!(fields.is_empty());
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].id, "customfield_10000");
+        assert_eq!(fields[0].name, "Owned test fixture");
+
+        // Subsequent call reuses cached fields without making another HTTP request.
+        let cached_fields = client.get_fields_cached();
+        assert_eq!(cached_fields.len(), 1);
+        assert_eq!(cached_fields[0].id, "customfield_10000");
+    }
+
+    #[tokio::test]
+    async fn test_get_fields_cached_recovers_from_poisoned_mutex_with_populated_cache() {
+        let mock_server = MockServer::start().await;
+
+        // HTTP requests should NOT be made since the cache is already seeded
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = std::sync::Arc::new(JiraClient::new(
+            &mock_server.uri(),
+            "test@test.com",
+            "test-token",
+        ));
+
+        // Seed the cache before poisoning
+        {
+            let mut cache = client.field_cache.lock().unwrap();
+            *cache = Some(vec![JiraField {
+                id: "customfield_20000".to_string(),
+                name: "Seeded field".to_string(),
+                custom: true,
+                schema: None,
+            }]);
+        }
+
+        // Poison the lock by panicking on another thread while holding the lock
+        let client_clone = std::sync::Arc::clone(&client);
+        let handle = std::thread::spawn(move || {
+            let _guard = client_clone.field_cache.lock().unwrap();
+            panic!("Intentional panic to poison mutex");
+        });
+        assert!(handle.join().is_err());
+        assert!(client.field_cache.is_poisoned());
+
+        // Mutex is poisoned, but cached data is preserved and returned without HTTP call
+        let fields = client.get_fields_cached();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].id, "customfield_20000");
+        assert_eq!(fields[0].name, "Seeded field");
     }
 }
