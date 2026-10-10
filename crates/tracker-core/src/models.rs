@@ -695,3 +695,65 @@ mod tests {
         assert_eq!(result.total, Some(100));
     }
 }
+
+impl Issue {
+    pub fn common_fields(&self) -> (Option<&String>, Option<&String>, Option<&String>) {
+        let mut state = None;
+        let mut priority = None;
+        let mut assignee = None;
+
+        for cf in &self.custom_fields {
+            match cf {
+                CustomField::State { value, .. } if state.is_none() => {
+                    state = value.as_ref();
+                }
+                CustomField::SingleEnum { name, value }
+                    if priority.is_none() && name.eq_ignore_ascii_case("priority") =>
+                {
+                    priority = value.as_ref();
+                }
+                CustomField::SingleUser { name, login, .. }
+                    if assignee.is_none() && name.eq_ignore_ascii_case("assignee") =>
+                {
+                    assignee = login.as_ref();
+                }
+                _ => {}
+            }
+            if state.is_some() && priority.is_some() && assignee.is_some() {
+                break;
+            }
+        }
+        (state, priority, assignee)
+    }
+}
+
+impl UpdateIssue {
+    pub fn common_fields(&self) -> (Option<&String>, Option<&String>, Option<&String>) {
+        let mut state = None;
+        let mut priority = None;
+        let mut assignee = None;
+
+        for cf in &self.custom_fields {
+            match cf {
+                CustomFieldUpdate::State { value, .. } if state.is_none() => {
+                    state = Some(value);
+                }
+                CustomFieldUpdate::SingleEnum { name, value }
+                    if priority.is_none() && name.eq_ignore_ascii_case("priority") =>
+                {
+                    priority = Some(value);
+                }
+                CustomFieldUpdate::SingleUser { name, login }
+                    if assignee.is_none() && name.eq_ignore_ascii_case("assignee") =>
+                {
+                    assignee = Some(login);
+                }
+                _ => {}
+            }
+            if state.is_some() && priority.is_some() && assignee.is_some() {
+                break;
+            }
+        }
+        (state, priority, assignee)
+    }
+}
