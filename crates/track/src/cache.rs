@@ -1411,21 +1411,14 @@ impl TrackerCache {
             .clone()
             .unwrap_or_else(|| "UNKNOWN".to_string());
 
-        // Extract state from custom fields
-        let state = issue.custom_fields.iter().find_map(|cf| {
-            if let tracker_core::CustomField::State { value, .. } = cf {
-                value.clone()
-            } else {
-                None
-            }
-        });
+        let (state, _, _) = issue.common_fields();
 
         let recent = CachedRecentIssue {
             id: issue.id.clone(),
             id_readable: issue.id_readable.clone(),
             summary: issue.summary.clone(),
             project_short_name,
-            state,
+            state: state.cloned(),
             last_accessed: now,
         };
 
