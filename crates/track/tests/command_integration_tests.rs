@@ -2096,6 +2096,269 @@ fn test_issue_inspect_jsonl_one_line_per_result() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// #292 first slice: issue search `--select` + `-o jsonl` for agent-friendly output.
+///
+/// `id_readable` / `summary` are the serialized tracker_core::Issue field names
+/// already emitted by `track -o json issue search`. `not_a_field` is intentionally
+/// absent so missing paths are omitted (no `--strict-select` in this slice).
+#[test]
+fn test_issue_search_select_jsonl_projects_fields() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "search",
+            "project: DEMO",
+            "--select",
+            "id_readable,summary,not_a_field",
+            "-o",
+            "jsonl",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "issue search --select -o jsonl should succeed: {output:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        !trimmed.is_empty(),
+        "jsonl stdout must contain issue records"
+    );
+    assert!(
+        !trimmed.starts_with('['),
+        "jsonl must print one object per issue, not a wrapping array: {stdout}"
+    );
+
+    let lines: Vec<&str> = stdout.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected one JSON object per search hit and no human text on stdout: {stdout}"
+    );
+
+    let expected = [
+        ("DEMO-1", "Implement user authentication"),
+        ("DEMO-2", "Add password reset feature"),
+    ];
+    for (line, (id, summary)) in lines.iter().zip(expected) {
+        let value: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("each jsonl line must be one JSON object ({e}): {line}"));
+        let obj = value
+            .as_object()
+            .unwrap_or_else(|| panic!("jsonl line must be an object, not an array: {line}"));
+
+        assert_eq!(obj["id_readable"], id);
+        assert_eq!(obj["summary"], summary);
+        assert!(
+            !obj.contains_key("not_a_field"),
+            "missing selected paths must be omitted without --strict-select: {line}"
+        );
+        assert_eq!(
+            obj.len(),
+            2,
+            "--select must project only present fields (id_readable, summary): {line}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #292 / #351: `-o jsonl` is wired for `issue search` only. Unwired commands
+/// must reject it (today `CliFormat::output()` silently remaps to pretty JSON).
+#[test]
+fn test_unwired_command_rejects_jsonl_format() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args(["project", "list", "-o", "jsonl"])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "unwired -o jsonl must fail, not remap to pretty JSON: {output:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let err = format!("{stdout}{stderr}").to_ascii_lowercase();
+    assert!(
+        err.contains("jsonl"),
+        "rejection must name jsonl: stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        err.contains("unsupported"),
+        "rejection must name unsupported: stdout={stdout:?} stderr={stderr:?}"
+    );
+
+    let trimmed = stdout.trim();
+    let is_pretty_json_document = serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
+        && (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && trimmed.contains('\n');
+    assert!(
+        !is_pretty_json_document,
+        "stdout must not be a pretty JSON document: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #292 / #351: `--select` is global but only `issue search` honors it.
+/// Other commands must reject it (today they print the full document).
+#[test]
+fn test_unwired_command_rejects_select() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args(["project", "list", "--select", "id", "-o", "json"])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "unwired --select must fail, not print the full project list: {output:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let err = format!("{stdout}{stderr}").to_ascii_lowercase();
+    assert!(
+        err.contains("select"),
+        "rejection must name select: stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        err.contains("unsupported"),
+        "rejection must name unsupported: stdout={stdout:?} stderr={stderr:?}"
+    );
+
+    let trimmed = stdout.trim();
+    let parsed = serde_json::from_str::<serde_json::Value>(trimmed).ok();
+    let is_pretty_json_document = parsed.is_some()
+        && (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && trimmed.contains('\n');
+    assert!(
+        !is_pretty_json_document,
+        "stdout must not be a pretty JSON document: {stdout}"
+    );
+    let is_project_list_payload = parsed
+        .as_ref()
+        .and_then(|value| value.as_array())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("short_name").and_then(|v| v.as_str()) == Some("DEMO")
+                    || item.get("name").and_then(|v| v.as_str()) == Some("Demo Project")
+            })
+        });
+    assert!(
+        !is_project_list_payload,
+        "stdout must not be a full project list success payload: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #292 / #351: `--select` is JSON/JSONL only. Text mode must reject it
+/// (today it is ignored and the human search table is printed).
+#[test]
+fn test_text_mode_rejects_select() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "search",
+            "project: DEMO",
+            "--select",
+            "id_readable",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "text-mode --select must fail, not print the human search table: {output:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let err = format!("{stdout}{stderr}").to_ascii_lowercase();
+    assert!(
+        err.contains("select"),
+        "rejection must name select: stdout={stdout:?} stderr={stderr:?}"
+    );
+
+    let human = stdout.to_ascii_lowercase();
+    assert!(
+        !human.contains("implement user authentication")
+            && !human.contains("add password reset feature"),
+        "stdout must not be the usual human search table: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #292 / #351: `--select` with no usable paths (`parse_select_paths` empty)
+/// must reject before output. `""`, `"  "`, and `" , "` all parse to empty.
+#[test]
+fn test_empty_select_paths_are_rejected() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    for select in ["", "  ", " , "] {
+        let output = track_mock(&dir, &scenario)
+            .args([
+                "issue",
+                "search",
+                "project: DEMO",
+                "--select",
+                select,
+                "-o",
+                "json",
+            ])
+            .output()
+            .unwrap();
+
+        assert!(
+            !output.status.success(),
+            "empty --select {select:?} must fail, not dump full issues: {output:?}"
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let err = format!("{stdout}{stderr}").to_ascii_lowercase();
+        assert!(
+            err.contains("select"),
+            "rejection must name select ({select:?}): stdout={stdout:?} stderr={stderr:?}"
+        );
+
+        let trimmed = stdout.trim();
+        let is_full_issue_array = serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|value| value.as_array().cloned())
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("id_readable").is_some()
+                        && item.get("summary").is_some()
+                        && item.get("description").is_some()
+                })
+            });
+        assert!(
+            !is_full_issue_array,
+            "empty --select {select:?} must not emit a JSON array of full issues: {stdout}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_issue_inspect_subtasks_derived_from_links() {
     let dir = temp_dir();

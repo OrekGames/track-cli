@@ -269,7 +269,7 @@ pub fn handle_doctor(cli: &Cli, opts: DoctorOptions) -> Result<()> {
         backends: reports,
     };
 
-    match cli.format {
+    match cli.format.output() {
         OutputFormat::Json => output_json(&report)?,
         OutputFormat::Text => print_text(&report),
     }

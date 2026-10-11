@@ -7,8 +7,12 @@ use std::path::PathBuf;
 #[command(name = "track", version, about = "CLI for issue tracking systems")]
 pub struct Cli {
     /// Output format
-    #[arg(long, short = 'o', value_enum, global = true, default_value_t = OutputFormat::Text)]
-    pub format: OutputFormat,
+    #[arg(long, short = 'o', value_enum, global = true, default_value_t = CliFormat::Text)]
+    pub format: CliFormat,
+
+    /// Comma-separated dotted field paths to project from JSON/JSONL output
+    #[arg(long, global = true, value_name = "PATHS")]
+    pub select: Option<String>,
 
     /// Verbose output (shows detailed changes and additional context)
     #[arg(long, short = 'v', global = true)]
@@ -86,6 +90,39 @@ impl std::fmt::Display for Backend {
 pub enum OutputFormat {
     Text,
     Json,
+}
+
+/// CLI-only output format. Maps onto [`OutputFormat`] so command handlers stay
+/// exhaustive on Text/Json; JSONL is a rendering mode of JSON, not a third
+/// handler variant.
+#[derive(ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
+pub enum CliFormat {
+    Text,
+    Json,
+    Jsonl,
+}
+
+impl CliFormat {
+    pub fn output(self) -> OutputFormat {
+        match self {
+            Self::Text => OutputFormat::Text,
+            Self::Json | Self::Jsonl => OutputFormat::Json,
+        }
+    }
+
+    pub fn is_jsonl(self) -> bool {
+        matches!(self, Self::Jsonl)
+    }
+}
+
+impl std::fmt::Display for CliFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text => write!(f, "text"),
+            Self::Json => write!(f, "json"),
+            Self::Jsonl => write!(f, "jsonl"),
+        }
+    }
 }
 
 #[derive(ValueEnum, Clone, Debug, Copy, Default)]
@@ -1074,7 +1111,7 @@ mod tests {
             "PROJ-1",
         ]);
 
-        assert!(matches!(cli.format, OutputFormat::Json));
+        assert!(matches!(cli.format, CliFormat::Json));
         assert_eq!(cli.url.as_deref(), Some("https://youtrack.example.com"));
         assert_eq!(cli.token.as_deref(), Some("perm:token"));
 
@@ -1088,6 +1125,25 @@ mod tests {
             },
             _ => panic!("expected issue command"),
         }
+    }
+
+    #[test]
+    fn parses_issue_search_select_jsonl() {
+        let cli = Cli::parse_from([
+            "track",
+            "issue",
+            "search",
+            "q",
+            "--select",
+            "id_readable,summary",
+            "-o",
+            "jsonl",
+        ]);
+
+        assert_eq!(cli.select.as_deref(), Some("id_readable,summary"));
+        assert!(matches!(cli.format, CliFormat::Jsonl));
+        assert!(cli.format.is_jsonl());
+        assert_eq!(cli.format.output(), OutputFormat::Json);
     }
 
     #[test]
