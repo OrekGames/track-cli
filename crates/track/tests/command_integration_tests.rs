@@ -1537,7 +1537,7 @@ fn test_body_file_error_on_missing_file() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Failed to read"));
+        .stderr(predicate::str::contains("does not exist"));
 
     let _ = fs::remove_dir_all(&dir);
 }
