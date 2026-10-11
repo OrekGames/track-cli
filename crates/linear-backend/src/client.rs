@@ -689,7 +689,7 @@ impl LinearClient {
         &self,
         issue_id: &str,
         first: usize,
-        after: Option<String>,
+        after: Option<&str>,
     ) -> Result<(Vec<LinearIssueHistory>, LinearPageInfo)> {
         #[derive(serde::Deserialize)]
         struct IssueHistory {
