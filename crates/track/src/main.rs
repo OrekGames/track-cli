@@ -183,7 +183,7 @@ fn run(cli: Cli) -> Result<()> {
         let backend = cli.backend.unwrap_or_else(|| config.get_backend());
         return commands::workflow::handle_workflow(
             action,
-            cli.format,
+            cli.format.output(),
             cli.config.as_deref(),
             backend,
         );
@@ -376,7 +376,13 @@ fn run_with_client(
         }
         Commands::Config { action } => {
             let backend = cli.backend.unwrap_or_else(|| config.get_backend());
-            commands::config::handle_config(issue_client, action, cli.format.output(), config, backend)
+            commands::config::handle_config(
+                issue_client,
+                action,
+                cli.format.output(),
+                config,
+                backend,
+            )
         }
         Commands::Article { action } => {
             commands::article::handle_article(issue_client, kb_client, action, cli.format.output())

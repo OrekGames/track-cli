@@ -2950,7 +2950,7 @@ mod tests {
         ));
 
         let show = Cli::parse_from(["track", "-o", "json", "workflow", "show"]);
-        assert!(matches!(show.format, OutputFormat::Json));
+        assert!(matches!(show.format, CliFormat::Json));
         assert!(matches!(
             show.command,
             Commands::Workflow {
