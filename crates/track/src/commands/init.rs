@@ -669,3 +669,73 @@ fn create_config_and_finish(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn displayed_url_strips_query_and_fragment() {
+        assert_eq!(
+            displayed_url("https://api.example.com"),
+            "https://api.example.com"
+        );
+        assert_eq!(
+            displayed_url("https://api.example.com?token=secret"),
+            "https://api.example.com"
+        );
+        assert_eq!(
+            displayed_url("https://api.example.com#section"),
+            "https://api.example.com"
+        );
+        assert_eq!(
+            displayed_url("https://api.example.com?a=1#frag"),
+            "https://api.example.com"
+        );
+    }
+
+    #[test]
+    fn omit_query_and_fragment_strips_from_transport_reasons() {
+        assert_eq!(
+            omit_query_and_fragment_in_text("GET https://api.example.com failed"),
+            "GET https://api.example.com failed"
+        );
+        assert_eq!(
+            omit_query_and_fragment_in_text("GET https://api.example.com?token=abc failed"),
+            "GET https://api.example.com failed"
+        );
+        assert_eq!(
+            omit_query_and_fragment_in_text("GET https://api.example.com#frag failed"),
+            "GET https://api.example.com failed"
+        );
+    }
+
+    #[test]
+    fn omit_query_and_fragment_handles_multiple_urls_in_text() {
+        assert_eq!(
+            omit_query_and_fragment_in_text(
+                "connect https://a.example.com?x=1 then https://b.example.com#f"
+            ),
+            "connect https://a.example.com then https://b.example.com"
+        );
+    }
+
+    #[test]
+    fn omit_query_and_fragment_stops_at_delimiters() {
+        assert_eq!(
+            omit_query_and_fragment_in_text("GET https://api.example.com?a=1: timeout"),
+            "GET https://api.example.com: timeout"
+        );
+        assert_eq!(
+            omit_query_and_fragment_in_text("url (https://api.example.com?q) is unreachable"),
+            "url (https://api.example.com) is unreachable"
+        );
+    }
+
+    #[test]
+    fn url_has_userinfo_detects_credentials() {
+        assert!(url_has_userinfo("https://user:pass@api.example.com"));
+        assert!(url_has_userinfo("https://user@api.example.com"));
+        assert!(!url_has_userinfo("https://api.example.com"));
+    }
+}

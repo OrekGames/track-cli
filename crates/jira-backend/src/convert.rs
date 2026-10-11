@@ -589,7 +589,9 @@ pub fn update_issue_to_jira(
         .as_ref()
         .map(|d| markdown_to_adf_document(d));
 
-    let (_, priority_val, assignee_val) = update.common_fields();
+    let fields = update.common_fields();
+    let priority_val = fields.priority;
+    let assignee_val = fields.assignee;
 
     let priority = priority_val.map(|value| PriorityId {
         id: None,

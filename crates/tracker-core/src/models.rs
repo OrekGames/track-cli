@@ -700,34 +700,42 @@ mod tests {
     }
 }
 
-impl Issue {
-    pub fn common_fields(&self) -> (Option<&String>, Option<&String>, Option<&String>) {
-        let mut state = None;
-        let mut priority = None;
-        let mut assignee = None;
+/// Common fields (state, priority, assignee) extracted from custom fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommonFields<'a> {
+    pub state: Option<&'a String>,
+    pub priority: Option<&'a String>,
+    pub assignee: Option<&'a String>,
+}
 
+impl Issue {
+    /// Extract the commonly used state, priority, and assignee from custom
+    /// fields in a single pass. First named match wins; the assignee is the
+    /// first `SingleUser` field whose name is `assignee` (case-insensitive).
+    pub fn common_fields(&self) -> CommonFields<'_> {
+        let mut fields = CommonFields::default();
         for cf in &self.custom_fields {
             match cf {
-                CustomField::State { value, .. } if state.is_none() => {
-                    state = value.as_ref();
+                CustomField::State { value, .. } if fields.state.is_none() => {
+                    fields.state = value.as_ref();
                 }
                 CustomField::SingleEnum { name, value }
-                    if priority.is_none() && name.eq_ignore_ascii_case("priority") =>
+                    if fields.priority.is_none() && name.eq_ignore_ascii_case("priority") =>
                 {
-                    priority = value.as_ref();
+                    fields.priority = value.as_ref();
                 }
                 CustomField::SingleUser { name, login, .. }
-                    if assignee.is_none() && name.eq_ignore_ascii_case("assignee") =>
+                    if fields.assignee.is_none() && name.eq_ignore_ascii_case("assignee") =>
                 {
-                    assignee = login.as_ref();
+                    fields.assignee = login.as_ref();
                 }
                 _ => {}
             }
-            if state.is_some() && priority.is_some() && assignee.is_some() {
+            if fields.state.is_some() && fields.priority.is_some() && fields.assignee.is_some() {
                 break;
             }
         }
-        (state, priority, assignee)
+        fields
     }
 }
 
@@ -750,8 +758,8 @@ mod update_common_fields_tests {
             ],
             ..Default::default()
         };
-        let (_, _, assignee) = update.common_fields();
-        assert_eq!(assignee.map(|s| s.as_str()), Some("right-user"));
+        let fields = update.common_fields();
+        assert_eq!(fields.assignee.map(|s| s.as_str()), Some("right-user"));
     }
 
     #[test]
@@ -763,40 +771,38 @@ mod update_common_fields_tests {
             }],
             ..Default::default()
         };
-        let (state, priority, assignee) = update.common_fields();
-        assert!(state.is_none());
-        assert!(priority.is_none());
-        assert!(assignee.is_none());
+        let fields = update.common_fields();
+        assert!(fields.state.is_none());
+        assert!(fields.priority.is_none());
+        assert!(fields.assignee.is_none());
     }
 }
 
 impl UpdateIssue {
-    pub fn common_fields(&self) -> (Option<&String>, Option<&String>, Option<&String>) {
-        let mut state = None;
-        let mut priority = None;
-        let mut assignee = None;
-
+    /// Same extraction as [`Issue::common_fields`] for update payloads.
+    pub fn common_fields(&self) -> CommonFields<'_> {
+        let mut fields = CommonFields::default();
         for cf in &self.custom_fields {
             match cf {
-                CustomFieldUpdate::State { value, .. } if state.is_none() => {
-                    state = Some(value);
+                CustomFieldUpdate::State { value, .. } if fields.state.is_none() => {
+                    fields.state = Some(value);
                 }
                 CustomFieldUpdate::SingleEnum { name, value }
-                    if priority.is_none() && name.eq_ignore_ascii_case("priority") =>
+                    if fields.priority.is_none() && name.eq_ignore_ascii_case("priority") =>
                 {
-                    priority = Some(value);
+                    fields.priority = Some(value);
                 }
                 CustomFieldUpdate::SingleUser { name, login }
-                    if assignee.is_none() && name.eq_ignore_ascii_case("assignee") =>
+                    if fields.assignee.is_none() && name.eq_ignore_ascii_case("assignee") =>
                 {
-                    assignee = Some(login);
+                    fields.assignee = Some(login);
                 }
                 _ => {}
             }
-            if state.is_some() && priority.is_some() && assignee.is_some() {
+            if fields.state.is_some() && fields.priority.is_some() && fields.assignee.is_some() {
                 break;
             }
         }
-        (state, priority, assignee)
+        fields
     }
 }

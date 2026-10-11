@@ -63,7 +63,10 @@ pub struct IssueSummary {
 
 impl From<&Issue> for IssueSummary {
     fn from(issue: &Issue) -> Self {
-        let (state, priority, assignee) = issue.common_fields();
+        let fields = issue.common_fields();
+        let state = fields.state;
+        let priority = fields.priority;
+        let assignee = fields.assignee;
 
         IssueSummary {
             id: issue.id.clone(),

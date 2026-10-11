@@ -1411,7 +1411,7 @@ impl TrackerCache {
             .clone()
             .unwrap_or_else(|| "UNKNOWN".to_string());
 
-        let (state, _, _) = issue.common_fields();
+        let state = issue.common_fields().state;
 
         let recent = CachedRecentIssue {
             id: issue.id.clone(),
