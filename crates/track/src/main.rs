@@ -177,6 +177,18 @@ fn run(cli: Cli) -> Result<()> {
     let mut config = Config::load(cli.config.clone(), effective_backend)?;
     config.merge_with_cli(cli.url.clone(), cli.token.clone());
 
+    // Workflow commands are offline: after config load + backend selection,
+    // before credential validation and client construction.
+    if let Commands::Workflow { action } = &cli.command {
+        let backend = cli.backend.unwrap_or_else(|| config.get_backend());
+        return commands::workflow::handle_workflow(
+            action,
+            cli.format,
+            cli.config.as_deref(),
+            backend,
+        );
+    }
+
     // Check if mock mode is enabled (before config validation, since mock mode
     // doesn't need real backend credentials)
     if let Some(mock_dir) = tracker_mock::get_mock_dir() {
@@ -342,6 +354,7 @@ fn run_with_client(
                 config.default_project.as_deref(),
                 cli.verbose,
                 config.link_mappings_for(backend),
+                cli.config.as_deref(),
             )
         }
         Commands::Project { action } => {
@@ -405,6 +418,7 @@ fn run_with_client(
                 &backend_type,
                 config.url.as_deref().unwrap_or("unknown"),
                 config.default_project.as_deref(),
+                cli.config.as_deref(),
             )
         }
         Commands::Apply {
@@ -442,6 +456,9 @@ fn run_with_client(
         }
         Commands::Doctor { .. } => {
             unreachable!("Doctor command should be handled before API validation")
+        }
+        Commands::Workflow { .. } => {
+            unreachable!("Workflow command should be handled before API validation")
         }
     }
 }

@@ -1093,8 +1093,8 @@ impl TrackerCache {
         Ok(cache)
     }
 
-    /// Get query templates for a backend
-    fn get_query_templates(backend_type: &str) -> Vec<CachedQueryTemplate> {
+    /// Get compiled built-in query templates for a backend.
+    pub(crate) fn get_query_templates(backend_type: &str) -> Vec<CachedQueryTemplate> {
         match backend_type {
             "youtrack" => vec![
                 CachedQueryTemplate {
