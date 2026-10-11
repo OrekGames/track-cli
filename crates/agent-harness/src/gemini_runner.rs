@@ -152,7 +152,7 @@ pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<GeminiRunnerResult> {
         "stream-json", // Structured JSON output
         "--yolo",      // Auto-approve all tools
         "--allowed-tools",
-        &format!("Bash({} *)", track_bin), // Only allow track CLI
+        &format_allowed_bash_pattern(&track_bin), // Only allow track CLI
     ]);
 
     // Set environment - route track commands through mock
@@ -308,6 +308,15 @@ fn build_task_prompt(scenario: &Scenario) -> String {
         "## Your Task\n\n{}\n\nPlease complete this task using the track CLI.",
         scenario.setup.prompt
     )
+}
+
+/// Format allowed Bash tool pattern by sanitizing track_bin
+fn format_allowed_bash_pattern(track_bin: &str) -> String {
+    let sanitized: String = track_bin
+        .chars()
+        .filter(|c| !matches!(c, '(' | ')' | ';' | '&' | '|' | '\n' | '\r'))
+        .collect();
+    format!("Bash({} *)", sanitized)
 }
 
 /// Find the track binary
@@ -557,6 +566,18 @@ impl From<GeminiRunnerResult> for SessionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_format_allowed_bash_pattern() {
+        assert_eq!(
+            format_allowed_bash_pattern("/usr/local/bin/track"),
+            "Bash(/usr/local/bin/track *)"
+        );
+        assert_eq!(
+            format_allowed_bash_pattern("/bin/track) || malicious_cmd"),
+            "Bash(/bin/track  malicious_cmd *)"
+        );
+    }
 
     #[test]
     fn test_is_track_command() {
