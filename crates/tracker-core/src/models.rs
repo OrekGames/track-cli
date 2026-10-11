@@ -731,6 +731,45 @@ impl Issue {
     }
 }
 
+#[cfg(test)]
+mod update_common_fields_tests {
+    use super::*;
+
+    #[test]
+    fn update_common_fields_assignee_requires_name_match() {
+        let update = UpdateIssue {
+            custom_fields: vec![
+                CustomFieldUpdate::SingleUser {
+                    name: "Reporter".to_string(),
+                    login: "wrong-user".to_string(),
+                },
+                CustomFieldUpdate::SingleUser {
+                    name: "Assignee".to_string(),
+                    login: "right-user".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        let (_, _, assignee) = update.common_fields();
+        assert_eq!(assignee.map(|s| s.as_str()), Some("right-user"));
+    }
+
+    #[test]
+    fn update_common_fields_empty_when_no_named_fields() {
+        let update = UpdateIssue {
+            custom_fields: vec![CustomFieldUpdate::SingleUser {
+                name: "Reporter".to_string(),
+                login: "someone".to_string(),
+            }],
+            ..Default::default()
+        };
+        let (state, priority, assignee) = update.common_fields();
+        assert!(state.is_none());
+        assert!(priority.is_none());
+        assert!(assignee.is_none());
+    }
+}
+
 impl UpdateIssue {
     pub fn common_fields(&self) -> (Option<&String>, Option<&String>, Option<&String>) {
         let mut state = None;

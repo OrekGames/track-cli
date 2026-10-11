@@ -732,3 +732,31 @@ fn config_set_preserves_unknown_or_invalid_pack_content() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// =============================================================================
+// Offline behavior: workflow commands must not require credentials or config
+// =============================================================================
+
+/// `track workflow list` and `validate` are documented as offline commands.
+/// They must succeed with no config file, no credentials, and no cache —
+/// i.e. the workflow early-return in `main` fires before any credential
+/// validation could reject the invocation.
+#[test]
+fn workflow_commands_run_offline_without_credentials() {
+    let dir = temp_dir();
+
+    for subcommand in ["list", "show", "validate"] {
+        let output = track_in(&dir)
+            .arg("workflow")
+            .arg(subcommand)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "`workflow {subcommand}` must succeed offline with no config; got:\n{}",
+            combined_output(&output)
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}

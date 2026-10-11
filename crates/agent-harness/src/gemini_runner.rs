@@ -4,6 +4,7 @@
 //! This allows testing how Gemini performs on scenarios using the track CLI.
 //! Uses Gemini's stream-json output format for structured event parsing.
 
+use crate::permissions::format_allowed_bash_pattern;
 use crate::runner::{CommandExecution, SessionResult};
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -310,15 +311,6 @@ fn build_task_prompt(scenario: &Scenario) -> String {
     )
 }
 
-/// Format allowed Bash tool pattern by sanitizing track_bin
-fn format_allowed_bash_pattern(track_bin: &str) -> String {
-    let sanitized: String = track_bin
-        .chars()
-        .filter(|c| !matches!(c, '(' | ')' | ';' | '&' | '|' | '\n' | '\r'))
-        .collect();
-    format!("Bash({} *)", sanitized)
-}
-
 /// Find the track binary
 fn find_track_binary() -> String {
     // Check for debug build first
@@ -566,18 +558,6 @@ impl From<GeminiRunnerResult> for SessionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_format_allowed_bash_pattern() {
-        assert_eq!(
-            format_allowed_bash_pattern("/usr/local/bin/track"),
-            "Bash(/usr/local/bin/track *)"
-        );
-        assert_eq!(
-            format_allowed_bash_pattern("/bin/track) || malicious_cmd"),
-            "Bash(/bin/track  malicious_cmd *)"
-        );
-    }
 
     #[test]
     fn test_is_track_command() {

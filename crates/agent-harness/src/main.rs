@@ -7,6 +7,7 @@ mod anthropic;
 mod claude_code;
 mod copilot_cli;
 mod gemini_runner;
+mod permissions;
 mod runner;
 mod text;
 mod tools;
