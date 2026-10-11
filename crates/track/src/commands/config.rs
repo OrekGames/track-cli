@@ -784,6 +784,7 @@ pub fn handle_config(
     action: &cli::ConfigCommands,
     format: cli::OutputFormat,
     config: &Config,
+    backend: Backend,
 ) -> Result<()> {
     use cli::ConfigCommands;
 
@@ -821,8 +822,22 @@ pub fn handle_config(
             Ok(())
         }
         ConfigCommands::Test => {
-            // Test connection by fetching current user info via projects list
-            let projects = client.list_projects()?;
+            // Test connection by fetching current user info via projects list.
+            // Keep the existing probe; only add GitHub-named context when that
+            // is the effective backend.
+            let projects = if backend == Backend::GitHub {
+                client.list_projects().map_err(|error| {
+                    let error = super::without_secret(
+                        &error.to_string(),
+                        config.token.as_deref().unwrap_or(""),
+                    );
+                    anyhow::anyhow!(
+                        "GitHub connection test failed while listing repositories: {error}\nCheck github.token/GITHUB_TOKEN and run 'track -b github doctor' for per-check details."
+                    )
+                })?
+            } else {
+                client.list_projects()?
+            };
             let url = config.url.as_deref().unwrap_or("unknown");
 
             match format {

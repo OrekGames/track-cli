@@ -19,6 +19,15 @@ use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::Path;
 
+/// Replace `secret` with `<redacted>` so wrapper/error copy cannot echo tokens.
+pub(crate) fn without_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(secret, "<redacted>")
+    }
+}
+
 /// Resolve text content from an inline string or a file path.
 ///
 /// If `body_file` is `Some`, reads from the given path (use `"-"` for stdin).

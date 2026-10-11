@@ -311,7 +311,7 @@ impl GitHubClient {
             .map_err(GitHubError::Http)?;
 
         let mut response = self.check_response(response)?;
-        let repo: GitHubRepo = response.body_mut().read_json()?;
+        let repo: GitHubRepo = serde_json::from_reader(response.body_mut().as_reader())?;
         Ok(repo)
     }
 
