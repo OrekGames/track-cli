@@ -15,7 +15,7 @@ pub struct JiraClient {
     auth_header: String,
     link_mappings: HashMap<String, String>,
     /// Cached instance-level field metadata (lazy-loaded)
-    field_cache: Mutex<Option<Vec<JiraField>>>,
+    pub(crate) field_cache: Mutex<Option<Vec<JiraField>>>,
 }
 
 impl JiraClient {
@@ -510,7 +510,7 @@ impl JiraClient {
     /// Get field metadata, using a cached copy if available.
     /// Falls back to an empty list on error (graceful degradation).
     pub fn get_fields_cached(&self) -> Vec<JiraField> {
-        let mut cache = self.field_cache.lock().unwrap();
+        let mut cache = self.field_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref fields) = *cache {
             return fields.clone();
         }
