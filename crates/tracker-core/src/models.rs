@@ -57,8 +57,10 @@ impl Issue {
                 {
                     fields.priority = value.as_deref();
                 }
-                CustomField::SingleUser { login, .. } if fields.assignee.is_none() => {
-                    fields.assignee = login.as_deref();
+                CustomField::SingleUser {
+                    login: Some(login), ..
+                } if fields.assignee.is_none() => {
+                    fields.assignee = Some(login.as_str());
                 }
                 _ => {}
             }
@@ -803,6 +805,44 @@ mod tests {
         assert_eq!(fields.state, None);
         assert_eq!(fields.priority, None);
         assert_eq!(fields.assignee, None);
+    }
+
+    #[test]
+    fn test_common_fields_assignee_before_reporter() {
+        let issue = issue_with_fields(vec![
+            CustomField::SingleUser {
+                name: "Assignee".into(),
+                login: Some("user1".into()),
+                display_name: Some("User One".into()),
+            },
+            CustomField::SingleUser {
+                name: "Reporter".into(),
+                login: Some("user2".into()),
+                display_name: Some("User Two".into()),
+            },
+        ]);
+
+        let fields = issue.common_fields();
+        assert_eq!(fields.assignee, Some("user1"));
+    }
+
+    #[test]
+    fn test_common_fields_skip_none_assignee() {
+        let issue = issue_with_fields(vec![
+            CustomField::SingleUser {
+                name: "Reporter".into(),
+                login: None,
+                display_name: Some("User One".into()),
+            },
+            CustomField::SingleUser {
+                name: "Assignee".into(),
+                login: Some("user2".into()),
+                display_name: Some("User Two".into()),
+            },
+        ]);
+
+        let fields = issue.common_fields();
+        assert_eq!(fields.assignee, Some("user2"));
     }
 
     #[test]
