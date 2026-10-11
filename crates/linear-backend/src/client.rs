@@ -635,7 +635,7 @@ impl LinearClient {
         &self,
         issue_id: &str,
         first: usize,
-        after: Option<String>,
+        after: Option<&str>,
     ) -> Result<(Vec<LinearComment>, LinearPageInfo)> {
         #[derive(serde::Deserialize)]
         struct IssueComments {
