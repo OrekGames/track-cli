@@ -289,7 +289,7 @@ mod tests {
 
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].filename, "custom.txt");
-        let _ = std::fs::remove_file(upload_path);
+        let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(upload_path)).await;
     }
 
     #[tokio::test]
