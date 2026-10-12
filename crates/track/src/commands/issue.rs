@@ -1768,7 +1768,7 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
 
             // Print individual results
             for result in results {
-                let id = result.id_readable.as_deref().unwrap_or(&result.id);
+                let id = result.id_readable.as_deref().unwrap_or(result.id);
                 if result.success {
                     println!("  {} {}", "✓".green(), id.cyan());
                 } else {
