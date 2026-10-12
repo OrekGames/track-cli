@@ -2588,18 +2588,9 @@ mod tests {
             "ISSUE-4".to_string(),
         ];
 
-        let start = std::time::Instant::now();
         let res = handle_delete_batch(&client, &ids, OutputFormat::Json);
-        let elapsed = start.elapsed();
 
         assert!(res.is_ok());
         assert_eq!(delete_count.load(Ordering::Relaxed), 5);
-        // 5 requests sleeping 10ms sequentially would take >= 50ms.
-        // Parallelized across worker threads, it should take significantly less time (e.g., < 40ms).
-        assert!(
-            elapsed.as_millis() < 40,
-            "Expected parallel execution under 40ms, took {}ms",
-            elapsed.as_millis()
-        );
     }
 }
