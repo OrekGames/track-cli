@@ -917,9 +917,15 @@ mod tests {
             "track-youtrack-article-attachment-{}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("article.txt");
-        std::fs::write(&file, "attachment body").unwrap();
+        let dir_clone = dir.clone();
+        let file_clone = file.clone();
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&dir_clone).unwrap();
+            std::fs::write(&file_clone, "attachment body").unwrap();
+        })
+        .await
+        .unwrap();
 
         Mock::given(method("POST"))
             .and(path("/api/articles/KB-A-1/attachments"))
@@ -956,7 +962,11 @@ mod tests {
 
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].name, "article.txt");
-        std::fs::remove_dir_all(dir).unwrap();
+        tokio::task::spawn_blocking(move || {
+            std::fs::remove_dir_all(dir).unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
