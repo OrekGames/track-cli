@@ -1625,34 +1625,56 @@ fn handle_delete_batch(
         return handle_delete(client, &ids[0], format);
     }
 
-    // Batch delete
-    let mut results = Vec::new();
+    if ids.is_empty() {
+        output_batch_results(&[], "deleted", format)?;
+        Ok(())
+    } else {
+        let worker_count = ids.len().min(8);
+        let next_index = std::sync::atomic::AtomicUsize::new(0);
+        let (tx, rx) = std::sync::mpsc::channel();
 
-    for id in ids {
-        let result = client.delete_issue(id);
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let tx = tx.clone();
+                let next_index = &next_index;
 
-        match result {
-            Ok(()) => {
-                results.push(BatchResult {
-                    id: id.clone(),
-                    success: true,
-                    error: None,
-                    id_readable: Some(id.clone()),
+                scope.spawn(move || {
+                    loop {
+                        let index = next_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if index >= ids.len() {
+                            break;
+                        }
+
+                        let id = &ids[index];
+                        let batch_res = match client.delete_issue(id) {
+                            Ok(()) => BatchResult {
+                                id: id.clone(),
+                                success: true,
+                                error: None,
+                                id_readable: Some(id.clone()),
+                            },
+                            Err(e) => BatchResult {
+                                id: id.clone(),
+                                success: false,
+                                error: Some(e.to_string()),
+                                id_readable: None,
+                            },
+                        };
+                        let _ = tx.send((index, batch_res));
+                    }
                 });
             }
-            Err(e) => {
-                results.push(BatchResult {
-                    id: id.clone(),
-                    success: false,
-                    error: Some(e.to_string()),
-                    id_readable: None,
-                });
-            }
-        }
+
+            drop(tx);
+
+            let mut indexed_results: Vec<_> = rx.into_iter().collect();
+            indexed_results.sort_by_key(|(idx, _)| *idx);
+
+            let results: Vec<BatchResult> = indexed_results.into_iter().map(|(_, r)| r).collect();
+            output_batch_results(&results, "deleted", format)?;
+            Ok(())
+        })
     }
-
-    output_batch_results(&results, "deleted", format)?;
-    Ok(())
 }
 
 fn handle_state_transition_batch(
@@ -2469,5 +2491,115 @@ mod tests {
 
         let warning = verify_field_match(&requested, &actual).expect("missing field must warn");
         assert!(warning.contains("ignored"));
+    }
+
+    #[test]
+    fn test_handle_delete_batch_parallel() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracker_core::{
+            Comment, CreateIssue, CreateProject, Issue, IssueLink, IssueTag, IssueTracker, Project,
+            ProjectCustomField, SearchResult, UpdateIssue,
+        };
+
+        struct MockDeleteTracker {
+            delete_count: Arc<AtomicUsize>,
+        }
+
+        impl IssueTracker for MockDeleteTracker {
+            fn get_issue(&self, _id: &str) -> tracker_core::Result<Issue> {
+                unimplemented!()
+            }
+            fn search_issues(
+                &self,
+                _query: &str,
+                _limit: usize,
+                _skip: usize,
+            ) -> tracker_core::Result<SearchResult<Issue>> {
+                unimplemented!()
+            }
+            fn create_issue(&self, _issue: &CreateIssue) -> tracker_core::Result<Issue> {
+                unimplemented!()
+            }
+            fn update_issue(
+                &self,
+                _id: &str,
+                _update: &UpdateIssue,
+            ) -> tracker_core::Result<Issue> {
+                unimplemented!()
+            }
+            fn delete_issue(&self, id: &str) -> tracker_core::Result<()> {
+                self.delete_count.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                if id == "FAIL-1" {
+                    Err(tracker_core::TrackerError::NotFound("FAIL-1".to_string()))
+                } else {
+                    Ok(())
+                }
+            }
+            fn list_projects(&self) -> tracker_core::Result<Vec<Project>> {
+                unimplemented!()
+            }
+            fn get_project(&self, _: &str) -> tracker_core::Result<Project> {
+                unimplemented!()
+            }
+            fn create_project(&self, _: &CreateProject) -> tracker_core::Result<Project> {
+                unimplemented!()
+            }
+            fn resolve_project_id(&self, _: &str) -> tracker_core::Result<String> {
+                unimplemented!()
+            }
+            fn get_project_custom_fields(
+                &self,
+                _: &str,
+            ) -> tracker_core::Result<Vec<ProjectCustomField>> {
+                unimplemented!()
+            }
+            fn list_tags(&self) -> tracker_core::Result<Vec<IssueTag>> {
+                unimplemented!()
+            }
+            fn get_issue_links(&self, _: &str) -> tracker_core::Result<Vec<IssueLink>> {
+                unimplemented!()
+            }
+            fn link_issues(&self, _: &str, _: &str, _: &str, _: &str) -> tracker_core::Result<()> {
+                unimplemented!()
+            }
+            fn link_subtask(&self, _: &str, _: &str) -> tracker_core::Result<()> {
+                unimplemented!()
+            }
+            fn add_comment(&self, _: &str, _: &str) -> tracker_core::Result<Comment> {
+                unimplemented!()
+            }
+            fn get_comments(&self, _: &str) -> tracker_core::Result<Vec<Comment>> {
+                unimplemented!()
+            }
+        }
+
+        let delete_count = Arc::new(AtomicUsize::new(0));
+        let client = MockDeleteTracker {
+            delete_count: Arc::clone(&delete_count),
+        };
+
+        let ids = vec![
+            "ISSUE-1".to_string(),
+            "ISSUE-2".to_string(),
+            "FAIL-1".to_string(),
+            "ISSUE-3".to_string(),
+            "ISSUE-4".to_string(),
+        ];
+
+        let start = std::time::Instant::now();
+        let res = handle_delete_batch(&client, &ids, OutputFormat::Json);
+        let elapsed = start.elapsed();
+
+        assert!(res.is_ok());
+        assert_eq!(delete_count.load(Ordering::Relaxed), 5);
+        // 5 requests sleeping 10ms sequentially would take >= 50ms.
+        // Parallelized across worker threads, it should take significantly less time (e.g., < 40ms).
+        assert!(
+            elapsed.as_millis() < 40,
+            "Expected parallel execution under 40ms, took {}ms",
+            elapsed.as_millis()
+        );
     }
 }
