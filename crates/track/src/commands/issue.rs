@@ -1515,24 +1515,26 @@ fn handle_state_transition(
 // Batch Operations
 // ============================================================================
 
+use std::borrow::Cow;
+
 /// Result of a batch operation on a single issue
 #[derive(Clone, serde::Serialize)]
-struct BatchResult {
-    id: String,
+struct BatchResult<'a> {
+    id: &'a str,
     success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    id_readable: Option<String>,
+    id_readable: Option<Cow<'a, str>>,
 }
 
 /// Summary of a batch operation
 #[derive(serde::Serialize)]
-struct BatchSummary {
+struct BatchSummary<'a> {
     total: usize,
     succeeded: usize,
     failed: usize,
-    results: Vec<BatchResult>,
+    results: &'a [BatchResult<'a>],
 }
 
 fn handle_update_batch(
@@ -1562,15 +1564,15 @@ fn handle_update_batch(
         match result {
             Ok(issue) => {
                 results.push(BatchResult {
-                    id: id.clone(),
+                    id,
                     success: true,
                     error: None,
-                    id_readable: issue.map(|issue| issue.id_readable),
+                    id_readable: issue.map(|issue| Cow::Owned(issue.id_readable)),
                 });
             }
             Err(e) => {
                 results.push(BatchResult {
-                    id: id.clone(),
+                    id,
                     success: false,
                     error: Some(e.to_string()),
                     id_readable: None,
@@ -1634,15 +1636,15 @@ fn handle_delete_batch(
         match result {
             Ok(()) => {
                 results.push(BatchResult {
-                    id: id.clone(),
+                    id,
                     success: true,
                     error: None,
-                    id_readable: Some(id.clone()),
+                    id_readable: Some(Cow::Borrowed(id.as_str())),
                 });
             }
             Err(e) => {
                 results.push(BatchResult {
-                    id: id.clone(),
+                    id,
                     success: false,
                     error: Some(e.to_string()),
                     id_readable: None,
@@ -1701,15 +1703,15 @@ fn handle_state_transition_batch(
                 let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
                 crate::output::output_verification_warnings(&warnings, format);
                 results.push(BatchResult {
-                    id: id.clone(),
+                    id,
                     success: true,
                     error: None,
-                    id_readable: Some(issue.id_readable),
+                    id_readable: Some(Cow::Owned(issue.id_readable)),
                 });
             }
             Err(e) => {
                 results.push(BatchResult {
-                    id: id.clone(),
+                    id,
                     success: false,
                     error: Some(e.to_string()),
                     id_readable: None,
@@ -1731,7 +1733,7 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
         total: results.len(),
         succeeded,
         failed,
-        results: results.to_vec(),
+        results,
     };
 
     match format {
