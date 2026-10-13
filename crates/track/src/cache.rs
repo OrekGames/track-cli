@@ -1489,21 +1489,6 @@ impl TrackerCache {
             .map(|c| c.count)
     }
 
-    /// Get link type by name (from cache)
-    #[allow(dead_code)]
-    pub fn get_link_type(&self, name: &str) -> Option<&CachedLinkType> {
-        self.link_types
-            .iter()
-            .find(|lt| tracker_core::unicode_eq_ignore_case(&lt.name, name))
-    }
-
-    /// Get recent issues (from cache)
-    #[allow(dead_code)]
-    pub fn get_recent_issues(&self, limit: usize) -> &[CachedRecentIssue] {
-        let end = std::cmp::min(limit, self.recent_issues.len());
-        &self.recent_issues[..end]
-    }
-
     /// Get the timestamp when cache was last updated
     pub fn updated_at_datetime(&self) -> Option<DateTime<Utc>> {
         self.updated_at
