@@ -105,7 +105,6 @@ pub struct ResultEvent {
 }
 
 /// Result of a Gemini session
-#[allow(dead_code)]
 pub struct GeminiRunnerResult {
     pub turns_used: usize,
     pub events: Vec<GeminiEvent>,
