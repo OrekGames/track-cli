@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::Instant;
 use tracker_mock::Scenario;
 
 /// Configuration for Gemini CLI invocation
@@ -107,17 +106,11 @@ pub struct ResultEvent {
 /// Result of a Gemini session
 pub struct GeminiRunnerResult {
     pub turns_used: usize,
-    pub events: Vec<GeminiEvent>,
-    pub final_result: Option<String>,
-    pub duration_ms: u64,
-    pub exit_code: i32,
     pub commands_executed: Vec<CommandExecution>,
 }
 
 /// Run Gemini against a scenario
 pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<GeminiRunnerResult> {
-    let start = Instant::now();
-
     // Build system prompt
     let system_prompt = build_system_prompt(&config.scenario);
 
@@ -175,14 +168,11 @@ pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<GeminiRunnerResult> {
     let events = parse_stream_output(stdout, config.verbose)?;
 
     // Wait for completion
-    let status = child.wait().context("Failed to wait for Gemini CLI")?;
-
-    let duration_ms = start.elapsed().as_millis() as u64;
+    child.wait().context("Failed to wait for Gemini CLI")?;
 
     // Extract commands from events
     let commands_executed = extract_commands(&events);
     let turns_used = count_turns(&events);
-    let final_result = extract_final_result(&events);
 
     if config.verbose {
         println!(
@@ -195,10 +185,6 @@ pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<GeminiRunnerResult> {
 
     Ok(GeminiRunnerResult {
         turns_used,
-        events,
-        final_result,
-        duration_ms,
-        exit_code: status.code().unwrap_or(-1),
         commands_executed,
     })
 }
@@ -528,17 +514,6 @@ fn count_turns(events: &[GeminiEvent]) -> usize {
         .iter()
         .filter(|e| matches!(e, GeminiEvent::Assistant(_)))
         .count()
-}
-
-/// Extract final result text
-fn extract_final_result(events: &[GeminiEvent]) -> Option<String> {
-    events.iter().rev().find_map(|e| {
-        if let GeminiEvent::Result(res) = e {
-            res.result.clone()
-        } else {
-            None
-        }
-    })
 }
 
 /// Convert GeminiRunnerResult to SessionResult for evaluation
