@@ -43,6 +43,23 @@ fn assignee_login(fields: &[tracker_core::CustomFieldUpdate]) -> Option<&str> {
     })
 }
 
+/// Resolve the assignee custom field into `assignee_ids` for the GitLab API.
+///
+/// GitLab ignores unknown ids in `assignee_ids` (creates succeed with no
+/// assignee), so ids must be resolved and verified up front. `None` means no
+/// assignee field was sent (do not touch assignees); `Some(Vec::new())` is an
+/// explicit request to clear assignees (`""`, `"0"`, or `"@0"`).
+fn assignee_ids(
+    client: &GitLabClient,
+    fields: &[tracker_core::CustomFieldUpdate],
+) -> std::result::Result<Option<Vec<u64>>, TrackerError> {
+    match assignee_login(fields) {
+        None => Ok(None),
+        Some("") | Some("0") | Some("@0") => Ok(Some(Vec::new())),
+        Some(login) => Ok(Some(vec![client.find_user_id(login)?])),
+    }
+}
+
 impl IssueTracker for GitLabClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
         let iid = parse_issue_iid(id)?;
@@ -106,11 +123,7 @@ impl IssueTracker for GitLabClient {
         } else {
             Some(issue.tags.join(","))
         };
-        let assignee_ids = match assignee_login(&issue.custom_fields) {
-            Some("") => Some(Vec::new()),
-            Some(login) => Some(vec![self.find_user_id(login)?]),
-            None => None,
-        };
+        let assignee_ids = assignee_ids(self, &issue.custom_fields)?;
 
         let create = CreateGitLabIssue {
             title: issue.summary.clone(),
@@ -165,11 +178,7 @@ impl IssueTracker for GitLabClient {
         } else {
             Some(update.tags.join(","))
         };
-        let assignee_ids = match assignee_login(&update.custom_fields) {
-            Some("") => Some(Vec::new()),
-            Some(login) => Some(vec![self.find_user_id(login)?]),
-            None => None,
-        };
+        let assignee_ids = assignee_ids(self, &update.custom_fields)?;
 
         let gitlab_update = UpdateGitLabIssue {
             title: update.summary.clone(),

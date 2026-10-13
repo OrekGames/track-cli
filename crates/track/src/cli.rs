@@ -486,7 +486,7 @@ pub enum IssueCommands {
         /// Issue priority (e.g., "Major", "Minor")
         #[arg(long, conflicts_with = "json")]
         priority: Option<String>,
-        /// Assignee login
+        /// Assignee login, @username, numeric user id, or ""/"0" to clear
         #[arg(long, conflicts_with = "json")]
         assignee: Option<String>,
         /// Tag name (can be repeated)
@@ -539,7 +539,7 @@ pub enum IssueCommands {
         /// Issue priority (e.g., "Major", "Minor")
         #[arg(long, conflicts_with = "json")]
         priority: Option<String>,
-        /// Assignee login
+        /// Assignee login, @username, numeric user id, or ""/"0" to clear
         #[arg(long, conflicts_with = "json")]
         assignee: Option<String>,
         /// Tag name (can be repeated)

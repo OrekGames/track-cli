@@ -548,7 +548,18 @@ track i s "project: PROJ #Unresolved" --all             # Fetch ALL results
 track -o json i s "project: PROJ" --all                 # All results as JSON
 track i comments PROJ-1 --all                           # All comments (default is only 10!)
 TRACK_MAX_RESULTS=5000 track i s "project: PROJ" --all  # Override safety cap
+track i s "project: PROJ" -o json --select id_readable,summary                # Projected JSON
+track i s "project: PROJ" -o jsonl --select id_readable,project.short_name   # JSON Lines
 ```
+
+### `--select` projection (JSON/JSONL only)
+
+`--select` takes comma-separated dotted paths and emits only those fields per issue
+(`issue search` only): `--select id_readable,summary` → `[{"id_readable": "PROJ-1", "summary": "..."}, ...]`.
+Missing paths are omitted from the record (no error, no `null`). Restrictions: rejected in text
+mode, rejected for any command other than `issue search`, and a flag with no usable paths is an
+error rather than a no-op. JSONL is root-aware: the array emits one record per line; nested
+arrays stay inside their record.
 
 ---
 
@@ -627,7 +638,7 @@ Jira fragments above must be embedded in a full query containing `=`/`AND`/`OR` 
 
 ### Query Templates
 
-`-T` / `--template` matches a `[workflow_pack]` query in config first (case-insensitive), then cached built-ins. Pack queries are not written into `.tracker-cache/`. Built-ins still resolve from the **local cache** — run `track cache refresh` if no pack defines the name, or `-T` fails with "Template not found".
+`-T` / `--template` matches a `[workflow_pack]` query in config first (case-insensitive), then cached built-ins. Pack queries are not written into `.tracker-cache/`. Built-ins still resolve from the **local cache** — run `track cache refresh` if no pack defines the name, or `-T` fails with "Template not found". Cached built-ins are backend-scoped: the cache records the backend that wrote it, and `workflow list` / `-T` resolution only use templates matching the selected backend; a cache refreshed for another backend is ignored, not leaked.
 
 ```toml
 [workflow_pack]
@@ -662,6 +673,23 @@ Availability and meaning vary by backend:
 | `high_priority` | ✓ (Critical/Major) | ✓ (Highest/High) | — | ✓ (`priority::high` label) | ✓ (High) |
 | `in_progress` | ✓ | ✓ | — | — | ✓ |
 | GitHub extras | | | `enhancements`, `no_assignee` | | |
+
+**Pack validation & precedence**: one pack is selected whole — `--config` / `TRACKER_CONFIG`, else `./.track.toml`, else `~/.tracker-cli/.track.toml`; a project pack shadows the global one. Query names must be lowercase snake_case (`^[a-z][a-z0-9_]*$`), unique within the pack (case-insensitive), with non-empty name/description/query; semantic errors (empty name, duplicates, unknown keys) fail `-T` search and `workflow` commands with a nonzero exit instead of silently falling back to built-ins. `shadows_builtin` is a warning, not an error. Cache behavior: pack queries are never written into `.tracker-cache/`; cached built-ins are backend-scoped (see above).
+
+### GitLab write-side assignees
+
+`issue create`/`update` `--assignee` (and the same fields in `apply` plans) accept:
+
+- `@username` or `username` — resolved case-insensitively (project members, then `GET /users?username=`)
+- numeric user id — verified via `GET /users/:id`; an unknown id fails the operation (GitLab would otherwise silently drop it)
+- `""`, `"0"`, or `"@0"` — clear assignees (sent as an empty `assignee_ids` array)
+
+```bash
+track -b gl i new -p 123 -s "Title" --assignee @username
+track -b gl i u 42 --assignee 7
+track -b gl i u 42 --assignee ""            # clear
+```
+
 
 ---
 

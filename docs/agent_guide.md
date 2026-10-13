@@ -126,7 +126,7 @@ description = "Issues blocked by dependencies."
 query = "project: {PROJECT} #Unresolved tag: blocked"
 ```
 
-Query names are lowercase snake_case (`^[a-z][a-z0-9_]*$`). Only exact `{PROJECT}` is substituted (`--project`, then pack `default_project`, then config `default_project`). One pack is selected whole: `--config` / `TRACKER_CONFIG`, else `./.track.toml`, else `~/.tracker-cli/.track.toml`. Pack queries win over cached built-ins on name collision; `track workflow validate` warns `shadows_builtin`. An invalid pack fails `-T` search and `workflow` commands (no silent built-in fallback). Packs are not written into `.tracker-cache/`.
+Query names are lowercase snake_case (`^[a-z][a-z0-9_]*$`). Only exact `{PROJECT}` is substituted (`--project`, then pack `default_project`, then config `default_project`). One pack is selected whole: `--config` / `TRACKER_CONFIG`, else `./.track.toml`, else `~/.tracker-cli/.track.toml`; a project pack shadows the global one. Pack queries win over cached built-ins on name collision; `track workflow validate` warns `shadows_builtin`. An invalid pack fails `-T` search and `workflow` commands (no silent built-in fallback). Packs are not written into `.tracker-cache/`. Cached built-ins are backend-scoped: the cache records the backend that wrote it, and `workflow list` / `-T` resolution only use templates matching the selected backend (a cache refreshed for another backend is ignored, not leaked).
 
 ```bash
 track workflow list                 # Pack queries, then unshadowed built-ins
@@ -618,6 +618,14 @@ track -b gl i s "labels=bug"
 # By assignee (`@me` / `me` → scope=assigned_to_me; otherwise assignee_username[])
 track -b gl i s "assignee_username=@me"
 track -b gl i s "assignee_username=username"
+
+# GitLab write-side assignees (`issue create`/`update`, `apply`):
+#   @username or username   → resolved case-insensitively (project members, then /users)
+#   numeric user id         → verified via GET /users/:id; unknown ids fail the operation
+#   "" / "0" / "@0"         → clear assignees (empty assignee_ids array)
+track -b gl i u 42 --assignee @username
+track -b gl i u 42 --assignee 7
+track -b gl i u 42 --assignee ""
 
 # Recently updated
 track -b gl i s "state=opened&order_by=updated_at&sort=desc"
@@ -1179,9 +1187,20 @@ track PROJ-123
 # JSON output - for programmatic parsing
 track -o json PROJ-123
 track --format json p ls
+
+# JSONL for `issue search` / `issue inspect` - one compact object per line
+track -o jsonl i s "project: PROJ #Unresolved"
+
+# Projected JSON/JSONL for `issue search` only
+track i s "project: PROJ #Unresolved" -o json --select id_readable,summary
 ```
 
 **Always use `-o json` when parsing output programmatically.**
+
+`--select` takes comma-separated dotted paths (e.g. `id_readable,project.short_name`)
+and emits only those fields per issue; missing paths are omitted (no error). It is wired for
+`issue search` JSON/JSONL only — text mode and every other command reject the flag, and a flag
+with no usable paths is an error rather than a no-op.
 
 ---
 

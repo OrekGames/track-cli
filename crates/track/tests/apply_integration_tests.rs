@@ -778,3 +778,98 @@ id = "DEMO-1"
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ============================================================================
+// Assignee forwarding (issue create/update/apply)
+// ============================================================================
+
+fn log_entries(scenario: &Path, method: &str) -> Vec<Value> {
+    let log = fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default();
+    log.lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|entry| entry["method"].as_str() == Some(method))
+        .collect()
+}
+
+/// `apply` forwards plan assignees into the `Assignee` SingleUser custom
+/// field for both create and update ops, preserving @-prefixed, numeric, and
+/// empty-string (clear) forms verbatim for backend resolution.
+#[test]
+fn apply_forwards_assignee_to_create_and_update() {
+    let dir = temp_dir();
+    let manifest = base_manifest(
+        r#"[[responses]]
+method = "create_issue"
+file = "create_assigned.json"
+
+[[responses]]
+method = "update_issue"
+file = "update_assigned.json"
+[responses.args]
+id = "DEMO-1"
+
+[[responses]]
+method = "get_issue"
+file = "get_issue_DEMO-1.json"
+[responses.args]
+id = "DEMO-1"
+"#,
+    );
+    let mut responses = standard_responses();
+    responses.push((
+        "create_assigned.json",
+        issue_json("DEMO-100", "Assigned", "Open", "Major"),
+    ));
+    responses.push((
+        "update_assigned.json",
+        issue_json("DEMO-1", "Updated", "Open", "Major"),
+    ));
+    responses.push((
+        "get_issue_DEMO-1.json",
+        issue_json("DEMO-1", "Target", "Open", "Major"),
+    ));
+    let scenario = write_scenario(&dir, &manifest, &responses);
+
+    let plan = write_plan(
+        &dir,
+        "plan.json",
+        json!({
+            "version": 1,
+            "operations": [
+                {"op": "create_issue", "project": "DEMO", "summary": "Assigned issue",
+                 "assignee": "@alice"},
+                {"op": "update_issue", "issue": "DEMO-1", "assignee": "7"},
+                {"op": "update_issue", "issue": "DEMO-1", "assignee": ""}
+            ]
+        }),
+    );
+
+    track_in(&dir, &scenario)
+        .args(["-o", "json", "apply"])
+        .arg(&plan)
+        .assert()
+        .success();
+
+    let updates = log_entries(&scenario, "update_issue");
+    let custom_fields: Vec<&str> = updates
+        .iter()
+        .map(|entry| entry["args"]["custom_fields"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        custom_fields.iter().any(|cf| cf.contains("Assignee=7")),
+        "numeric assignee must be forwarded verbatim, got {custom_fields:?}"
+    );
+    assert!(
+        custom_fields.contains(&"Assignee="),
+        "empty assignee must arrive as an empty-login Assignee field (clear request), got {custom_fields:?}"
+    );
+
+    let creates = log_entries(&scenario, "create_issue");
+    assert!(
+        !creates.is_empty(),
+        "create with assignee must be issued; log: {}",
+        fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default()
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

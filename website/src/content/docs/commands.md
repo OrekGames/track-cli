@@ -39,6 +39,12 @@ track issue search "project: PROJ #Unresolved" --limit 20
 track i s "project: PROJ State: Open"
 track i s --template unresolved --project PROJ  # Use query template
 track i s "project: PROJ #Unresolved" --all     # Fetch all pages
+track i s "project: PROJ #Unresolved" -o json --select id_readable,summary  # Projected JSON
+track i s "project: PROJ #Unresolved" -o jsonl                               # JSON Lines
+
+`--select` (JSON/JSONL only) takes comma-separated dotted paths and emits only
+those fields per issue; missing paths are omitted. It is rejected in text mode
+and for any command other than `issue search`.
 
 # Inspect many issues with opt-in context
 track issue inspect PROJ-1,PROJ-2,PROJ-3 -o json
@@ -267,6 +273,24 @@ track workflow validate             # Collision is a warning; semantic errors ex
 `{valid, source, errors, warnings:[{code, query, message}]}`. See
 [configuration](/configuration/#workflow-packs) for the `[workflow_pack]`
 schema.
+
+Cached built-in templates are backend-scoped: `workflow list` only shows cache
+templates whose backend matches the selected one, and a cache written by
+another backend is ignored rather than leaked. Pack queries always list and
+keep winning on name collisions (shadowing).
+
+### GitLab assignees
+
+GitLab `issue create`/`update` `--assignee` (and the same field in `apply`
+plans) accepts `@username`/`username` (resolved case-insensitively), a numeric
+user id (verified server-side; unknown ids fail the operation instead of being
+silently dropped), and `""`/`"0"`/`"@0"` to clear assignees:
+
+```bash
+track -b gl i u 42 --assignee @username
+track -b gl i u 42 --assignee 7
+track -b gl i u 42 --assignee ""            # clear
+```
 
 ## Context (aggregated project context)
 

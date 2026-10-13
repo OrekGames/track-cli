@@ -760,3 +760,134 @@ fn workflow_commands_run_offline_without_credentials() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// =============================================================================
+// Cache isolation: built-ins must be scoped to the selected backend
+// =============================================================================
+
+/// Seed a local cache whose backend metadata and templates can be scripted.
+fn seed_scripted_cache(dir: &Path, backend_type: &str, templates: &str) {
+    let cache = dir.join(".tracker-cache");
+    fs::create_dir_all(cache.join("backend")).unwrap();
+    fs::write(
+        cache.join("index.json"),
+        format!(
+            r#"{{
+  "version": 2,
+  "updated_at": "2026-01-01T00:00:00Z",
+  "backend_metadata": {{
+    "backend_type": "{backend_type}",
+    "base_url": "https://mock.test"
+  }},
+  "default_project": "DEMO"
+}}
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(cache.join("backend/query_templates.json"), templates).unwrap();
+}
+
+/// A cache written by another backend must not leak its built-in templates
+/// into `workflow list` for the selected backend; pack queries still list.
+#[test]
+fn workflow_list_ignores_cache_from_other_backend() {
+    let dir = temp_dir();
+    let pack = dir.join(".track.toml");
+    write_config(&pack, ready_pack_toml());
+    seed_youtrack_builtin_cache(&dir);
+
+    // Same backend as the cache: built-ins list alongside the pack.
+    let same = track_in(&dir)
+        .args(["-o", "json"])
+        .args(["-b", "youtrack", "workflow", "list"])
+        .output()
+        .unwrap();
+    assert!(
+        same.status.success(),
+        "workflow list with matching cache backend must succeed, got: {}",
+        combined_output(&same)
+    );
+    let same_json = parse_json_stdout(&same);
+    assert!(
+        json_mentions_name(&same_json, "unresolved"),
+        "matching backend must list the cached built-in, got {same_json}"
+    );
+
+    // Different backend: the youtrack cache must not leak built-ins.
+    let other = track_in(&dir)
+        .args(["-o", "json"])
+        .args(["-b", "jira", "workflow", "list"])
+        .output()
+        .unwrap();
+    assert!(
+        other.status.success(),
+        "workflow list with a foreign cache must still succeed offline, got: {}",
+        combined_output(&other)
+    );
+    let other_json = parse_json_stdout(&other);
+    assert!(
+        !json_mentions_name(&other_json, "unresolved"),
+        "youtrack cache built-ins must not leak into -b jira workflow list, got {other_json}"
+    );
+    assert!(
+        json_mentions_name(&other_json, "ready") && json_mentions_name(&other_json, "blocked"),
+        "pack queries must still list under the selected backend, got {other_json}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Even when the cache index matches the selected backend, individual cached
+/// templates are filtered by their own backend field.
+#[test]
+fn workflow_list_filters_cached_templates_by_backend_field() {
+    let dir = temp_dir();
+    let pack = dir.join(".track.toml");
+    write_config(&pack, ready_pack_toml());
+    seed_scripted_cache(
+        &dir,
+        "youtrack",
+        r#"[
+  {
+    "name": "unresolved",
+    "description": "All unresolved issues in project",
+    "query": "project: {PROJECT} #Unresolved",
+    "backend": "youtrack"
+  },
+  {
+    "name": "gitlab_only",
+    "description": "GitLab-specific query",
+    "query": "state=opened",
+    "backend": "gitlab"
+  }
+]
+"#,
+    );
+
+    let output = track_in(&dir)
+        .args(["-o", "json"])
+        .args(["-b", "youtrack", "workflow", "list"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "workflow list must succeed, got: {}",
+        combined_output(&output)
+    );
+    let json = parse_json_stdout(&output);
+    assert!(
+        json_mentions_name(&json, "unresolved"),
+        "youtrack template from a youtrack cache must list, got {json}"
+    );
+    assert!(
+        !json_mentions_name(&json, "gitlab_only"),
+        "a gitlab-backend template must be filtered out of -b youtrack list, got {json}"
+    );
+    assert!(
+        json_mentions_name(&json, "ready"),
+        "pack queries must still list, got {json}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

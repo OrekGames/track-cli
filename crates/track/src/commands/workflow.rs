@@ -72,7 +72,7 @@ fn handle_list(
 ) -> Result<()> {
     let loaded = require_valid_workflow_pack(explicit_config)?;
     let compiled = TrackerCache::get_query_templates(&backend.to_string());
-    let cached = load_cached_templates();
+    let cached = load_cached_templates(&backend.to_string());
     let items = list_items(loaded.as_ref(), cached.as_deref(), &compiled);
 
     match format {
@@ -246,13 +246,31 @@ fn list_items(
     items
 }
 
-fn load_cached_templates() -> Option<Vec<CachedQueryTemplate>> {
+/// Load cached built-in templates that belong to `backend`.
+///
+/// The cache is shared across backends (one directory per project/global
+/// root), so templates must be isolated before display: the cache index's
+/// backend metadata must match the selected backend, and each cached
+/// template's `backend` field must match as well. A cache written for another
+/// backend is ignored rather than leaking foreign queries into `workflow
+/// list`.
+fn load_cached_templates(backend: &str) -> Option<Vec<CachedQueryTemplate>> {
     let mut cache = TrackerCache::load(None).ok()?;
     cache.ensure_backend_shards().ok()?;
-    if cache.query_templates.is_empty() {
+    if let Some(metadata) = &cache.backend_metadata
+        && !metadata.backend_type.eq_ignore_ascii_case(backend)
+    {
+        return None;
+    }
+    let templates: Vec<CachedQueryTemplate> = cache
+        .query_templates
+        .into_iter()
+        .filter(|template| template.backend.eq_ignore_ascii_case(backend))
+        .collect();
+    if templates.is_empty() {
         None
     } else {
-        Some(cache.query_templates)
+        Some(templates)
     }
 }
 

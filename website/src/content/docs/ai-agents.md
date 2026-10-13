@@ -153,6 +153,22 @@ track i s -T ready -p PROJ
 `track context` includes the pack with unexpanded queries and marks pack
 templates as higher precedence. An invalid pack fails pack-consuming commands
 (`issue search -T`, `workflow *`) instead of silently falling back to built-ins.
+Cached built-ins are backend-scoped: the cache records the backend that wrote
+it, and `workflow list` / `-T` resolution only use templates matching the
+selected backend — a cache refreshed for another backend is ignored, not
+leaked.
+
+## Search projection (`--select`)
+
+`issue search` accepts `--select` in JSON/JSONL mode: comma-separated dotted
+paths (`--select id_readable,project.short_name`) emit only those fields per
+issue; missing paths are omitted. Text mode and every other command reject the
+flag, so a projected, minimal shape is always explicit:
+
+```bash
+track i s "project: PROJ #Unresolved" -o json --select id_readable,summary
+track i s "project: PROJ #Unresolved" -o jsonl --select id_readable,summary
+```
 
 ## Workflow hints
 

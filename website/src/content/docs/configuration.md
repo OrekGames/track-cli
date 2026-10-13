@@ -191,6 +191,11 @@ Rules:
   pack are an error. An invalid pack fails `-T` search and `workflow` commands.
 - The section is preserved by `config set` / `Config::save`, but it is not
   editable via `track config set`. Packs are not written into `.tracker-cache/`.
+- Cached built-ins are backend-scoped: the cache records the backend that wrote
+  it, and `workflow list` / `-T` resolution only use templates matching the
+  selected backend. A cache refreshed for another backend is ignored, not
+  leaked — run `track cache refresh` after switching backends. A project pack
+  shadows the global one and its queries always win on name collision.
 
 ## Environment variables
 
