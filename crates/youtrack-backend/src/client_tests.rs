@@ -910,6 +910,13 @@ mod tests {
         assert_eq!(attachments[1].name, "image.png");
     }
 
+    struct TempDirGuard(PathBuf);
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[tokio::test]
     async fn test_add_article_attachment_uses_upload_multipart_field() {
         let mock_server = MockServer::start().await;
@@ -917,6 +924,7 @@ mod tests {
             "track-youtrack-article-attachment-{}",
             std::process::id()
         ));
+        let _guard = TempDirGuard(dir.clone());
         let file = dir.join("article.txt");
         let dir_clone = dir.clone();
         let file_clone = file.clone();
@@ -962,11 +970,6 @@ mod tests {
 
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].name, "article.txt");
-        tokio::task::spawn_blocking(move || {
-            std::fs::remove_dir_all(dir).unwrap();
-        })
-        .await
-        .unwrap();
     }
 
     #[tokio::test]
