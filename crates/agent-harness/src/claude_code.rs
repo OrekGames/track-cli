@@ -176,7 +176,10 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
     let events = parse_stream_output(stdout, config.verbose)?;
 
     // Wait for completion
-    child.wait().context("Failed to wait for Claude Code")?;
+    let status = child.wait().context("Failed to wait for Claude Code")?;
+    if !status.success() {
+        anyhow::bail!("Claude Code CLI exited with non-zero status: {status}");
+    }
 
     // Extract commands from events
     let commands_executed = extract_commands(&events);
