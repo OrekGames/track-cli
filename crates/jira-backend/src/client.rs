@@ -653,17 +653,19 @@ impl JiraClient {
     /// available on the issue's current workflow step.
     pub fn resolve_transition_id(&self, issue_key: &str, target_status: &str) -> Result<String> {
         let target = target_status.trim();
-        let target_lower = target.to_lowercase();
         let target_is_ascii = target.is_ascii();
         let transitions = self.list_transitions(issue_key)?;
 
+        let mut target_lower: Option<String> = None;
+
         // Helper to check case-insensitive match without unnecessary allocations
         // when both strings are ASCII, falling back to Unicode lowercasing otherwise.
-        let is_match = |name: &str| {
+        let mut is_match = |name: &str| {
             if target_is_ascii && name.is_ascii() {
                 name.eq_ignore_ascii_case(target)
             } else {
-                name.to_lowercase() == target_lower
+                let tl = target_lower.get_or_insert_with(|| target.to_lowercase());
+                &name.to_lowercase() == tl
             }
         };
 
