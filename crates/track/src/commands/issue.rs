@@ -5,6 +5,7 @@ use crate::output::{
 };
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
+use std::borrow::Cow;
 use tracker_core::{
     CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
     canonical_field_name, get_max_results, unicode_eq_ignore_case,
@@ -1514,8 +1515,6 @@ fn handle_state_transition(
 // ============================================================================
 // Batch Operations
 // ============================================================================
-
-use std::borrow::Cow;
 
 /// Result of a batch operation on a single issue
 #[derive(Clone, serde::Serialize)]
