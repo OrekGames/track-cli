@@ -2397,3 +2397,38 @@ mod tests {
         assert_eq!(events.len(), 1);
     }
 }
+
+#[cfg(test)]
+mod resolve_field_info_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_field_info_keeps_first_duplicate() {
+        let fields = vec![
+            JiraField {
+                id: "customfield_100".to_string(),
+                name: "Duplicate Field".to_string(),
+                custom: true,
+                schema: Some(JiraFieldSchema {
+                    field_type: "string".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+            JiraField {
+                id: "customfield_101".to_string(),
+                name: "Duplicate Field".to_string(),
+                custom: true,
+                schema: Some(JiraFieldSchema {
+                    field_type: "number".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+        ];
+
+        let result = resolve_field_info(&fields, "Duplicate Field");
+        let (id, _) = result.expect("Should resolve the duplicate field");
+        assert_eq!(id, "customfield_100");
+    }
+}
