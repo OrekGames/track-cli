@@ -833,7 +833,10 @@ fn resolve_field_info<'a>(
 
     if let Some(id) = target_id {
         // Find by mapped ID to retrieve the schema if present.
-        let schema = fields.iter().find(|f| f.id == id).and_then(|f| f.schema.as_ref());
+        let schema = fields
+            .iter()
+            .find(|f| f.id == id)
+            .and_then(|f| f.schema.as_ref());
         return Some((id, schema));
     }
 
