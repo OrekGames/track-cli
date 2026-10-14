@@ -6,6 +6,7 @@
 //! without requiring it request permissions. Use caution when running it against
 //! your local machine.
 
+use crate::permissions::format_allowed_bash_pattern;
 use crate::runner::{CommandExecution, SessionResult};
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -150,7 +151,7 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
         "stream-json",
         "--verbose", // Required for stream-json with --print
         "--allowedTools",
-        &format!("Bash({} *)", track_bin),
+        &format_allowed_bash_pattern(&track_bin),
         "--append-system-prompt",
         &system_prompt,
         "--dangerously-skip-permissions",

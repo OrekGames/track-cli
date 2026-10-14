@@ -548,7 +548,18 @@ track i s "project: PROJ #Unresolved" --all             # Fetch ALL results
 track -o json i s "project: PROJ" --all                 # All results as JSON
 track i comments PROJ-1 --all                           # All comments (default is only 10!)
 TRACK_MAX_RESULTS=5000 track i s "project: PROJ" --all  # Override safety cap
+track i s "project: PROJ" -o json --select id_readable,summary                # Projected JSON
+track i s "project: PROJ" -o jsonl --select id_readable,project.short_name   # JSON Lines
 ```
+
+### `--select` projection (JSON/JSONL only)
+
+`--select` takes comma-separated dotted paths and emits only those fields per issue
+(`issue search` only): `--select id_readable,summary` → `[{"id_readable": "PROJ-1", "summary": "..."}, ...]`.
+Missing paths are omitted from the record (no error, no `null`). Restrictions: rejected in text
+mode, rejected for any command other than `issue search`, and a flag with no usable paths is an
+error rather than a no-op. JSONL is root-aware: the array emits one record per line; nested
+arrays stay inside their record.
 
 ---
 
@@ -627,10 +638,25 @@ Jira fragments above must be embedded in a full query containing `=`/`AND`/`OR` 
 
 ### Query Templates
 
-Templates resolve from the **local cache** — run `track cache refresh` first, or `-T` fails with "Template not found".
+`-T` / `--template` matches a `[workflow_pack]` query in config first (case-insensitive), then cached built-ins. Pack queries are not written into `.tracker-cache/`. Built-ins still resolve from the **local cache** — run `track cache refresh` if no pack defines the name, or `-T` fails with "Template not found". Cached built-ins are backend-scoped: the cache records the backend that wrote it, and `workflow list` / `-T` resolution only use templates matching the selected backend; a cache refreshed for another backend is ignored, not leaked.
+
+```toml
+[workflow_pack]
+name = "Orek backlog"
+default_project = "PROJ"
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Issues ready for implementation."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+```
 
 ```bash
-track i s -T unresolved -p PROJ     # All unresolved issues
+track workflow list                 # Pack first, then unshadowed built-ins (offline)
+track workflow show                 # Selected pack + source
+track workflow validate             # Offline; shadows_builtin is a warning
+track i s -T ready -p PROJ          # Pack query when defined
+track i s -T unresolved -p PROJ     # All unresolved issues (or pack override)
 track i s -T my_issues -p PROJ      # Assigned to current user
 track i s -T recent -p PROJ         # Recently updated
 track i s -T high_priority -p PROJ  # High-priority issues
@@ -647,6 +673,23 @@ Availability and meaning vary by backend:
 | `high_priority` | ✓ (Critical/Major) | ✓ (Highest/High) | — | ✓ (`priority::high` label) | ✓ (High) |
 | `in_progress` | ✓ | ✓ | — | — | ✓ |
 | GitHub extras | | | `enhancements`, `no_assignee` | | |
+
+**Pack validation & precedence**: one pack is selected whole — `--config` / `TRACKER_CONFIG`, else `./.track.toml`, else `~/.tracker-cli/.track.toml`; a project pack shadows the global one. Query names must be lowercase snake_case (`^[a-z][a-z0-9_]*$`), unique within the pack (case-insensitive), with non-empty name/description/query; semantic errors (empty name, duplicates, unknown keys) fail `-T` search and `workflow` commands with a nonzero exit instead of silently falling back to built-ins. `shadows_builtin` is a warning, not an error. Cache behavior: pack queries are never written into `.tracker-cache/`; cached built-ins are backend-scoped (see above).
+
+### GitLab write-side assignees
+
+`issue create`/`update` `--assignee` (and the same fields in `apply` plans) accept:
+
+- `@username` or `username` — resolved case-insensitively (project members, then `GET /users?username=`)
+- numeric user id — verified via `GET /users/:id`; an unknown id fails the operation (GitLab would otherwise silently drop it)
+- `""`, `"0"`, or `"@0"` — clear assignees (sent as an empty `assignee_ids` array)
+
+```bash
+track -b gl i new -p 123 -s "Title" --assignee @username
+track -b gl i u 42 --assignee 7
+track -b gl i u 42 --assignee ""            # clear
+```
+
 
 ---
 
@@ -686,7 +729,7 @@ track context --issue-limit 25       # Limit issues (default: 10)
 track -o json context                # JSON for parsing
 ```
 
-**Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, query templates, assignable users, workflow hints, issue counts, recent issues.
+**Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, optional `workflow_pack`, query templates (pack first, then unshadowed built-ins), assignable users, workflow hints, issue counts (shadowed built-in names dropped), recent issues.
 
 ### Field Validation
 
@@ -758,7 +801,7 @@ Setting `TRACK_MOCK_DIR=./fixtures/scenarios/<name>` routes **every** command to
 4. **Issue shortcut**: `track PROJ-123` = `track issue get PROJ-123` (one-dash IDs only; flags go before the ID; only `--full` works after it)
 5. **Default project**: `track config set default_project PROJ` to skip `-p` flag
 6. **Field discovery**: `track -o json p f PROJ`, `track cache show`, or `track context -p PROJ` list custom fields with valid values (plain `track p f` text output omits the values)
-7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, query templates, issue counts, and articles — and is required before `-T` templates work
+7. **Cache context**: `track cache refresh` fetches projects, fields, users, link types, built-in query templates, issue counts, and articles. `-T` prefers `[workflow_pack]` in `.track.toml`; built-ins still need the cache. Use `track workflow list|show|validate` offline.
 8. **Pagination**: `--all` caps at 1000 (override `TRACK_MAX_RESULTS`); comments commands default to `--limit 10` and have no `--skip`
 9. **GitHub limitations**: No issue delete (close instead), no general issue links (only subtask/parent; use `#N` references); articles work via repo wiki (no article comments)
 10. **GitLab limitations**: No project creation; query filters limited to `state`/`labels`/`search`; articles work via wiki (no article comments)

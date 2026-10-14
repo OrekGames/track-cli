@@ -15,7 +15,7 @@ pub struct JiraClient {
     auth_header: String,
     link_mappings: HashMap<String, String>,
     /// Cached instance-level field metadata (lazy-loaded)
-    field_cache: Mutex<Option<Vec<JiraField>>>,
+    pub(crate) field_cache: Mutex<Option<Vec<JiraField>>>,
 }
 
 impl JiraClient {
@@ -510,7 +510,7 @@ impl JiraClient {
     /// Get field metadata, using a cached copy if available.
     /// Falls back to an empty list on error (graceful degradation).
     pub fn get_fields_cached(&self) -> Vec<JiraField> {
-        let mut cache = self.field_cache.lock().unwrap();
+        let mut cache = self.field_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref fields) = *cache {
             return fields.clone();
         }
@@ -652,17 +652,23 @@ impl JiraClient {
     /// Resolve a user-provided status name (case-insensitive) to a transition id
     /// available on the issue's current workflow step.
     pub fn resolve_transition_id(&self, issue_key: &str, target_status: &str) -> Result<String> {
-        let target = target_status.trim().to_lowercase();
+        let target = target_status.trim();
+        let target_lower = target.to_lowercase(); // once per resolver call
+        let matches_target = |name: &str| {
+            if name.is_ascii() && target.is_ascii() {
+                name.eq_ignore_ascii_case(target)
+            } else {
+                name.to_lowercase() == target_lower
+            }
+        };
+
         let transitions = self.list_transitions(issue_key)?;
 
         // Prefer exact match on the target status name, fall back to transition name.
-        if let Some(t) = transitions
-            .iter()
-            .find(|t| t.to.name.to_lowercase() == target)
-        {
+        if let Some(t) = transitions.iter().find(|t| matches_target(&t.to.name)) {
             return Ok(t.id.clone());
         }
-        if let Some(t) = transitions.iter().find(|t| t.name.to_lowercase() == target) {
+        if let Some(t) = transitions.iter().find(|t| matches_target(&t.name)) {
             return Ok(t.id.clone());
         }
 

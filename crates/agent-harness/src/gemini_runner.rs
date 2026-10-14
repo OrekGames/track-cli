@@ -4,6 +4,7 @@
 //! This allows testing how Gemini performs on scenarios using the track CLI.
 //! Uses Gemini's stream-json output format for structured event parsing.
 
+use crate::permissions::format_allowed_bash_pattern;
 use crate::runner::{CommandExecution, SessionResult};
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -152,7 +153,7 @@ pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<GeminiRunnerResult> {
         "stream-json", // Structured JSON output
         "--yolo",      // Auto-approve all tools
         "--allowed-tools",
-        &format!("Bash({} *)", track_bin), // Only allow track CLI
+        &format_allowed_bash_pattern(&track_bin), // Only allow track CLI
     ]);
 
     // Set environment - route track commands through mock

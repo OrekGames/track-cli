@@ -344,6 +344,9 @@ track i new -p PROJ -s "Title" --field "Priority=Major" --validate
 track issue update PROJ-123 --summary "New title"
 track i u PROJ-123 --field "Priority=Critical"
 track i u PROJ-1,PROJ-2,PROJ-3 --field "Priority=Major"  # Batch update
+track i u PROJ-123 --assignee @username     # GitLab: @-prefixed username (case-insensitive)
+track i u PROJ-123 --assignee 7            # GitLab: numeric user id (verified server-side)
+track i u PROJ-123 --assignee ""            # Clear assignees (GitLab also accepts "0" or "@0")
 
 # State transitions (single or batch)
 track issue start PROJ-123              # In progress
@@ -356,6 +359,12 @@ track issue search "project: PROJ #Unresolved" --limit 20
 track i s "project: PROJ State: Open"
 track i s --template unresolved --project PROJ  # Use query template
 track i s "project: PROJ #Unresolved" --all     # Fetch all pages
+track i s "project: PROJ #Unresolved" -o json --select id_readable,summary  # Projected JSON
+track i s "project: PROJ #Unresolved" -o jsonl --select id_readable,summary  # JSON Lines
+
+`--select` (JSON/JSONL only) takes comma-separated dotted paths (e.g. `id_readable,project.short_name`)
+and emits only those fields per issue; missing paths are omitted. It is rejected in text mode and
+for any command other than `issue search`.
 
 # Inspect many issues at once (per-issue success/failure, opt-in context)
 track issue inspect PROJ-1,PROJ-2,PROJ-3 -o json
@@ -567,6 +576,44 @@ The cache stores comprehensive tracker context for fast lookups:
 - Query templates for both backends
 - Issue counts per project and query template
 - Recently accessed issues (LRU, max 50)
+
+Cached built-in templates are backend-scoped: the cache records which backend wrote it, and
+`workflow list` / template resolution only expose templates whose backend matches the selected
+one. A repository workflow pack (`[workflow_pack]` in `.track.toml`) takes precedence over
+cache-built-ins on name collision (shadowing); pack queries are never written into the cache.
+Run `track cache refresh` after switching backends.
+
+### Workflow Packs
+
+A `[workflow_pack]` in `.track.toml` defines project-local query templates:
+
+```toml
+[workflow_pack]
+name = "Orek backlog"
+default_project = "PROJ"
+
+[[workflow_pack.queries]]
+name = "ready"
+description = "Issues ready for implementation."
+query = "project: {PROJECT} #Unresolved State: {Ready}"
+```
+
+```bash
+track workflow list      # Pack queries first, then unshadowed cached built-ins (offline)
+track workflow show      # Selected pack, source, and queries
+track workflow validate  # Offline; shadows_builtin is a warning, semantic errors fail
+track i s -T ready -p PROJ
+```
+
+- One pack is selected whole: `--config`/`TRACKER_CONFIG`, else `./.track.toml`, else
+  `~/.tracker-cli/.track.toml`. Project config shadows the global config.
+- Query names must be lowercase snake_case (`^[a-z][a-z0-9_]*$`), unique within the pack
+  (case-insensitive), with non-empty name/description/query. Only exact `{PROJECT}` is
+  substituted (`--project`, then pack `default_project`, then config `default_project`).
+- A pack query shadows the same-named built-in (`validate` warns `shadows_builtin`); pack
+  queries always win over cached built-ins. Packs are never written into the cache.
+- An invalid pack fails pack-consuming commands (`-T` search, `workflow` commands) instead
+  of silently falling back to built-ins; ordinary commands like `issue get` are unaffected.
 
 ### Context (AI-Optimized)
 

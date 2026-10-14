@@ -589,23 +589,17 @@ pub fn update_issue_to_jira(
         .as_ref()
         .map(|d| markdown_to_adf_document(d));
 
-    let priority = update.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleEnum { name, value } if name.eq_ignore_ascii_case("priority") => {
-            Some(PriorityId {
-                id: None,
-                name: Some(value.clone()),
-            })
-        }
-        _ => None,
+    let fields = update.common_fields();
+    let priority_val = fields.priority;
+    let assignee_val = fields.assignee;
+
+    let priority = priority_val.map(|value| PriorityId {
+        id: None,
+        name: Some(value.clone()),
     });
 
-    let assignee = update.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::SingleUser { name, login } if name.eq_ignore_ascii_case("assignee") => {
-            Some(AssigneeId {
-                account_id: Some(login.clone()),
-            })
-        }
-        _ => None,
+    let assignee = assignee_val.map(|login| AssigneeId {
+        account_id: Some(login.clone()),
     });
 
     let extra = resolve_extra_fields(&update.custom_fields, jira_fields, UPDATE_HANDLED_FIELDS)?;

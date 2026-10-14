@@ -32,6 +32,34 @@ fn parse_issue_iid(id: &str) -> std::result::Result<u64, TrackerError> {
     })
 }
 
+fn assignee_login(fields: &[tracker_core::CustomFieldUpdate]) -> Option<&str> {
+    fields.iter().find_map(|field| match field {
+        tracker_core::CustomFieldUpdate::SingleUser { name, login }
+            if name.eq_ignore_ascii_case("assignee") =>
+        {
+            Some(login.as_str())
+        }
+        _ => None,
+    })
+}
+
+/// Resolve the assignee custom field into `assignee_ids` for the GitLab API.
+///
+/// GitLab ignores unknown ids in `assignee_ids` (creates succeed with no
+/// assignee), so ids must be resolved and verified up front. `None` means no
+/// assignee field was sent (do not touch assignees); `Some(Vec::new())` is an
+/// explicit request to clear assignees (`""`, `"0"`, or `"@0"`).
+fn assignee_ids(
+    client: &GitLabClient,
+    fields: &[tracker_core::CustomFieldUpdate],
+) -> std::result::Result<Option<Vec<u64>>, TrackerError> {
+    match assignee_login(fields) {
+        None => Ok(None),
+        Some("") | Some("0") | Some("@0") => Ok(Some(Vec::new())),
+        Some(login) => Ok(Some(vec![client.find_user_id(login)?])),
+    }
+}
+
 impl IssueTracker for GitLabClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
         let iid = parse_issue_iid(id)?;
@@ -95,12 +123,13 @@ impl IssueTracker for GitLabClient {
         } else {
             Some(issue.tags.join(","))
         };
+        let assignee_ids = assignee_ids(self, &issue.custom_fields)?;
 
         let create = CreateGitLabIssue {
             title: issue.summary.clone(),
             description: issue.description.clone(),
             labels,
-            assignee_ids: None,
+            assignee_ids,
             milestone_id: None,
             // GitLab's work item hierarchy requires child items to be Task type
             issue_type: if issue.parent.is_some() {
@@ -149,13 +178,14 @@ impl IssueTracker for GitLabClient {
         } else {
             Some(update.tags.join(","))
         };
+        let assignee_ids = assignee_ids(self, &update.custom_fields)?;
 
         let gitlab_update = UpdateGitLabIssue {
             title: update.summary.clone(),
             description: update.description.clone(),
             labels,
             state_event,
-            assignee_ids: None,
+            assignee_ids,
             milestone_id: None,
         };
 

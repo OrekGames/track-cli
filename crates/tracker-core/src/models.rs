@@ -262,9 +262,19 @@ pub const FIELD_STATUS: &str = "status";
 /// callers can filter portably. All other field names are returned trimmed but
 /// otherwise unchanged, preserving their display casing.
 pub fn canonical_field_name(raw: &str) -> String {
-    match raw.trim().to_lowercase().as_str() {
-        "status" | "state" => FIELD_STATUS.to_string(),
-        _ => raw.trim().to_string(),
+    let trimmed = raw.trim();
+    // ASCII fast path: covers virtually all real field names without paying
+    // for Unicode case folding. Non-ASCII inputs fall back to the
+    // Unicode-aware comparison.
+    if (trimmed.is_ascii() && trimmed.eq_ignore_ascii_case("status"))
+        || (trimmed.is_ascii() && trimmed.eq_ignore_ascii_case("state"))
+        || (!trimmed.is_ascii()
+            && (crate::unicode_eq_ignore_case(trimmed, "status")
+                || crate::unicode_eq_ignore_case(trimmed, "state")))
+    {
+        FIELD_STATUS.to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -693,5 +703,112 @@ mod tests {
         let result = SearchResult::with_total(vec![1, 2, 3], 100);
         assert_eq!(result.items, vec![1, 2, 3]);
         assert_eq!(result.total, Some(100));
+    }
+}
+
+/// Common fields (state, priority, assignee) extracted from custom fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommonFields<'a> {
+    pub state: Option<&'a String>,
+    pub priority: Option<&'a String>,
+    pub assignee: Option<&'a String>,
+}
+
+impl Issue {
+    /// Extract the commonly used state, priority, and assignee from custom
+    /// fields in a single pass. First named match wins; the assignee is the
+    /// first `SingleUser` field whose name is `assignee` (case-insensitive).
+    pub fn common_fields(&self) -> CommonFields<'_> {
+        let mut fields = CommonFields::default();
+        for cf in &self.custom_fields {
+            match cf {
+                CustomField::State { value, .. } if fields.state.is_none() => {
+                    fields.state = value.as_ref();
+                }
+                CustomField::SingleEnum { name, value }
+                    if fields.priority.is_none() && name.eq_ignore_ascii_case("priority") =>
+                {
+                    fields.priority = value.as_ref();
+                }
+                CustomField::SingleUser { name, login, .. }
+                    if fields.assignee.is_none() && name.eq_ignore_ascii_case("assignee") =>
+                {
+                    fields.assignee = login.as_ref();
+                }
+                _ => {}
+            }
+            if fields.state.is_some() && fields.priority.is_some() && fields.assignee.is_some() {
+                break;
+            }
+        }
+        fields
+    }
+}
+
+#[cfg(test)]
+mod update_common_fields_tests {
+    use super::*;
+
+    #[test]
+    fn update_common_fields_assignee_requires_name_match() {
+        let update = UpdateIssue {
+            custom_fields: vec![
+                CustomFieldUpdate::SingleUser {
+                    name: "Reporter".to_string(),
+                    login: "wrong-user".to_string(),
+                },
+                CustomFieldUpdate::SingleUser {
+                    name: "Assignee".to_string(),
+                    login: "right-user".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        let fields = update.common_fields();
+        assert_eq!(fields.assignee.map(|s| s.as_str()), Some("right-user"));
+    }
+
+    #[test]
+    fn update_common_fields_empty_when_no_named_fields() {
+        let update = UpdateIssue {
+            custom_fields: vec![CustomFieldUpdate::SingleUser {
+                name: "Reporter".to_string(),
+                login: "someone".to_string(),
+            }],
+            ..Default::default()
+        };
+        let fields = update.common_fields();
+        assert!(fields.state.is_none());
+        assert!(fields.priority.is_none());
+        assert!(fields.assignee.is_none());
+    }
+}
+
+impl UpdateIssue {
+    /// Same extraction as [`Issue::common_fields`] for update payloads.
+    pub fn common_fields(&self) -> CommonFields<'_> {
+        let mut fields = CommonFields::default();
+        for cf in &self.custom_fields {
+            match cf {
+                CustomFieldUpdate::State { value, .. } if fields.state.is_none() => {
+                    fields.state = Some(value);
+                }
+                CustomFieldUpdate::SingleEnum { name, value }
+                    if fields.priority.is_none() && name.eq_ignore_ascii_case("priority") =>
+                {
+                    fields.priority = Some(value);
+                }
+                CustomFieldUpdate::SingleUser { name, login }
+                    if fields.assignee.is_none() && name.eq_ignore_ascii_case("assignee") =>
+                {
+                    fields.assignee = Some(login);
+                }
+                _ => {}
+            }
+            if fields.state.is_some() && fields.priority.is_some() && fields.assignee.is_some() {
+                break;
+            }
+        }
+        fields
     }
 }

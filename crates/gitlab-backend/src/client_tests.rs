@@ -5,7 +5,10 @@ mod tests {
     use crate::client::GitLabClient;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tracker_core::{AttachmentUpload, AttachmentUploadFile, IssueTracker, KnowledgeBase};
+    use tracker_core::{
+        AttachmentUpload, AttachmentUploadFile, CreateIssue, CustomFieldUpdate, IssueTracker,
+        KnowledgeBase, UpdateIssue,
+    };
     use wiremock::matchers::{body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -293,6 +296,370 @@ mod tests {
 
         let issue = client.update_issue(42, &update).unwrap();
         assert_eq!(issue.title, "Updated title");
+    }
+
+    /// `CustomFieldUpdate::SingleUser` is the `--assignee` channel. GitLab write
+    /// paths must harvest it into `assignee_ids` instead of dropping it.
+    #[tokio::test]
+    async fn trait_create_and_update_send_assignee_ids() {
+        #[derive(Clone, Copy)]
+        struct Case {
+            name: &'static str,
+            method: &'static str,
+            path: &'static str,
+        }
+
+        let cases = [
+            Case {
+                name: "create",
+                method: "POST",
+                path: "/projects/123/issues",
+            },
+            Case {
+                name: "update",
+                method: "PUT",
+                path: "/projects/123/issues/42",
+            },
+        ];
+
+        let assignee = serde_json::json!({
+            "id": 7,
+            "username": "alice",
+            "name": "Alice"
+        });
+
+        for case in cases {
+            let mock_server = MockServer::start().await;
+
+            // Resolution endpoints the honor-`assignee_ids` fix can use.
+            Mock::given(method("GET"))
+                .and(path("/projects/123/members/all"))
+                .and(header("PRIVATE-TOKEN", "test-token"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!([assignee.clone()])),
+                )
+                .mount(&mock_server)
+                .await;
+
+            Mock::given(method("GET"))
+                .and(path("/projects/123/members"))
+                .and(header("PRIVATE-TOKEN", "test-token"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!([assignee.clone()])),
+                )
+                .mount(&mock_server)
+                .await;
+
+            Mock::given(method("GET"))
+                .and(path("/users"))
+                .and(header("PRIVATE-TOKEN", "test-token"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!([assignee.clone()])),
+                )
+                .mount(&mock_server)
+                .await;
+
+            Mock::given(method("GET"))
+                .and(path("/projects/123/issues/42"))
+                .and(header("PRIVATE-TOKEN", "test-token"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(mock_gitlab_issue(42, "Existing")),
+                )
+                .mount(&mock_server)
+                .await;
+
+            Mock::given(method(case.method))
+                .and(path(case.path))
+                .and(header("PRIVATE-TOKEN", "test-token"))
+                .respond_with(
+                    ResponseTemplate::new(if case.method == "POST" { 201 } else { 200 })
+                        .set_body_json(mock_gitlab_issue(42, "Assigned issue")),
+                )
+                .mount(&mock_server)
+                .await;
+
+            let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+            let field = CustomFieldUpdate::SingleUser {
+                name: "Assignee".to_string(),
+                login: "alice".to_string(),
+            };
+
+            match case.name {
+                "create" => {
+                    let created = <GitLabClient as IssueTracker>::create_issue(
+                        &client,
+                        &CreateIssue {
+                            project_id: "123".to_string(),
+                            summary: "Assigned issue".to_string(),
+                            description: None,
+                            custom_fields: vec![field],
+                            tags: vec![],
+                            parent: None,
+                        },
+                    );
+                    assert!(
+                        created.is_ok(),
+                        "{} should succeed when assignee is honored: {created:?}",
+                        case.name
+                    );
+                }
+                "update" => {
+                    let updated = <GitLabClient as IssueTracker>::update_issue(
+                        &client,
+                        "42",
+                        &UpdateIssue {
+                            custom_fields: vec![field],
+                            ..Default::default()
+                        },
+                    );
+                    assert!(
+                        updated.is_ok(),
+                        "{} should succeed when assignee is honored: {updated:?}",
+                        case.name
+                    );
+                }
+                other => panic!("unexpected case {other}"),
+            }
+
+            let requests = mock_server.received_requests().await.unwrap();
+            let write = requests.iter().find(|request| {
+                request.method.as_str() == case.method && request.url.path() == case.path
+            });
+            let write = write.unwrap_or_else(|| {
+                panic!(
+                    "{} dropped assignee: expected {} {} with assignee_ids, received {:#?}",
+                    case.name,
+                    case.method,
+                    case.path,
+                    requests
+                        .iter()
+                        .map(|request| format!("{} {}", request.method, request.url.path()))
+                        .collect::<Vec<_>>()
+                )
+            });
+
+            let body: serde_json::Value = write.body_json().unwrap_or_else(|err| {
+                panic!("{} write body is not JSON: {err}", case.name);
+            });
+            let ids = body.get("assignee_ids").and_then(|value| value.as_array());
+            let ids = ids.unwrap_or_else(|| {
+                panic!(
+                    "{} silently dropped --assignee: write body missing assignee_ids: {body}",
+                    case.name
+                )
+            });
+            assert!(
+                ids.iter().any(|id| id.as_u64() == Some(7)),
+                "{} must send resolved assignee_ids including 7, got {ids:?}",
+                case.name
+            );
+        }
+    }
+
+    /// Mount the resolution endpoints used by `find_user_id` for a member
+    /// with a mixed-case username and a specific numeric id.
+    async fn mount_user_resolution(mock_server: &MockServer, member: serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(path("/projects/123/members/all"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([member.clone()])),
+            )
+            .mount(mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/123/members"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([member])))
+            .mount(mock_server)
+            .await;
+    }
+
+    async fn mount_issue_write(
+        mock_server: &MockServer,
+        http_method: &str,
+        issue_path: &str,
+        status: u16,
+    ) {
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_gitlab_issue(42, "Existing")),
+            )
+            .mount(mock_server)
+            .await;
+        Mock::given(method(http_method))
+            .and(path(issue_path))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(mock_gitlab_issue(42, "Assigned")),
+            )
+            .mount(mock_server)
+            .await;
+    }
+
+    /// `@username` is accepted and resolved case-insensitively via project
+    /// membership (GitLab usernames are case-insensitive in practice).
+    #[tokio::test]
+    async fn trait_assignee_accepts_at_prefixed_and_mixed_case_username() {
+        let mock_server = MockServer::start().await;
+        mount_user_resolution(
+            &mock_server,
+            serde_json::json!({"id": 7, "username": "Alice", "name": "Alice"}),
+        )
+        .await;
+        mount_issue_write(&mock_server, "POST", "/projects/123/issues", 201).await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let created = <GitLabClient as IssueTracker>::create_issue(
+            &client,
+            &CreateIssue {
+                project_id: "123".to_string(),
+                summary: "Assigned issue".to_string(),
+                description: None,
+                custom_fields: vec![CustomFieldUpdate::SingleUser {
+                    name: "Assignee".to_string(),
+                    login: "@ALICE".to_string(),
+                }],
+                tags: vec![],
+                parent: None,
+            },
+        );
+        assert!(created.is_ok(), "@ALICE should resolve: {created:?}");
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let write = requests
+            .iter()
+            .find(|r| r.method.as_str() == "POST" && r.url.path() == "/projects/123/issues")
+            .expect("create must be issued");
+        let body: serde_json::Value = write.body_json().unwrap();
+        assert_eq!(
+            body["assignee_ids"],
+            serde_json::json!([7]),
+            "case-insensitive @username must resolve to the member id"
+        );
+    }
+
+    /// A numeric assignee must be verified against `GET /users/:id`; the
+    /// returned identity evidence must match, otherwise the operation fails
+    /// instead of being silently dropped by GitLab.
+    #[tokio::test]
+    async fn trait_assignee_numeric_id_is_verified_and_rejected_when_unknown() {
+        // Verified path: id 7 exists.
+        let mock_server = MockServer::start().await;
+        mount_issue_write(&mock_server, "PUT", "/projects/123/issues/42", 200).await;
+        Mock::given(method("GET"))
+            .and(path("/users/7"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7,
+                "username": "alice",
+                "name": "Alice"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let updated = <GitLabClient as IssueTracker>::update_issue(
+            &client,
+            "42",
+            &UpdateIssue {
+                custom_fields: vec![CustomFieldUpdate::SingleUser {
+                    name: "Assignee".to_string(),
+                    login: "7".to_string(),
+                }],
+                ..Default::default()
+            },
+        );
+        assert!(
+            updated.is_ok(),
+            "verified numeric id must pass: {updated:?}"
+        );
+        let requests = mock_server.received_requests().await.unwrap();
+        let write = requests
+            .iter()
+            .find(|r| r.method.as_str() == "PUT" && r.url.path() == "/projects/123/issues/42")
+            .expect("update must be issued");
+        let body: serde_json::Value = write.body_json().unwrap();
+        assert_eq!(body["assignee_ids"], serde_json::json!([7]));
+
+        // Unknown numeric id: verification 404s, no write is issued.
+        let mock_server = MockServer::start().await;
+        mount_issue_write(&mock_server, "PUT", "/projects/123/issues/42", 200).await;
+        Mock::given(method("GET"))
+            .and(path("/users/999999"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(serde_json::json!({
+                        "message": "404 User Not Found"
+                    }))
+                    .append_header("content-type", "application/json"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let updated = <GitLabClient as IssueTracker>::update_issue(
+            &client,
+            "42",
+            &UpdateIssue {
+                custom_fields: vec![CustomFieldUpdate::SingleUser {
+                    name: "Assignee".to_string(),
+                    login: "999999".to_string(),
+                }],
+                ..Default::default()
+            },
+        );
+        assert!(
+            updated.is_err(),
+            "unknown numeric id must fail instead of being silently dropped: {updated:?}"
+        );
+        let requests = mock_server.received_requests().await.unwrap();
+        assert!(
+            !requests.iter().any(|r| r.method.as_str() == "PUT"),
+            "no issue write may be issued when assignee verification fails"
+        );
+    }
+
+    /// Empty string and "0" are explicit clear-assignee requests and must be
+    /// forwarded as an empty `assignee_ids` array, not treated as a lookup.
+    #[tokio::test]
+    async fn trait_assignee_empty_and_zero_clear_assignees() {
+        for login in ["", "0", "@0"] {
+            let mock_server = MockServer::start().await;
+            mount_issue_write(&mock_server, "PUT", "/projects/123/issues/42", 200).await;
+
+            let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+            let updated = <GitLabClient as IssueTracker>::update_issue(
+                &client,
+                "42",
+                &UpdateIssue {
+                    custom_fields: vec![CustomFieldUpdate::SingleUser {
+                        name: "Assignee".to_string(),
+                        login: login.to_string(),
+                    }],
+                    ..Default::default()
+                },
+            );
+            assert!(updated.is_ok(), "clear '{login}' must succeed: {updated:?}");
+            let requests = mock_server.received_requests().await.unwrap();
+            assert!(
+                !requests.iter().any(|r| r.url.path().starts_with("/users")),
+                "clear request '{login}' must not trigger a user lookup"
+            );
+            let write = requests
+                .iter()
+                .find(|r| r.method.as_str() == "PUT" && r.url.path() == "/projects/123/issues/42")
+                .expect("update must be issued");
+            let body: serde_json::Value = write.body_json().unwrap();
+            assert_eq!(
+                body["assignee_ids"],
+                serde_json::json!([]),
+                "clear request '{login}' must send an empty assignee_ids array"
+            );
+        }
     }
 
     #[tokio::test]

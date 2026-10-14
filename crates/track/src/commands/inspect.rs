@@ -81,6 +81,7 @@ pub(crate) fn handle_inspect(
     format: OutputFormat,
     default_project: Option<&str>,
     link_mappings: &HashMap<String, String>,
+    explicit_config: Option<&Path>,
 ) -> Result<()> {
     let includes = parse_includes(args.include)?;
     let query_mode = validate_input_mode(args)?;
@@ -114,6 +115,7 @@ pub(crate) fn handle_inspect(
             args.template,
             args.project,
             default_project,
+            explicit_config,
         )?;
         let issues = if args.all {
             let res = client

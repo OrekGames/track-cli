@@ -22,6 +22,207 @@ mod tests {
         path
     }
 
+    async fn setup_mock_client(mock_server: &MockServer) -> JiraClient {
+        JiraClient::new(&mock_server.uri(), "test@example.com", "dummy_token")
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_greek_destination() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Close",
+                        "to": {
+                            "id": "done",
+                            "name": "Κλειστός"
+                        }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let id = client
+            .resolve_transition_id("TEST-123", "  ΚΛΕΙΣΤΌΣ  ")
+            .unwrap();
+        assert_eq!(id, "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_greek_name_fallback() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Κλειστός",
+                        "to": {
+                            "id": "done",
+                            "name": "Done"
+                        }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let id = client
+            .resolve_transition_id("TEST-123", "  ΚΛΕΙΣΤΌΣ  ")
+            .unwrap();
+        assert_eq!(id, "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_greek_negative_equality() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "31",
+                        "name": "Close",
+                        "to": {
+                            "id": "done",
+                            "name": "Κλειστόσ"
+                        }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let err = client
+            .resolve_transition_id("TEST-123", "ΚΛΕΙΣΤΌΣ")
+            .unwrap_err();
+        match err {
+            crate::error::JiraError::InvalidTransition {
+                requested,
+                available,
+            } => {
+                assert_eq!(requested, "ΚΛΕΙΣΤΌΣ");
+                assert_eq!(available, vec!["Κλειστόσ"]);
+            }
+            _ => panic!("Expected InvalidTransition error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_destination_precedence() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "10",
+                        "name": "Done",
+                        "to": {
+                            "id": "open",
+                            "name": "Open"
+                        }
+                    },
+                    {
+                        "id": "31",
+                        "name": "Close",
+                        "to": {
+                            "id": "done",
+                            "name": "Done"
+                        }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let id = client.resolve_transition_id("TEST-123", " done ").unwrap();
+        assert_eq!(id, "31");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_transition_id_various_cases() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "transitions": [
+                    {
+                        "id": "1",
+                        "name": "Geöffnet",
+                        "to": { "id": "1", "name": "Geöffnet" }
+                    },
+                    {
+                        "id": "2",
+                        "name": "À faire",
+                        "to": { "id": "2", "name": "À faire" }
+                    },
+                    {
+                        "id": "3",
+                        "name": "Открыто",
+                        "to": { "id": "3", "name": "Открыто" }
+                    },
+                    {
+                        "id": "4",
+                        "name": "i\u{307}",
+                        "to": { "id": "4", "name": "i\u{307}" }
+                    },
+                    {
+                        "id": "5",
+                        "name": "K",
+                        "to": { "id": "5", "name": "K" }
+                    }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+
+        assert_eq!(
+            client
+                .resolve_transition_id("TEST-123", "GEÖFFNET")
+                .unwrap(),
+            "1"
+        );
+        assert_eq!(
+            client.resolve_transition_id("TEST-123", "À FAIRE").unwrap(),
+            "2"
+        );
+        assert_eq!(
+            client.resolve_transition_id("TEST-123", "ОТКРЫТО").unwrap(),
+            "3"
+        );
+        assert_eq!(client.resolve_transition_id("TEST-123", "İ").unwrap(), "4");
+        assert_eq!(client.resolve_transition_id("TEST-123", "K").unwrap(), "5");
+
+        let err = client
+            .resolve_transition_id("TEST-123", "UNKNOWN")
+            .unwrap_err();
+        match err {
+            crate::error::JiraError::InvalidTransition {
+                requested,
+                available,
+            } => {
+                assert_eq!(requested, "UNKNOWN");
+                assert_eq!(
+                    available,
+                    vec!["Geöffnet", "À faire", "Открыто", "i\u{307}", "K"]
+                );
+            }
+            _ => panic!("Expected InvalidTransition error"),
+        }
+    }
+
     fn base64_encode_for_test(input: &str) -> String {
         const ALPHABET: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -2019,5 +2220,100 @@ mod tests {
 
         let issue = IssueTracker::update_issue(&client, "TEST-1", &update).unwrap();
         assert_eq!(issue.id_readable, "TEST-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_fields_cached_recovers_from_poisoned_mutex() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "customfield_10000",
+                    "name": "Owned test fixture",
+                    "custom": true,
+                    "schema": null
+                }
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = std::sync::Arc::new(JiraClient::new(
+            &mock_server.uri(),
+            "test@test.com",
+            "test-token",
+        ));
+
+        // Poison the lock by panicking on another thread while holding the lock
+        let client_clone = std::sync::Arc::clone(&client);
+        let handle = std::thread::spawn(move || {
+            let _guard = client_clone.field_cache.lock().unwrap();
+            panic!("Intentional panic to poison mutex");
+        });
+        assert!(handle.join().is_err());
+        assert!(client.field_cache.is_poisoned());
+
+        // Mutex is now poisoned; get_fields_cached should recover gracefully without panicking,
+        // fetch fields via GET /rest/api/3/field, and return them.
+        let fields = client.get_fields_cached();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].id, "customfield_10000");
+        assert_eq!(fields[0].name, "Owned test fixture");
+
+        // Subsequent call reuses cached fields without making another HTTP request.
+        let cached_fields = client.get_fields_cached();
+        assert_eq!(cached_fields.len(), 1);
+        assert_eq!(cached_fields[0].id, "customfield_10000");
+    }
+
+    #[tokio::test]
+    async fn test_get_fields_cached_recovers_from_poisoned_mutex_with_populated_cache() {
+        let mock_server = MockServer::start().await;
+
+        // HTTP requests should NOT be made since the cache is already seeded
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = std::sync::Arc::new(JiraClient::new(
+            &mock_server.uri(),
+            "test@test.com",
+            "test-token",
+        ));
+
+        // Seed the cache before poisoning
+        {
+            let mut cache = client.field_cache.lock().unwrap();
+            *cache = Some(vec![JiraField {
+                id: "customfield_20000".to_string(),
+                name: "Seeded field".to_string(),
+                custom: true,
+                schema: None,
+            }]);
+        }
+
+        // Poison the lock by panicking on another thread while holding the lock
+        let client_clone = std::sync::Arc::clone(&client);
+        let handle = std::thread::spawn(move || {
+            let _guard = client_clone.field_cache.lock().unwrap();
+            panic!("Intentional panic to poison mutex");
+        });
+        assert!(handle.join().is_err());
+        assert!(client.field_cache.is_poisoned());
+
+        // Mutex is poisoned, but cached data is preserved and returned without HTTP call
+        let fields = client.get_fields_cached();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].id, "customfield_20000");
+        assert_eq!(fields[0].name, "Seeded field");
     }
 }

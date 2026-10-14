@@ -14,10 +14,20 @@ pub mod issue;
 pub mod open;
 pub mod project;
 pub mod tags;
+pub mod workflow;
 
 use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::Path;
+
+/// Replace `secret` with `<redacted>` so wrapper/error copy cannot echo tokens.
+pub(crate) fn without_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(secret, "<redacted>")
+    }
+}
 
 /// Resolve text content from an inline string or a file path.
 ///
@@ -37,6 +47,12 @@ pub(crate) fn resolve_body(
                 .context("Failed to read from stdin")?;
             buf
         } else {
+            if !path.exists() {
+                anyhow::bail!("File '{}' does not exist", path.display());
+            }
+            if !path.is_file() {
+                anyhow::bail!("Path '{}' is not a file", path.display());
+            }
             std::fs::read_to_string(path)
                 .with_context(|| format!("Failed to read '{}'", path.display()))?
         };
@@ -134,9 +150,24 @@ mod tests {
         let result = resolve_body(None, Some(&path));
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("Failed to read"),
-            "error should mention file read failure"
+            result.unwrap_err().to_string().contains("does not exist"),
+            "error should mention file does not exist"
         );
+    }
+
+    #[test]
+    fn resolve_body_errors_on_directory() {
+        let dir = std::env::temp_dir().join("track-test-resolve-dir");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let result = resolve_body(None, Some(&dir));
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("is not a file"),
+            "error should mention path is not a file"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

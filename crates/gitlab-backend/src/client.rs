@@ -832,6 +832,83 @@ impl GitLabClient {
         Ok(members)
     }
 
+    /// Resolve a login or numeric id to a GitLab user id.
+    ///
+    /// Resolve a login or numeric id to a verified GitLab user id.
+    ///
+    /// Accepted forms:
+    /// - `@username` or `username` (case-insensitive match): prefer project
+    ///   members (including inherited), then `GET /users?username=`.
+    /// - numeric user id: verified against `GET /users/:id` before use, so a
+    ///   typo cannot be silently dropped by GitLab's create/update endpoints
+    ///   (they ignore unknown `assignee_ids`).
+    ///
+    /// Empty or `"0"` is not a lookup: callers treat those as a request to
+    /// clear assignees.
+    pub fn find_user_id(&self, username: &str) -> Result<u64> {
+        let username = username.strip_prefix('@').unwrap_or(username);
+        if let Ok(id) = username.parse::<u64>() {
+            return self.verify_user_id(id);
+        }
+
+        if let Some(id) = self
+            .list_project_members()?
+            .into_iter()
+            .find(|user| tracker_core::unicode_eq_ignore_case(&user.username, username))
+            .map(|user| user.id)
+        {
+            return Ok(id);
+        }
+
+        let url = format!(
+            "{}/users?username={}",
+            self.base_url,
+            urlencoding::encode(username)
+        );
+        let response = self
+            .agent
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+        let mut response = self.check_response(response)?;
+        let users: Vec<GitLabUser> = response.body_mut().read_json()?;
+        users
+            .into_iter()
+            .find(|user| tracker_core::unicode_eq_ignore_case(&user.username, username))
+            .map(|user| user.id)
+            .ok_or_else(|| GitLabError::Api {
+                status: 404,
+                message: format!("GitLab user '{username}' not found"),
+            })
+    }
+
+    /// Verify that a numeric user id exists via `GET /users/:id` and that the
+    /// returned identity matches the requested id.
+    fn verify_user_id(&self, id: u64) -> Result<u64> {
+        let url = format!("{}/users/{}", self.base_url, id);
+        let response = self
+            .agent
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+        let mut response = self.check_response(response)?;
+        let user: GitLabUser = response.body_mut().read_json()?;
+        if user.id != id {
+            return Err(GitLabError::Api {
+                status: 404,
+                message: format!(
+                    "GitLab user id '{id}' resolved to a different user (id {})",
+                    user.id
+                ),
+            });
+        }
+        Ok(user.id)
+    }
+
     // ==================== Wiki Operations ====================
 
     /// List project wiki pages.
