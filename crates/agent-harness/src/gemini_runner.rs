@@ -168,7 +168,10 @@ pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<GeminiRunnerResult> {
     let events = parse_stream_output(stdout, config.verbose)?;
 
     // Wait for completion
-    child.wait().context("Failed to wait for Gemini CLI")?;
+    let status = child.wait().context("Failed to wait for Gemini CLI")?;
+    if !status.success() {
+        anyhow::bail!("Gemini CLI exited with status {status}");
+    }
 
     // Extract commands from events
     let commands_executed = extract_commands(&events);
