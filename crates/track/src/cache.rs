@@ -1366,15 +1366,6 @@ impl TrackerCache {
         transitions
     }
 
-    /// Get project ID by shortName (from cache)
-    #[allow(dead_code)]
-    pub fn get_project_id(&self, short_name: &str) -> Option<&str> {
-        self.projects
-            .iter()
-            .find(|p| p.short_name.eq_ignore_ascii_case(short_name))
-            .map(|p| p.id.as_str())
-    }
-
     /// Get fields for a project (from cache)
     #[allow(dead_code)]
     pub fn get_project_fields(&self, short_name: &str) -> Option<&[CachedField]> {
