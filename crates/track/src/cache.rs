@@ -1384,15 +1384,6 @@ impl TrackerCache {
             .map(|pf| pf.fields.as_slice())
     }
 
-    /// Get tag ID by name (from cache)
-    #[allow(dead_code)]
-    pub fn get_tag_id(&self, name: &str) -> Option<&str> {
-        self.tags
-            .iter()
-            .find(|t| tracker_core::unicode_eq_ignore_case(&t.name, name))
-            .map(|t| t.id.as_str())
-    }
-
     /// Get users for a project (from cache)
     #[allow(dead_code)]
     pub fn get_project_users(&self, short_name: &str) -> Option<&[CachedUser]> {
