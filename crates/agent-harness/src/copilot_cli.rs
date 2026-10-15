@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::Instant;
 use tracker_mock::Scenario;
 
 /// Copilot CLI operation mode
@@ -40,20 +39,13 @@ pub struct CopilotInteraction {
 }
 
 /// Result of a Copilot CLI session
-#[allow(dead_code)]
 pub struct CopilotCliResult {
     pub turns_used: usize,
     pub commands_executed: Vec<CommandExecution>,
-    pub duration_ms: u64,
-    pub exit_code: i32,
-    pub interactions: Vec<CopilotInteraction>,
-    pub final_output: Option<String>,
 }
 
 /// Run Copilot CLI against a scenario
 pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<CopilotCliResult> {
-    let start = Instant::now();
-
     // Build system prompt
     let system_prompt = build_system_prompt(&config.scenario);
 
@@ -98,13 +90,13 @@ pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<CopilotCliResult> {
 
     // Wait for completion
     let status = child.wait().context("Failed to wait for Copilot CLI")?;
-
-    let duration_ms = start.elapsed().as_millis() as u64;
+    if !status.success() {
+        anyhow::bail!("Copilot CLI exited with status {status}");
+    }
 
     // Extract commands from interactions
     let commands_executed = extract_track_commands(&interactions);
     let turns_used = interactions.len();
-    let final_output = interactions.last().map(|i| i.response.clone());
 
     if config.verbose {
         println!(
@@ -118,10 +110,6 @@ pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<CopilotCliResult> {
     Ok(CopilotCliResult {
         turns_used,
         commands_executed,
-        duration_ms,
-        exit_code: status.code().unwrap_or(-1),
-        interactions,
-        final_output,
     })
 }
 
