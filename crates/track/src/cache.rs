@@ -1366,17 +1366,7 @@ impl TrackerCache {
         transitions
     }
 
-    /// Get project ID by shortName (from cache)
-    #[allow(dead_code)]
-    pub fn get_project_id(&self, short_name: &str) -> Option<&str> {
-        self.projects
-            .iter()
-            .find(|p| p.short_name.eq_ignore_ascii_case(short_name))
-            .map(|p| p.id.as_str())
-    }
-
     /// Get fields for a project (from cache)
-    #[allow(dead_code)]
     pub fn get_project_fields(&self, short_name: &str) -> Option<&[CachedField]> {
         self.project_fields
             .iter()
@@ -1384,17 +1374,7 @@ impl TrackerCache {
             .map(|pf| pf.fields.as_slice())
     }
 
-    /// Get tag ID by name (from cache)
-    #[allow(dead_code)]
-    pub fn get_tag_id(&self, name: &str) -> Option<&str> {
-        self.tags
-            .iter()
-            .find(|t| tracker_core::unicode_eq_ignore_case(&t.name, name))
-            .map(|t| t.id.as_str())
-    }
-
     /// Get users for a project (from cache)
-    #[allow(dead_code)]
     pub fn get_project_users(&self, short_name: &str) -> Option<&[CachedUser]> {
         self.project_users
             .iter()
@@ -1470,7 +1450,6 @@ impl TrackerCache {
     }
 
     /// Look up a cached issue count for a project + template name
-    #[allow(dead_code)]
     pub fn get_issue_count(&self, project_short_name: &str, template_name: &str) -> Option<u64> {
         self.issue_counts
             .iter()
