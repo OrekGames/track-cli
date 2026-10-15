@@ -704,6 +704,36 @@ mod tests {
         assert_eq!(result.items, vec![1, 2, 3]);
         assert_eq!(result.total, Some(100));
     }
+
+    #[test]
+    fn canonical_field_name_tests() {
+        // Known status/state synonyms fold to FIELD_STATUS ("status")
+        assert_eq!(canonical_field_name("status"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("Status"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("STATUS"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("sTaTuS"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("state"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("State"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("STATE"), FIELD_STATUS);
+
+        // Leading and trailing whitespace is trimmed before folding
+        assert_eq!(canonical_field_name("  status  \t"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("\n State \r"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("  Assignee  "), "Assignee");
+
+        // Other field names are trimmed but preserve their original display casing
+        assert_eq!(canonical_field_name("Assignee"), "Assignee");
+        assert_eq!(canonical_field_name("Priority"), "Priority");
+        assert_eq!(canonical_field_name("custom_field"), "custom_field");
+
+        // Empty and whitespace-only strings return empty string
+        assert_eq!(canonical_field_name(""), "");
+        assert_eq!(canonical_field_name("   "), "");
+
+        // Non-ASCII inputs preserve casing if non-matching, or fold if matching
+        assert_eq!(canonical_field_name("   État   "), "État");
+        assert_eq!(canonical_field_name("  СТАТУС  "), "СТАТУС");
+    }
 }
 
 /// Common fields (state, priority, assignee) extracted from custom fields.
