@@ -805,19 +805,40 @@ pub fn flatten_project_statuses(
     (values, state_values)
 }
 
-/// Build a name → field ID lookup from JiraField metadata.
-pub fn build_field_id_map(fields: &[JiraField]) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for field in fields {
-        map.insert(field.name.to_lowercase(), field.id.clone());
+/// Find a field ID and schema by its name directly from the list of fields.
+fn resolve_field_info<'a>(
+    fields: &'a [JiraField],
+    name: &str,
+) -> Option<(&'a str, Option<&'a JiraFieldSchema>)> {
+    // Standard field name aliases map to specific field IDs.
+    let target_id = if name.eq_ignore_ascii_case("priority") {
+        Some("priority")
+    } else if name.eq_ignore_ascii_case("assignee") {
+        Some("assignee")
+    } else if name.eq_ignore_ascii_case("status") {
+        Some("status")
+    } else if name.eq_ignore_ascii_case("type") {
+        Some("issuetype")
+    } else if name.eq_ignore_ascii_case("labels") {
+        Some("labels")
+    } else {
+        None
+    };
+
+    if let Some(id) = target_id {
+        // Find by mapped ID to retrieve the schema if present.
+        let schema = fields
+            .iter()
+            .find(|f| f.id == id)
+            .and_then(|f| f.schema.as_ref());
+        return Some((id, schema));
     }
-    // Also insert known standard field name mappings
-    map.insert("priority".to_string(), "priority".to_string());
-    map.insert("assignee".to_string(), "assignee".to_string());
-    map.insert("status".to_string(), "status".to_string());
-    map.insert("type".to_string(), "issuetype".to_string());
-    map.insert("labels".to_string(), "labels".to_string());
-    map
+
+    if let Some(field) = fields.iter().find(|f| f.name.eq_ignore_ascii_case(name)) {
+        return Some((field.id.as_str(), field.schema.as_ref()));
+    }
+
+    None
 }
 
 /// Convert a custom field value to the appropriate JSON representation
@@ -1001,12 +1022,6 @@ pub fn resolve_extra_fields(
     jira_fields: &[JiraField],
     silently_handled: &[&str],
 ) -> tracker_core::Result<HashMap<String, serde_json::Value>> {
-    let field_id_map = build_field_id_map(jira_fields);
-    let schema_map: HashMap<&str, &JiraFieldSchema> = jira_fields
-        .iter()
-        .filter_map(|f| f.schema.as_ref().map(|s| (f.id.as_str(), s)))
-        .collect();
-
     let mut extra = HashMap::new();
 
     for cf in custom_fields {
@@ -1020,8 +1035,7 @@ pub fn resolve_extra_fields(
                     }
                     continue;
                 }
-                if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-                    let schema = schema_map.get(field_id.as_str()).copied();
+                if let Some((field_id, schema)) = resolve_field_info(jira_fields, name) {
                     insert_resolved_field(&mut extra, field_id, value, schema)?;
                 }
             }
@@ -1032,8 +1046,7 @@ pub fn resolve_extra_fields(
                     }
                     continue;
                 }
-                if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-                    let schema = schema_map.get(field_id.as_str()).copied();
+                if let Some((field_id, schema)) = resolve_field_info(jira_fields, name) {
                     if values.is_empty() {
                         // An empty array clears the field. Jira needs [] for an
                         // array/multi field and null for a scalar; detect it here,
@@ -1043,7 +1056,7 @@ pub fn resolve_extra_fields(
                             Some("array") => serde_json::Value::Array(vec![]),
                             _ => serde_json::Value::Null,
                         };
-                        extra.insert(field_id.clone(), cleared);
+                        extra.insert(field_id.to_string(), cleared);
                     } else {
                         insert_resolved_field(&mut extra, field_id, &values.join(","), schema)?;
                     }
@@ -2376,5 +2389,40 @@ mod tests {
         let events = jira_changelog_to_history_events(page.values);
         // The entry with no timestamp is dropped rather than fabricated.
         assert_eq!(events.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod resolve_field_info_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_field_info_keeps_first_duplicate() {
+        let fields = vec![
+            JiraField {
+                id: "customfield_100".to_string(),
+                name: "Duplicate Field".to_string(),
+                custom: true,
+                schema: Some(JiraFieldSchema {
+                    field_type: "string".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+            JiraField {
+                id: "customfield_101".to_string(),
+                name: "Duplicate Field".to_string(),
+                custom: true,
+                schema: Some(JiraFieldSchema {
+                    field_type: "number".to_string(),
+                    custom: None,
+                    items: None,
+                }),
+            },
+        ];
+
+        let result = resolve_field_info(&fields, "Duplicate Field");
+        let (id, _) = result.expect("Should resolve the duplicate field");
+        assert_eq!(id, "customfield_100");
     }
 }

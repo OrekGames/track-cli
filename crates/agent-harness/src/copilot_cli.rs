@@ -19,9 +19,6 @@ use tracker_mock::Scenario;
 pub enum CopilotMode {
     /// Legacy gh copilot suggest mode (interactive Q&A)
     Suggest,
-    /// New standalone copilot CLI agent mode
-    #[allow(dead_code)]
-    Agent,
 }
 
 /// Configuration for Copilot CLI invocation
@@ -235,11 +232,6 @@ fn build_copilot_command(config: &CopilotCliConfig) -> Command {
             let mut cmd = Command::new("gh");
             cmd.args(["copilot", "suggest"]);
             cmd
-        }
-        CopilotMode::Agent => {
-            // New: standalone copilot CLI
-            // Add any agent-specific flags
-            Command::new("copilot")
         }
     }
 }
