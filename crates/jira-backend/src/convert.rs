@@ -820,7 +820,10 @@ fn find_jira_field<'a>(
         _ => None,
     };
     if let Some(id) = std_id {
-        let schema = fields.iter().find(|f| f.id == id).and_then(|f| f.schema.as_ref());
+        let schema = fields
+            .iter()
+            .find(|f| f.id == id)
+            .and_then(|f| f.schema.as_ref());
         return Some((id, schema));
     }
 
