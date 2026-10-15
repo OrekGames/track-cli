@@ -12,20 +12,8 @@ use std::path::PathBuf;
 use tracker_mock::Scenario;
 
 /// Result of running a session
-#[allow(dead_code)]
 pub struct SessionResult {
     pub turns_used: usize,
-    pub total_input_tokens: u32,
-    pub total_output_tokens: u32,
-    pub commands_executed: Vec<CommandExecution>,
-}
-
-/// Record of a command execution
-#[allow(dead_code)]
-pub struct CommandExecution {
-    pub args: Vec<String>,
-    pub output: String,
-    pub is_error: bool,
 }
 
 /// Path to the skill file relative to the project root
@@ -105,7 +93,6 @@ impl SessionRunner {
     pub fn run(&mut self) -> Result<SessionResult> {
         let mut total_input_tokens = 0;
         let mut total_output_tokens = 0;
-        let mut commands_executed = Vec::new();
         let mut turns = 0;
 
         // Build system prompt
@@ -197,12 +184,6 @@ impl SessionRunner {
                                         }
                                     }
 
-                                    commands_executed.push(CommandExecution {
-                                        args: args.clone(),
-                                        output: output.clone(),
-                                        is_error,
-                                    });
-
                                     tool_results.push(ContentBlock::tool_result(
                                         id.clone(),
                                         output,
@@ -272,12 +253,7 @@ impl SessionRunner {
             );
         }
 
-        Ok(SessionResult {
-            turns_used: turns,
-            total_input_tokens,
-            total_output_tokens,
-            commands_executed,
-        })
+        Ok(SessionResult { turns_used: turns })
     }
 
     /// Build the system prompt using the track skill file
