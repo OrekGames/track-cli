@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::Instant;
 use tracker_mock::Scenario;
 
 /// Configuration for Claude Code invocation
@@ -108,20 +107,13 @@ pub struct ResultEvent {
 }
 
 /// Result of a Claude Code session
-#[allow(dead_code)]
 pub struct ClaudeCodeResult {
     pub turns_used: usize,
-    pub events: Vec<ClaudeCodeEvent>,
-    pub final_result: Option<String>,
-    pub duration_ms: u64,
-    pub exit_code: i32,
     pub commands_executed: Vec<CommandExecution>,
 }
 
 /// Run Claude Code against a scenario
 pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
-    let start = Instant::now();
-
     // Build system prompt
     let system_prompt = build_system_prompt(&config.scenario);
 
@@ -186,13 +178,13 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
 
     // Wait for completion
     let status = child.wait().context("Failed to wait for Claude Code")?;
-
-    let duration_ms = start.elapsed().as_millis() as u64;
+    if !status.success() {
+        anyhow::bail!("Claude Code CLI exited with non-zero status: {status}");
+    }
 
     // Extract commands from events
     let commands_executed = extract_commands(&events);
     let turns_used = count_turns(&events);
-    let final_result = extract_final_result(&events);
 
     if config.verbose {
         println!(
@@ -205,10 +197,6 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
 
     Ok(ClaudeCodeResult {
         turns_used,
-        events,
-        final_result,
-        duration_ms,
-        exit_code: status.code().unwrap_or(-1),
         commands_executed,
     })
 }
@@ -538,17 +526,6 @@ fn count_turns(events: &[ClaudeCodeEvent]) -> usize {
         .iter()
         .filter(|e| matches!(e, ClaudeCodeEvent::Assistant(_)))
         .count()
-}
-
-/// Extract final result text
-fn extract_final_result(events: &[ClaudeCodeEvent]) -> Option<String> {
-    events.iter().rev().find_map(|e| {
-        if let ClaudeCodeEvent::Result(res) = e {
-            res.result.clone()
-        } else {
-            None
-        }
-    })
 }
 
 /// Convert ClaudeCodeResult to SessionResult for evaluation
