@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use tracker_mock::Scenario;
 
 /// Result of running a session
-#[allow(dead_code)]
 pub struct SessionResult {
     pub turns_used: usize,
     pub total_input_tokens: u32,
@@ -21,7 +20,6 @@ pub struct SessionResult {
 }
 
 /// Record of a command execution
-#[allow(dead_code)]
 pub struct CommandExecution {
     pub args: Vec<String>,
     pub output: String,
