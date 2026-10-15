@@ -258,6 +258,15 @@ fn run_scenario(
                 "score_percent": eval_result.score_percent,
                 "total_calls": eval_result.total_calls,
                 "turns_used": session_result.turns_used,
+                "input_tokens": session_result.total_input_tokens,
+                "output_tokens": session_result.total_output_tokens,
+                "commands_executed": session_result.commands_executed.iter().map(|c| {
+                    serde_json::json!({
+                        "args": c.args,
+                        "output": c.output,
+                        "is_error": c.is_error,
+                    })
+                }).collect::<Vec<_>>(),
                 "outcomes": eval_result.outcomes,
                 "efficiency": format!("{:?}", eval_result.efficiency),
                 "passed": eval_result.score_percent >= min_score as f64 && eval_result.success,
@@ -505,6 +514,9 @@ fn run_all_scenarios(
             "score_percent": eval_result.score_percent,
             "total_calls": eval_result.total_calls,
             "turns_used": session_result.turns_used,
+            "input_tokens": session_result.total_input_tokens,
+            "output_tokens": session_result.total_output_tokens,
+            "commands_executed_count": session_result.commands_executed.len(),
             "success": eval_result.success,
         }));
 
