@@ -235,8 +235,6 @@ impl JiraClient {
         // Jira returns a minimal response on create, we need to fetch the full issue
         #[derive(serde::Deserialize)]
         struct CreateResponse {
-            #[allow(dead_code)]
-            id: String,
             key: String,
         }
         let created: CreateResponse = response.body_mut().read_json()?;
