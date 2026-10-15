@@ -7,7 +7,7 @@
 //! your local machine.
 
 use crate::permissions::format_allowed_bash_pattern;
-use crate::runner::{CommandExecution, SessionResult};
+use crate::runner::SessionResult;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -109,7 +109,6 @@ pub struct ResultEvent {
 /// Result of a Claude Code session
 pub struct ClaudeCodeResult {
     pub turns_used: usize,
-    pub commands_executed: Vec<CommandExecution>,
 }
 
 /// Run Claude Code against a scenario
@@ -190,15 +189,12 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
         println!(
             "\n{}: {} commands in {} turns",
             "Session complete".green(),
-            commands_executed.len(),
+            commands_executed,
             turns_used
         );
     }
 
-    Ok(ClaudeCodeResult {
-        turns_used,
-        commands_executed,
-    })
+    Ok(ClaudeCodeResult { turns_used })
 }
 
 /// Path to the skill file relative to the project root
@@ -418,10 +414,10 @@ fn print_event(event: &ClaudeCodeEvent) {
     }
 }
 
-/// Extract track commands from events
-fn extract_commands(events: &[ClaudeCodeEvent]) -> Vec<CommandExecution> {
-    let mut commands = Vec::new();
-    let mut pending_commands: Vec<(String, String)> = Vec::new(); // (tool_use_id, command)
+/// Extract track commands count from events
+fn extract_commands(events: &[ClaudeCodeEvent]) -> usize {
+    let mut count = 0;
+    let mut pending_commands: Vec<String> = Vec::new(); // tool_use_id
 
     for event in events {
         match event {
@@ -433,7 +429,7 @@ fn extract_commands(events: &[ClaudeCodeEvent]) -> Vec<CommandExecution> {
                             && let Some(cmd) = input.get("command").and_then(|c| c.as_str())
                             && is_track_command(cmd)
                         {
-                            pending_commands.push((id.clone(), cmd.to_string()));
+                            pending_commands.push(id.clone());
                         }
                     }
                 }
@@ -441,25 +437,12 @@ fn extract_commands(events: &[ClaudeCodeEvent]) -> Vec<CommandExecution> {
             ClaudeCodeEvent::User(user) => {
                 if let Some(msg) = &user.message {
                     for block in &msg.content {
-                        if let ContentBlock::ToolResult {
-                            tool_use_id,
-                            content,
-                            is_error,
-                        } = block
+                        if let ContentBlock::ToolResult { tool_use_id, .. } = block
+                            && let Some(idx) =
+                                pending_commands.iter().position(|id| id == tool_use_id)
                         {
-                            // Find matching pending command
-                            if let Some(idx) = pending_commands
-                                .iter()
-                                .position(|(id, _)| id == tool_use_id)
-                            {
-                                let (_, cmd) = pending_commands.remove(idx);
-                                let args = parse_track_args(&cmd);
-                                commands.push(CommandExecution {
-                                    args,
-                                    output: content.clone(),
-                                    is_error: *is_error,
-                                });
-                            }
+                            pending_commands.remove(idx);
+                            count += 1;
                         }
                     }
                 }
@@ -468,7 +451,7 @@ fn extract_commands(events: &[ClaudeCodeEvent]) -> Vec<CommandExecution> {
         }
     }
 
-    commands
+    count
 }
 
 /// Check if a bash command is a track command
@@ -499,27 +482,6 @@ fn is_track_command(cmd: &str) -> bool {
     false
 }
 
-/// Parse track command into args
-fn parse_track_args(cmd: &str) -> Vec<String> {
-    let trimmed = cmd.trim();
-
-    // Handle path-based track command
-    let Some(idx) = trimmed.find("track ") else {
-        // No "track " found - either ends with "track" (no args) or not a track command
-        return vec![];
-    };
-
-    let track_part = &trimmed[idx + 6..];
-
-    // Simple arg splitting (doesn't handle all quoting edge cases)
-    shell_words::split(track_part).unwrap_or_else(|_| {
-        track_part
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect()
-    })
-}
-
 /// Count the number of turns (assistant responses)
 fn count_turns(events: &[ClaudeCodeEvent]) -> usize {
     events
@@ -533,9 +495,6 @@ impl From<ClaudeCodeResult> for SessionResult {
     fn from(result: ClaudeCodeResult) -> Self {
         SessionResult {
             turns_used: result.turns_used,
-            total_input_tokens: 0,  // Not available from CLI
-            total_output_tokens: 0, // Not available from CLI
-            commands_executed: result.commands_executed,
         }
     }
 }
@@ -551,18 +510,6 @@ mod tests {
         assert!(is_track_command("/path/to/track issue get DEMO-1"));
         assert!(!is_track_command("ls -la"));
         assert!(!is_track_command("cat file.txt"));
-    }
-
-    #[test]
-    fn test_parse_track_args() {
-        assert_eq!(
-            parse_track_args("track issue get DEMO-1"),
-            vec!["issue", "get", "DEMO-1"]
-        );
-        assert_eq!(
-            parse_track_args("track issue comment DEMO-1 -m \"Hello world\""),
-            vec!["issue", "comment", "DEMO-1", "-m", "Hello world"]
-        );
     }
 
     #[test]

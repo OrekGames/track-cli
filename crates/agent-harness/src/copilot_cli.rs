@@ -4,7 +4,7 @@
 //! This allows testing how GitHub Copilot performs on scenarios using the track CLI.
 //! Supports both legacy `gh copilot` mode and new standalone `copilot` agent mode.
 
-use crate::runner::{CommandExecution, SessionResult};
+use crate::runner::SessionResult;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,6 @@ pub struct CopilotInteraction {
 #[allow(dead_code)]
 pub struct CopilotCliResult {
     pub turns_used: usize,
-    pub commands_executed: Vec<CommandExecution>,
     pub duration_ms: u64,
     pub exit_code: i32,
     pub interactions: Vec<CopilotInteraction>,
@@ -110,14 +109,13 @@ pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<CopilotCliResult> {
         println!(
             "\n{}: {} commands in {} turns",
             "Session complete".green(),
-            commands_executed.len(),
+            commands_executed,
             turns_used
         );
     }
 
     Ok(CopilotCliResult {
         turns_used,
-        commands_executed,
         duration_ms,
         exit_code: status.code().unwrap_or(-1),
         interactions,
@@ -450,55 +448,26 @@ fn is_track_command(cmd: &str) -> bool {
     false
 }
 
-/// Parse track command into args
-fn parse_track_args(cmd: &str) -> Vec<String> {
-    let trimmed = cmd.trim();
-
-    // Handle path-based track command
-    let Some(idx) = trimmed.find("track ") else {
-        // No "track " found - either ends with "track" (no args) or not a track command
-        return vec![];
-    };
-
-    let track_part = &trimmed[idx + 6..];
-
-    // Simple arg splitting (doesn't handle all quoting edge cases)
-    shell_words::split(track_part).unwrap_or_else(|_| {
-        track_part
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect()
-    })
-}
-
-/// Extract track commands from interactions
-fn extract_track_commands(interactions: &[CopilotInteraction]) -> Vec<CommandExecution> {
-    let mut commands = Vec::new();
+/// Extract track commands count from interactions
+fn extract_track_commands(interactions: &[CopilotInteraction]) -> usize {
+    let mut count = 0;
 
     for interaction in interactions {
         if let Some(cmd) = &interaction.command_suggested
             && is_track_command(cmd)
             && interaction.command_executed
         {
-            let args = parse_track_args(cmd);
-            commands.push(CommandExecution {
-                args,
-                output: interaction.response.clone(),
-                is_error: false, // Would need to parse from output
-            });
+            count += 1;
         }
     }
 
-    commands
+    count
 }
 
 impl From<CopilotCliResult> for SessionResult {
     fn from(result: CopilotCliResult) -> Self {
         SessionResult {
             turns_used: result.turns_used,
-            total_input_tokens: 0,  // Not available from CLI
-            total_output_tokens: 0, // Not available from CLI
-            commands_executed: result.commands_executed,
         }
     }
 }
@@ -544,21 +513,5 @@ mod tests {
         assert!(!is_track_command("ls -la"));
         assert!(!is_track_command("cat file.txt"));
         assert!(!is_track_command("git commit"));
-    }
-
-    #[test]
-    fn test_parse_track_args() {
-        assert_eq!(
-            parse_track_args("track issue get DEMO-1"),
-            vec!["issue", "get", "DEMO-1"]
-        );
-        assert_eq!(
-            parse_track_args("track issue comment DEMO-1 -m \"Hello world\""),
-            vec!["issue", "comment", "DEMO-1", "-m", "Hello world"]
-        );
-        assert_eq!(
-            parse_track_args("/path/to/track i s \"query\""),
-            vec!["i", "s", "query"]
-        );
     }
 }
