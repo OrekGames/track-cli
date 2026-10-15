@@ -805,19 +805,39 @@ pub fn flatten_project_statuses(
     (values, state_values)
 }
 
-/// Build a name → field ID lookup from JiraField metadata.
-pub fn build_field_id_map(fields: &[JiraField]) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for field in fields {
-        map.insert(field.name.to_lowercase(), field.id.clone());
+/// Find a field ID and schema by its display name, avoiding allocations
+/// for ASCII names. Standard field mappings are resolved first.
+fn find_jira_field<'a>(
+    fields: &'a [JiraField],
+    name: &str,
+) -> Option<(&'a str, Option<&'a JiraFieldSchema>)> {
+    let std_id = match name {
+        _ if name.eq_ignore_ascii_case("priority") => Some("priority"),
+        _ if name.eq_ignore_ascii_case("assignee") => Some("assignee"),
+        _ if name.eq_ignore_ascii_case("status") => Some("status"),
+        _ if name.eq_ignore_ascii_case("type") => Some("issuetype"),
+        _ if name.eq_ignore_ascii_case("labels") => Some("labels"),
+        _ => None,
+    };
+    if let Some(id) = std_id {
+        let schema = fields.iter().find(|f| f.id == id).and_then(|f| f.schema.as_ref());
+        return Some((id, schema));
     }
-    // Also insert known standard field name mappings
-    map.insert("priority".to_string(), "priority".to_string());
-    map.insert("assignee".to_string(), "assignee".to_string());
-    map.insert("status".to_string(), "status".to_string());
-    map.insert("type".to_string(), "issuetype".to_string());
-    map.insert("labels".to_string(), "labels".to_string());
-    map
+
+    let mut name_lower = None;
+    for field in fields {
+        let matches = if name.is_ascii() && field.name.is_ascii() {
+            name.eq_ignore_ascii_case(&field.name)
+        } else {
+            let lower = name_lower.get_or_insert_with(|| name.to_lowercase());
+            field.name.to_lowercase() == *lower
+        };
+
+        if matches {
+            return Some((field.id.as_str(), field.schema.as_ref()));
+        }
+    }
+    None
 }
 
 /// Convert a custom field value to the appropriate JSON representation
@@ -1001,12 +1021,6 @@ pub fn resolve_extra_fields(
     jira_fields: &[JiraField],
     silently_handled: &[&str],
 ) -> tracker_core::Result<HashMap<String, serde_json::Value>> {
-    let field_id_map = build_field_id_map(jira_fields);
-    let schema_map: HashMap<&str, &JiraFieldSchema> = jira_fields
-        .iter()
-        .filter_map(|f| f.schema.as_ref().map(|s| (f.id.as_str(), s)))
-        .collect();
-
     let mut extra = HashMap::new();
 
     for cf in custom_fields {
@@ -1020,8 +1034,7 @@ pub fn resolve_extra_fields(
                     }
                     continue;
                 }
-                if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-                    let schema = schema_map.get(field_id.as_str()).copied();
+                if let Some((field_id, schema)) = find_jira_field(jira_fields, name) {
                     insert_resolved_field(&mut extra, field_id, value, schema)?;
                 }
             }
@@ -1032,8 +1045,7 @@ pub fn resolve_extra_fields(
                     }
                     continue;
                 }
-                if let Some(field_id) = field_id_map.get(&name.to_lowercase()) {
-                    let schema = schema_map.get(field_id.as_str()).copied();
+                if let Some((field_id, schema)) = find_jira_field(jira_fields, name) {
                     if values.is_empty() {
                         // An empty array clears the field. Jira needs [] for an
                         // array/multi field and null for a scalar; detect it here,
@@ -1043,7 +1055,7 @@ pub fn resolve_extra_fields(
                             Some("array") => serde_json::Value::Array(vec![]),
                             _ => serde_json::Value::Null,
                         };
-                        extra.insert(field_id.clone(), cleared);
+                        extra.insert(field_id.to_string(), cleared);
                     } else {
                         insert_resolved_field(&mut extra, field_id, &values.join(","), schema)?;
                     }
