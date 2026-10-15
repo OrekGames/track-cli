@@ -1470,7 +1470,6 @@ impl TrackerCache {
     }
 
     /// Look up a cached issue count for a project + template name
-    #[allow(dead_code)]
     pub fn get_issue_count(&self, project_short_name: &str, template_name: &str) -> Option<u64> {
         self.issue_counts
             .iter()
