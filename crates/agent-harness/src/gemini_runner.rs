@@ -429,13 +429,12 @@ fn extract_commands(events: &[GeminiEvent]) -> usize {
             GeminiEvent::User(user) => {
                 if let Some(msg) = &user.message {
                     for block in &msg.content {
-                        if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                            if let Some(idx) =
+                        if let ContentBlock::ToolResult { tool_use_id, .. } = block
+                            && let Some(idx) =
                                 pending_commands.iter().position(|id| id == tool_use_id)
-                            {
-                                pending_commands.remove(idx);
-                                count += 1;
-                            }
+                        {
+                            pending_commands.remove(idx);
+                            count += 1;
                         }
                     }
                 }
