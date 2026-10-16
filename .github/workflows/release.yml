@@ -10,8 +10,13 @@ on:
     inputs:
       version:
         description: 'Version to release (e.g., v1.0.0). Creates tag if it does not exist.'
-        required: true
+        required: false
         type: string
+      homebrew_recovery:
+        description: 'Homebrew-only recovery: re-publish the formula for an existing stable release (no rebuild, no tag changes)'
+        required: false
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -37,8 +42,18 @@ jobs:
           should_release=false
           version=""
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.homebrew_recovery }}" = "true" ]; then
+            # Homebrew recovery is handled by its own job; skip the release pipeline.
+            echo "::warning::Homebrew recovery mode — release pipeline skipped"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            exit 0
+
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Manual trigger — use provided version
+            if [ -z "${{ inputs.version }}" ]; then
+              echo "::error::A version is required unless homebrew_recovery is enabled"
+              exit 1
+            fi
             INPUT="${{ inputs.version }}"
             VERSION="${INPUT#v}"
             TAG="v${VERSION}"
@@ -422,17 +437,130 @@ jobs:
           VERSION="${{ needs.detect-release.outputs.version }}"
           ./scripts/update-homebrew-formula.sh "$VERSION" dist/checksums-sha256.txt
 
-      - name: Push formula to tap repo
+      - name: Check out tap repo (isolated, no credential persistence)
         run: |
-          VERSION="${{ needs.detect-release.outputs.version }}"
-          git clone https://x-access-token:${TAP_TOKEN}@github.com/OrekGames/homebrew-tap.git tap-repo
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set or empty"
+            exit 1
+          fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/OrekGames/homebrew-tap.git" tap-repo
+          # Remove the token from the remote URL; the push step injects a
+          # one-shot credential instead of leaving the secret on disk.
+          git -C tap-repo remote set-url origin https://github.com/OrekGames/homebrew-tap.git
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Copy formula into tap
+        run: |
           mkdir -p tap-repo/Formula
           cp homebrew/Formula/track.rb tap-repo/Formula/track.rb
+
+      - name: Commit formula
+        run: |
+          VERSION="${{ needs.detect-release.outputs.version }}"
           cd tap-repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/track.rb
-          git diff --cached --quiet || git commit -m "track ${VERSION}"
-          git push
+          if git diff --cached --quiet; then
+            echo "No formula changes to commit (already at ${VERSION})"
+          else
+            git commit -m "track ${VERSION}"
+          fi
+
+      - name: Push formula to tap repo
+        run: |
+          cd tap-repo
+          git push "https://x-access-token:${TAP_TOKEN}@github.com/OrekGames/homebrew-tap.git" HEAD:main
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  update-homebrew-recovery:
+    name: Recover Homebrew Formula (existing release)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.homebrew_recovery == true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve latest stable release
+        id: resolve
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(gh release list --limit 1 --exclude-drafts --exclude-prereleases --json tagName --jq '.[0].tagName' | sed 's/^v//')
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "::error::No stable release found to recover"
+            exit 1
+          fi
+          if ! gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Stable release v${VERSION} does not exist"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Recovering Homebrew formula for existing release v${VERSION}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download checksums from release
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          gh release download "v${VERSION}" --pattern "checksums-sha256.txt" --dir dist/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update formula with version and checksums
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          ./scripts/update-homebrew-formula.sh "$VERSION" dist/checksums-sha256.txt
+
+      - name: Check out tap repo (isolated, no credential persistence)
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set or empty"
+            exit 1
+          fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/OrekGames/homebrew-tap.git" tap-repo
+          git -C tap-repo remote set-url origin https://github.com/OrekGames/homebrew-tap.git
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Copy formula into tap
+        run: |
+          mkdir -p tap-repo/Formula
+          cp homebrew/Formula/track.rb tap-repo/Formula/track.rb
+
+      - name: Commit formula
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          cd tap-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/track.rb
+          if git diff --cached --quiet; then
+            echo "No formula changes to commit (tap already at ${VERSION})"
+          else
+            git commit -m "track ${VERSION}"
+          fi
+
+      - name: Push formula to tap repo
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          cd tap-repo
+          git push "https://x-access-token:${TAP_TOKEN}@github.com/OrekGames/homebrew-tap.git" HEAD:main
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Verify remote formula
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          sleep 5
+          ACTUAL=$(git -C tap-repo fetch origin main && git -C tap-repo show origin/main:Formula/track.rb | sed -n 's/^  version "\(.*\)"/\1/p' | head -n1)
+          if [ "$ACTUAL" != "$VERSION" ]; then
+            echo "::error::Remote formula version is ${ACTUAL:-unknown}, expected ${VERSION}"
+            exit 1
+          fi
+          echo "Remote tap formula verified at version ${VERSION}"
