@@ -154,6 +154,8 @@ pub struct CreateProject {
     pub short_name: String,
     /// Optional description
     pub description: Option<String>,
+    /// Optional project leader / owner (user ID, login, or "me")
+    pub leader: Option<String>,
 }
 
 /// Issue tag (full representation with optional metadata)

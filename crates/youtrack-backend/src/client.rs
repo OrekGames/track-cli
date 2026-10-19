@@ -446,6 +446,82 @@ impl YouTrackClient {
         Ok(project)
     }
 
+    /// Get the currently authenticated user details.
+    pub fn get_current_user(&self) -> Result<User> {
+        let url = format!(
+            "{}/api/users/me?fields=id,login,fullName,email",
+            self.base_url
+        );
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let user: User = response.body_mut().read_json()?;
+        Ok(user)
+    }
+
+    /// Resolve a user identifier (database ID, login, or "me") to a YouTrack database user ID.
+    pub fn resolve_user_id(&self, identifier: &str) -> Result<String> {
+        let trimmed = identifier.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("me") {
+            return self.get_current_user().map(|u| u.id);
+        }
+
+        // 1. Check direct GET /api/users/{id} first
+        let direct_url = format!(
+            "{}/api/users/{}?fields=id,login,fullName,email",
+            self.base_url,
+            urlencoding::encode(trimmed)
+        );
+        if let Ok(response) = self
+            .agent
+            .get(&direct_url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            && let Ok(mut resp) = self.check_response(response)
+            && let Ok(user) = resp.body_mut().read_json::<User>()
+        {
+            return Ok(user.id);
+        }
+
+        // 2. Search /api/users?query={trimmed} for matching login or ID
+        let search_url = format!(
+            "{}/api/users?query={}&fields=id,login,fullName,email&$top=50",
+            self.base_url,
+            urlencoding::encode(trimmed)
+        );
+        if let Ok(response) = self
+            .agent
+            .get(&search_url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            && let Ok(mut resp) = self.check_response(response)
+            && let Ok(users) = resp.body_mut().read_json::<Vec<User>>()
+        {
+            for user in &users {
+                if user.login.eq_ignore_ascii_case(trimmed) || user.id == trimmed {
+                    return Ok(user.id.clone());
+                }
+            }
+        }
+
+        Err(YouTrackError::Api {
+            status: 404,
+            message: format!(
+                "Project leader '{}' could not be resolved to a YouTrack user",
+                identifier
+            ),
+        })
+    }
+
     pub fn create_project(&self, create: &CreateProject) -> Result<Project> {
         let url = format!(
             "{}/api/admin/projects?fields={}",

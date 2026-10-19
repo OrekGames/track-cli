@@ -257,7 +257,7 @@ Note: `--full` issue JSON does **not** include attachments — `track i attachme
 | List | `track p ls` (add `-b gh`/`-b gl` for other backends) |
 | Get | `track p g PROJ` |
 | Fields | `track -o json p f PROJ` (text mode omits valid values — use JSON, `cache show`, or `context`) |
-| Create | `track p new -n "Name" -s "KEY"` (YouTrack only) |
+| Create | `track p new -n "Name" -s "KEY" [-l "leader"]` (YouTrack only; leader defaults to authenticated user) |
 | Attach existing field | `track p attach-field PROJ -f <FIELD_ID> --bundle <BUNDLE_ID> [--required]` (YouTrack; `--bundle` required for enum/state) |
 
 ### Tag Management

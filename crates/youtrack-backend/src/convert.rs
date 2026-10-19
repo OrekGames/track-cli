@@ -469,6 +469,7 @@ impl From<&core::CreateProject> for yt::CreateProject {
             name: create.name.clone(),
             short_name: create.short_name.clone(),
             description: create.description.clone(),
+            leader: None,
         }
     }
 }
