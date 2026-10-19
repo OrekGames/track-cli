@@ -351,26 +351,56 @@ pub trait KnowledgeBase: Send + Sync {
     }
 
     /// Create a new article
-    fn create_article(&self, article: &CreateArticle) -> Result<Article>;
+    fn create_article(&self, article: &CreateArticle) -> Result<Article> {
+        let _ = article;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Article creation is not supported by this backend".to_string(),
+        ))
+    }
 
     /// Update an existing article
-    fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article>;
+    fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
+        let _ = (id, update);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Article updating is not supported by this backend".to_string(),
+        ))
+    }
 
     /// Delete an article
-    fn delete_article(&self, id: &str) -> Result<()>;
+    fn delete_article(&self, id: &str) -> Result<()> {
+        let _ = id;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Article deletion is not supported by this backend".to_string(),
+        ))
+    }
 
     // ========== Hierarchy Operations ==========
 
     /// Get child articles of a parent article
-    fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>>;
+    fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
+        let _ = parent_id;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Fetching child articles is not supported by this backend".to_string(),
+        ))
+    }
 
     /// Move an article to a new parent (or to root if new_parent_id is None)
-    fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article>;
+    fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article> {
+        let _ = (article_id, new_parent_id);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Moving articles is not supported by this backend".to_string(),
+        ))
+    }
 
     // ========== Attachment Operations ==========
 
     /// List attachments on an article
-    fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>>;
+    fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
+        let _ = article_id;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Article attachments are not supported by this backend".to_string(),
+        ))
+    }
 
     /// Upload one or more files to an article.
     fn add_article_attachment(
@@ -387,10 +417,20 @@ pub trait KnowledgeBase: Send + Sync {
     // ========== Comment Operations ==========
 
     /// Get comments on an article
-    fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>>;
+    fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
+        let _ = article_id;
+        Err(crate::error::TrackerError::InvalidInput(
+            "Article comments are not supported by this backend".to_string(),
+        ))
+    }
 
     /// Add a comment to an article
-    fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment>;
+    fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment> {
+        let _ = (article_id, text);
+        Err(crate::error::TrackerError::InvalidInput(
+            "Article comment creation is not supported by this backend".to_string(),
+        ))
+    }
 
     /// Add a comment with one or more native attachments to an article.
     fn add_article_comment_attachment(
@@ -537,38 +577,6 @@ mod tests {
                 .take(limit)
                 .cloned()
                 .collect())
-        }
-
-        fn create_article(&self, _: &CreateArticle) -> Result<Article> {
-            unimplemented!()
-        }
-
-        fn update_article(&self, _: &str, _: &UpdateArticle) -> Result<Article> {
-            unimplemented!()
-        }
-
-        fn delete_article(&self, _: &str) -> Result<()> {
-            unimplemented!()
-        }
-
-        fn get_child_articles(&self, _: &str) -> Result<Vec<Article>> {
-            unimplemented!()
-        }
-
-        fn move_article(&self, _: &str, _: Option<&str>) -> Result<Article> {
-            unimplemented!()
-        }
-
-        fn list_article_attachments(&self, _: &str) -> Result<Vec<ArticleAttachment>> {
-            unimplemented!()
-        }
-
-        fn get_article_comments(&self, _: &str) -> Result<Vec<Comment>> {
-            unimplemented!()
-        }
-
-        fn add_article_comment(&self, _: &str, _: &str) -> Result<Comment> {
-            unimplemented!()
         }
     }
 
