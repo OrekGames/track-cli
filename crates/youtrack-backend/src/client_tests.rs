@@ -686,7 +686,6 @@ mod tests {
         let result = IssueTracker::create_project(&client, &create);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        eprintln!("ACTUAL ERR_MSG: {}", err_msg);
         assert!(err_msg.contains("Project leader 'nonexistent' could not be resolved"));
     }
 

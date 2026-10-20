@@ -457,8 +457,8 @@ This is useful when your instance has custom or renamed link types.
 track project list
 track project get PROJ
 track project fields PROJ       # Custom fields
-track project create -n "Name" -s "KEY"  # YouTrack only (defaults leader to authenticated user)
-track project create -n "Name" -s "KEY" -l "username"  # Specify explicit leader
+track project create -n "Name" -s "KEY"  # YouTrack only (defaults leader to authenticated user; --leader is ignored for non-YouTrack backends)
+track project create -n "Name" -s "KEY" -l "username"  # Specify explicit leader (YouTrack only)
 ```
 
 ### Tags
