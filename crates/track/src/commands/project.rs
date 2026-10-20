@@ -16,9 +16,17 @@ pub fn handle_project(
             short_name,
             description,
             body_file,
+            leader,
         } => {
             let resolved_desc = super::resolve_body(description.as_deref(), body_file.as_deref())?;
-            handle_create(client, name, short_name, resolved_desc, format)
+            handle_create(
+                client,
+                name,
+                short_name,
+                resolved_desc,
+                leader.as_deref(),
+                format,
+            )
         }
         ProjectCommands::Fields { id } => handle_fields(client, id, format),
         ProjectCommands::AttachField {
@@ -51,12 +59,14 @@ fn handle_create(
     name: &str,
     short_name: &str,
     description: Option<String>,
+    leader: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
     let create = CreateProject {
         name: name.to_string(),
         short_name: short_name.to_string(),
         description,
+        leader: leader.map(String::from),
     };
 
     let project = client

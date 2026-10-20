@@ -130,7 +130,18 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn create_project(&self, project: &CreateProject) -> Result<Project> {
-        let yt_create: crate::models::CreateProject = project.into();
+        let leader_id = match &project.leader {
+            Some(leader) => self.resolve_user_id(leader)?,
+            None => self.get_current_user()?.id,
+        };
+
+        let yt_create = crate::models::CreateProject {
+            name: project.name.clone(),
+            short_name: project.short_name.clone(),
+            description: project.description.clone(),
+            leader: Some(crate::models::UserRef { id: leader_id }),
+        };
+
         Ok(self.create_project(&yt_create)?.into())
     }
 

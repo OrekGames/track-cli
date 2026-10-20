@@ -557,6 +557,184 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_trait_create_project_defaults_leader_to_current_user() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users/me"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "1-3",
+                "login": "alice",
+                "fullName": "Alice Admin"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/admin/projects"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(body_json(serde_json::json!({
+                "name": "New Project",
+                "shortName": "NEW",
+                "leader": { "id": "1-3" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "0-10",
+                "name": "New Project",
+                "shortName": "NEW",
+                "description": null
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = tracker_core::CreateProject {
+            name: "New Project".to_string(),
+            short_name: "NEW".to_string(),
+            description: None,
+            leader: None,
+        };
+
+        let project = IssueTracker::create_project(&client, &create).unwrap();
+        assert_eq!(project.id, "0-10");
+        assert_eq!(project.name, "New Project");
+        assert_eq!(project.short_name, "NEW");
+    }
+
+    #[tokio::test]
+    async fn test_trait_create_project_with_explicit_leader_resolves_login() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users/bob"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .and(query_param("query", "bob"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "1-5",
+                    "login": "bob",
+                    "fullName": "Bob Leader"
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/admin/projects"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(body_json(serde_json::json!({
+                "name": "Bob Project",
+                "shortName": "BOB",
+                "leader": { "id": "1-5" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "0-11",
+                "name": "Bob Project",
+                "shortName": "BOB",
+                "description": null
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = tracker_core::CreateProject {
+            name: "Bob Project".to_string(),
+            short_name: "BOB".to_string(),
+            description: None,
+            leader: Some("bob".to_string()),
+        };
+
+        let project = IssueTracker::create_project(&client, &create).unwrap();
+        assert_eq!(project.id, "0-11");
+        assert_eq!(project.name, "Bob Project");
+        assert_eq!(project.short_name, "BOB");
+    }
+
+    #[tokio::test]
+    async fn test_trait_create_project_fails_when_leader_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .and(query_param("query", "nonexistent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users/nonexistent"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = tracker_core::CreateProject {
+            name: "Fail Project".to_string(),
+            short_name: "FAIL".to_string(),
+            description: None,
+            leader: Some("nonexistent".to_string()),
+        };
+
+        let result = IssueTracker::create_project(&client, &create);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Project leader 'nonexistent' could not be resolved"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_user_id_direct_database_id() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .and(query_param("query", "1-99"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users/1-99"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "1-99",
+                "login": "raw_user",
+                "fullName": "Raw User"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let user_id = client.resolve_user_id("1-99").unwrap();
+        assert_eq!(user_id, "1-99");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_user_id_me_alias() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "1-1",
+                "login": "admin",
+                "fullName": "Admin User"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let user_id = client.resolve_user_id("me").unwrap();
+        assert_eq!(user_id, "1-1");
+    }
+
+    #[tokio::test]
     async fn test_unauthorized_error() {
         let mock_server = MockServer::start().await;
 
