@@ -5,7 +5,7 @@ use tracker_core::{
     CreateArticle, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment,
     IssueHistoryEvent, IssueLink, IssueTag, IssueTracker, KnowledgeBase, Project,
     ProjectCustomField, ProjectRef, Result, SearchResult, Tag, TrackerError, UpdateArticle,
-    UpdateIssue,
+    UpdateIssue, contains_ignore_case,
 };
 
 use crate::client::GitHubClient;
@@ -450,12 +450,12 @@ fn wiki_pages_to_articles(
 }
 
 fn wiki_page_matches_query(page: &WikiPage, query_lower: &str) -> bool {
-    page.title.to_lowercase().contains(query_lower)
-        || page.content.to_lowercase().contains(query_lower)
+    contains_ignore_case(&page.title, query_lower)
+        || contains_ignore_case(&page.content, query_lower)
         || page
             .tags
             .iter()
-            .any(|tag| tag.to_lowercase().contains(query_lower))
+            .any(|tag| contains_ignore_case(tag, query_lower))
 }
 
 impl KnowledgeBase for GitHubClient {

@@ -117,3 +117,26 @@ mod tests {
         assert_ne!(case_key("完了"), case_key("未対応"));
     }
 }
+
+/// Allocation-free Unicode case-insensitive substring search.
+///
+/// If both the haystack and the pre-lowercased needle are ASCII, it uses
+/// `[u8]::windows` and `eq_ignore_ascii_case` to find the substring without
+/// allocating. Otherwise, it falls back to allocating a lowercased haystack.
+/// `needle_lower` must be already lowercased (e.g. by `to_lowercase()`).
+pub fn contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        if needle_lower.is_empty() {
+            return true;
+        }
+        if haystack.len() < needle_lower.len() {
+            return false;
+        }
+        haystack
+            .as_bytes()
+            .windows(needle_lower.len())
+            .any(|window| window.eq_ignore_ascii_case(needle_lower.as_bytes()))
+    } else {
+        haystack.to_lowercase().contains(needle_lower)
+    }
+}
