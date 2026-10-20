@@ -463,6 +463,23 @@ impl YouTrackClient {
         Ok(user)
     }
 
+    /// GET a JSON endpoint, returning None on 404 and propagating other errors.
+    fn get_json_opt<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
+        let response = self
+            .agent
+            .get(url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let mut response = self.check_response(response)?;
+        Ok(response.body_mut().read_json::<T>().ok())
+    }
+
     /// Resolve a user identifier (database ID, login, or "me") to a YouTrack database user ID.
     pub fn resolve_user_id(&self, identifier: &str) -> Result<String> {
         let trimmed = identifier.trim();
@@ -470,71 +487,38 @@ impl YouTrackClient {
             return self.get_current_user().map(|u| u.id);
         }
 
-        let mut candidates = Vec::new();
-
-        // 1. Search /api/users?query={trimmed} first to match login/name/id
+        // 1. Search users by query, matching login or database ID exactly
         let search_url = format!(
             "{}/api/users?query={}&fields=id,login,fullName&$top=50",
             self.base_url,
             urlencoding::encode(trimmed)
         );
-        let search_resp = self
-            .agent
-            .get(&search_url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call();
+        let users: Option<Vec<User>> = self.get_json_opt(&search_url)?;
 
-        match search_resp {
-            Ok(res) => {
-                if res.status().is_success() {
-                    let mut resp = self.check_response(res)?;
-                    if let Ok(users) = resp.body_mut().read_json::<Vec<User>>() {
-                        for user in &users {
-                            if user.login.eq_ignore_ascii_case(trimmed) || user.id == trimmed {
-                                return Ok(user.id.clone());
-                            }
-                        }
-                        candidates = users.into_iter().map(|u| u.login).take(5).collect();
-                    }
-                } else if res.status().as_u16() != 404 {
-                    self.check_response(res)?;
-                }
-            }
-            Err(e) => {
-                return Err(self.handle_error(e));
-            }
+        if let Some(user) = users.as_ref().and_then(|found| {
+            found
+                .iter()
+                .find(|u| u.login.eq_ignore_ascii_case(trimmed) || u.id == trimmed)
+        }) {
+            return Ok(user.id.clone());
         }
 
-        // 2. Direct GET /api/users/{id} fallback for exact database ID lookup
+        // 2. Fall back to a direct lookup, in case the identifier is a database ID
         let direct_url = format!(
             "{}/api/users/{}?fields=id,login,fullName",
             self.base_url,
             urlencoding::encode(trimmed)
         );
-        let direct_resp = self
-            .agent
-            .get(&direct_url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call();
-
-        match direct_resp {
-            Ok(res) => {
-                if res.status().is_success() {
-                    let mut resp = self.check_response(res)?;
-                    if let Ok(user) = resp.body_mut().read_json::<User>() {
-                        return Ok(user.id);
-                    }
-                } else if res.status().as_u16() != 404 {
-                    self.check_response(res)?;
-                }
-            }
-            Err(e) => {
-                return Err(self.handle_error(e));
-            }
+        if let Some(user) = self.get_json_opt::<User>(&direct_url)? {
+            return Ok(user.id);
         }
 
+        let candidates: Vec<String> = users
+            .unwrap_or_default()
+            .into_iter()
+            .map(|u| u.login)
+            .take(5)
+            .collect();
         let message = if candidates.is_empty() {
             format!(
                 "Project leader '{}' could not be resolved to a YouTrack user",
