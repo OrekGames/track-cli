@@ -4,7 +4,7 @@ use tracker_core::{
     Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CreateArticle, CreateIssue,
     CreateProject, CreateTag, Issue, IssueAttachment, IssueHistoryEvent, IssueLink, IssueLinkType,
     IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, ProjectRef, Result,
-    SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
+    SearchResult, TrackerError, UpdateArticle, UpdateIssue, User, contains_ignore_case,
 };
 
 use crate::client::GitLabClient;
@@ -545,13 +545,8 @@ impl KnowledgeBase for GitLabClient {
             .list_wiki_pages(true)?
             .into_iter()
             .filter(|page| {
-                page.title.to_lowercase().contains(&query)
-                    || page
-                        .content
-                        .as_deref()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .contains(&query)
+                contains_ignore_case(&page.title, &query)
+                    || contains_ignore_case(page.content.as_deref().unwrap_or_default(), &query)
             })
             .skip(skip)
             .take(limit)
