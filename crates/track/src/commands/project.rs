@@ -24,7 +24,7 @@ pub fn handle_project(
                 name,
                 short_name,
                 resolved_desc,
-                leader.clone(),
+                leader.as_deref(),
                 format,
             )
         }
@@ -59,14 +59,14 @@ fn handle_create(
     name: &str,
     short_name: &str,
     description: Option<String>,
-    leader: Option<String>,
+    leader: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
     let create = CreateProject {
         name: name.to_string(),
         short_name: short_name.to_string(),
         description,
-        leader,
+        leader: leader.map(String::from),
     };
 
     let project = client

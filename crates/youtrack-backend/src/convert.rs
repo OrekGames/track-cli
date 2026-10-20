@@ -462,18 +462,6 @@ impl From<yt::ArticleComment> for core::Comment {
     }
 }
 
-/// Convert tracker-core CreateProject to YouTrack CreateProject
-impl From<&core::CreateProject> for yt::CreateProject {
-    fn from(create: &core::CreateProject) -> Self {
-        Self {
-            name: create.name.clone(),
-            short_name: create.short_name.clone(),
-            description: create.description.clone(),
-            leader: None,
-        }
-    }
-}
-
 /// Convert tracker-core CreateArticle to YouTrack CreateArticle
 impl From<&core::CreateArticle> for yt::CreateArticle {
     fn from(create: &core::CreateArticle) -> Self {

@@ -448,10 +448,7 @@ impl YouTrackClient {
 
     /// Get the currently authenticated user details.
     pub fn get_current_user(&self) -> Result<User> {
-        let url = format!(
-            "{}/api/users/me?fields=id,login,fullName,email",
-            self.base_url
-        );
+        let url = format!("{}/api/users/me?fields=id,login,fullName", self.base_url);
 
         let response = self
             .agent
@@ -473,52 +470,87 @@ impl YouTrackClient {
             return self.get_current_user().map(|u| u.id);
         }
 
-        // 1. Check direct GET /api/users/{id} first
-        let direct_url = format!(
-            "{}/api/users/{}?fields=id,login,fullName,email",
-            self.base_url,
-            urlencoding::encode(trimmed)
-        );
-        if let Ok(response) = self
-            .agent
-            .get(&direct_url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            && let Ok(mut resp) = self.check_response(response)
-            && let Ok(user) = resp.body_mut().read_json::<User>()
-        {
-            return Ok(user.id);
-        }
+        let mut candidates = Vec::new();
 
-        // 2. Search /api/users?query={trimmed} for matching login or ID
+        // 1. Search /api/users?query={trimmed} first to match login/name/id
         let search_url = format!(
-            "{}/api/users?query={}&fields=id,login,fullName,email&$top=50",
+            "{}/api/users?query={}&fields=id,login,fullName&$top=50",
             self.base_url,
             urlencoding::encode(trimmed)
         );
-        if let Ok(response) = self
+        let search_resp = self
             .agent
             .get(&search_url)
             .header("Authorization", &self.auth_header())
             .header("Accept", "application/json")
-            .call()
-            && let Ok(mut resp) = self.check_response(response)
-            && let Ok(users) = resp.body_mut().read_json::<Vec<User>>()
-        {
-            for user in &users {
-                if user.login.eq_ignore_ascii_case(trimmed) || user.id == trimmed {
-                    return Ok(user.id.clone());
+            .call();
+
+        match search_resp {
+            Ok(res) => {
+                if res.status().is_success() {
+                    let mut resp = self.check_response(res)?;
+                    if let Ok(users) = resp.body_mut().read_json::<Vec<User>>() {
+                        for user in &users {
+                            if user.login.eq_ignore_ascii_case(trimmed) || user.id == trimmed {
+                                return Ok(user.id.clone());
+                            }
+                        }
+                        candidates = users.into_iter().map(|u| u.login).take(5).collect();
+                    }
+                } else if res.status().as_u16() != 404 {
+                    self.check_response(res)?;
                 }
+            }
+            Err(e) => {
+                return Err(self.handle_error(e));
             }
         }
 
-        Err(YouTrackError::Api {
-            status: 404,
-            message: format!(
+        // 2. Direct GET /api/users/{id} fallback for exact database ID lookup
+        let direct_url = format!(
+            "{}/api/users/{}?fields=id,login,fullName",
+            self.base_url,
+            urlencoding::encode(trimmed)
+        );
+        let direct_resp = self
+            .agent
+            .get(&direct_url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call();
+
+        match direct_resp {
+            Ok(res) => {
+                if res.status().is_success() {
+                    let mut resp = self.check_response(res)?;
+                    if let Ok(user) = resp.body_mut().read_json::<User>() {
+                        return Ok(user.id);
+                    }
+                } else if res.status().as_u16() != 404 {
+                    self.check_response(res)?;
+                }
+            }
+            Err(e) => {
+                return Err(self.handle_error(e));
+            }
+        }
+
+        let message = if candidates.is_empty() {
+            format!(
                 "Project leader '{}' could not be resolved to a YouTrack user",
                 identifier
-            ),
+            )
+        } else {
+            format!(
+                "Project leader '{}' could not be resolved to an exact user match. Candidate matches found: {}",
+                identifier,
+                candidates.join(", ")
+            )
+        };
+
+        Err(YouTrackError::Api {
+            status: 404,
+            message,
         })
     }
 
