@@ -1,5 +1,6 @@
 //! Implementation of tracker-core traits for GitHubClient
 
+use tracker_core::strings::contains_ignore_case;
 use tracker_core::{
     Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CommentAuthor,
     CreateArticle, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment,
@@ -450,12 +451,12 @@ fn wiki_pages_to_articles(
 }
 
 fn wiki_page_matches_query(page: &WikiPage, query_lower: &str) -> bool {
-    page.title.to_lowercase().contains(query_lower)
-        || page.content.to_lowercase().contains(query_lower)
+    contains_ignore_case(&page.title, query_lower)
+        || contains_ignore_case(&page.content, query_lower)
         || page
             .tags
             .iter()
-            .any(|tag| tag.to_lowercase().contains(query_lower))
+            .any(|tag| contains_ignore_case(tag, query_lower))
 }
 
 impl KnowledgeBase for GitHubClient {

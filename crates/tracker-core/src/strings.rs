@@ -37,6 +37,24 @@ pub fn case_key(s: &str) -> String {
     s.chars().flat_map(char::to_lowercase).collect()
 }
 
+/// Allocation-free Unicode case-insensitive substring search (fast path for ASCII).
+///
+/// `needle_lower` must be pre-folded to lowercase.
+pub fn contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        let n_bytes = needle_lower.as_bytes();
+        if n_bytes.is_empty() {
+            return true;
+        }
+        haystack
+            .as_bytes()
+            .windows(n_bytes.len())
+            .any(|w| w.eq_ignore_ascii_case(n_bytes))
+    } else {
+        haystack.to_lowercase().contains(needle_lower)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +133,13 @@ mod tests {
     fn case_key_distinguishes() {
         assert_ne!(case_key("foo"), case_key("bar"));
         assert_ne!(case_key("完了"), case_key("未対応"));
+    }
+
+    #[test]
+    fn test_contains_ignore_case() {
+        assert!(contains_ignore_case("Hello World", "world"));
+        assert!(!contains_ignore_case("Hello World", "word"));
+        assert!(contains_ignore_case("Wiki page content", "wiki"));
+        assert!(contains_ignore_case("Geöffnet", "geöffnet"));
     }
 }
