@@ -37,6 +37,24 @@ pub fn case_key(s: &str) -> String {
     s.chars().flat_map(char::to_lowercase).collect()
 }
 
+/// Case-insensitive substring search that avoids allocation when both strings are ASCII.
+pub fn contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        if needle_lower.is_empty() {
+            return true;
+        }
+        if haystack.len() < needle_lower.len() {
+            return false;
+        }
+        haystack
+            .as_bytes()
+            .windows(needle_lower.len())
+            .any(|window| window.eq_ignore_ascii_case(needle_lower.as_bytes()))
+    } else {
+        haystack.to_lowercase().contains(needle_lower)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +133,18 @@ mod tests {
     fn case_key_distinguishes() {
         assert_ne!(case_key("foo"), case_key("bar"));
         assert_ne!(case_key("完了"), case_key("未対応"));
+    }
+
+    #[test]
+    fn contains_ignore_case_ascii() {
+        assert!(contains_ignore_case("Hello World", "world"));
+        assert!(contains_ignore_case("Hello World", "lo w"));
+        assert!(!contains_ignore_case("Hello World", "worldd"));
+    }
+
+    #[test]
+    fn contains_ignore_case_non_ascii() {
+        assert!(contains_ignore_case("Otevřeno", "tevře"));
+        assert!(!contains_ignore_case("Otevřeno", "xyz"));
     }
 }
