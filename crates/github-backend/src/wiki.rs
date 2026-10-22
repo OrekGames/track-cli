@@ -831,12 +831,12 @@ impl WikiManager {
         let filtered: Vec<WikiPage> = pages
             .into_iter()
             .filter(|page| {
-                page.title.to_lowercase().contains(&query_lower)
-                    || page.content.to_lowercase().contains(&query_lower)
+                tracker_core::strings::contains_ignore_case(&page.title, &query_lower)
+                    || tracker_core::strings::contains_ignore_case(&page.content, &query_lower)
                     || page
                         .tags
                         .iter()
-                        .any(|t| t.to_lowercase().contains(&query_lower))
+                        .any(|t| tracker_core::strings::contains_ignore_case(t, &query_lower))
             })
             .collect();
 

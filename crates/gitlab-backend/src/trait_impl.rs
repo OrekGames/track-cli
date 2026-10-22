@@ -545,13 +545,11 @@ impl KnowledgeBase for GitLabClient {
             .list_wiki_pages(true)?
             .into_iter()
             .filter(|page| {
-                page.title.to_lowercase().contains(&query)
-                    || page
-                        .content
-                        .as_deref()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .contains(&query)
+                tracker_core::strings::contains_ignore_case(&page.title, &query)
+                    || tracker_core::strings::contains_ignore_case(
+                        page.content.as_deref().unwrap_or_default(),
+                        &query,
+                    )
             })
             .skip(skip)
             .take(limit)
