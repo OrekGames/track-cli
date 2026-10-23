@@ -547,13 +547,7 @@ impl KnowledgeBase for GitLabClient {
             .into_iter()
             .filter(|page| {
                 contains_ignore_case(&page.title, &query)
-                    || contains_ignore_case(
-                        page
-                            .content
-                            .as_deref()
-                            .unwrap_or_default(),
-                        &query
-                    )
+                    || contains_ignore_case(page.content.as_deref().unwrap_or_default(), &query)
             })
             .skip(skip)
             .take(limit)
