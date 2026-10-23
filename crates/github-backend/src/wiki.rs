@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tracker_core::AttachmentUpload;
+use tracker_core::{AttachmentUpload, strings::contains_ignore_case};
 use walkdir::WalkDir;
 
 const ATTACHMENT_ROOT: &str = ".track-attachments";
@@ -831,12 +831,12 @@ impl WikiManager {
         let filtered: Vec<WikiPage> = pages
             .into_iter()
             .filter(|page| {
-                page.title.to_lowercase().contains(&query_lower)
-                    || page.content.to_lowercase().contains(&query_lower)
+                contains_ignore_case(&page.title, &query_lower)
+                    || contains_ignore_case(&page.content, &query_lower)
                     || page
                         .tags
                         .iter()
-                        .any(|t| t.to_lowercase().contains(&query_lower))
+                        .any(|t| contains_ignore_case(t, &query_lower))
             })
             .collect();
 
