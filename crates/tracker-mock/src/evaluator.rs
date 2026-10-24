@@ -314,7 +314,7 @@ impl Evaluator {
                                 .args
                                 .get("summary")
                                 .and_then(|v| v.as_str())
-                                .map(|t| t.to_lowercase().contains(&contains_lower))
+                                .map(|t| tracker_core::strings::contains_ignore_case(t, &contains_lower))
                                 .unwrap_or(false)
                     })
                 }
@@ -326,7 +326,7 @@ impl Evaluator {
                                 .args
                                 .get("text")
                                 .and_then(|v| v.as_str())
-                                .map(|t| t.to_lowercase().contains(&contains_lower))
+                                .map(|t| tracker_core::strings::contains_ignore_case(t, &contains_lower))
                                 .unwrap_or(false)
                     })
                 }
@@ -335,7 +335,7 @@ impl Evaluator {
                     calls.iter().any(|call| {
                         call.args.values().any(|v| {
                             v.as_str()
-                                .map(|t| t.to_lowercase().contains(&contains_lower))
+                                .map(|t| tracker_core::strings::contains_ignore_case(t, &contains_lower))
                                 .unwrap_or(false)
                         })
                     })
