@@ -37,6 +37,29 @@ pub fn case_key(s: &str) -> String {
     s.chars().flat_map(char::to_lowercase).collect()
 }
 
+/// Case-insensitive substring search.
+///
+/// Uses an allocation-free algorithm (`eq_ignore_ascii_case`) when both the
+/// haystack and needle are ASCII. Falls back to a full Unicode case-fold
+/// search (allocating) for non-ASCII strings.
+pub fn contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        let needle_len = needle_lower.len();
+        if haystack.len() < needle_len {
+            return false;
+        }
+        haystack
+            .as_bytes()
+            .windows(needle_len)
+            .any(|window| window.eq_ignore_ascii_case(needle_lower.as_bytes()))
+    } else {
+        haystack.to_lowercase().contains(needle_lower)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +138,15 @@ mod tests {
     fn case_key_distinguishes() {
         assert_ne!(case_key("foo"), case_key("bar"));
         assert_ne!(case_key("完了"), case_key("未対応"));
+    }
+
+    #[test]
+    fn test_contains_ignore_case() {
+        assert!(contains_ignore_case("Hello World", "world"));
+        assert!(contains_ignore_case("Hello World", "hello"));
+        assert!(!contains_ignore_case("Hello World", "foo"));
+        assert!(contains_ignore_case("Geöffnet", "öffnet"));
+        assert!(contains_ignore_case("Geöffnet", "geöffnet"));
+        assert!(contains_ignore_case("TEST", "es"));
     }
 }
