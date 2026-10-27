@@ -383,6 +383,107 @@ mod tests {
         assert!(children.is_empty());
     }
 
+    // ====================================================================
+    // Round trips and git history
+    // ====================================================================
+
+    #[test]
+    fn rewriting_a_page_with_front_matter_keeps_its_content() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, _) = setup_wiki(&temp);
+
+        let created = wiki
+            .create_page("Tagged", "Tagged", "Body", vec!["tag".to_string()])
+            .expect("create page");
+        assert_eq!(created.content, "Body");
+
+        // Each rewrite re-reads the stored content; the blank line separating
+        // front matter from the body must not leak into it.
+        wiki.update_page("Tagged", Some("Renamed"), None, None)
+            .expect("first update");
+        let updated = wiki
+            .update_page("Tagged", Some("Renamed again"), None, None)
+            .expect("second update");
+        assert_eq!(updated.content, "Body");
+    }
+
+    #[test]
+    fn page_history_reflects_commits_that_touched_the_page() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, _) = setup_wiki(&temp);
+
+        // A later commit by another author that does not touch Home.
+        wiki.create_page("Other", "Other", "Body", Vec::new())
+            .expect("create page");
+
+        let home = wiki.get_page("Home").expect("get page");
+        assert_eq!(home.author.as_deref(), Some("tester"));
+        let other = wiki.get_page("Other").expect("get page");
+        assert_eq!(other.author.as_deref(), Some("track-cli"));
+    }
+
+    #[test]
+    fn move_page_keeps_dots_in_the_page_name() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, cache_dir) = setup_wiki(&temp);
+        wiki.create_page("Release-1.2", "Release 1.2", "Notes", Vec::new())
+            .expect("create page");
+
+        let moved = wiki
+            .move_page("Release-1.2", Some("Archive"))
+            .expect("move page");
+
+        assert_eq!(moved.slug, "Archive/Release-1.2");
+        assert!(cache_dir.join("Archive/Release-1.2.md").exists());
+    }
+
+    #[test]
+    fn move_page_refuses_to_overwrite_an_existing_page() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, _) = setup_wiki(&temp);
+        wiki.create_page("Guides/Home", "Home", "Guides home", Vec::new())
+            .expect("create page");
+
+        assert!(wiki.move_page("Home", Some("Guides")).is_err());
+
+        let existing = wiki.get_page("Guides/Home").expect("destination kept");
+        assert_eq!(existing.content, "Guides home");
+        assert!(wiki.get_page("Home").is_ok(), "source should stay in place");
+    }
+
+    #[test]
+    fn rejected_push_is_an_error() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, _) = setup_wiki(&temp);
+        // A held ref lock makes the remote reject the update to master.
+        fs::write(temp.path().join("bare.git/refs/heads/master.lock"), "")
+            .expect("lock remote ref");
+
+        let result = wiki.create_page("Unpublished", "Unpublished", "Body", Vec::new());
+
+        let err = result.expect_err("push rejection should fail the write");
+        assert!(err.to_string().contains("rejected"), "got: {err}");
+    }
+
+    #[test]
+    fn wiki_url_uses_the_web_host_of_the_api() {
+        let cases = [
+            ("https://api.github.com", "https://github.com/o/r.wiki.git"),
+            (
+                "https://github.example.com/api/v3",
+                "https://github.example.com/o/r.wiki.git",
+            ),
+            (
+                "https://api.octocorp.ghe.com",
+                "https://octocorp.ghe.com/o/r.wiki.git",
+            ),
+        ];
+        for (api_url, wiki_url) in cases {
+            let wiki = WikiManager::new(api_url, "o", "r", "token");
+            assert_eq!(wiki.wiki_url(), wiki_url, "API URL {api_url}");
+        }
+    }
+
     #[test]
     fn managed_attachments_are_added_and_listed() {
         let temp = TempDir::new().expect("tempdir");

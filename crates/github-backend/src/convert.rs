@@ -2,9 +2,9 @@
 
 use chrono::{DateTime, Utc};
 use tracker_core::{
-    Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueHistoryEvent,
-    IssueTag, Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag, TagColor, UpdateIssue,
-    canonical_field_name,
+    Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, FIELD_STATUS, Issue,
+    IssueHistoryEvent, IssueTag, Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag,
+    TagColor, UpdateIssue,
 };
 
 use crate::models::*;
@@ -134,8 +134,6 @@ fn is_github_noise(key: &str) -> bool {
                 | "draft"
                 | "repository"
                 | "sub_issues_summary"
-                | "timeline_url"
-                | "events_url"
         )
 }
 
@@ -525,153 +523,104 @@ pub fn github_timeline_to_events(events: Vec<GitHubTimelineEvent>) -> Vec<IssueH
     let mut out = Vec::new();
 
     for event in events {
-        match event {
-            GitHubTimelineEvent::Closed { created_at, actor } => {
-                let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
-                    continue;
-                };
-                out.push(IssueHistoryEvent {
-                    at,
-                    author: timeline_actor_to_author(actor),
-                    field: canonical_field_name("status"),
-                    from: Some(status.clone()),
-                    to: Some("closed".to_string()),
-                });
-                status = "closed".to_string();
-            }
-            GitHubTimelineEvent::Reopened { created_at, actor } => {
-                let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
-                    continue;
-                };
-                out.push(IssueHistoryEvent {
-                    at,
-                    author: timeline_actor_to_author(actor),
-                    field: canonical_field_name("status"),
-                    from: Some(status.clone()),
-                    to: Some("open".to_string()),
-                });
-                status = "open".to_string();
-            }
+        let (created_at, actor, field, from, to) = match event {
+            GitHubTimelineEvent::Closed { created_at, actor } => (
+                created_at,
+                actor,
+                FIELD_STATUS,
+                Some(status.clone()),
+                Some("closed".to_string()),
+            ),
+            GitHubTimelineEvent::Reopened { created_at, actor } => (
+                created_at,
+                actor,
+                FIELD_STATUS,
+                Some(status.clone()),
+                Some("open".to_string()),
+            ),
             GitHubTimelineEvent::Assigned {
                 created_at,
                 actor,
                 assignee,
-            } => {
-                let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
-                    continue;
-                };
-                out.push(IssueHistoryEvent {
-                    at,
-                    author: timeline_actor_to_author(actor),
-                    field: "assignee".to_string(),
-                    from: None,
-                    to: assignee.map(|u| u.login),
-                });
-            }
+            } => (
+                created_at,
+                actor,
+                "assignee",
+                None,
+                assignee.map(|u| u.login),
+            ),
             GitHubTimelineEvent::Unassigned {
                 created_at,
                 actor,
                 assignee,
-            } => {
-                let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
-                    continue;
-                };
-                out.push(IssueHistoryEvent {
-                    at,
-                    author: timeline_actor_to_author(actor),
-                    field: "assignee".to_string(),
-                    from: assignee.map(|u| u.login),
-                    to: None,
-                });
-            }
+            } => (
+                created_at,
+                actor,
+                "assignee",
+                assignee.map(|u| u.login),
+                None,
+            ),
             GitHubTimelineEvent::Labeled {
                 created_at,
                 actor,
                 label,
-            } => {
-                let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
-                    continue;
-                };
-                out.push(IssueHistoryEvent {
-                    at,
-                    author: timeline_actor_to_author(actor),
-                    field: "labels".to_string(),
-                    from: None,
-                    to: label.map(|l| l.name),
-                });
-            }
+            } => (created_at, actor, "labels", None, label.map(|l| l.name)),
             GitHubTimelineEvent::Unlabeled {
                 created_at,
                 actor,
                 label,
-            } => {
-                let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
-                    continue;
-                };
-                out.push(IssueHistoryEvent {
-                    at,
-                    author: timeline_actor_to_author(actor),
-                    field: "labels".to_string(),
-                    from: label.map(|l| l.name),
-                    to: None,
-                });
-            }
+            } => (created_at, actor, "labels", label.map(|l| l.name), None),
             GitHubTimelineEvent::Renamed {
                 created_at,
                 actor,
                 rename,
             } => {
-                let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
-                    continue;
-                };
                 // The `renamed` event is the one event that carries a prior
                 // value, so use its from/to directly.
-                let (from, to) = match rename {
-                    Some(r) => (r.from, r.to),
-                    None => (None, None),
-                };
-                out.push(IssueHistoryEvent {
-                    at,
-                    author: timeline_actor_to_author(actor),
-                    field: "title".to_string(),
-                    from,
-                    to,
-                });
+                let (from, to) = rename.map_or((None, None), |r| (r.from, r.to));
+                (created_at, actor, "title", from, to)
             }
             GitHubTimelineEvent::Milestoned {
                 created_at,
                 actor,
                 milestone,
-            } => {
-                let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
-                    continue;
-                };
-                out.push(IssueHistoryEvent {
-                    at,
-                    author: timeline_actor_to_author(actor),
-                    field: "milestone".to_string(),
-                    from: None,
-                    to: milestone.map(|m| m.title),
-                });
-            }
+            } => (
+                created_at,
+                actor,
+                "milestone",
+                None,
+                milestone.map(|m| m.title),
+            ),
             GitHubTimelineEvent::Demilestoned {
                 created_at,
                 actor,
                 milestone,
-            } => {
-                let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
-                    continue;
-                };
-                out.push(IssueHistoryEvent {
-                    at,
-                    author: timeline_actor_to_author(actor),
-                    field: "milestone".to_string(),
-                    from: milestone.map(|m| m.title),
-                    to: None,
-                });
-            }
-            GitHubTimelineEvent::Other => {}
+            } => (
+                created_at,
+                actor,
+                "milestone",
+                milestone.map(|m| m.title),
+                None,
+            ),
+            GitHubTimelineEvent::Other => continue,
+        };
+
+        // A skipped status event must not advance the running status either.
+        let Some(at) = created_at.as_deref().and_then(parse_github_datetime) else {
+            continue;
+        };
+        if field == FIELD_STATUS
+            && let Some(new_status) = &to
+        {
+            status = new_status.clone();
         }
+        out.push(IssueHistoryEvent {
+            at,
+            author: timeline_actor_to_author(actor),
+            field: field.to_string(),
+            from,
+            to,
+        });
     }
 
     // GitHub returns the timeline oldest-first; expose newest-first to match

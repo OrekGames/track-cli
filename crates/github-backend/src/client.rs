@@ -1,11 +1,21 @@
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::sync::OnceLock;
 use std::time::Duration;
-use ureq::Agent;
+use ureq::typestate::{WithBody, WithoutBody};
+use ureq::{Agent, Body, RequestBuilder};
 
 use crate::convert::convert_query_to_github;
 use crate::error::{GitHubError, Result};
 use crate::models::*;
 use crate::wiki::WikiManager;
+
+type Response = ureq::http::Response<Body>;
+
+/// Media type GitHub recommends for REST API requests.
+const GITHUB_ACCEPT: &str = "application/vnd.github+json";
+/// REST API version the request and response models are written against.
+const GITHUB_API_VERSION: &str = "2022-11-28";
 
 /// GitHub REST API client
 pub struct GitHubClient {
@@ -26,7 +36,7 @@ impl GitHubClient {
     /// Get wiki manager, lazily initializing on first access
     pub fn wiki(&self) -> &WikiManager {
         self.wiki_manager
-            .get_or_init(|| WikiManager::new(&self.owner, &self.repo, &self.token))
+            .get_or_init(|| WikiManager::new(&self.base_url, &self.owner, &self.repo, &self.token))
     }
 
     /// Create a new GitHub client with a custom base URL (for GitHub Enterprise or testing)
@@ -70,11 +80,40 @@ impl GitHubClient {
         format!("Bearer {}", self.token)
     }
 
-    /// Check response status and return error if not successful
-    fn check_response(
+    /// Add the authentication and API-version headers every request carries.
+    fn with_github_headers<B>(&self, request: RequestBuilder<B>) -> RequestBuilder<B> {
+        request
+            .header("Authorization", &self.auth_header())
+            .header("Accept", GITHUB_ACCEPT)
+            .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+    }
+
+    /// Send a body-less request (GET, DELETE) and return the successful response.
+    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<Response> {
+        let response = self.with_github_headers(request).call()?;
+        self.check_response(response)
+    }
+
+    /// Send `body` as JSON and return the successful response.
+    fn send_json(
         &self,
-        mut response: ureq::http::Response<ureq::Body>,
-    ) -> Result<ureq::http::Response<ureq::Body>> {
+        request: RequestBuilder<WithBody>,
+        body: &impl Serialize,
+    ) -> Result<Response> {
+        let response = self
+            .with_github_headers(request)
+            .header("Content-Type", "application/json")
+            .send_json(body)?;
+        self.check_response(response)
+    }
+
+    /// GET `url` and decode the JSON response.
+    fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
+        read_json(self.call(self.agent.get(url))?)
+    }
+
+    /// Check response status and return error if not successful
+    fn check_response(&self, mut response: Response) -> Result<Response> {
         let status = response.status().as_u16();
 
         if (200..300).contains(&status) {
@@ -119,20 +158,7 @@ impl GitHubClient {
 
     /// Get an issue by number
     pub fn get_issue(&self, number: u64) -> Result<GitHubIssue> {
-        let url = self.repo_url(&format!("/issues/{}", number));
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let issue: GitHubIssue = response.body_mut().read_json()?;
-        Ok(issue)
+        self.get_json(&self.repo_url(&format!("/issues/{}", number)))
     }
 
     /// List issues for the repository
@@ -152,19 +178,7 @@ impl GitHubClient {
             page
         );
 
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let issues: Vec<GitHubIssue> = response.body_mut().read_json()?;
-
-        // Filter out pull requests
+        let issues: Vec<GitHubIssue> = self.get_json(&url)?;
         Ok(issues
             .into_iter()
             .filter(|i| !i.is_pull_request())
@@ -189,18 +203,7 @@ impl GitHubClient {
             page
         );
 
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let result: GitHubSearchResult = response.body_mut().read_json()?;
-        Ok(result)
+        self.get_json(&url)
     }
 
     /// Count issues matching a query without fetching full issue data.
@@ -213,40 +216,16 @@ impl GitHubClient {
 
     /// Create a new issue
     pub fn create_issue(&self, issue: &CreateGitHubIssue) -> Result<GitHubIssue> {
-        let url = self.repo_url("/issues");
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send_json(issue)
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let created: GitHubIssue = response.body_mut().read_json()?;
-        Ok(created)
+        let request = self.agent.post(&self.repo_url("/issues"));
+        read_json(self.send_json(request, issue)?)
     }
 
     /// Update an existing issue
     pub fn update_issue(&self, number: u64, update: &UpdateGitHubIssue) -> Result<GitHubIssue> {
-        let url = self.repo_url(&format!("/issues/{}", number));
-
-        let response = self
+        let request = self
             .agent
-            .patch(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send_json(update)
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let updated: GitHubIssue = response.body_mut().read_json()?;
-        Ok(updated)
+            .patch(&self.repo_url(&format!("/issues/{}", number)));
+        read_json(self.send_json(request, update)?)
     }
 
     // ==================== Sub-Issue Operations ====================
@@ -256,24 +235,15 @@ impl GitHubClient {
     /// `parent_number` is the issue number of the parent.
     /// `child_id` is the **global numeric ID** (not the issue number) of the child.
     pub fn add_sub_issue(&self, parent_number: u64, child_id: u64) -> Result<()> {
-        let url = self.repo_url(&format!("/issues/{}/sub_issues", parent_number));
-
+        let request = self
+            .agent
+            .post(&self.repo_url(&format!("/issues/{}/sub_issues", parent_number)));
         let body = serde_json::json!({
             "sub_issue_id": child_id,
             "replace_parent": true
         });
 
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send_json(&body)
-            .map_err(GitHubError::Http)?;
-
-        self.check_response(response)?;
+        self.send_json(request, &body)?;
         Ok(())
     }
 
@@ -281,138 +251,55 @@ impl GitHubClient {
 
     /// List repositories for the authenticated user
     pub fn list_repos(&self) -> Result<Vec<GitHubRepo>> {
-        let url = format!("{}/user/repos?per_page=100&sort=updated", self.base_url);
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let repos: Vec<GitHubRepo> = response.body_mut().read_json()?;
-        Ok(repos)
+        self.get_json(&format!(
+            "{}/user/repos?per_page=100&sort=updated",
+            self.base_url
+        ))
     }
 
     /// Get a specific repository
     pub fn get_repo(&self, owner: &str, repo: &str) -> Result<GitHubRepo> {
-        let url = format!("{}/repos/{}/{}", self.base_url, owner, repo);
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let repo: GitHubRepo = serde_json::from_reader(response.body_mut().as_reader())?;
-        Ok(repo)
+        self.get_json(&format!("{}/repos/{}/{}", self.base_url, owner, repo))
     }
 
     // ==================== Label Operations ====================
 
-    /// List labels for the repository
+    /// List every label of the repository
     pub fn list_labels(&self) -> Result<Vec<GitHubLabel>> {
-        let url = format!("{}?per_page=100", self.repo_url("/labels"));
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let labels: Vec<GitHubLabel> = response.body_mut().read_json()?;
-        Ok(labels)
+        self.get_all_pages(&self.repo_url("/labels"))
     }
 
     /// Create a label
     pub fn create_label(&self, label: &CreateGitHubLabel) -> Result<GitHubLabel> {
-        let url = self.repo_url("/labels");
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send_json(label)
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let created: GitHubLabel = response.body_mut().read_json()?;
-        Ok(created)
+        let request = self.agent.post(&self.repo_url("/labels"));
+        read_json(self.send_json(request, label)?)
     }
 
     /// Delete a label by name
     pub fn delete_label(&self, name: &str) -> Result<()> {
-        let encoded_name = urlencoding::encode(name);
-        let url = self.repo_url(&format!("/labels/{}", encoded_name));
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(GitHubError::Http)?;
-
-        self.check_response(response)?;
+        let url = self.repo_url(&format!("/labels/{}", urlencoding::encode(name)));
+        self.call(self.agent.delete(&url))?;
         Ok(())
     }
 
     /// Update a label by name
     pub fn update_label(&self, name: &str, update: &UpdateGitHubLabel) -> Result<GitHubLabel> {
-        let encoded_name = urlencoding::encode(name);
-        let url = self.repo_url(&format!("/labels/{}", encoded_name));
-
-        let response = self
-            .agent
-            .patch(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send_json(update)
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let label: GitHubLabel = response.body_mut().read_json()?;
-        Ok(label)
+        let url = self.repo_url(&format!("/labels/{}", urlencoding::encode(name)));
+        read_json(self.send_json(self.agent.patch(&url), update)?)
     }
 
     // ==================== Comment Operations ====================
 
     /// Add a comment to an issue
     pub fn add_comment(&self, number: u64, body: &str) -> Result<GitHubComment> {
-        let url = self.repo_url(&format!("/issues/{}/comments", number));
-
+        let request = self
+            .agent
+            .post(&self.repo_url(&format!("/issues/{}/comments", number)));
         let comment = CreateGitHubComment {
             body: body.to_string(),
         };
 
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send_json(&comment)
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let created: GitHubComment = response.body_mut().read_json()?;
-        Ok(created)
+        read_json(self.send_json(request, &comment)?)
     }
 
     /// Get comments on an issue
@@ -427,25 +314,12 @@ impl GitHubClient {
         per_page: usize,
         page: usize,
     ) -> Result<Vec<GitHubComment>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}?per_page={}&page={}",
             self.repo_url(&format!("/issues/{}/comments", number)),
             per_page.min(100),
             page.max(1)
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let comments: Vec<GitHubComment> = response.body_mut().read_json()?;
-        Ok(comments)
+        ))
     }
 
     // ==================== Timeline / History Operations ====================
@@ -462,56 +336,64 @@ impl GitHubClient {
         per_page: usize,
         page: usize,
     ) -> Result<Vec<GitHubTimelineEvent>> {
-        let url = format!(
+        let raw: Vec<serde_json::Value> = self.get_json(&format!(
             "{}?per_page={}&page={}",
             self.repo_url(&format!("/issues/{}/timeline", number)),
             per_page.min(100),
             page.max(1)
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .call()
-            .map_err(GitHubError::Http)?;
-
-        let mut response = self.check_response(response)?;
-        let raw: Vec<serde_json::Value> = response.body_mut().read_json()?;
-        raw.into_iter()
+        ))?;
+        Ok(raw
+            .into_iter()
             .map(GitHubTimelineEvent::from_value)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(GitHubError::Parse)
+            .collect::<serde_json::Result<_>>()?)
     }
 
     /// Fetch an issue's complete timeline, paging through every event.
     ///
-    /// GitHub honors `per_page`, so a short page (fewer than `PER_PAGE` events)
-    /// is a reliable end-of-data signal. A `MAX_PAGES` backstop guards against a
-    /// server that ignores paging and never shrinks a page — failing loudly via
-    /// [`GitHubError::PaginationStalled`] instead of looping forever.
-    ///
     /// Events are returned oldest-first, matching the GitHub API ordering.
     pub fn get_issue_timeline(&self, number: u64) -> Result<Vec<GitHubTimelineEvent>> {
+        let raw: Vec<serde_json::Value> =
+            self.get_all_pages(&self.repo_url(&format!("/issues/{}/timeline", number)))?;
+        Ok(raw
+            .into_iter()
+            .map(GitHubTimelineEvent::from_value)
+            .collect::<serde_json::Result<_>>()?)
+    }
+
+    /// GET every page of a list endpoint (`url` without a query string), in API order.
+    ///
+    /// GitHub honors `per_page`, so a short page is a reliable end-of-data
+    /// signal. A `MAX_PAGES` backstop guards against a server that ignores
+    /// paging and never shrinks a page — failing loudly via
+    /// [`GitHubError::PaginationStalled`] instead of looping forever.
+    fn get_all_pages<T: DeserializeOwned>(&self, url: &str) -> Result<Vec<T>> {
         const PER_PAGE: usize = 100;
         const MAX_PAGES: usize = 10_000;
 
-        let mut events = Vec::new();
-        let mut page = 1;
-        for _ in 0..MAX_PAGES {
-            let batch = self.get_timeline_page(number, PER_PAGE, page)?;
+        let mut items = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let batch: Vec<T> =
+                self.get_json(&format!("{}?per_page={}&page={}", url, PER_PAGE, page))?;
             let fetched = batch.len();
-            events.extend(batch);
+            items.extend(batch);
             if fetched < PER_PAGE {
-                return Ok(events);
+                return Ok(items);
             }
-            page += 1;
         }
         Err(GitHubError::PaginationStalled(format!(
-            "issue '{}' timeline did not terminate after {} pages",
-            number, MAX_PAGES
+            "'{}' did not terminate after {} pages",
+            url, MAX_PAGES
         )))
     }
+}
+
+/// Decode a successful response's JSON body.
+///
+/// The body is read through ureq (keeping its size limit; I/O failures stay
+/// [`GitHubError::Http`]) but decoded with serde_json, so a body that is not
+/// the expected JSON is reported as [`GitHubError::Parse`] rather than as a
+/// transport failure.
+fn read_json<T: DeserializeOwned>(mut response: Response) -> Result<T> {
+    let body = response.body_mut().read_to_vec()?;
+    Ok(serde_json::from_slice(&body)?)
 }
