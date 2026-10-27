@@ -484,7 +484,7 @@ impl YouTrackClient {
     /// Resolve a user identifier (database ID, login, or "me") to a YouTrack database user ID.
     pub fn resolve_user_id(&self, identifier: &str) -> Result<String> {
         let trimmed = identifier.trim();
-        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("me") {
+        if trimmed.eq_ignore_ascii_case("me") {
             return self.get_current_user().map(|u| u.id);
         }
 
@@ -499,7 +499,7 @@ impl YouTrackClient {
         if let Some(user) = users.as_ref().and_then(|found| {
             found
                 .iter()
-                .find(|u| u.login.eq_ignore_ascii_case(trimmed) || u.id == trimmed)
+                .find(|u| unicode_eq_ignore_case(&u.login, trimmed) || u.id == trimmed)
         }) {
             return Ok(user.id.clone());
         }
@@ -577,7 +577,7 @@ impl YouTrackClient {
         // Otherwise, search by shortName
         let projects = self.list_projects()?;
         for project in projects {
-            if project.short_name.eq_ignore_ascii_case(identifier) {
+            if unicode_eq_ignore_case(&project.short_name, identifier) {
                 return Ok(project.id);
             }
         }
@@ -639,6 +639,7 @@ impl YouTrackClient {
 
     /// List all available issue tags
     pub fn list_tags(&self) -> Result<Vec<IssueTag>> {
+        // `issues(id)` is fetched only to count each tag's issues.
         let url = format!(
             "{}/api/issueTags?fields=id,name,color(id,background,foreground),issues(id)",
             self.base_url
@@ -1139,10 +1140,11 @@ impl YouTrackClient {
             self.base_url, article_id, DEFAULT_ARTICLE_FIELDS
         );
 
+        // `parentArticle` is always sent: an explicit `null` is what moves the
+        // article to the root, whereas omitting it leaves the parent unchanged.
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct MoveArticle {
-            #[serde(skip_serializing_if = "Option::is_none")]
             parent_article: Option<ArticleIdentifier>,
         }
 

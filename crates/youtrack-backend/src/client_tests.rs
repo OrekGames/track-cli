@@ -753,6 +753,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_resolve_user_id_matches_non_ascii_login_case_insensitively() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .and(query_param("query", "øyvind"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "id": "1-7", "login": "Øyvind", "fullName": "Øyvind Hansen" }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users/%C3%B8yvind"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        assert_eq!(client.resolve_user_id("øyvind").unwrap(), "1-7");
+    }
+
+    #[tokio::test]
+    async fn test_trait_create_project_rejects_empty_leader() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "1-3",
+                "login": "alice",
+                "fullName": "Alice Admin"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/admin/projects"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "0-12",
+                "name": "Empty Leader",
+                "shortName": "EMPTY"
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = tracker_core::CreateProject {
+            name: "Empty Leader".to_string(),
+            short_name: "EMPTY".to_string(),
+            description: None,
+            leader: Some("  ".to_string()),
+        };
+
+        let err = IssueTracker::create_project(&client, &create).unwrap_err();
+        assert!(matches!(err, tracker_core::TrackerError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_project_id_matches_non_ascii_short_name_case_insensitively() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/admin/projects"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "id": "0-1", "name": "Other", "shortName": "OTHER" },
+                { "id": "0-2", "name": "Über", "shortName": "ÜBER" }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        assert_eq!(client.resolve_project_id("über").unwrap(), "0-2");
+    }
+
+    #[tokio::test]
     async fn test_unauthorized_error() {
         let mock_server = MockServer::start().await;
 
@@ -1069,6 +1146,31 @@ mod tests {
         assert_eq!(children.len(), 2);
         assert_eq!(children[0].id_readable.as_deref(), Some("KB-A-1-1"));
         assert_eq!(children[1].id_readable.as_deref(), Some("KB-A-1-2"));
+    }
+
+    #[tokio::test]
+    async fn test_move_article_to_root_sends_null_parent() {
+        let mock_server = MockServer::start().await;
+
+        // Omitting `parentArticle` would leave the parent unchanged; only an
+        // explicit null detaches the article.
+        Mock::given(method("POST"))
+            .and(path("/api/articles/KB-A-2"))
+            .and(body_json(serde_json::json!({ "parentArticle": null })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "123-461",
+                "idReadable": "KB-A-2",
+                "summary": "Moved Article"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let article = client.move_article("KB-A-2", None).unwrap();
+
+        assert_eq!(article.id_readable.as_deref(), Some("KB-A-2"));
+        assert!(article.parent_article.is_none());
     }
 
     #[tokio::test]
@@ -1978,6 +2080,31 @@ mod tests {
         assert_eq!(tag.name, "renamed-tag");
         let color = tag.color.unwrap();
         assert_eq!(color.background, Some("#0075ca".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_tags_counts_tagged_issues() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issueTags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "6-1",
+                    "name": "backend",
+                    "issues": [{ "id": "2-1" }, { "id": "2-2" }, { "id": "2-3" }]
+                },
+                { "id": "6-2", "name": "unused", "issues": [] },
+                { "id": "6-3", "name": "no-issues-field" }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let tags = IssueTracker::list_tags(&client).unwrap();
+
+        let counts: Vec<_> = tags.iter().map(|t| t.issues_count).collect();
+        assert_eq!(counts, vec![Some(3), Some(0), None]);
     }
 
     #[tokio::test]

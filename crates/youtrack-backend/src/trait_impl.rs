@@ -130,7 +130,15 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn create_project(&self, project: &CreateProject) -> Result<Project> {
-        let leader_id = match &project.leader {
+        let leader_id = match project.leader.as_deref().map(str::trim) {
+            // Only an omitted leader defaults to the caller; an empty one (e.g.
+            // from an unset shell variable) is a mistake, not a request for "me".
+            Some("") => {
+                return Err(TrackerError::InvalidInput(
+                    "Project leader must not be empty; omit it to default to the authenticated user"
+                        .to_string(),
+                ));
+            }
             Some(leader) => self.resolve_user_id(leader)?,
             None => self.get_current_user()?.id,
         };

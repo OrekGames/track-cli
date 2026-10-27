@@ -51,8 +51,24 @@ pub struct IssueTag {
     pub name: String,
     #[serde(default)]
     pub color: Option<TagColor>,
-    #[serde(default)]
+    /// Number of tagged issues. YouTrack tags have no count attribute, so this
+    /// is the length of the `issues` collection, which only `list_tags`
+    /// requests; it is `None` when the response omits `issues`.
+    #[serde(
+        default,
+        rename(deserialize = "issues"),
+        deserialize_with = "deserialize_collection_len"
+    )]
     pub issues_count: Option<i64>,
+}
+
+/// Deserialize an optional JSON array into its length, ignoring the elements.
+fn deserialize_collection_len<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let items = Option::<Vec<serde::de::IgnoredAny>>::deserialize(deserializer)?;
+    Ok(items.map(|items| items.len() as i64))
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
