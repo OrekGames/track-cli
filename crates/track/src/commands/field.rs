@@ -4,8 +4,8 @@ use crate::cli::{FieldCommands, OutputFormat};
 use crate::output::{output_json, output_result};
 use anyhow::{Context, Result, anyhow};
 use tracker_core::{
-    AttachFieldToProject, BundleType, CreateBundle, CreateBundleValue, CreateCustomField,
-    CustomFieldDefinition, CustomFieldType, IssueTracker,
+    AttachFieldToProject, BundleType, CreateBundle, CreateCustomField, CustomFieldDefinition,
+    CustomFieldType, IssueTracker,
 };
 
 pub fn handle_field(
@@ -109,30 +109,16 @@ fn handle_new(
         }
     };
 
+    let bundle_values = super::bundle::build_bundle_values(values, resolved, bundle_type)?;
+
     // Resolve project ID
     let project_id = client
         .resolve_project_id(project)
         .with_context(|| format!("Failed to resolve project '{}'", project))?;
 
     // Step 1: Create bundle with values
-    let bundle_name = format!("{} values", name);
-    let bundle_values: Vec<CreateBundleValue> = values
-        .iter()
-        .enumerate()
-        .map(|(i, v)| CreateBundleValue {
-            name: v.clone(),
-            description: None,
-            is_resolved: if bundle_type == BundleType::State {
-                Some(resolved.contains(v))
-            } else {
-                None
-            },
-            ordinal: Some(i as i32),
-        })
-        .collect();
-
     let create_bundle = CreateBundle {
-        name: bundle_name,
+        name: format!("{} values", name),
         bundle_type,
         values: bundle_values,
     };
