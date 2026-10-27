@@ -276,10 +276,7 @@ impl From<GitLabNote> for Comment {
         Self {
             id: note.id.to_string(),
             text: note.body,
-            author: note.author.map(|u| CommentAuthor {
-                login: u.username,
-                name: Some(u.name),
-            }),
+            author: note.author.map(gitlab_user_to_author),
             created: parse_gitlab_datetime(&note.created_at),
         }
     }
@@ -325,41 +322,13 @@ impl From<GitLabUser> for User {
 
 /// Convert a GitLab issue link to a tracker-core IssueLink.
 ///
-/// The GET endpoint returns linked issues as flat objects with `link_type` metadata.
-/// `_current_iid` is kept for API compatibility but is no longer needed since the
-/// GET response returns a flat list of linked issues (not source/target pairs).
-pub fn gitlab_link_to_core(link: GitLabIssueLink, _current_iid: u64) -> IssueLink {
+/// The GET endpoint returns linked issues as flat objects with `link_type`
+/// metadata, already oriented from the queried issue's point of view.
+pub fn gitlab_link_to_core(link: GitLabIssueLink) -> IssueLink {
     let (link_type_info, direction) = match link.link_type.as_str() {
-        "blocks" => (
-            IssueLinkType {
-                id: "blocks".to_string(),
-                name: "Blocks".to_string(),
-                source_to_target: Some("blocks".to_string()),
-                target_to_source: Some("is blocked by".to_string()),
-                directed: true,
-            },
-            "outward",
-        ),
-        "is_blocked_by" => (
-            IssueLinkType {
-                id: "is_blocked_by".to_string(),
-                name: "Is Blocked By".to_string(),
-                source_to_target: Some("is blocked by".to_string()),
-                target_to_source: Some("blocks".to_string()),
-                directed: true,
-            },
-            "inward",
-        ),
-        _ => (
-            IssueLinkType {
-                id: "relates_to".to_string(),
-                name: "Relates".to_string(),
-                source_to_target: Some("relates to".to_string()),
-                target_to_source: Some("relates to".to_string()),
-                directed: false,
-            },
-            "both",
-        ),
+        "blocks" => (blocks_link_type(), "outward"),
+        "is_blocked_by" => (is_blocked_by_link_type(), "inward"),
+        _ => (relates_to_link_type(), "both"),
     };
 
     IssueLink {
@@ -377,28 +346,40 @@ pub fn gitlab_link_to_core(link: GitLabIssueLink, _current_iid: u64) -> IssueLin
 /// Get the 3 standard GitLab link types as tracker-core IssueLinkType values
 pub fn get_gitlab_link_types() -> Vec<IssueLinkType> {
     vec![
-        IssueLinkType {
-            id: "relates_to".to_string(),
-            name: "Relates".to_string(),
-            source_to_target: Some("relates to".to_string()),
-            target_to_source: Some("relates to".to_string()),
-            directed: false,
-        },
-        IssueLinkType {
-            id: "blocks".to_string(),
-            name: "Blocks".to_string(),
-            source_to_target: Some("blocks".to_string()),
-            target_to_source: Some("is blocked by".to_string()),
-            directed: true,
-        },
-        IssueLinkType {
-            id: "is_blocked_by".to_string(),
-            name: "Is Blocked By".to_string(),
-            source_to_target: Some("is blocked by".to_string()),
-            target_to_source: Some("blocks".to_string()),
-            directed: true,
-        },
+        relates_to_link_type(),
+        blocks_link_type(),
+        is_blocked_by_link_type(),
     ]
+}
+
+fn relates_to_link_type() -> IssueLinkType {
+    IssueLinkType {
+        id: "relates_to".to_string(),
+        name: "Relates".to_string(),
+        source_to_target: Some("relates to".to_string()),
+        target_to_source: Some("relates to".to_string()),
+        directed: false,
+    }
+}
+
+fn blocks_link_type() -> IssueLinkType {
+    IssueLinkType {
+        id: "blocks".to_string(),
+        name: "Blocks".to_string(),
+        source_to_target: Some("blocks".to_string()),
+        target_to_source: Some("is blocked by".to_string()),
+        directed: true,
+    }
+}
+
+fn is_blocked_by_link_type() -> IssueLinkType {
+    IssueLinkType {
+        id: "is_blocked_by".to_string(),
+        name: "Is Blocked By".to_string(),
+        source_to_target: Some("is blocked by".to_string()),
+        target_to_source: Some("blocks".to_string()),
+        directed: true,
+    }
 }
 
 /// Get standard GitLab custom fields for a project
@@ -459,16 +440,14 @@ fn parse_gitlab_datetime(dt: &Option<String>) -> Option<DateTime<Utc>> {
     })
 }
 
-/// Map a GitLab resource-event user onto a [`CommentAuthor`].
-///
-/// Mirrors the note/comment author mapping (`username` → `login`, `name` →
-/// `Some(name)`) so history and comment authors render identically. A
-/// system-generated event with no user produces `None`.
-fn event_user_to_author(user: Option<GitLabUser>) -> Option<CommentAuthor> {
-    user.map(|u| CommentAuthor {
-        login: u.username,
-        name: Some(u.name),
-    })
+/// Map a GitLab user onto a [`CommentAuthor`] (`username` → `login`, `name` →
+/// `Some(name)`), shared by comments, attachments and history so their
+/// authors render identically.
+pub(crate) fn gitlab_user_to_author(user: GitLabUser) -> CommentAuthor {
+    CommentAuthor {
+        login: user.username,
+        name: Some(user.name),
+    }
 }
 
 /// Merge GitLab's three resource-event streams into a unified history.
@@ -519,7 +498,7 @@ pub fn gitlab_events_to_history_events(
         };
         out.push(IssueHistoryEvent {
             at,
-            author: event_user_to_author(event.user),
+            author: event.user.map(gitlab_user_to_author),
             field: canonical_field_name("state"),
             from: Some(status.clone()),
             to: Some(to.clone()),
@@ -539,7 +518,7 @@ pub fn gitlab_events_to_history_events(
         };
         out.push(IssueHistoryEvent {
             at,
-            author: event_user_to_author(event.user),
+            author: event.user.map(gitlab_user_to_author),
             field: "labels".to_string(),
             from,
             to,
@@ -558,7 +537,7 @@ pub fn gitlab_events_to_history_events(
         };
         out.push(IssueHistoryEvent {
             at,
-            author: event_user_to_author(event.user),
+            author: event.user.map(gitlab_user_to_author),
             field: "milestone".to_string(),
             from,
             to,
@@ -663,8 +642,7 @@ fn parse_token_query(query: &str) -> GitLabQueryParams {
     let mut search_parts = Vec::new();
     let mut params = GitLabQueryParams::default();
 
-    let tokens: Vec<&str> = query.split_whitespace().collect();
-    for token in &tokens {
+    for token in query.split_whitespace() {
         if let Some(hash_tag) = token.strip_prefix('#') {
             if hash_tag.eq_ignore_ascii_case("unresolved")
                 || hash_tag.eq_ignore_ascii_case("open")
@@ -676,15 +654,22 @@ fn parse_token_query(query: &str) -> GitLabQueryParams {
             {
                 params.state = Some("closed".to_string());
             } else {
-                search_parts.push(*token);
+                search_parts.push(token);
             }
-        } else if let Some(rest) = token.strip_prefix("project:") {
-            // Skip project: prefix for GitLab (project is already scoped via project_id)
-            let _ = rest;
-        } else if let Some(rest) = token.strip_prefix("label:") {
-            params.labels = Some(rest.to_string());
+        } else if token.starts_with("project:") {
+            // Ignored: requests are already scoped to the configured project_id.
+        } else if let Some(label) = token.strip_prefix("label:") {
+            // GitLab's `labels` filter is a comma-separated AND list, so
+            // repeated `label:` tokens must accumulate rather than overwrite.
+            match &mut params.labels {
+                Some(labels) => {
+                    labels.push(',');
+                    labels.push_str(label);
+                }
+                None => params.labels = Some(label.to_string()),
+            }
         } else {
-            search_parts.push(*token);
+            search_parts.push(token);
         }
     }
 
@@ -810,6 +795,13 @@ mod tests {
     }
 
     #[test]
+    fn token_repeated_labels_are_all_kept() {
+        let parsed = convert_query_to_gitlab_params("label:bug crash label:urgent");
+        assert_eq!(parsed.search, "crash");
+        assert_eq!(parsed.labels, Some("bug,urgent".to_string()));
+    }
+
+    #[test]
     fn token_free_text() {
         let parsed = convert_query_to_gitlab_params("hello world");
         assert_eq!(parsed.search, "hello world");
@@ -841,7 +833,7 @@ mod tests {
             link_type: "blocks".to_string(),
         };
 
-        let core_link = gitlab_link_to_core(link, 100);
+        let core_link = gitlab_link_to_core(link);
 
         assert_eq!(core_link.id, "789");
         assert_eq!(core_link.direction, Some("outward".to_string()));
@@ -867,7 +859,7 @@ mod tests {
             link_type: "is_blocked_by".to_string(),
         };
 
-        let core_link = gitlab_link_to_core(link, 100);
+        let core_link = gitlab_link_to_core(link);
 
         assert_eq!(core_link.id, "790");
         assert_eq!(core_link.direction, Some("inward".to_string()));
@@ -893,7 +885,7 @@ mod tests {
             link_type: "relates_to".to_string(),
         };
 
-        let core_link = gitlab_link_to_core(link, 100);
+        let core_link = gitlab_link_to_core(link);
 
         assert_eq!(core_link.id, "791");
         assert_eq!(core_link.direction, Some("both".to_string()));
@@ -919,7 +911,7 @@ mod tests {
             link_type: "unknown_type".to_string(),
         };
 
-        let core_link = gitlab_link_to_core(link, 100);
+        let core_link = gitlab_link_to_core(link);
 
         // Unknown link types default to "relates_to"
         assert_eq!(core_link.id, "792");

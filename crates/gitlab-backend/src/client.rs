@@ -1,11 +1,19 @@
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::time::Duration;
 use tracker_core::AttachmentUploadFile;
-use ureq::Agent;
+use ureq::http::Response;
+use ureq::typestate::WithBody;
 use ureq::unversioned::multipart::{Form, Part};
+use ureq::{Agent, Body, RequestBuilder};
 
+use crate::convert::GitLabQueryParams;
 use crate::error::{GitLabError, Result};
 use crate::models::*;
+
+/// GitLab's maximum `per_page`; also the page size used when walking every page.
+const MAX_PER_PAGE: usize = 100;
 
 /// GitLab REST API client
 pub struct GitLabClient {
@@ -20,7 +28,8 @@ impl GitLabClient {
     /// Create a new GitLab client.
     ///
     /// `base_url` should include the API version path, e.g. `https://gitlab.com/api/v4`.
-    /// `project_id` can be a numeric ID or a URL-encoded path like `group%2Fproject`.
+    /// `project_id` can be a numeric ID or a plain path like `group/sub/project`;
+    /// it is URL-encoded when request URLs are built, so do not pre-encode it.
     pub fn new(base_url: &str, token: &str, project_id: Option<&str>) -> Self {
         let agent = Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
@@ -83,10 +92,7 @@ impl GitLabClient {
     }
 
     /// Check response status and return error if not successful
-    fn check_response(
-        &self,
-        mut response: ureq::http::Response<ureq::Body>,
-    ) -> Result<ureq::http::Response<ureq::Body>> {
+    fn check_response(&self, mut response: Response<Body>) -> Result<Response<Body>> {
         let status = response.status().as_u16();
 
         if (200..300).contains(&status) {
@@ -98,28 +104,22 @@ impl GitLabClient {
             .read_to_string()
             .unwrap_or_else(|_| String::new());
 
-        // Try to parse as GitLab error JSON
-        let message = if let Ok(error_value) = serde_json::from_str::<serde_json::Value>(&body) {
-            // GitLab can return {"message": "..."} or {"error": "..."}
-            if let Some(msg) = error_value.get("message").and_then(|m| m.as_str()) {
-                msg.to_string()
-            } else if let Some(msg) = error_value.get("error").and_then(|e| e.as_str()) {
-                msg.to_string()
-            } else if let Some(msg) = error_value
-                .get("error_description")
-                .and_then(|e| e.as_str())
-            {
-                msg.to_string()
-            } else if body.is_empty() {
-                format!("HTTP {}", status)
-            } else {
-                body
-            }
-        } else if body.is_empty() {
-            format!("HTTP {}", status)
-        } else {
-            body
-        };
+        // GitLab reports errors as {"message": ...}, {"error": ...} or (OAuth)
+        // {"error_description": ...}; anything else is surfaced verbatim.
+        let message = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|json| {
+                ["message", "error", "error_description"]
+                    .into_iter()
+                    .find_map(|key| json.get(key)?.as_str().map(str::to_string))
+            })
+            .unwrap_or_else(|| {
+                if body.is_empty() {
+                    format!("HTTP {}", status)
+                } else {
+                    body
+                }
+            });
 
         if status == 401 {
             Err(GitLabError::Unauthorized)
@@ -128,28 +128,105 @@ impl GitLabClient {
         }
     }
 
-    /// Handle transport-level errors
-    fn handle_error(&self, err: ureq::Error) -> GitLabError {
-        GitLabError::Http(err)
+    // ==================== HTTP Helpers ====================
+
+    /// Add the auth and `Accept` headers every GitLab API request carries.
+    fn authorized<B>(&self, request: RequestBuilder<B>) -> RequestBuilder<B> {
+        request
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("Accept", "application/json")
+    }
+
+    /// GET `url`, failing on a non-2xx status.
+    fn get(&self, url: &str) -> Result<Response<Body>> {
+        self.check_response(self.authorized(self.agent.get(url)).call()?)
+    }
+
+    /// GET `url` and deserialize the JSON response body.
+    fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
+        Ok(self.get(url)?.body_mut().read_json()?)
+    }
+
+    /// GET every page of the project-scoped collection at `path` (which must
+    /// not carry a query string) and concatenate them in API order.
+    ///
+    /// GitLab honors `per_page`, so a short page is a reliable end-of-data
+    /// signal. A `MAX_PAGES` backstop guards against a server that ignores
+    /// paging and never shrinks a page — failing loudly via
+    /// [`GitLabError::PaginationStalled`] instead of looping forever.
+    fn get_all_pages<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
+        const MAX_PAGES: usize = 10_000;
+
+        let mut items = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let url = self.project_url(&format!("{path}?per_page={MAX_PER_PAGE}&page={page}"))?;
+            let batch: Vec<T> = self.get_json(&url)?;
+            let fetched = batch.len();
+            items.extend(batch);
+            if fetched < MAX_PER_PAGE {
+                return Ok(items);
+            }
+        }
+        Err(GitLabError::PaginationStalled(format!(
+            "'{path}' did not terminate after {MAX_PAGES} pages"
+        )))
+    }
+
+    /// Send `body` as JSON on a POST or PUT `request`, failing on a non-2xx status.
+    fn send_json(
+        &self,
+        request: RequestBuilder<WithBody>,
+        body: &impl Serialize,
+    ) -> Result<Response<Body>> {
+        let response = self
+            .authorized(request)
+            .header("Content-Type", "application/json")
+            .send_json(body)?;
+        self.check_response(response)
+    }
+
+    /// POST `body` as JSON and deserialize the JSON response body.
+    fn post_json<T: DeserializeOwned>(&self, url: &str, body: &impl Serialize) -> Result<T> {
+        Ok(self
+            .send_json(self.agent.post(url), body)?
+            .body_mut()
+            .read_json()?)
+    }
+
+    /// PUT `body` as JSON and deserialize the JSON response body.
+    fn put_json<T: DeserializeOwned>(&self, url: &str, body: &impl Serialize) -> Result<T> {
+        Ok(self
+            .send_json(self.agent.put(url), body)?
+            .body_mut()
+            .read_json()?)
+    }
+
+    /// DELETE `url`, failing on a non-2xx status. Any response body is ignored.
+    fn delete(&self, url: &str) -> Result<()> {
+        self.check_response(self.authorized(self.agent.delete(url)).call()?)?;
+        Ok(())
+    }
+
+    /// POST `file` as the multipart `file` field and deserialize the JSON response body.
+    fn post_file<T: DeserializeOwned>(&self, url: &str, file: &AttachmentUploadFile) -> Result<T> {
+        let mut part = Part::file(&file.path)?;
+        if let Some(name) = &file.name {
+            part = part.file_name(name);
+        }
+        if let Some(mime_type) = &file.mime_type {
+            part = part.mime_str(mime_type)?;
+        }
+        let form = Form::new().part("file", part);
+
+        let response = self.authorized(self.agent.post(url)).send(form)?;
+        Ok(self.check_response(response)?.body_mut().read_json()?)
     }
 
     // ==================== Issue Operations ====================
 
     /// Get an issue by IID (project-scoped number)
     pub fn get_issue(&self, iid: u64) -> Result<GitLabIssue> {
-        let url = self.project_url(&format!("/issues/{}", iid))?;
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let issue: GitLabIssue = response.body_mut().read_json()?;
-        Ok(issue)
+        self.get_json(&self.project_url(&format!("/issues/{}", iid))?)
     }
 
     fn append_assignee_filter(url: &mut String, assignee_username: Option<&str>) {
@@ -169,74 +246,40 @@ impl GitLabClient {
         }
     }
 
-    fn append_issue_list_filters(
-        url: &mut String,
-        state: Option<&str>,
-        labels: Option<&str>,
-        assignee_username: Option<&str>,
-        order_by: Option<&str>,
-        sort: Option<&str>,
-    ) {
-        if let Some(s) = state {
-            url.push_str(&format!("&state={}", urlencoding::encode(s)));
-        }
-        if let Some(l) = labels {
-            url.push_str(&format!("&labels={}", urlencoding::encode(l)));
-        }
-        if let Some(o) = order_by {
-            url.push_str(&format!("&order_by={}", urlencoding::encode(o)));
-        }
-        if let Some(s) = sort {
-            url.push_str(&format!("&sort={}", urlencoding::encode(s)));
-        }
-        Self::append_assignee_filter(url, assignee_username);
-    }
-
-    fn fetch_project_issues(
+    /// Fetch one page of project issues matching `query`, plus the `X-Total`
+    /// match count when GitLab reports it (it omits it above 10,000 matches).
+    pub(crate) fn fetch_project_issues(
         &self,
-        query: &crate::convert::GitLabQueryParams,
+        query: &GitLabQueryParams,
         per_page: usize,
         page: usize,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
         let mut url = self.project_url(&format!("/issues?per_page={}&page={}", per_page, page))?;
-        if !query.search.is_empty() {
-            url.push_str(&format!("&search={}", urlencoding::encode(&query.search)));
+        let filters = [
+            (
+                "search",
+                Some(query.search.as_str()).filter(|s| !s.is_empty()),
+            ),
+            ("state", query.state.as_deref()),
+            ("labels", query.labels.as_deref()),
+            ("order_by", query.order_by.as_deref()),
+            ("sort", query.sort.as_deref()),
+        ];
+        for (key, value) in filters {
+            if let Some(value) = value {
+                url.push_str(&format!("&{}={}", key, urlencoding::encode(value)));
+            }
         }
-        Self::append_issue_list_filters(
-            &mut url,
-            query.state.as_deref(),
-            query.labels.as_deref(),
-            query.assignee_username.as_deref(),
-            query.order_by.as_deref(),
-            query.sort.as_deref(),
-        );
+        Self::append_assignee_filter(&mut url, query.assignee_username.as_deref());
 
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
+        let mut response = self.get(&url)?;
         let total = response
             .headers()
             .get("x-total")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
-
-        let mut response = self.check_response(response)?;
         let issues: Vec<GitLabIssue> = response.body_mut().read_json()?;
         Ok((issues, total))
-    }
-
-    pub(crate) fn issues_matching(
-        &self,
-        query: &crate::convert::GitLabQueryParams,
-        per_page: usize,
-        page: usize,
-    ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
-        self.fetch_project_issues(query, per_page, page)
     }
 
     /// List issues for the project
@@ -260,7 +303,7 @@ impl GitLabClient {
         assignee_username: Option<&str>,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
         self.fetch_project_issues(
-            &crate::convert::GitLabQueryParams {
+            &GitLabQueryParams {
                 state: state.map(str::to_string),
                 assignee_username: assignee_username.map(str::to_string),
                 ..Default::default()
@@ -296,7 +339,7 @@ impl GitLabClient {
         page: usize,
     ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
         self.fetch_project_issues(
-            &crate::convert::GitLabQueryParams {
+            &GitLabQueryParams {
                 search: search.to_string(),
                 state: state.map(str::to_string),
                 labels: labels.map(str::to_string),
@@ -310,210 +353,79 @@ impl GitLabClient {
 
     /// Create a new issue
     pub fn create_issue(&self, issue: &CreateGitLabIssue) -> Result<GitLabIssue> {
-        let url = self.project_url("/issues")?;
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(issue)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let created: GitLabIssue = response.body_mut().read_json()?;
-        Ok(created)
+        self.post_json(&self.project_url("/issues")?, issue)
     }
 
     /// Update an existing issue (GitLab uses PUT, not PATCH)
     pub fn update_issue(&self, iid: u64, update: &UpdateGitLabIssue) -> Result<GitLabIssue> {
-        let url = self.project_url(&format!("/issues/{}", iid))?;
-
-        let response = self
-            .agent
-            .put(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(update)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let updated: GitLabIssue = response.body_mut().read_json()?;
-        Ok(updated)
+        self.put_json(&self.project_url(&format!("/issues/{}", iid))?, update)
     }
 
     /// Delete an issue
     pub fn delete_issue(&self, iid: u64) -> Result<()> {
-        let url = self.project_url(&format!("/issues/{}", iid))?;
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
-        Ok(())
+        self.delete(&self.project_url(&format!("/issues/{}", iid))?)
     }
 
     /// Upload a file to the project markdown uploads endpoint.
     pub fn upload_project_file(&self, file: &AttachmentUploadFile) -> Result<GitLabUpload> {
-        let url = self.project_url("/uploads")?;
-        let mut part = Part::file(&file.path)?;
-        if let Some(name) = &file.name {
-            part = part.file_name(name);
-        }
-        if let Some(mime_type) = &file.mime_type {
-            part = part.mime_str(mime_type)?;
-        }
-        let form = Form::new().part("file", part);
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .send(form)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let upload: GitLabUpload = response.body_mut().read_json()?;
-        Ok(upload)
+        self.post_file(&self.project_url("/uploads")?, file)
     }
 
     // ==================== Project Operations ====================
 
     /// List projects the authenticated user is a member of
     pub fn list_projects(&self) -> Result<Vec<GitLabProject>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/projects?membership=true&per_page=100&order_by=updated_at",
             self.base_url
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let projects: Vec<GitLabProject> = response.body_mut().read_json()?;
-        Ok(projects)
+        ))
     }
 
-    /// Get a project by ID or URL-encoded path
+    /// Get a project by numeric ID or path (`group/project`)
     pub fn get_project(&self, id: &str) -> Result<GitLabProject> {
-        let url = format!("{}/projects/{}", self.base_url, urlencoding::encode(id));
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let project: GitLabProject = response.body_mut().read_json()?;
-        Ok(project)
+        self.get_json(&format!(
+            "{}/projects/{}",
+            self.base_url,
+            urlencoding::encode(id)
+        ))
     }
 
     // ==================== Label Operations ====================
 
-    /// List labels for the project
+    /// List every label of the project (all pages)
     pub fn list_labels(&self) -> Result<Vec<GitLabLabel>> {
-        let url = self.project_url("/labels?per_page=100")?;
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let labels: Vec<GitLabLabel> = response.body_mut().read_json()?;
-        Ok(labels)
+        self.get_all_pages("/labels")
     }
 
     /// Create a new label
     pub fn create_label(&self, label: &CreateGitLabLabel) -> Result<GitLabLabel> {
-        let url = self.project_url("/labels")?;
-        let response = self
-            .agent
-            .post(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(label)
-            .map_err(|e| self.handle_error(e))?;
-        let mut response = self.check_response(response)?;
-        let created: GitLabLabel = response.body_mut().read_json()?;
-        Ok(created)
+        self.post_json(&self.project_url("/labels")?, label)
     }
 
     /// Delete a label by ID
     pub fn delete_label(&self, label_id: u64) -> Result<()> {
-        let url = self.project_url(&format!("/labels/{}", label_id))?;
-        let response = self
-            .agent
-            .delete(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-        self.check_response(response)?;
-        Ok(())
+        self.delete(&self.project_url(&format!("/labels/{}", label_id))?)
     }
 
     /// Update a label by ID
     pub fn update_label(&self, label_id: u64, update: &UpdateGitLabLabel) -> Result<GitLabLabel> {
-        let url = self.project_url(&format!("/labels/{}", label_id))?;
-        let response = self
-            .agent
-            .put(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(update)
-            .map_err(|e| self.handle_error(e))?;
-        let mut response = self.check_response(response)?;
-        let label: GitLabLabel = response.body_mut().read_json()?;
-        Ok(label)
+        self.put_json(&self.project_url(&format!("/labels/{}", label_id))?, update)
     }
 
     // ==================== Note (Comment) Operations ====================
 
     /// Add a note to an issue
     pub fn add_note(&self, iid: u64, body: &str) -> Result<GitLabNote> {
-        let url = self.project_url(&format!("/issues/{}/notes", iid))?;
         let note = CreateGitLabNote {
             body: body.to_string(),
         };
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(&note)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let created: GitLabNote = response.body_mut().read_json()?;
-        Ok(created)
+        self.post_json(&self.project_url(&format!("/issues/{}/notes", iid))?, &note)
     }
 
     /// Get notes on an issue, filtering out system-generated notes
     pub fn get_notes(&self, iid: u64) -> Result<Vec<GitLabNote>> {
         Ok(self
-            .get_notes_page_raw(iid, 100, 1)?
+            .get_notes_page_raw(iid, MAX_PER_PAGE, 1)?
             .into_iter()
             .filter(|n| !n.system)
             .collect())
@@ -526,189 +438,48 @@ impl GitLabClient {
         per_page: usize,
         page: usize,
     ) -> Result<Vec<GitLabNote>> {
-        let url = self.project_url(&format!(
+        self.get_json(&self.project_url(&format!(
             "/issues/{}/notes?per_page={}&page={}",
             iid,
-            per_page.min(100),
+            per_page.min(MAX_PER_PAGE),
             page.max(1)
-        ))?;
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let notes: Vec<GitLabNote> = response.body_mut().read_json()?;
-        Ok(notes)
+        ))?)
     }
 
     // ==================== Resource Event (History) Operations ====================
 
-    /// Fetch a single page of a resource-event subresource for an issue.
-    ///
-    /// `subpath` is the trailing segment (e.g. `resource_state_events`). Mirrors
-    /// [`get_notes_page_raw`](Self::get_notes_page_raw): offset paging via
-    /// `per_page` (capped at 100) and `page` (1-based), `PRIVATE-TOKEN` auth,
-    /// and GitLab returns these events oldest-first.
-    fn get_resource_events_page<T: serde::de::DeserializeOwned>(
-        &self,
-        iid: u64,
-        subpath: &str,
-        per_page: usize,
-        page: usize,
-    ) -> Result<Vec<T>> {
-        let url = self.project_url(&format!(
-            "/issues/{}/{}?per_page={}&page={}",
-            iid,
-            subpath,
-            per_page.min(100),
-            page.max(1)
-        ))?;
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let events: Vec<T> = response.body_mut().read_json()?;
-        Ok(events)
-    }
-
-    /// Page through every event of a resource-event subresource to completion.
-    ///
-    /// GitLab honors `per_page`, so a short page (fewer than `PER_PAGE` events)
-    /// is a reliable end-of-data signal. A `MAX_PAGES` backstop guards against a
-    /// server that ignores paging and never shrinks a page — failing loudly via
-    /// [`GitLabError::PaginationStalled`] instead of looping forever.
-    ///
-    /// Events are returned oldest-first, matching the GitLab API ordering.
-    fn get_all_resource_events<T: serde::de::DeserializeOwned>(
-        &self,
-        iid: u64,
-        subpath: &str,
-    ) -> Result<Vec<T>> {
-        const PER_PAGE: usize = 100;
-        const MAX_PAGES: usize = 10_000;
-
-        let mut events = Vec::new();
-        let mut page = 1;
-        for _ in 0..MAX_PAGES {
-            let batch = self.get_resource_events_page::<T>(iid, subpath, PER_PAGE, page)?;
-            let fetched = batch.len();
-            events.extend(batch);
-            if fetched < PER_PAGE {
-                return Ok(events);
-            }
-            page += 1;
-        }
-        Err(GitLabError::PaginationStalled(format!(
-            "issue '{}' {} did not terminate after {} pages",
-            iid, subpath, MAX_PAGES
-        )))
-    }
-
-    /// Fetch a single page of an issue's resource state events.
-    pub fn get_state_events_page(
-        &self,
-        iid: u64,
-        per_page: usize,
-        page: usize,
-    ) -> Result<Vec<GitLabStateEvent>> {
-        self.get_resource_events_page(iid, "resource_state_events", per_page, page)
-    }
-
     /// Fetch all of an issue's resource state events (oldest-first).
     pub fn get_state_events(&self, iid: u64) -> Result<Vec<GitLabStateEvent>> {
-        self.get_all_resource_events(iid, "resource_state_events")
-    }
-
-    /// Fetch a single page of an issue's resource label events.
-    pub fn get_label_events_page(
-        &self,
-        iid: u64,
-        per_page: usize,
-        page: usize,
-    ) -> Result<Vec<GitLabLabelEvent>> {
-        self.get_resource_events_page(iid, "resource_label_events", per_page, page)
+        self.get_all_pages(&format!("/issues/{}/resource_state_events", iid))
     }
 
     /// Fetch all of an issue's resource label events (oldest-first).
     pub fn get_label_events(&self, iid: u64) -> Result<Vec<GitLabLabelEvent>> {
-        self.get_all_resource_events(iid, "resource_label_events")
-    }
-
-    /// Fetch a single page of an issue's resource milestone events.
-    pub fn get_milestone_events_page(
-        &self,
-        iid: u64,
-        per_page: usize,
-        page: usize,
-    ) -> Result<Vec<GitLabMilestoneEvent>> {
-        self.get_resource_events_page(iid, "resource_milestone_events", per_page, page)
+        self.get_all_pages(&format!("/issues/{}/resource_label_events", iid))
     }
 
     /// Fetch all of an issue's resource milestone events (oldest-first).
     pub fn get_milestone_events(&self, iid: u64) -> Result<Vec<GitLabMilestoneEvent>> {
-        self.get_all_resource_events(iid, "resource_milestone_events")
+        self.get_all_pages(&format!("/issues/{}/resource_milestone_events", iid))
     }
 
     // ==================== Link Operations ====================
 
     /// Get issue links for an issue
     pub fn get_issue_links(&self, iid: u64) -> Result<Vec<GitLabIssueLink>> {
-        let url = self.project_url(&format!("/issues/{}/links", iid))?;
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let links: Vec<GitLabIssueLink> = response.body_mut().read_json()?;
-        Ok(links)
+        self.get_json(&self.project_url(&format!("/issues/{}/links", iid))?)
     }
 
     /// Create an issue link
     pub fn create_issue_link(&self, iid: u64, link: &CreateGitLabIssueLink) -> Result<()> {
         let url = self.project_url(&format!("/issues/{}/links", iid))?;
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(link)
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
+        self.send_json(self.agent.post(&url), link)?;
         Ok(())
     }
 
     /// Delete an issue link by issue IID and link ID
     pub fn delete_issue_link(&self, iid: u64, issue_link_id: u64) -> Result<()> {
-        let url = self.project_url(&format!("/issues/{}/links/{}", iid, issue_link_id))?;
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
-        Ok(())
+        self.delete(&self.project_url(&format!("/issues/{}/links/{}", iid, issue_link_id))?)
     }
 
     // ==================== Count Operations ====================
@@ -723,7 +494,7 @@ impl GitLabClient {
         assignee_username: Option<&str>,
     ) -> Result<Option<u64>> {
         let (_issues, total) = self.fetch_project_issues(
-            &crate::convert::GitLabQueryParams {
+            &GitLabQueryParams {
                 search: search.to_string(),
                 state: state.map(str::to_string),
                 assignee_username: assignee_username.map(str::to_string),
@@ -755,26 +526,12 @@ impl GitLabClient {
     /// Both IDs must be **global** numeric IDs (not project-scoped IIDs).
     /// The mutation uses the `hierarchyWidget` on `workItemUpdate`.
     pub fn set_work_item_parent(&self, child_global_id: u64, parent_global_id: u64) -> Result<()> {
-        let graphql_url = self.graphql_url();
-
         let query = format!(
             r#"mutation {{ workItemUpdate(input: {{ id: "gid://gitlab/Issue/{}", hierarchyWidget: {{ parentId: "gid://gitlab/Issue/{}" }} }}) {{ workItem {{ id }} errors }} }}"#,
             child_global_id, parent_global_id
         );
-
         let body = serde_json::json!({ "query": query });
-
-        let response = self
-            .agent
-            .post(&graphql_url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(&body)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let result: serde_json::Value = response.body_mut().read_json()?;
+        let result: serde_json::Value = self.post_json(&self.graphql_url(), &body)?;
 
         // Check for top-level GraphQL errors
         if let Some(errors) = result.get("errors")
@@ -815,25 +572,11 @@ impl GitLabClient {
 
     // ==================== Member Operations ====================
 
-    /// List project members (including inherited members)
+    /// List every project member, including inherited members (all pages)
     pub fn list_project_members(&self) -> Result<Vec<GitLabUser>> {
-        let url = self.project_url("/members/all?per_page=100")?;
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let members: Vec<GitLabUser> = response.body_mut().read_json()?;
-        Ok(members)
+        self.get_all_pages("/members/all")
     }
 
-    /// Resolve a login or numeric id to a GitLab user id.
-    ///
     /// Resolve a login or numeric id to a verified GitLab user id.
     ///
     /// Accepted forms:
@@ -851,29 +594,23 @@ impl GitLabClient {
             return self.verify_user_id(id);
         }
 
-        if let Some(id) = self
-            .list_project_members()?
+        // Only the first page of members is checked: it is a fast path, and
+        // walking every page of a large group's inherited members would cost
+        // far more requests than the authoritative `/users` lookup below.
+        let members: Vec<GitLabUser> =
+            self.get_json(&self.project_url(&format!("/members/all?per_page={MAX_PER_PAGE}"))?)?;
+        if let Some(member) = members
             .into_iter()
             .find(|user| tracker_core::unicode_eq_ignore_case(&user.username, username))
-            .map(|user| user.id)
         {
-            return Ok(id);
+            return Ok(member.id);
         }
 
-        let url = format!(
+        let users: Vec<GitLabUser> = self.get_json(&format!(
             "{}/users?username={}",
             self.base_url,
             urlencoding::encode(username)
-        );
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-        let mut response = self.check_response(response)?;
-        let users: Vec<GitLabUser> = response.body_mut().read_json()?;
+        ))?;
         users
             .into_iter()
             .find(|user| tracker_core::unicode_eq_ignore_case(&user.username, username))
@@ -887,16 +624,7 @@ impl GitLabClient {
     /// Verify that a numeric user id exists via `GET /users/:id` and that the
     /// returned identity matches the requested id.
     fn verify_user_id(&self, id: u64) -> Result<u64> {
-        let url = format!("{}/users/{}", self.base_url, id);
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-        let mut response = self.check_response(response)?;
-        let user: GitLabUser = response.body_mut().read_json()?;
+        let user: GitLabUser = self.get_json(&format!("{}/users/{}", self.base_url, id))?;
         if user.id != id {
             return Err(GitLabError::Api {
                 status: 404,
@@ -919,57 +647,20 @@ impl GitLabClient {
     /// the full collection in a single response regardless). Callers that
     /// need a subset should slice the returned `Vec` themselves.
     pub fn list_wiki_pages(&self, with_content: bool) -> Result<Vec<GitLabWikiPage>> {
-        let url = self.project_url(&format!(
+        self.get_json(&self.project_url(&format!(
             "/wikis?with_content={}",
             if with_content { 1 } else { 0 }
-        ))?;
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let pages: Vec<GitLabWikiPage> = response.body_mut().read_json()?;
-        Ok(pages)
+        ))?)
     }
 
     /// Get a project wiki page by slug.
     pub fn get_wiki_page(&self, slug: &str) -> Result<GitLabWikiPage> {
-        let url = self.project_url(&format!("/wikis/{}", urlencoding::encode(slug)))?;
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let page: GitLabWikiPage = response.body_mut().read_json()?;
-        Ok(page)
+        self.get_json(&self.project_url(&format!("/wikis/{}", urlencoding::encode(slug)))?)
     }
 
     /// Create a project wiki page.
     pub fn create_wiki_page(&self, page: &CreateGitLabWikiPage) -> Result<GitLabWikiPage> {
-        let url = self.project_url("/wikis")?;
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(page)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let page: GitLabWikiPage = response.body_mut().read_json()?;
-        Ok(page)
+        self.post_json(&self.project_url("/wikis")?, page)
     }
 
     /// Update a project wiki page.
@@ -978,35 +669,15 @@ impl GitLabClient {
         slug: &str,
         update: &UpdateGitLabWikiPage,
     ) -> Result<GitLabWikiPage> {
-        let url = self.project_url(&format!("/wikis/{}", urlencoding::encode(slug)))?;
-
-        let response = self
-            .agent
-            .put(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(update)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let page: GitLabWikiPage = response.body_mut().read_json()?;
-        Ok(page)
+        self.put_json(
+            &self.project_url(&format!("/wikis/{}", urlencoding::encode(slug)))?,
+            update,
+        )
     }
 
     /// Delete a project wiki page.
     pub fn delete_wiki_page(&self, slug: &str) -> Result<()> {
-        let url = self.project_url(&format!("/wikis/{}", urlencoding::encode(slug)))?;
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
-        Ok(())
+        self.delete(&self.project_url(&format!("/wikis/{}", urlencoding::encode(slug)))?)
     }
 
     /// Upload one file to project wiki attachments.
@@ -1014,26 +685,6 @@ impl GitLabClient {
         &self,
         file: &AttachmentUploadFile,
     ) -> Result<GitLabWikiAttachment> {
-        let url = self.project_url("/wikis/attachments")?;
-        let mut part = Part::file(&file.path)?;
-        if let Some(name) = &file.name {
-            part = part.file_name(name);
-        }
-        if let Some(mime_type) = &file.mime_type {
-            part = part.mime_str(mime_type)?;
-        }
-        let form = Form::new().part("file", part);
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .header("Accept", "application/json")
-            .send(form)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let attachment: GitLabWikiAttachment = response.body_mut().read_json()?;
-        Ok(attachment)
+        self.post_file(&self.project_url("/wikis/attachments")?, file)
     }
 }
