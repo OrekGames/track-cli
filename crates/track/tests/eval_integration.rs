@@ -116,6 +116,17 @@ fn test_eval_clear_creates_empty_log() {
 }
 
 #[test]
+fn test_eval_clear_rejects_missing_scenario_dir() {
+    let missing = fixtures_path().join("no-such-scenario");
+    track()
+        .args(["eval", "clear", missing.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not exist"));
+    assert!(!missing.exists());
+}
+
+#[test]
 #[serial]
 fn test_eval_run_fails_on_empty_log() {
     let path = scenario_path("basic-workflow");
@@ -306,4 +317,56 @@ fn test_mock_mode_error_handling() {
         log_content.contains("get_issue"),
         "Failed calls should also be logged"
     );
+}
+
+fn write_scenario_file(root: &std::path::Path, dir: &str, contents: &str) {
+    let scenario_dir = root.join(dir);
+    fs::create_dir_all(&scenario_dir).unwrap();
+    fs::write(scenario_dir.join("scenario.toml"), contents).unwrap();
+}
+
+#[test]
+fn test_eval_list_is_sorted_and_reports_unloadable_scenarios() {
+    let root = std::env::temp_dir().join(format!("track-eval-list-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    // Created out of order so that directory iteration order is not sorted order.
+    for name in ["delta", "bravo", "echo", "alpha", "charlie"] {
+        write_scenario_file(
+            &root,
+            name,
+            &format!(
+                "[scenario]\nname = \"{name}\"\ndescription = \"d\"\n\n[setup]\nprompt = \"p\"\n"
+            ),
+        );
+    }
+    write_scenario_file(&root, "broken", "[scenario\nname = ");
+
+    let output = track()
+        .args([
+            "eval",
+            "list",
+            "--path",
+            root.to_str().unwrap(),
+            "-o",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let list: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let names: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["alpha", "bravo", "charlie", "delta", "echo"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Warning") && stderr.contains("broken"),
+        "a scenario that fails to load must be reported, got stderr:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }

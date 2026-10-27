@@ -1,7 +1,33 @@
 use anyhow::Result;
+use std::path::{Path, PathBuf};
+use tracker_mock::Scenario;
 
 use crate::cli;
 use crate::output::output_json;
+
+/// Load every `<dir>/scenario.toml` under `path`, sorted by directory path so
+/// list and run-all output is stable across filesystems.
+///
+/// A scenario file that fails to load is reported on stderr instead of being
+/// dropped silently, which would let `run-all` pass without running it.
+fn discover_scenarios(path: &Path) -> Result<Vec<(PathBuf, Scenario)>> {
+    let entries = std::fs::read_dir(path)
+        .map_err(|e| anyhow::anyhow!("Failed to read scenarios directory: {}", e))?;
+
+    let mut scenarios = Vec::new();
+    for entry in entries.flatten() {
+        let scenario_file = entry.path().join("scenario.toml");
+        if !scenario_file.exists() {
+            continue;
+        }
+        match Scenario::load(&scenario_file) {
+            Ok(scenario) => scenarios.push((entry.path(), scenario)),
+            Err(e) => eprintln!("Warning: Skipping {}: {}", scenario_file.display(), e),
+        }
+    }
+    scenarios.sort_by(|(a, _), (b, _)| a.cmp(b));
+    Ok(scenarios)
+}
 
 /// Print evaluation result in the specified format
 fn print_eval_result(
@@ -105,7 +131,7 @@ fn print_eval_result(
 
 pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Result<()> {
     use cli::EvalCommands;
-    use tracker_mock::{EvaluationResult, Evaluator, MockClient, Scenario};
+    use tracker_mock::{EvaluationResult, Evaluator, MockClient};
 
     match action {
         EvalCommands::Run {
@@ -164,19 +190,7 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
             min_score,
             fail_fast,
         } => {
-            let entries = std::fs::read_dir(path)
-                .map_err(|e| anyhow::anyhow!("Failed to read scenarios directory: {}", e))?;
-
-            let mut scenarios: Vec<(std::path::PathBuf, Scenario)> = Vec::new();
-            for entry in entries.flatten() {
-                let scenario_file = entry.path().join("scenario.toml");
-                if scenario_file.exists()
-                    && let Ok(scenario) = Scenario::load(&scenario_file)
-                {
-                    scenarios.push((entry.path(), scenario));
-                }
-            }
-
+            let scenarios = discover_scenarios(path)?;
             if scenarios.is_empty() {
                 return Err(anyhow::anyhow!("No scenarios found in {}", path.display()));
             }
@@ -283,23 +297,17 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
 
                     println!("{}", "-".repeat(60));
                     let passed_count = results.iter().filter(|(_, _, p)| *p).count();
-                    let total = results.len();
-
-                    if all_passed {
-                        println!(
-                            "  {} {}/{} scenarios passed",
-                            "✓".green().bold(),
-                            passed_count,
-                            total
-                        );
+                    let icon = if all_passed {
+                        "✓".green().bold()
                     } else {
-                        println!(
-                            "  {} {}/{} scenarios passed",
-                            "✗".red().bold(),
-                            passed_count,
-                            total
-                        );
-                    }
+                        "✗".red().bold()
+                    };
+                    println!(
+                        "  {} {}/{} scenarios passed",
+                        icon,
+                        passed_count,
+                        results.len()
+                    );
                     println!();
                 }
             }
@@ -312,18 +320,7 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
         }
 
         EvalCommands::List { path } => {
-            let entries = std::fs::read_dir(path)
-                .map_err(|e| anyhow::anyhow!("Failed to read scenarios directory: {}", e))?;
-
-            let mut scenarios = Vec::new();
-            for entry in entries.flatten() {
-                let scenario_file = entry.path().join("scenario.toml");
-                if scenario_file.exists()
-                    && let Ok(scenario) = Scenario::load(&scenario_file)
-                {
-                    scenarios.push((entry.path(), scenario));
-                }
-            }
+            let scenarios = discover_scenarios(path)?;
 
             match format {
                 cli::OutputFormat::Json => {
@@ -450,6 +447,13 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
         }
 
         EvalCommands::Clear { scenario } => {
+            // A mistyped path would otherwise report "Cleared" while the real log keeps its calls.
+            if !scenario.is_dir() {
+                return Err(anyhow::anyhow!(
+                    "Scenario directory '{}' does not exist",
+                    scenario.display()
+                ));
+            }
             let log_path = scenario.join("call_log.jsonl");
 
             if log_path.exists() {
@@ -501,12 +505,11 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
 
         EvalCommands::Status => {
             let mock_dir = tracker_mock::get_mock_dir();
-            let is_enabled = mock_dir.is_some();
 
             match format {
                 cli::OutputFormat::Json => {
                     let status = serde_json::json!({
-                        "mock_enabled": is_enabled,
+                        "mock_enabled": mock_dir.is_some(),
                         "mock_dir": mock_dir,
                         "env_var": tracker_mock::MOCK_DIR_ENV,
                     });
@@ -521,9 +524,9 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
                         tracker_mock::MOCK_DIR_ENV.cyan()
                     );
 
-                    if is_enabled {
+                    if let Some(mock_dir) = &mock_dir {
                         println!("  Status: {}", "ENABLED".green().bold());
-                        println!("  Mock directory: {}", mock_dir.unwrap().display());
+                        println!("  Mock directory: {}", mock_dir.display());
                         println!(
                             "\n  {} All track commands will use mock responses.",
                             "Note:".yellow()
