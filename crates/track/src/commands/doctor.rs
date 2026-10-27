@@ -302,7 +302,8 @@ pub fn handle_doctor(cli: &Cli, opts: DoctorOptions) -> Result<()> {
 
 /// The effective backend: global `-b` flag, then config chain, then default.
 fn effective_backend(cli: &Cli) -> Backend {
-    cli.backend.unwrap_or_else(crate::config::resolve_backend)
+    cli.backend
+        .unwrap_or_else(|| crate::config::resolve_backend(cli.config.as_deref()))
 }
 
 /// The global `--url`/`--token` flags belong to the effective backend only;

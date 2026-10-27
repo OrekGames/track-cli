@@ -171,8 +171,11 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    // Determine effective backend: CLI flag > config chain (project > global > env) > default
-    let effective_backend = cli.backend.unwrap_or_else(config::resolve_backend);
+    // Effective backend: -b / TRACKER_BACKEND, else `backend` from the config
+    // files (project over global, or only the --config file), else YouTrack
+    let effective_backend = cli
+        .backend
+        .unwrap_or_else(|| config::resolve_backend(cli.config.as_deref()));
 
     let mut config = Config::load(cli.config.clone(), effective_backend)?;
     config.merge_with_cli(cli.url.clone(), cli.token.clone());
@@ -180,12 +183,11 @@ fn run(cli: Cli) -> Result<()> {
     // Workflow commands are offline: after config load + backend selection,
     // before credential validation and client construction.
     if let Commands::Workflow { action } = &cli.command {
-        let backend = cli.backend.unwrap_or_else(|| config.get_backend());
         return commands::workflow::handle_workflow(
             action,
             cli.format.output(),
             cli.config.as_deref(),
-            backend,
+            effective_backend,
         );
     }
 
@@ -194,7 +196,7 @@ fn run(cli: Cli) -> Result<()> {
     if let Some(mock_dir) = tracker_mock::get_mock_dir() {
         let client = MockClient::new(&mock_dir)
             .map_err(|e| anyhow::anyhow!("Failed to initialize mock client: {}", e))?;
-        return run_with_client(&client, &client, &cli, &config);
+        return run_with_client(&client, &client, &cli, &config, effective_backend);
     }
 
     config.validate(effective_backend)?;
@@ -206,6 +208,7 @@ fn run(cli: Cli) -> Result<()> {
         client.knowledge_base(),
         &cli,
         &config,
+        effective_backend,
     )
 }
 
@@ -339,51 +342,43 @@ fn run_with_client(
     kb_client: &dyn KnowledgeBase,
     cli: &Cli,
     config: &Config,
+    backend: Backend,
 ) -> Result<()> {
     match &cli.command {
-        Commands::Issue { action } => {
-            let backend = cli.backend.unwrap_or_else(|| config.get_backend());
-            commands::issue::handle_issue(
-                issue_client,
-                action,
-                commands::issue::IssueOutput {
-                    format: cli.format.output(),
-                    select: cli.select.as_deref(),
-                    jsonl: cli.format.is_jsonl(),
-                },
-                config.default_project.as_deref(),
-                cli.verbose,
-                config.link_mappings_for(backend),
-                cli.config.as_deref(),
-            )
-        }
+        Commands::Issue { action } => commands::issue::handle_issue(
+            issue_client,
+            action,
+            commands::issue::IssueOutput {
+                format: cli.format.output(),
+                select: cli.select.as_deref(),
+                jsonl: cli.format.is_jsonl(),
+            },
+            config.default_project.as_deref(),
+            cli.verbose,
+            config.link_mappings_for(backend),
+            cli.config.as_deref(),
+        ),
         Commands::Project { action } => {
             commands::project::handle_project(issue_client, action, cli.format.output())
         }
         Commands::Tags { action } => {
             commands::tags::handle_tags(issue_client, action, cli.format.output())
         }
-        Commands::Cache { action } => {
-            let backend = cli.backend.unwrap_or_else(|| config.get_backend());
-            commands::cache::handle_cache(
-                issue_client,
-                Some(kb_client),
-                action,
-                cli.format.output(),
-                backend,
-                config,
-            )
-        }
-        Commands::Config { action } => {
-            let backend = cli.backend.unwrap_or_else(|| config.get_backend());
-            commands::config::handle_config(
-                issue_client,
-                action,
-                cli.format.output(),
-                config,
-                backend,
-            )
-        }
+        Commands::Cache { action } => commands::cache::handle_cache(
+            issue_client,
+            Some(kb_client),
+            action,
+            cli.format.output(),
+            backend,
+            config,
+        ),
+        Commands::Config { action } => commands::config::handle_config(
+            issue_client,
+            action,
+            cli.format.output(),
+            config,
+            backend,
+        ),
         Commands::Article { action } => {
             commands::article::handle_article(issue_client, kb_client, action, cli.format.output())
         }
@@ -411,7 +406,6 @@ fn run_with_client(
                 tracker_mock::log_cli_command(&mock_dir, "context", &args);
             }
 
-            let backend = cli.backend.unwrap_or_else(|| config.get_backend());
             let backend_type = backend.to_string();
             commands::context::handle_context(
                 issue_client,
@@ -452,7 +446,7 @@ fn run_with_client(
             unreachable!("Init command should be handled before API validation")
         }
         Commands::Open { id } => {
-            commands::open::handle_open(id.as_deref(), config, cli.format.output())
+            commands::open::handle_open(id.as_deref(), config, backend, cli.format.output())
         }
         Commands::External(args) => {
             commands::open::handle_issue_shortcut(issue_client, args, cli.format.output())

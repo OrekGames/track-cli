@@ -323,6 +323,32 @@ fn map_linear_env_key(key: &str) -> Option<&'static str> {
     }
 }
 
+/// Maps an env key (prefix stripped) to its nested config key, if recognized.
+type EnvKeyMapper = fn(&str) -> Option<&'static str>;
+
+/// Backend-specific environment prefixes and the mapper that nests each
+/// recognized key under its backend section (e.g. `YOUTRACK_URL` ->
+/// `youtrack.url`). Unrecognized keys pass through as top-level keys.
+const BACKEND_ENV_PREFIXES: [(&str, EnvKeyMapper); 5] = [
+    ("YOUTRACK_", map_youtrack_env_key),
+    ("JIRA_", map_jira_env_key),
+    ("GITHUB_", map_github_env_key),
+    ("GITLAB_", map_gitlab_env_key),
+    ("LINEAR_", map_linear_env_key),
+];
+
+/// Merge the variables selected by `env` into `figment`, keeping every value
+/// a string.
+///
+/// Figment's own `Env` provider parses values as TOML-like literals, so
+/// `GITLAB_PROJECT_ID=123` would arrive as an integer and fail to deserialize
+/// into the string field it configures.
+fn merge_env_as_strings(figment: Figment, env: &Env) -> Figment {
+    env.iter().fold(figment, |figment, (key, value)| {
+        figment.merge(Serialized::default(key.as_str(), value))
+    })
+}
+
 impl Config {
     pub fn load(config_path: Option<PathBuf>, backend: Backend) -> Result<Self> {
         let mut config = Self::load_raw(config_path)?;
@@ -354,46 +380,14 @@ impl Config {
             }
         }
 
-        // Support TRACKER_*, YOUTRACK_*, and JIRA_* environment variables
-        figment = figment
-            .merge(Env::prefixed("TRACKER_"))
-            .merge(Env::prefixed("YOUTRACK_").map(|key| {
-                // Map YOUTRACK_URL -> youtrack.url for nested config
-                if let Some(mapped) = map_youtrack_env_key(key.as_str()) {
-                    mapped.into()
-                } else {
-                    key.into()
-                }
-            }))
-            .merge(Env::prefixed("JIRA_").map(|key| {
-                // Map JIRA_URL -> jira.url for nested config
-                if let Some(mapped) = map_jira_env_key(key.as_str()) {
-                    mapped.into()
-                } else {
-                    key.into()
-                }
-            }))
-            .merge(Env::prefixed("GITHUB_").map(|key| {
-                if let Some(mapped) = map_github_env_key(key.as_str()) {
-                    mapped.into()
-                } else {
-                    key.into()
-                }
-            }))
-            .merge(Env::prefixed("GITLAB_").map(|key| {
-                if let Some(mapped) = map_gitlab_env_key(key.as_str()) {
-                    mapped.into()
-                } else {
-                    key.into()
-                }
-            }))
-            .merge(Env::prefixed("LINEAR_").map(|key| {
-                if let Some(mapped) = map_linear_env_key(key.as_str()) {
-                    mapped.into()
-                } else {
-                    key.into()
-                }
-            }));
+        figment = merge_env_as_strings(figment, &Env::prefixed("TRACKER_"));
+        for (prefix, map_key) in BACKEND_ENV_PREFIXES {
+            let env = Env::prefixed(prefix).map(move |key| match map_key(key.as_str()) {
+                Some(mapped) => mapped.into(),
+                None => key.into(),
+            });
+            figment = merge_env_as_strings(figment, &env);
+        }
 
         let config: Config = figment
             .extract()
@@ -684,7 +678,7 @@ pub(crate) fn config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
     // Load configs from lowest to highest priority
     // Later entries override earlier ones in figment merge
     // 1. Global: ~/.tracker-cli/.track.toml (lowest file priority)
-    if let Some(path) = get_global_config_path() {
+    if let Some(path) = global_config_path() {
         paths.push(path);
     }
     // 2. Project: ./.track.toml (highest file priority)
@@ -695,11 +689,6 @@ pub(crate) fn config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
     }
 
     paths
-}
-
-/// Returns the path to the global config (~/.tracker-cli/.track.toml)
-fn get_global_config_path() -> Option<PathBuf> {
-    home_dir().map(|home| home.join(".tracker-cli").join(".track.toml"))
 }
 
 /// Returns the path to the local .track.toml file in the current directory
@@ -725,7 +714,7 @@ pub fn local_track_config_path() -> Result<PathBuf> {
 
 /// Returns the global config path (~/.tracker-cli/.track.toml)
 pub fn global_config_path() -> Option<PathBuf> {
-    get_global_config_path()
+    home_dir().map(|home| home.join(".tracker-cli").join(".track.toml"))
 }
 
 /// Returns the global config path, creating the parent directory if needed
@@ -764,20 +753,13 @@ pub fn global_cache_dir() -> Option<PathBuf> {
     home_dir().map(|home| home.join(".tracker-cli").join("cache"))
 }
 
-/// Load backend from the full config chain (global -> project -> env)
-/// without requiring a backend argument.
-pub fn resolve_backend() -> Backend {
-    let mut figment = Figment::new().merge(Serialized::defaults(Config::default()));
-    for path in config_paths(None) {
-        if path.exists() {
-            figment = figment.merge(Toml::file(path));
-        }
-    }
-    figment = figment.merge(Env::prefixed("TRACKER_"));
-    figment
-        .extract::<Config>()
-        .ok()
-        .and_then(|c| c.backend)
+/// The backend named by the same config chain [`Config::load_raw`] reads
+/// (the `--config` file when given, else global then project file, then env),
+/// defaulting to YouTrack. Load errors also fall back to the default; the
+/// subsequent full config load reports them.
+pub fn resolve_backend(explicit: Option<&Path>) -> Backend {
+    Config::load_raw(explicit.map(Path::to_path_buf))
+        .map(|config| config.get_backend())
         .unwrap_or_default()
 }
 
@@ -842,7 +824,7 @@ fn select_workflow_pack_file(
         return Ok(Some((path, WorkflowPackSource::Repo)));
     }
 
-    if let Some(path) = get_global_config_path()
+    if let Some(path) = global_config_path()
         && path.exists()
         && toml_has_workflow_pack(&path)?
     {

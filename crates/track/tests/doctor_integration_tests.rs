@@ -371,6 +371,83 @@ token = "yt-token"
 }
 
 #[test]
+fn doctor_uses_backend_named_in_explicit_config_file() {
+    // `--config` must also decide the backend, not only the settings: a
+    // GitLab config passed explicitly is audited as GitLab, not as YouTrack.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+    let config_path = dir.join("gitlab.toml");
+    fs::write(
+        &config_path,
+        r#"
+backend = "gitlab"
+
+[gitlab]
+url = "https://gitlab.mock.test/api/v4"
+token = "gl-token"
+project_id = "123"
+"#,
+    )
+    .unwrap();
+
+    let output = track_in(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .arg("--config")
+        .arg(&config_path)
+        .args(["-o", "json", "doctor"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(report["backends"][0]["backend"], "gitlab");
+    assert_eq!(check(&report, 0, "config_valid")["status"], "ok");
+    assert_eq!(
+        report["backends"][0]["config"]["url"],
+        "https://gitlab.mock.test/api/v4"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn doctor_accepts_numeric_values_from_env() {
+    // GitLab project ids are numeric; GITLAB_PROJECT_ID=123 must configure
+    // the string setting instead of failing to load the config.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+    fs::write(
+        dir.join(".track.toml"),
+        r#"
+backend = "gitlab"
+
+[gitlab]
+url = "https://gitlab.mock.test/api/v4"
+token = "gl-token"
+"#,
+    )
+    .unwrap();
+
+    let output = track_in(&dir)
+        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
+        .env("GITLAB_PROJECT_ID", "123")
+        .args(["-o", "json", "doctor"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(report["backends"][0]["backend"], "gitlab");
+    assert_eq!(
+        check(&report, 0, "config_valid")["status"],
+        "ok",
+        "report: {report}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn doctor_invalid_config_fails_only_under_strict() {
     // No config at all: config_valid fails, remote checks are skipped, and no
     // network is touched. Non-strict still exits 0; strict exits non-zero.
