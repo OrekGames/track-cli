@@ -15,6 +15,26 @@ use tracker_core::{
     UpdateIssue, User,
 };
 
+/// Build the YouTrack tag create/update body; the tag color is its background.
+fn tag_request(tag: &CreateTag) -> CreateIssueTagRequest {
+    CreateIssueTagRequest {
+        name: tag.name.clone(),
+        color: tag.color.as_ref().map(|hex| TagColorRequest {
+            background: Some(hex.clone()),
+            foreground: None,
+        }),
+    }
+}
+
+fn bundle_value_request(value: &CreateBundleValue) -> CreateBundleValueRequest {
+    CreateBundleValueRequest {
+        name: value.name.clone(),
+        description: value.description.clone(),
+        is_resolved: value.is_resolved,
+        ordinal: value.ordinal,
+    }
+}
+
 impl IssueTracker for YouTrackClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
         Ok(self.get_issue(id)?.into())
@@ -29,23 +49,13 @@ impl IssueTracker for YouTrackClient {
         let items: Vec<Issue> = issues.into_iter().map(Into::into).collect();
         let item_count = items.len();
 
-        if item_count < limit {
-            // An empty page after a nonzero skip doesn't reliably mean the
-            // true total equals skip -- matching issues may have been
-            // deleted or reprioritized since an earlier page suggested more
-            // results existed. Fall back to a best-effort count rather than
-            // asserting total == skip.
-            if skip > 0 && item_count == 0 {
-                let total = self
-                    .count_issues_with_retry(query, 1, std::time::Duration::ZERO)
-                    .ok()
-                    .flatten();
-                return Ok(match total {
-                    Some(count) => SearchResult::with_total(items, count),
-                    None => SearchResult::from_items(items),
-                });
-            }
-
+        // A short page is the last one, so its end is the total. The exception
+        // is an empty page after a nonzero skip: that doesn't reliably mean the
+        // true total equals skip -- matching issues may have been deleted or
+        // reprioritized since an earlier page suggested more results existed --
+        // so it falls through to a best-effort count instead.
+        let empty_page_after_skip = skip > 0 && item_count == 0;
+        if item_count < limit && !empty_page_after_skip {
             return Ok(SearchResult::with_total(items, (skip + item_count) as u64));
         }
 
@@ -178,14 +188,7 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn create_tag(&self, tag: &CreateTag) -> Result<IssueTag> {
-        let request = CreateIssueTagRequest {
-            name: tag.name.clone(),
-            color: tag.color.as_ref().map(|hex| TagColorRequest {
-                background: Some(hex.clone()),
-                foreground: None,
-            }),
-        };
-        Ok(self.create_tag(&request)?.into())
+        Ok(self.create_tag(&tag_request(tag))?.into())
     }
 
     fn delete_tag(&self, name: &str) -> Result<()> {
@@ -203,14 +206,7 @@ impl IssueTracker for YouTrackClient {
             .into_iter()
             .find(|t| t.name == current_name)
             .ok_or_else(|| TrackerError::NotFound(format!("Tag '{}' not found", current_name)))?;
-        let request = CreateIssueTagRequest {
-            name: tag.name.clone(),
-            color: tag.color.as_ref().map(|hex| TagColorRequest {
-                background: Some(hex.clone()),
-                foreground: None,
-            }),
-        };
-        Ok(self.update_tag(&existing.id, &request)?.into())
+        Ok(self.update_tag(&existing.id, &tag_request(tag))?.into())
     }
 
     fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
@@ -327,16 +323,7 @@ impl IssueTracker for YouTrackClient {
     fn create_bundle(&self, bundle: &CreateBundle) -> Result<BundleDefinition> {
         let request = CreateBundleRequest {
             name: bundle.name.clone(),
-            values: bundle
-                .values
-                .iter()
-                .map(|v| CreateBundleValueRequest {
-                    name: v.name.clone(),
-                    description: v.description.clone(),
-                    is_resolved: v.is_resolved,
-                    ordinal: v.ordinal,
-                })
-                .collect(),
+            values: bundle.values.iter().map(bundle_value_request).collect(),
         };
         Ok(convert::bundle_response_to_core(self.create_bundle(
             bundle.bundle_type.to_api_path(),
@@ -353,13 +340,7 @@ impl IssueTracker for YouTrackClient {
         let mut results = Vec::new();
 
         for value in values {
-            let request = CreateBundleValueRequest {
-                name: value.name.clone(),
-                description: value.description.clone(),
-                is_resolved: value.is_resolved,
-                ordinal: value.ordinal,
-            };
-
+            let request = bundle_value_request(value);
             let created = self.add_bundle_value(bundle_type.to_api_path(), bundle_id, &request)?;
 
             results.push(convert::bundle_value_response_to_core(created));
