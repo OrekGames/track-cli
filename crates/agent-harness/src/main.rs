@@ -9,14 +9,18 @@ mod copilot_cli;
 mod gemini_runner;
 mod permissions;
 mod runner;
+mod subprocess;
 mod text;
 mod tools;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 use tracker_mock::{Evaluator, MockClient, Scenario};
+
+/// Model for the Anthropic provider when `--model` is not given
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
 
 #[derive(Parser, Debug)]
 #[command(name = "track-agent", version, about = "AI agent evaluation harness")]
@@ -185,68 +189,22 @@ fn run_scenario(
     let log_path = scenario_path.join("call_log.jsonl");
     std::fs::write(&log_path, "")?;
 
-    // Run the session based on provider
-    let session_result = match provider {
-        Provider::Anthropic => {
-            // Validate API key for Anthropic provider
-            let api_key = api_key.ok_or_else(|| {
-                anyhow::anyhow!("API key required. Set ANTHROPIC_API_KEY or use --api-key")
-            })?;
-
-            let model = model.unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
-
-            let mut session_runner = runner::SessionRunner::new(
-                scenario_path.clone(),
-                scenario.clone(),
-                api_key,
-                model,
-                max_turns,
-                verbose,
-            );
-
-            session_runner.run()?
-        }
-        Provider::ClaudeCode => {
-            let config = claude_code::ClaudeCodeConfig {
-                scenario_path: scenario_path.clone(),
-                scenario: scenario.clone(),
-                max_turns,
-                verbose,
-            };
-
-            let result = claude_code::run_claude_code(&config)?;
-            runner::SessionResult::from(result)
-        }
-        Provider::CopilotCli => {
-            let config = copilot_cli::CopilotCliConfig {
-                scenario_path: scenario_path.clone(),
-                scenario: scenario.clone(),
-                max_turns,
-                verbose,
-                copilot_mode: copilot_cli::CopilotMode::Suggest,
-            };
-
-            let result = copilot_cli::run_copilot_cli(&config)?;
-            runner::SessionResult::from(result)
-        }
-        Provider::Gemini => {
-            let config = gemini_runner::GeminiRunnerConfig {
-                scenario_path: scenario_path.clone(),
-                scenario: scenario.clone(),
-                max_turns,
-                verbose,
-            };
-
-            let result = gemini_runner::run_gemini(&config)?;
-            runner::SessionResult::from(result)
-        }
-    };
+    let session_result = run_agent_session(
+        provider,
+        scenario_path,
+        &scenario,
+        model.as_deref(),
+        max_turns,
+        verbose,
+        api_key.as_deref(),
+    )?;
 
     // Evaluate results
     let client = MockClient::new(scenario_path)?;
     let calls = client.read_call_log()?;
     let evaluator = Evaluator::new(scenario);
     let eval_result = evaluator.evaluate(&calls);
+    let passed = eval_result.score_percent >= min_score as f64 && eval_result.success;
 
     // Output results
     match format {
@@ -269,7 +227,7 @@ fn run_scenario(
                 }).collect::<Vec<_>>(),
                 "outcomes": eval_result.outcomes,
                 "efficiency": format!("{:?}", eval_result.efficiency),
-                "passed": eval_result.score_percent >= min_score as f64 && eval_result.success,
+                "passed": passed,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
@@ -278,7 +236,7 @@ fn run_scenario(
             println!("{}", "EVALUATION RESULTS".white().bold());
             println!("{}", "═".repeat(60));
 
-            let status = if eval_result.success {
+            let status = if passed {
                 "PASS".green().bold()
             } else {
                 "FAIL".red().bold()
@@ -349,11 +307,60 @@ fn run_scenario(
     }
 
     // Exit with error if failed
-    if eval_result.score_percent < min_score as f64 || !eval_result.success {
+    if !passed {
         std::process::exit(1);
     }
 
     Ok(())
+}
+
+/// Run one agent session against `scenario` with the selected provider
+fn run_agent_session(
+    provider: Provider,
+    scenario_path: &Path,
+    scenario: &Scenario,
+    model: Option<&str>,
+    max_turns: usize,
+    verbose: bool,
+    api_key: Option<&str>,
+) -> Result<runner::SessionResult> {
+    let scenario_path = scenario_path.to_path_buf();
+    let scenario = scenario.clone();
+
+    match provider {
+        Provider::Anthropic => {
+            let api_key =
+                api_key.context("API key required. Set ANTHROPIC_API_KEY or use --api-key")?;
+            runner::SessionRunner::new(
+                scenario_path,
+                scenario,
+                api_key.to_string(),
+                model.unwrap_or(DEFAULT_ANTHROPIC_MODEL).to_string(),
+                max_turns,
+                verbose,
+            )
+            .run()
+        }
+        Provider::ClaudeCode => claude_code::run_claude_code(&claude_code::ClaudeCodeConfig {
+            scenario_path,
+            scenario,
+            max_turns,
+            verbose,
+        }),
+        Provider::CopilotCli => copilot_cli::run_copilot_cli(&copilot_cli::CopilotCliConfig {
+            scenario_path,
+            scenario,
+            max_turns,
+            verbose,
+            copilot_mode: copilot_cli::CopilotMode::Suggest,
+        }),
+        Provider::Gemini => gemini_runner::run_gemini(&gemini_runner::GeminiRunnerConfig {
+            scenario_path,
+            scenario,
+            max_turns,
+            verbose,
+        }),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -406,93 +413,24 @@ fn run_all_scenarios(
         let log_path = scenario_path.join("call_log.jsonl");
         std::fs::write(&log_path, "")?;
 
-        let session_result = match provider {
-            Provider::Anthropic => {
-                let model = model
-                    .clone()
-                    .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
-
-                let mut session_runner = runner::SessionRunner::new(
-                    scenario_path.clone(),
-                    scenario.clone(),
-                    api_key.clone().unwrap(), // Safe: validated above
-                    model,
-                    max_turns,
-                    false, // not verbose in batch mode
-                );
-
-                match session_runner.run() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("  {} {}", "Error:".red(), e);
-                        all_passed = false;
-                        if fail_fast {
-                            break;
-                        }
-                        continue;
-                    }
+        let session_result = match run_agent_session(
+            provider,
+            scenario_path,
+            scenario,
+            model.as_deref(),
+            max_turns,
+            false, // not verbose in batch mode
+            api_key.as_deref(),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                // `:#` includes the cause, e.g. why a CLI failed to spawn.
+                eprintln!("  {} {:#}", "Error:".red(), e);
+                all_passed = false;
+                if fail_fast {
+                    break;
                 }
-            }
-            Provider::ClaudeCode => {
-                let config = claude_code::ClaudeCodeConfig {
-                    scenario_path: scenario_path.clone(),
-                    scenario: scenario.clone(),
-                    max_turns,
-                    verbose: false, // not verbose in batch mode
-                };
-
-                match claude_code::run_claude_code(&config) {
-                    Ok(r) => runner::SessionResult::from(r),
-                    Err(e) => {
-                        eprintln!("  {} {}", "Error:".red(), e);
-                        all_passed = false;
-                        if fail_fast {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-            }
-            Provider::CopilotCli => {
-                let config = copilot_cli::CopilotCliConfig {
-                    scenario_path: scenario_path.clone(),
-                    scenario: scenario.clone(),
-                    max_turns,
-                    verbose: false, // not verbose in batch mode
-                    copilot_mode: copilot_cli::CopilotMode::Suggest,
-                };
-
-                match copilot_cli::run_copilot_cli(&config) {
-                    Ok(r) => runner::SessionResult::from(r),
-                    Err(e) => {
-                        eprintln!("  {} {}", "Error:".red(), e);
-                        all_passed = false;
-                        if fail_fast {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-            }
-            Provider::Gemini => {
-                let config = gemini_runner::GeminiRunnerConfig {
-                    scenario_path: scenario_path.clone(),
-                    scenario: scenario.clone(),
-                    max_turns,
-                    verbose: false, // not verbose in batch mode
-                };
-
-                match gemini_runner::run_gemini(&config) {
-                    Ok(r) => runner::SessionResult::from(r),
-                    Err(e) => {
-                        eprintln!("  {} {}", "Error:".red(), e);
-                        all_passed = false;
-                        if fail_fast {
-                            break;
-                        }
-                        continue;
-                    }
-                }
+                continue;
             }
         };
 

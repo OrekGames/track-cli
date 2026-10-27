@@ -7,7 +7,9 @@
 //! your local machine.
 
 use crate::permissions::format_allowed_bash_pattern;
-use crate::runner::{CommandExecution, SessionResult};
+use crate::runner::{CommandExecution, SessionResult, load_skill_file};
+use crate::subprocess::{StderrCapture, ensure_success, route_track_to_mock};
+use crate::tools::{find_track_binary, is_track_command, parse_track_args};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -78,6 +80,10 @@ pub enum ContentBlock {
         #[serde(default)]
         is_error: bool,
     },
+    /// Blocks the harness does not inspect, such as `thinking`. Without this,
+    /// one such block would fail the whole event, dropping its tool calls.
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -94,6 +100,9 @@ pub struct UserMessage {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResultEvent {
+    /// `success`, or why the session ended early (e.g. `error_max_turns`)
+    #[serde(default)]
+    pub subtype: Option<String>,
     #[serde(default)]
     pub result: Option<String>,
     #[serde(default)]
@@ -106,14 +115,8 @@ pub struct ResultEvent {
     pub cost_usd: Option<f64>,
 }
 
-/// Result of a Claude Code session
-pub struct ClaudeCodeResult {
-    pub turns_used: usize,
-    pub commands_executed: Vec<CommandExecution>,
-}
-
 /// Run Claude Code against a scenario
-pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
+pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<SessionResult> {
     // Build system prompt
     let system_prompt = build_system_prompt(&config.scenario);
 
@@ -122,10 +125,6 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
 
     // Find track binary path
     let track_bin = find_track_binary();
-    let track_bin_dir = std::path::Path::new(&track_bin)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
 
     if config.verbose {
         println!("\n{}", "Starting Claude Code session...".cyan());
@@ -153,40 +152,45 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
         &task_prompt,
     ]);
 
-    // Set environment - route track commands through mock
-    cmd.env("TRACK_MOCK_DIR", &config.scenario_path);
+    route_track_to_mock(&mut cmd, &config.scenario_path, &track_bin);
 
     // Unset CLAUDECODE to allow running inside a Claude Code session
     cmd.env_remove("CLAUDECODE");
 
-    // Add track binary to PATH if needed
-    if !track_bin_dir.is_empty() {
-        let current_path = std::env::var("PATH").unwrap_or_default();
-        cmd.env("PATH", format!("{}:{}", track_bin_dir, current_path));
-    }
+    run_stream_json_session(cmd, "Claude Code CLI", config.verbose)
+}
 
-    // Set up stdio
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    // Spawn process
-    let mut child = cmd.spawn().context("Failed to spawn Claude Code CLI")?;
+/// Run an agent CLI that prints Claude Code stream-json events on stdout, and
+/// collect the track commands it executed.
+pub(crate) fn run_stream_json_session(
+    mut cmd: Command,
+    cli_name: &str,
+    verbose: bool,
+) -> Result<SessionResult> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("Failed to spawn {cli_name}"))?;
+    let stderr = StderrCapture::start(&mut child);
 
     // Parse streaming JSON output
     let stdout = child.stdout.take().context("Failed to capture stdout")?;
-    let events = parse_stream_output(stdout, config.verbose)?;
+    let events = parse_stream_output(stdout, verbose)?;
 
-    // Wait for completion
-    let status = child.wait().context("Failed to wait for Claude Code")?;
-    if !status.success() {
-        anyhow::bail!("Claude Code CLI exited with non-zero status: {status}");
+    let status = child
+        .wait()
+        .with_context(|| format!("Failed to wait for {cli_name}"))?;
+    // Running out of turns is an outcome to score, not a CLI failure, even if
+    // the CLI exits non-zero for it.
+    if !stopped_at_turn_limit(&events) {
+        ensure_success(cli_name, status, stderr)?;
     }
 
     // Extract commands from events
     let commands_executed = extract_commands(&events);
     let turns_used = count_turns(&events);
 
-    if config.verbose {
+    if verbose {
         println!(
             "\n{}: {} commands in {} turns",
             "Session complete".green(),
@@ -195,60 +199,16 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<ClaudeCodeResult> {
         );
     }
 
-    Ok(ClaudeCodeResult {
+    Ok(SessionResult {
         turns_used,
+        total_input_tokens: None,  // Not available from CLI
+        total_output_tokens: None, // Not available from CLI
         commands_executed,
     })
 }
 
-/// Path to the skill file relative to the project root
-const SKILL_FILE_PATH: &str = "agent-skills/SKILL.md";
-
-/// Strip YAML frontmatter (--- ... ---) from skill file content
-fn strip_frontmatter(content: &str) -> &str {
-    if let Some(stripped) = content.strip_prefix("---\n")
-        && let Some(close) = stripped.find("\n---\n")
-    {
-        return stripped[close + 5..].trim_start();
-    }
-    content
-}
-
-/// Load the skill file content, stripping frontmatter
-fn load_skill_file() -> Option<String> {
-    // Try to find the skill file relative to the current working directory
-    let paths_to_try = [
-        SKILL_FILE_PATH.to_string(),
-        format!("./{}", SKILL_FILE_PATH),
-        format!("../{}", SKILL_FILE_PATH),
-        format!("../../{}", SKILL_FILE_PATH),
-    ];
-
-    for path in &paths_to_try {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            return Some(strip_frontmatter(&content).to_string());
-        }
-    }
-
-    // Also try from CARGO_MANIFEST_DIR if available
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let path = std::path::Path::new(&manifest_dir)
-            .parent() // crates/
-            .and_then(|p| p.parent()) // project root
-            .map(|p| p.join(SKILL_FILE_PATH));
-
-        if let Some(path) = path
-            && let Ok(content) = std::fs::read_to_string(&path)
-        {
-            return Some(strip_frontmatter(&content).to_string());
-        }
-    }
-
-    None
-}
-
 /// Build system prompt for Claude Code using the track skill file
-fn build_system_prompt(scenario: &Scenario) -> String {
+pub(crate) fn build_system_prompt(scenario: &Scenario) -> String {
     let mut prompt = String::new();
 
     prompt.push_str("# Evaluation Mode\n\n");
@@ -300,33 +260,11 @@ fn build_system_prompt(scenario: &Scenario) -> String {
 }
 
 /// Build the task prompt from scenario
-fn build_task_prompt(scenario: &Scenario) -> String {
+pub(crate) fn build_task_prompt(scenario: &Scenario) -> String {
     format!(
         "## Your Task\n\n{}\n\nPlease complete this task using the track CLI.",
         scenario.setup.prompt
     )
-}
-
-/// Find the track binary
-fn find_track_binary() -> String {
-    // Check for debug build first
-    let debug_path = "./target/debug/track";
-    if std::path::Path::new(debug_path).exists() {
-        return std::fs::canonicalize(debug_path)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| debug_path.to_string());
-    }
-
-    // Check for release build
-    let release_path = "./target/release/track";
-    if std::path::Path::new(release_path).exists() {
-        return std::fs::canonicalize(release_path)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| release_path.to_string());
-    }
-
-    // Fall back to PATH
-    "track".to_string()
 }
 
 /// Parse streaming JSON output from Claude Code
@@ -471,55 +409,6 @@ fn extract_commands(events: &[ClaudeCodeEvent]) -> Vec<CommandExecution> {
     commands
 }
 
-/// Check if a bash command is a track command
-fn is_track_command(cmd: &str) -> bool {
-    let trimmed = cmd.trim();
-    // Check for direct track command
-    if trimmed.starts_with("track ") || trimmed == "track" {
-        return true;
-    }
-    // Check for path-based track command (e.g., /path/to/track or ./target/debug/track)
-    if trimmed.contains("track ") {
-        // Extract the command name from a potential path
-        if let Some(track_idx) = trimmed.find("track ") {
-            // Verify "track" is preceded by a path separator or start of string
-            if track_idx == 0 {
-                return true;
-            }
-            let prev_char = trimmed.chars().nth(track_idx - 1);
-            if prev_char == Some('/') || prev_char == Some('\\') {
-                return true;
-            }
-        }
-    }
-    // Check for track at end of path without args
-    if trimmed.ends_with("/track") || trimmed.ends_with("\\track") {
-        return true;
-    }
-    false
-}
-
-/// Parse track command into args
-fn parse_track_args(cmd: &str) -> Vec<String> {
-    let trimmed = cmd.trim();
-
-    // Handle path-based track command
-    let Some(idx) = trimmed.find("track ") else {
-        // No "track " found - either ends with "track" (no args) or not a track command
-        return vec![];
-    };
-
-    let track_part = &trimmed[idx + 6..];
-
-    // Simple arg splitting (doesn't handle all quoting edge cases)
-    shell_words::split(track_part).unwrap_or_else(|_| {
-        track_part
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect()
-    })
-}
-
 /// Count the number of turns (assistant responses)
 fn count_turns(events: &[ClaudeCodeEvent]) -> usize {
     events
@@ -528,42 +417,17 @@ fn count_turns(events: &[ClaudeCodeEvent]) -> usize {
         .count()
 }
 
-/// Convert ClaudeCodeResult to SessionResult for evaluation
-impl From<ClaudeCodeResult> for SessionResult {
-    fn from(result: ClaudeCodeResult) -> Self {
-        SessionResult {
-            turns_used: result.turns_used,
-            total_input_tokens: None,  // Not available from CLI
-            total_output_tokens: None, // Not available from CLI
-            commands_executed: result.commands_executed,
-        }
-    }
+/// Whether the session ended because it used up `--max-turns`
+fn stopped_at_turn_limit(events: &[ClaudeCodeEvent]) -> bool {
+    events.iter().any(|event| {
+        matches!(event, ClaudeCodeEvent::Result(result)
+            if result.subtype.as_deref() == Some("error_max_turns"))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_is_track_command() {
-        assert!(is_track_command("track issue get DEMO-1"));
-        assert!(is_track_command("  track issue get DEMO-1  "));
-        assert!(is_track_command("/path/to/track issue get DEMO-1"));
-        assert!(!is_track_command("ls -la"));
-        assert!(!is_track_command("cat file.txt"));
-    }
-
-    #[test]
-    fn test_parse_track_args() {
-        assert_eq!(
-            parse_track_args("track issue get DEMO-1"),
-            vec!["issue", "get", "DEMO-1"]
-        );
-        assert_eq!(
-            parse_track_args("track issue comment DEMO-1 -m \"Hello world\""),
-            vec!["issue", "comment", "DEMO-1", "-m", "Hello world"]
-        );
-    }
 
     #[test]
     fn test_parse_assistant_event() {
@@ -594,5 +458,49 @@ mod tests {
         } else {
             panic!("Expected Assistant event");
         }
+    }
+
+    #[test]
+    fn unknown_content_block_keeps_tool_calls_in_same_event() {
+        let stream = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"..."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"track issue get DEMO-1"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"DEMO-1: Fix login"}]}}"#,
+            "\n",
+        );
+        let events = parse_stream_output(stream.as_bytes(), false).unwrap();
+        let commands = extract_commands(&events);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].args, vec!["issue", "get", "DEMO-1"]);
+    }
+
+    #[cfg(unix)]
+    fn run_fake_cli(script: &str) -> Result<SessionResult> {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        run_stream_json_session(cmd, "Fake CLI", false)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn turn_limit_exit_is_scored_not_an_error() {
+        let session = run_fake_cli(concat!(
+            r#"echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"track issue get DEMO-1"}}]}}';"#,
+            r#"echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}';"#,
+            r#"echo '{"type":"result","subtype":"error_max_turns"}';"#,
+            "exit 1",
+        ))
+        .expect("a --max-turns stop should be scored");
+        assert_eq!(session.commands_executed.len(), 1);
+        assert_eq!(session.turns_used, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn crash_is_an_error_that_quotes_stderr() {
+        let err = run_fake_cli("echo 'Invalid API key' >&2; exit 1")
+            .err()
+            .expect("a crashed CLI should fail the run");
+        assert!(err.to_string().ends_with("Invalid API key"), "{err}");
     }
 }

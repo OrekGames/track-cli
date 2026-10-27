@@ -94,22 +94,58 @@ pub fn execute_track(args: &[String], scenario_dir: &std::path::Path) -> (String
     }
 }
 
-/// Find the track binary
-fn find_track_binary() -> String {
-    // Check for debug build first
-    let debug_path = "./target/debug/track";
-    if std::path::Path::new(debug_path).exists() {
-        return debug_path.to_string();
+/// Find the track binary: a local debug build, then a local release build, then
+/// `track` on PATH.
+///
+/// Local builds are canonicalized because agent CLIs are given this path (and
+/// its directory on PATH) and may run commands from another working directory.
+pub(crate) fn find_track_binary() -> String {
+    for local_build in ["./target/debug/track", "./target/release/track"] {
+        if std::path::Path::new(local_build).exists() {
+            return std::fs::canonicalize(local_build)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| local_build.to_string());
+        }
     }
-
-    // Check for release build
-    let release_path = "./target/release/track";
-    if std::path::Path::new(release_path).exists() {
-        return release_path.to_string();
-    }
-
-    // Fall back to PATH
     "track".to_string()
+}
+
+/// Check if a shell command runs track, either as `track` or by path
+/// (e.g. `/path/to/track` or `./target/debug/track`)
+pub(crate) fn is_track_command(cmd: &str) -> bool {
+    let trimmed = cmd.trim();
+    // `track` must start the command or follow a path separator, so that
+    // `echo track ...` or `mytrack ...` do not count.
+    if let Some(track_idx) = trimmed.find("track ") {
+        let before = &trimmed[..track_idx];
+        if before.is_empty() || before.ends_with(['/', '\\']) {
+            return true;
+        }
+    }
+    trimmed == "track" || trimmed.ends_with("/track") || trimmed.ends_with("\\track")
+}
+
+/// Parse the arguments of a track shell command
+pub(crate) fn parse_track_args(cmd: &str) -> Vec<String> {
+    const TRACK_PREFIX: &str = "track ";
+
+    let trimmed = cmd.trim();
+
+    // Handle path-based track command
+    let Some(idx) = trimmed.find(TRACK_PREFIX) else {
+        // No "track " found - either ends with "track" (no args) or not a track command
+        return vec![];
+    };
+
+    let track_part = &trimmed[idx + TRACK_PREFIX.len()..];
+
+    // Fall back to whitespace splitting when the quoting is unbalanced
+    shell_words::split(track_part).unwrap_or_else(|_| {
+        track_part
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect()
+    })
 }
 
 #[cfg(test)]
@@ -165,5 +201,41 @@ mod tests {
         let result = parse_track_input(&input);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "All args must be strings");
+    }
+
+    #[test]
+    fn test_is_track_command() {
+        assert!(is_track_command("track issue get DEMO-1"));
+        assert!(is_track_command("  track issue get DEMO-1  "));
+        assert!(is_track_command("/path/to/track issue get DEMO-1"));
+        assert!(is_track_command("./target/debug/track issue list"));
+        assert!(is_track_command("/path/to/track"));
+        assert!(!is_track_command("ls -la"));
+        assert!(!is_track_command("cat file.txt"));
+        assert!(!is_track_command("git commit"));
+        assert!(!is_track_command("echo track issue get DEMO-1"));
+    }
+
+    #[test]
+    fn is_track_command_accepts_path_with_multibyte_characters() {
+        // `find` returns a byte offset; using it as a char index looked at the
+        // wrong character once the path contained multi-byte UTF-8.
+        assert!(is_track_command("/home/josé/bin/track issue get DEMO-1"));
+    }
+
+    #[test]
+    fn test_parse_track_args() {
+        assert_eq!(
+            parse_track_args("track issue get DEMO-1"),
+            vec!["issue", "get", "DEMO-1"]
+        );
+        assert_eq!(
+            parse_track_args("track issue comment DEMO-1 -m \"Hello world\""),
+            vec!["issue", "comment", "DEMO-1", "-m", "Hello world"]
+        );
+        assert_eq!(
+            parse_track_args("/path/to/track i s \"query\""),
+            vec!["i", "s", "query"]
+        );
     }
 }
