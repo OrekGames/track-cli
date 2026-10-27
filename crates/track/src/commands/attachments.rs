@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{Result, anyhow};
 use std::path::{Path, PathBuf};
 use tracker_core::{AttachmentUpload, AttachmentUploadFile};
@@ -28,17 +26,14 @@ pub(crate) fn build_attachment_upload(
         ));
     }
 
+    // The checks above guarantee `name` and `mime_type` are only set for a single file.
     let mut files = Vec::with_capacity(paths.len());
     for path in paths {
         validate_attachment_path(path)?;
         files.push(AttachmentUploadFile {
             path: path.clone(),
-            name: (paths.len() == 1)
-                .then(|| name.map(str::to_string))
-                .flatten(),
-            mime_type: (paths.len() == 1)
-                .then(|| mime_type.map(str::to_string))
-                .flatten(),
+            name: name.map(str::to_string),
+            mime_type: mime_type.map(str::to_string),
         });
     }
 
