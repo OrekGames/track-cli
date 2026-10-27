@@ -735,6 +735,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_resolve_user_id_propagates_malformed_search_response() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/users"))
+            .and(query_param("query", "bob"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let err = client.resolve_user_id("bob").unwrap_err();
+
+        assert!(!matches!(err, crate::error::YouTrackError::Api { .. }));
+        assert!(!err.to_string().contains("could not be resolved"));
+    }
+
+    #[tokio::test]
     async fn test_unauthorized_error() {
         let mock_server = MockServer::start().await;
 

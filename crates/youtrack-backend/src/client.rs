@@ -477,7 +477,8 @@ impl YouTrackClient {
             return Ok(None);
         }
         let mut response = self.check_response(response)?;
-        Ok(response.body_mut().read_json::<T>().ok())
+        let value: T = response.body_mut().read_json()?;
+        Ok(Some(value))
     }
 
     /// Resolve a user identifier (database ID, login, or "me") to a YouTrack database user ID.
