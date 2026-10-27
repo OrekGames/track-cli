@@ -486,12 +486,15 @@ jobs:
 
       - name: Resolve latest stable release
         id: resolve
+        # bash (not the default `bash -e`) adds pipefail, so a gh failure
+        # surfaces its own error instead of "No stable release found".
+        shell: bash
         run: |
           if [ -n "${{ inputs.version }}" ]; then
             INPUT="${{ inputs.version }}"
             VERSION="${INPUT#v}"
           else
-            VERSION=$(gh release list --limit 1 --exclude-drafts --exclude-prereleases --json tagName --jq '.[0].tagName' | sed 's/^v//')
+            VERSION=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName' | sed 's/^v//')
           fi
           if [ -z "$VERSION" ]; then
             echo "::error::No stable release found to recover"
