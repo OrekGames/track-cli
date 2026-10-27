@@ -173,22 +173,23 @@ impl From<yt::ProjectCustomFieldExt> for core::ProjectCustomField {
         // Extract enum values and state values from bundle if available
         let (values, state_values) = match field.bundle {
             Some(bundle) => {
-                let values: Vec<String> = bundle.values.iter().map(|v| v.name.clone()).collect();
+                let mut values: Vec<String> = Vec::with_capacity(bundle.values.len());
+                let mut state_values: Vec<core::StateValueInfo> = if is_state_field {
+                    Vec::with_capacity(bundle.values.len())
+                } else {
+                    Vec::new()
+                };
 
-                // For state fields, also extract workflow metadata
-                let state_values: Vec<core::StateValueInfo> = if is_state_field {
-                    bundle
-                        .values
-                        .iter()
-                        .map(|v| core::StateValueInfo {
+                for v in bundle.values {
+                    if is_state_field {
+                        state_values.push(core::StateValueInfo {
                             name: v.name.clone(),
                             is_resolved: v.is_resolved.unwrap_or(false),
                             ordinal: v.ordinal.unwrap_or(0),
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                };
+                        });
+                    }
+                    values.push(v.name);
+                }
 
                 (values, state_values)
             }
@@ -579,21 +580,23 @@ pub fn project_custom_field_response_to_core(
 
     let (values, state_values) = match field.bundle {
         Some(bundle) => {
-            let values: Vec<String> = bundle.values.iter().map(|v| v.name.clone()).collect();
+            let mut values: Vec<String> = Vec::with_capacity(bundle.values.len());
+            let mut state_values: Vec<core::StateValueInfo> = if is_state_field {
+                Vec::with_capacity(bundle.values.len())
+            } else {
+                Vec::new()
+            };
 
-            let state_values: Vec<core::StateValueInfo> = if is_state_field {
-                bundle
-                    .values
-                    .iter()
-                    .map(|v| core::StateValueInfo {
+            for v in bundle.values {
+                if is_state_field {
+                    state_values.push(core::StateValueInfo {
                         name: v.name.clone(),
                         is_resolved: v.is_resolved.unwrap_or(false),
                         ordinal: v.ordinal.unwrap_or(0),
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
+                    });
+                }
+                values.push(v.name);
+            }
 
             (values, state_values)
         }
