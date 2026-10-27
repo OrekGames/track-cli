@@ -7,7 +7,12 @@ This directory contains the Homebrew formula template for Track CLI. The formula
 ```bash
 brew tap OrekGames/tap
 brew install track
+track init --skills   # optional: install the agent skill for Claude Code, Copilot, Cursor and Gemini CLI
 ```
+
+Homebrew runs post-install steps with an isolated `HOME`, so the formula cannot
+write the agent skill into your home directory; `track init --skills` does that
+per user. A reference copy is installed at `$(brew --prefix)/share/track/SKILL.md`.
 
 ## Updating
 
@@ -28,7 +33,7 @@ brew untap OrekGames/tap
 1. A tagged release (`v*.*.*`) triggers the [release workflow](../.github/workflows/release.yml)
 2. CI builds binaries for macOS (arm64 + x86_64) and Linux (x86_64 + arm64)
 3. CI generates SHA256 checksums and creates a GitHub Release
-4. CI renders the formula template with real version and checksums
+4. CI renders the formula template with the real version (written into the four release URLs, where Homebrew reads it) and checksums
 5. CI pushes the updated formula to `OrekGames/homebrew-tap`
 
 ## For Maintainers
@@ -63,6 +68,12 @@ create another release. Leave **version** empty to use the latest stable release
 brew tap                         # List all taps
 brew tap-info OrekGames/tap      # Show tap details
 brew update                      # Refresh tap index
+```
+
+**`Refusing to load formula ... from untrusted tap`:**
+Recent Homebrew versions ask you to trust third-party taps. `brew install` trusts the formula you name; for other commands, trust the tap once:
+```bash
+brew trust orekgames/tap
 ```
 
 **Version mismatch:**

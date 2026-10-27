@@ -12,6 +12,9 @@ brew install track
 
 Shell completions for bash, zsh, and fish are installed automatically.
 
+To install the agent skill for Claude Code, Copilot, Cursor, and Gemini CLI, run
+`track init --skills` (Homebrew can't write into your home directory itself).
+
 ## Native Install
 
 macOS and Linux:
