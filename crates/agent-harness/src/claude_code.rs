@@ -457,7 +457,7 @@ fn extract_commands(events: &[ClaudeCodeEvent]) -> Vec<CommandExecution> {
                                 commands.push(CommandExecution {
                                     args,
                                     output: content.clone(),
-                                    is_error: *is_error,
+                                    is_error: Some(*is_error),
                                 });
                             }
                         }
@@ -533,8 +533,8 @@ impl From<ClaudeCodeResult> for SessionResult {
     fn from(result: ClaudeCodeResult) -> Self {
         SessionResult {
             turns_used: result.turns_used,
-            total_input_tokens: 0,  // Not available from CLI
-            total_output_tokens: 0, // Not available from CLI
+            total_input_tokens: None,  // Not available from CLI
+            total_output_tokens: None, // Not available from CLI
             commands_executed: result.commands_executed,
         }
     }
