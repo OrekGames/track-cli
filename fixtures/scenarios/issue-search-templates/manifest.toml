@@ -24,19 +24,19 @@ project_id = "*"
 # Search Operations
 # =============================================================================
 
+# Template: my-issues (before "unresolved": its query also contains "#Unresolved")
+[[responses]]
+method = "search_issues"
+file = "search_my_issues.json"
+[responses.when]
+body_contains = "Assignee: me"
+
 # Template: unresolved
 [[responses]]
 method = "search_issues"
 file = "search_unresolved.json"
 [responses.when]
 body_contains = "Unresolved"
-
-# Template: my-issues
-[[responses]]
-method = "search_issues"
-file = "search_my_issues.json"
-[responses.when]
-body_contains = "Assignee: me"
 
 # Custom query with High priority
 [[responses]]

@@ -34,6 +34,13 @@ id = "DEMO-1"
 # Issue Create Operations
 # =============================================================================
 
+# Create subtask (before "Basic create": its summary also contains "feature X")
+[[responses]]
+method = "create_issue"
+file = "create_issue_subtask.json"
+[responses.when]
+body_contains = "Subtask"
+
 # Basic create
 [[responses]]
 method = "create_issue"
@@ -47,13 +54,6 @@ method = "create_issue"
 file = "create_issue_custom_fields.json"
 [responses.when]
 body_contains = "priority bug"
-
-# Create subtask
-[[responses]]
-method = "create_issue"
-file = "create_issue_subtask.json"
-[responses.when]
-body_contains = "Subtask"
 
 # Create with tags
 [[responses]]
