@@ -488,7 +488,8 @@ jobs:
         id: resolve
         run: |
           if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
+            INPUT="${{ inputs.version }}"
+            VERSION="${INPUT#v}"
           else
             VERSION=$(gh release list --limit 1 --exclude-drafts --exclude-prereleases --json tagName --jq '.[0].tagName' | sed 's/^v//')
           fi
@@ -496,8 +497,12 @@ jobs:
             echo "::error::No stable release found to recover"
             exit 1
           fi
-          if ! gh release view "v${VERSION}" >/dev/null 2>&1; then
+          if ! STATE=$(gh release view "v${VERSION}" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"' 2>/dev/null); then
             echo "::error::Stable release v${VERSION} does not exist"
+            exit 1
+          fi
+          if [ "$STATE" != "false false" ]; then
+            echo "::error::Release v${VERSION} is a draft or prerelease; Homebrew recovery only re-publishes stable releases"
             exit 1
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
