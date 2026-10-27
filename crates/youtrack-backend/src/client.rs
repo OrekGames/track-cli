@@ -446,6 +446,99 @@ impl YouTrackClient {
         Ok(project)
     }
 
+    /// Get the currently authenticated user details.
+    pub fn get_current_user(&self) -> Result<User> {
+        let url = format!("{}/api/users/me?fields=id,login,fullName", self.base_url);
+
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        let mut response = self.check_response(response)?;
+        let user: User = response.body_mut().read_json()?;
+        Ok(user)
+    }
+
+    /// GET a JSON endpoint, returning None on 404 and propagating other errors.
+    fn get_json_opt<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
+        let response = self
+            .agent
+            .get(url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|e| self.handle_error(e))?;
+
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let mut response = self.check_response(response)?;
+        let value: T = response.body_mut().read_json()?;
+        Ok(Some(value))
+    }
+
+    /// Resolve a user identifier (database ID, login, or "me") to a YouTrack database user ID.
+    pub fn resolve_user_id(&self, identifier: &str) -> Result<String> {
+        let trimmed = identifier.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("me") {
+            return self.get_current_user().map(|u| u.id);
+        }
+
+        // 1. Search users by query, matching login or database ID exactly
+        let search_url = format!(
+            "{}/api/users?query={}&fields=id,login,fullName&$top=50",
+            self.base_url,
+            urlencoding::encode(trimmed)
+        );
+        let users: Option<Vec<User>> = self.get_json_opt(&search_url)?;
+
+        if let Some(user) = users.as_ref().and_then(|found| {
+            found
+                .iter()
+                .find(|u| u.login.eq_ignore_ascii_case(trimmed) || u.id == trimmed)
+        }) {
+            return Ok(user.id.clone());
+        }
+
+        // 2. Fall back to a direct lookup, in case the identifier is a database ID
+        let direct_url = format!(
+            "{}/api/users/{}?fields=id,login,fullName",
+            self.base_url,
+            urlencoding::encode(trimmed)
+        );
+        if let Some(user) = self.get_json_opt::<User>(&direct_url)? {
+            return Ok(user.id);
+        }
+
+        let candidates: Vec<String> = users
+            .unwrap_or_default()
+            .into_iter()
+            .map(|u| u.login)
+            .take(5)
+            .collect();
+        let message = if candidates.is_empty() {
+            format!(
+                "Project leader '{}' could not be resolved to a YouTrack user",
+                identifier
+            )
+        } else {
+            format!(
+                "Project leader '{}' could not be resolved to an exact user match. Candidate matches found: {}",
+                identifier,
+                candidates.join(", ")
+            )
+        };
+
+        Err(YouTrackError::Api {
+            status: 404,
+            message,
+        })
+    }
+
     pub fn create_project(&self, create: &CreateProject) -> Result<Project> {
         let url = format!(
             "{}/api/admin/projects?fields={}",

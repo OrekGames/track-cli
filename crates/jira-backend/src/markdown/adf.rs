@@ -260,6 +260,18 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                 mark_stack.retain(|m| m != "strike");
             }
 
+            // Only emitted with ENABLE_SUPERSCRIPT / ENABLE_SUBSCRIPT; mapped
+            // to the ADF "subsup" mark for completeness.
+            Event::Start(Tag::Superscript) => mark_stack.push("sup".to_string()),
+            Event::End(TagEnd::Superscript) => {
+                mark_stack.retain(|m| m != "sup");
+            }
+
+            Event::Start(Tag::Subscript) => mark_stack.push("sub".to_string()),
+            Event::End(TagEnd::Subscript) => {
+                mark_stack.retain(|m| m != "sub");
+            }
+
             Event::Start(Tag::Link { dest_url, .. }) => {
                 link_href = Some(dest_url.to_string());
                 mark_stack.push("link".to_string());
@@ -388,6 +400,8 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                                 "type": "link",
                                 "attrs": { "href": link_href.as_deref().unwrap_or("") }
                             })
+                        } else if m == "sup" || m == "sub" {
+                            json!({ "type": "subsup", "attrs": { "type": m } })
                         } else {
                             json!({ "type": m })
                         }

@@ -84,6 +84,12 @@ pub struct TagColorRequest {
     pub foreground: Option<String>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserRef {
+    pub id: String,
+}
+
 /// Data for creating a new project via YouTrack API
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +98,8 @@ pub struct CreateProject {
     pub short_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leader: Option<UserRef>,
 }
 
 /// User that can be assigned to issues in a project

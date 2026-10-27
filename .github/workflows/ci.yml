@@ -87,3 +87,11 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build workspace
         run: cargo build --workspace
+
+  homebrew-script:
+    name: Homebrew Script Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run update-homebrew-formula.sh regression tests
+        run: bash scripts/test-update-homebrew-formula.sh

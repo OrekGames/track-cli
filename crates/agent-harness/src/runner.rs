@@ -12,20 +12,21 @@ use std::path::PathBuf;
 use tracker_mock::Scenario;
 
 /// Result of running a session
-#[allow(dead_code)]
 pub struct SessionResult {
     pub turns_used: usize,
-    pub total_input_tokens: u32,
-    pub total_output_tokens: u32,
+    /// `None` when the provider does not report token usage (CLI runners)
+    pub total_input_tokens: Option<u32>,
+    /// `None` when the provider does not report token usage (CLI runners)
+    pub total_output_tokens: Option<u32>,
     pub commands_executed: Vec<CommandExecution>,
 }
 
 /// Record of a command execution
-#[allow(dead_code)]
 pub struct CommandExecution {
     pub args: Vec<String>,
     pub output: String,
-    pub is_error: bool,
+    /// `None` when the runner cannot tell whether the command failed
+    pub is_error: Option<bool>,
 }
 
 /// Path to the skill file relative to the project root
@@ -200,7 +201,7 @@ impl SessionRunner {
                                     commands_executed.push(CommandExecution {
                                         args: args.clone(),
                                         output: output.clone(),
-                                        is_error,
+                                        is_error: Some(is_error),
                                     });
 
                                     tool_results.push(ContentBlock::tool_result(
@@ -274,8 +275,8 @@ impl SessionRunner {
 
         Ok(SessionResult {
             turns_used: turns,
-            total_input_tokens,
-            total_output_tokens,
+            total_input_tokens: Some(total_input_tokens),
+            total_output_tokens: Some(total_output_tokens),
             commands_executed,
         })
     }

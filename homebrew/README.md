@@ -38,15 +38,23 @@ brew untap OrekGames/tap
 If you need to update the formula manually (outside of CI):
 
 1. Download the checksums file from the [latest release](https://github.com/OrekGames/track-cli/releases)
-2. Run the update script:
+2. Run the update script (requires bash 4+; on macOS `brew install bash`). It downloads all four Homebrew archives and verifies their bytes before touching the formula, refuses downgrades below the `--baseline` formula, and is idempotent for the same version. Pass the tap's current formula as the baseline, since the in-repo template's version is only a placeholder:
    ```bash
-   ./scripts/update-homebrew-formula.sh 0.2.0 dist/checksums-sha256.txt
+   ./scripts/update-homebrew-formula.sh --baseline /path/to/homebrew-tap/Formula/track.rb 0.2.0 dist/checksums-sha256.txt
    ```
 3. Copy the updated formula to the tap repo:
    ```bash
    cp homebrew/Formula/track.rb /path/to/homebrew-tap/Formula/track.rb
    ```
 4. Commit and push the tap repo
+
+### Recovering a Failed Homebrew Update
+
+If a release published successfully but the Homebrew update job failed, run the
+[Release workflow](../.github/workflows/release.yml) manually with the
+**homebrew_recovery** input enabled. This re-publishes the formula for an
+existing stable release only — it does not rebuild binaries, move tags, or
+create another release. Leave **version** empty to use the latest stable release.
 
 ### Troubleshooting
 

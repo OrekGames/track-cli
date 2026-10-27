@@ -789,6 +789,9 @@ pub enum ProjectCommands {
         /// Read body text from a file ("-" for stdin), sets description
         #[arg(long, value_name = "PATH", conflicts_with = "description")]
         body_file: Option<PathBuf>,
+        /// Project leader / owner (user ID, login, or "me"; defaults to authenticated account if omitted)
+        #[arg(long, short = 'l')]
+        leader: Option<String>,
     },
     /// List custom fields for a project
     #[command(visible_alias = "f")]
@@ -2719,6 +2722,38 @@ mod tests {
                 } => {
                     assert_eq!(body_file, Some(PathBuf::from("desc.md")));
                     assert!(description.is_none());
+                }
+                _ => panic!("expected project create"),
+            },
+            _ => panic!("expected project command"),
+        }
+    }
+
+    #[test]
+    fn parses_project_create_with_leader_flag() {
+        let cli = Cli::parse_from([
+            "track",
+            "project",
+            "create",
+            "-n",
+            "My Project",
+            "-s",
+            "PROJ",
+            "-l",
+            "alice",
+        ]);
+
+        match cli.command {
+            Commands::Project { action } => match action {
+                ProjectCommands::Create {
+                    name,
+                    short_name,
+                    leader,
+                    ..
+                } => {
+                    assert_eq!(name, "My Project");
+                    assert_eq!(short_name, "PROJ");
+                    assert_eq!(leader.as_deref(), Some("alice"));
                 }
                 _ => panic!("expected project create"),
             },

@@ -154,6 +154,8 @@ pub struct CreateProject {
     pub short_name: String,
     /// Optional description
     pub description: Option<String>,
+    /// Optional project leader / owner (user ID, login, or "me")
+    pub leader: Option<String>,
 }
 
 /// Issue tag (full representation with optional metadata)
@@ -473,16 +475,27 @@ impl CustomFieldType {
 
     /// Parse from string representation
     pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "enum" | "single-enum" | "singleenum" => Some(CustomFieldType::SingleEnum),
-            "multi-enum" | "multienum" => Some(CustomFieldType::MultiEnum),
-            "state" => Some(CustomFieldType::State),
-            "text" => Some(CustomFieldType::Text),
-            "date" => Some(CustomFieldType::Date),
-            "integer" | "int" => Some(CustomFieldType::Integer),
-            "float" => Some(CustomFieldType::Float),
-            "period" => Some(CustomFieldType::Period),
-            _ => None,
+        if s.eq_ignore_ascii_case("enum")
+            || s.eq_ignore_ascii_case("single-enum")
+            || s.eq_ignore_ascii_case("singleenum")
+        {
+            Some(CustomFieldType::SingleEnum)
+        } else if s.eq_ignore_ascii_case("multi-enum") || s.eq_ignore_ascii_case("multienum") {
+            Some(CustomFieldType::MultiEnum)
+        } else if s.eq_ignore_ascii_case("state") {
+            Some(CustomFieldType::State)
+        } else if s.eq_ignore_ascii_case("text") {
+            Some(CustomFieldType::Text)
+        } else if s.eq_ignore_ascii_case("date") {
+            Some(CustomFieldType::Date)
+        } else if s.eq_ignore_ascii_case("integer") || s.eq_ignore_ascii_case("int") {
+            Some(CustomFieldType::Integer)
+        } else if s.eq_ignore_ascii_case("float") {
+            Some(CustomFieldType::Float)
+        } else if s.eq_ignore_ascii_case("period") {
+            Some(CustomFieldType::Period)
+        } else {
+            None
         }
     }
 }
@@ -543,13 +556,21 @@ impl BundleType {
 
     /// Parse from string representation
     pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "enum" => Some(BundleType::Enum),
-            "state" => Some(BundleType::State),
-            "ownedfield" | "owned" | "owned-field" => Some(BundleType::OwnedField),
-            "version" => Some(BundleType::Version),
-            "build" => Some(BundleType::Build),
-            _ => None,
+        if s.eq_ignore_ascii_case("enum") {
+            Some(BundleType::Enum)
+        } else if s.eq_ignore_ascii_case("state") {
+            Some(BundleType::State)
+        } else if s.eq_ignore_ascii_case("ownedfield")
+            || s.eq_ignore_ascii_case("owned")
+            || s.eq_ignore_ascii_case("owned-field")
+        {
+            Some(BundleType::OwnedField)
+        } else if s.eq_ignore_ascii_case("version") {
+            Some(BundleType::Version)
+        } else if s.eq_ignore_ascii_case("build") {
+            Some(BundleType::Build)
+        } else {
+            None
         }
     }
 }
@@ -703,6 +724,36 @@ mod tests {
         let result = SearchResult::with_total(vec![1, 2, 3], 100);
         assert_eq!(result.items, vec![1, 2, 3]);
         assert_eq!(result.total, Some(100));
+    }
+
+    #[test]
+    fn canonical_field_name_tests() {
+        // Known status/state synonyms fold to FIELD_STATUS ("status")
+        assert_eq!(canonical_field_name("status"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("Status"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("STATUS"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("sTaTuS"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("state"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("State"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("STATE"), FIELD_STATUS);
+
+        // Leading and trailing whitespace is trimmed before folding
+        assert_eq!(canonical_field_name("  status  \t"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("\n State \r"), FIELD_STATUS);
+        assert_eq!(canonical_field_name("  Assignee  "), "Assignee");
+
+        // Other field names are trimmed but preserve their original display casing
+        assert_eq!(canonical_field_name("Assignee"), "Assignee");
+        assert_eq!(canonical_field_name("Priority"), "Priority");
+        assert_eq!(canonical_field_name("custom_field"), "custom_field");
+
+        // Empty and whitespace-only strings return empty string
+        assert_eq!(canonical_field_name(""), "");
+        assert_eq!(canonical_field_name("   "), "");
+
+        // Non-ASCII inputs preserve casing if non-matching, or fold if matching
+        assert_eq!(canonical_field_name("   État   "), "État");
+        assert_eq!(canonical_field_name("  СТАТУС  "), "СТАТУС");
     }
 }
 

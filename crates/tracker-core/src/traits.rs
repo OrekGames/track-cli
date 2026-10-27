@@ -505,9 +505,16 @@ mod tests {
         }
     }
 
+    /// Error for article operations the pagination tests never exercise.
+    fn unsupported<T>(op: &str) -> Result<T> {
+        Err(TrackerError::InvalidInput(format!(
+            "{op} is not supported by StubKnowledgeBase"
+        )))
+    }
+
     impl KnowledgeBase for StubKnowledgeBase {
         fn get_article(&self, _: &str) -> Result<Article> {
-            unimplemented!()
+            unsupported("get_article")
         }
 
         fn list_articles(
@@ -540,35 +547,35 @@ mod tests {
         }
 
         fn create_article(&self, _: &CreateArticle) -> Result<Article> {
-            unimplemented!()
+            unsupported("create_article")
         }
 
         fn update_article(&self, _: &str, _: &UpdateArticle) -> Result<Article> {
-            unimplemented!()
+            unsupported("update_article")
         }
 
         fn delete_article(&self, _: &str) -> Result<()> {
-            unimplemented!()
+            unsupported("delete_article")
         }
 
         fn get_child_articles(&self, _: &str) -> Result<Vec<Article>> {
-            unimplemented!()
+            unsupported("get_child_articles")
         }
 
         fn move_article(&self, _: &str, _: Option<&str>) -> Result<Article> {
-            unimplemented!()
+            unsupported("move_article")
         }
 
         fn list_article_attachments(&self, _: &str) -> Result<Vec<ArticleAttachment>> {
-            unimplemented!()
+            unsupported("list_article_attachments")
         }
 
         fn get_article_comments(&self, _: &str) -> Result<Vec<Comment>> {
-            unimplemented!()
+            unsupported("get_article_comments")
         }
 
         fn add_article_comment(&self, _: &str, _: &str) -> Result<Comment> {
-            unimplemented!()
+            unsupported("add_article_comment")
         }
     }
 

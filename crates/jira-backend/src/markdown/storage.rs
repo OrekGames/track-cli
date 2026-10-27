@@ -163,6 +163,8 @@ pub(crate) fn markdown_to_storage(markdown: &str) -> String {
                 Tag::Emphasis => result.push_str("<em>"),
                 Tag::Strong => result.push_str("<strong>"),
                 Tag::Strikethrough => result.push_str("<del>"),
+                Tag::Superscript => result.push_str("<sup>"),
+                Tag::Subscript => result.push_str("<sub>"),
                 Tag::Link { dest_url, .. } => {
                     result.push_str(&format!("<a href=\"{}\">", html_escape(&dest_url)));
                 }
@@ -193,6 +195,8 @@ pub(crate) fn markdown_to_storage(markdown: &str) -> String {
                 TagEnd::Emphasis => result.push_str("</em>"),
                 TagEnd::Strong => result.push_str("</strong>"),
                 TagEnd::Strikethrough => result.push_str("</del>"),
+                TagEnd::Superscript => result.push_str("</sup>"),
+                TagEnd::Subscript => result.push_str("</sub>"),
                 TagEnd::Link => result.push_str("</a>"),
                 TagEnd::Image => {}
                 TagEnd::Table => result.push_str("</tbody></table>"),
