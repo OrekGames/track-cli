@@ -7,7 +7,7 @@ use serde_json::Value;
 use tracker_core::{
     Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, Issue, IssueHistoryEvent,
     IssueLink, IssueLinkType, LinkedIssue, Project, ProjectCustomField, ProjectRef, StateValueInfo,
-    Tag, UpdateIssue, User, canonical_field_name,
+    Tag, UpdateIssue, User, canonical_field_name, unicode_eq_ignore_case,
 };
 
 use crate::markdown::adf::{
@@ -834,7 +834,16 @@ fn resolve_field_info<'a>(
         return Some((id, schema));
     }
 
-    if let Some(field) = fields.iter().find(|f| f.name.eq_ignore_ascii_case(name)) {
+    // Custom field names can be localized: compare ASCII-only names cheaply,
+    // falling back to Unicode case folding otherwise.
+    let name_is_ascii = name.is_ascii();
+    if let Some(field) = fields.iter().find(|f| {
+        if name_is_ascii && f.name.is_ascii() {
+            f.name.eq_ignore_ascii_case(name)
+        } else {
+            unicode_eq_ignore_case(&f.name, name)
+        }
+    }) {
         return Some((field.id.as_str(), field.schema.as_ref()));
     }
 
@@ -1456,6 +1465,32 @@ mod tests {
         assert!(!extra.contains_key("priority"));
         assert!(!extra.contains_key("customfield_11315")); // "State" custom field should be skipped
         assert_eq!(extra["customfield_10016"], serde_json::json!(3.0));
+    }
+
+    #[test]
+    fn resolve_extra_fields_matches_non_ascii_field_name_case_insensitively() {
+        // Localized custom field names must resolve regardless of case, even
+        // when the differing characters are non-ASCII (Ö vs ö).
+        let custom_fields = vec![CustomFieldUpdate::SingleEnum {
+            name: "GRÖßE".to_string(),
+            value: "XL".to_string(),
+        }];
+        let jira_fields = vec![JiraField {
+            id: "customfield_30001".to_string(),
+            name: "Größe".to_string(),
+            custom: true,
+            schema: Some(JiraFieldSchema {
+                field_type: "option".to_string(),
+                custom: None,
+                items: None,
+            }),
+        }];
+
+        let extra = resolve_extra_fields(&custom_fields, &jira_fields, &[]).unwrap();
+        assert_eq!(
+            extra["customfield_30001"],
+            serde_json::json!({ "value": "XL" })
+        );
     }
 
     #[test]
