@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Update the Homebrew formula with a new version and checksums.
 #
 # Usage: ./scripts/update-homebrew-formula.sh [--formula <path>] [--baseline <path>] <version> <checksums-file>
@@ -23,6 +23,12 @@
 #     matches (version + all four checksums), the script exits 0 without
 #     changing anything.
 set -euo pipefail
+
+# Associative arrays below need bash 4+; macOS ships bash 3.2 as /bin/bash.
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "Error: bash 4 or newer is required (on macOS: brew install bash)" >&2
+    exit 1
+fi
 
 FORMULA_PATH="homebrew/Formula/track.rb"
 BASELINE_PATH=""

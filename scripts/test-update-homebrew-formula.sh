@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Regression tests for scripts/update-homebrew-formula.sh
 #
 # Usage: bash scripts/test-update-homebrew-formula.sh
