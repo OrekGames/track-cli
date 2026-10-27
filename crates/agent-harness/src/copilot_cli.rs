@@ -472,7 +472,7 @@ fn extract_track_commands(interactions: &[CopilotInteraction]) -> Vec<CommandExe
             commands.push(CommandExecution {
                 args,
                 output: interaction.response.clone(),
-                is_error: false, // Would need to parse from output
+                is_error: None, // Would need to parse from output
             });
         }
     }
@@ -484,8 +484,8 @@ impl From<CopilotCliResult> for SessionResult {
     fn from(result: CopilotCliResult) -> Self {
         SessionResult {
             turns_used: result.turns_used,
-            total_input_tokens: 0,  // Not available from CLI
-            total_output_tokens: 0, // Not available from CLI
+            total_input_tokens: None,  // Not available from CLI
+            total_output_tokens: None, // Not available from CLI
             commands_executed: result.commands_executed,
         }
     }
