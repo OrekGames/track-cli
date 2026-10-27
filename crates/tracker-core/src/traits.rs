@@ -1,6 +1,9 @@
 use crate::error::Result;
 use crate::models::*;
 
+/// Offset window used by the default `*_all_*` auto-pagination methods.
+const AUTO_PAGINATION_PAGE_SIZE: usize = 100;
+
 /// Common trait for all issue tracker backends
 ///
 /// This trait defines the operations that any issue tracker backend must implement.
@@ -34,7 +37,7 @@ pub trait IssueTracker: Send + Sync {
     fn search_all_issues(&self, query: &str, max_results: usize) -> Result<Vec<Issue>> {
         crate::pagination::fetch_all_pages_keyed(
             |offset, limit| self.search_issues(query, limit, offset).map(|r| r.items),
-            100,
+            AUTO_PAGINATION_PAGE_SIZE,
             max_results,
             |issue: &Issue| issue.id.clone(),
         )
@@ -268,7 +271,7 @@ pub trait IssueTracker: Send + Sync {
     fn get_all_comments(&self, issue_id: &str, max_results: usize) -> Result<Vec<Comment>> {
         crate::pagination::fetch_all_pages_keyed(
             |offset, limit| self.get_comments_page(issue_id, limit, offset),
-            100,
+            AUTO_PAGINATION_PAGE_SIZE,
             max_results,
             |comment: &Comment| comment.id.clone(),
         )
@@ -331,7 +334,7 @@ pub trait KnowledgeBase: Send + Sync {
     ) -> Result<Vec<Article>> {
         crate::pagination::fetch_all_pages_keyed(
             |offset, limit| self.list_articles(project_id, limit, offset),
-            100,
+            AUTO_PAGINATION_PAGE_SIZE,
             max_results,
             |article: &Article| article.id.clone(),
         )
@@ -340,11 +343,13 @@ pub trait KnowledgeBase: Send + Sync {
     /// Search all articles, auto-paginating up to `max_results`.
     ///
     /// The default implementation pages through [`Self::search_articles`] in
-    /// offset windows of 100, deduplicating by article id.
+    /// offset windows of 100, deduplicating by article id and failing with
+    /// [`crate::TrackerError::PaginationStalled`] if a full page yields no
+    /// new articles.
     fn search_all_articles(&self, query: &str, max_results: usize) -> Result<Vec<Article>> {
         crate::pagination::fetch_all_pages_keyed(
             |offset, limit| self.search_articles(query, limit, offset),
-            100,
+            AUTO_PAGINATION_PAGE_SIZE,
             max_results,
             |article: &Article| article.id.clone(),
         )

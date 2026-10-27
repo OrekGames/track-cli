@@ -265,14 +265,9 @@ pub const FIELD_STATUS: &str = "status";
 /// otherwise unchanged, preserving their display casing.
 pub fn canonical_field_name(raw: &str) -> String {
     let trimmed = raw.trim();
-    // ASCII fast path: covers virtually all real field names without paying
-    // for Unicode case folding. Non-ASCII inputs fall back to the
-    // Unicode-aware comparison.
-    if (trimmed.is_ascii() && trimmed.eq_ignore_ascii_case("status"))
-        || (trimmed.is_ascii() && trimmed.eq_ignore_ascii_case("state"))
-        || (!trimmed.is_ascii()
-            && (crate::unicode_eq_ignore_case(trimmed, "status")
-                || crate::unicode_eq_ignore_case(trimmed, "state")))
+    if ["status", "state"]
+        .iter()
+        .any(|synonym| crate::unicode_eq_ignore_case(trimmed, synonym))
     {
         FIELD_STATUS.to_string()
     } else {
