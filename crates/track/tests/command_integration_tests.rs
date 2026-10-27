@@ -2797,3 +2797,189 @@ fn test_issue_start_resolves_state_field_from_schema() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn test_issue_complete_json_output_is_valid_json() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "state-field-resolution");
+
+    let output = track_mock(&dir, &scenario)
+        .args(["-o", "json", "issue", "complete", "ALPHA-1"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected success: {output:?}");
+    let json = parse_json_stdout(&output);
+    assert_eq!(json["success"], true);
+    assert_eq!(json["action"], "completed");
+    assert_eq!(json["state"], "Done");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// batch issue operations
+// =============================================================================
+
+#[test]
+fn test_issue_batch_partial_failure_reports_all_then_fails() {
+    // One failing issue must not hide the others' results, must keep its
+    // cause, and must fail the command just as a single-issue failure does.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "-o",
+            "json",
+            "issue",
+            "update",
+            "DEMO-1,MISSING-1",
+            "--summary",
+            "Renamed",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "a partially failed batch must exit non-zero: {output:?}"
+    );
+    let report = parse_json_stdout(&output);
+    assert_eq!(report["total"], 2);
+    assert_eq!(report["succeeded"], 1);
+    assert_eq!(report["failed"], 1);
+    assert_eq!(report["results"][0]["success"], true);
+    assert_eq!(report["results"][1]["id"], "MISSING-1");
+    let error = report["results"][1]["error"].as_str().unwrap();
+    assert!(
+        error.contains("Failed to update issue 'MISSING-1'") && error.contains("API error (404)"),
+        "batch error must keep its cause, got: {error}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("1 of 2 issues were not updated"),
+        "stderr should summarize the failure: {output:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_batch_ignores_blank_ids_and_succeeds_when_all_pass() {
+    // A space after a comma or a trailing comma must not become an issue ID.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "issue-batch-operations");
+
+    track_mock(&dir, &scenario)
+        .args(["issue", "delete", "DEMO-1, DEMO-2,"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 issues deleted"));
+
+    let deleted: Vec<String> = mock_call_entries(&scenario)
+        .iter()
+        .filter(|entry| entry["method"] == "delete_issue")
+        .map(|entry| entry["args"]["id"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(deleted, vec!["DEMO-1", "DEMO-2"]);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_batch_commands_require_an_id() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "issue-batch-operations");
+
+    for args in [
+        vec!["issue", "start"],
+        vec!["issue", "complete", ","],
+        vec!["issue", "delete"],
+        vec!["issue", "update", "--summary", "Renamed"],
+    ] {
+        track_mock(&dir, &scenario).args(&args).assert().failure();
+    }
+    assert!(mock_call_methods(&scenario).is_empty());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// issue link JSON output
+// =============================================================================
+
+#[test]
+fn test_issue_link_json_output_escapes_values() {
+    // Link types are free text (custom backend types pass through), so the
+    // JSON output must escape them instead of splicing them into a string.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "issue-linking");
+    let link_type = r#"Custom "quoted" \ type"#;
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "-o", "json", "issue", "link", "DEMO-1", "DEMO-2", "--type", link_type,
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected success: {output:?}");
+    let json = parse_json_stdout(&output);
+    assert_eq!(json["success"], true);
+    assert_eq!(json["source"], "DEMO-1");
+    assert_eq!(json["target"], "DEMO-2");
+    assert_eq!(json["linkType"], link_type);
+    assert_eq!(json["description"], link_type.to_lowercase());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// context --include-issues
+// =============================================================================
+
+#[test]
+fn test_context_include_issues_on_gitlab_needs_no_default_project() {
+    // `track init` sets no default project for GitLab, whose client is already
+    // project-scoped, so --include-issues must not require one.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args(["-b", "gitlab", "-o", "json", "context", "--include-issues"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected success: {output:?}");
+    let json = parse_json_stdout(&output);
+    let issues = json["issues"].as_array().unwrap_or_else(|| {
+        panic!(
+            "context should include issues; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    assert!(!issues.is_empty(), "expected open issues: {json}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_context_include_issues_without_project_warns() {
+    // YouTrack needs a project to scope the query; skipping must not be silent.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "context-aggregation");
+
+    let output = track_mock(&dir, &scenario)
+        .args(["-o", "json", "context", "--include-issues"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected success: {output:?}");
+    assert!(parse_json_stdout(&output).get("issues").is_none());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--include-issues needs --project"),
+        "skipping issues must warn: {output:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

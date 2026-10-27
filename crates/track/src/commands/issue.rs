@@ -83,7 +83,7 @@ pub fn handle_issue(
                 priority: priority.as_deref(),
                 assignee: assignee.as_deref(),
                 tags,
-                parent: None, // parent is passed separately to handle_create
+                parent: parent.as_deref(),
                 validate: *validate,
                 dry_run: *dry_run,
                 json: json.as_deref(),
@@ -92,7 +92,6 @@ pub fn handle_issue(
                 client,
                 &args,
                 project.as_deref(),
-                parent.as_deref(),
                 format,
                 default_project,
                 verbose,
@@ -361,7 +360,6 @@ fn handle_create(
     client: &dyn IssueTracker,
     args: &IssueFieldArgs,
     project: Option<&str>,
-    parent: Option<&str>,
     format: OutputFormat,
     default_project: Option<&str>,
     verbose: bool,
@@ -408,7 +406,7 @@ fn handle_create(
             description: args.description.map(|s| s.to_string()),
             custom_fields,
             tags: args.tags.to_vec(),
-            parent: parent.map(|s| s.to_string()),
+            parent: args.parent.map(|s| s.to_string()),
         };
 
         (create, project_id)
@@ -469,8 +467,7 @@ fn handle_update(
 
     if args.dry_run {
         let fields_validated = validate_update(client, id, &update)?;
-        output_update_dry_run(id, fields_validated, format);
-        return Ok(());
+        return output_update_dry_run(id, fields_validated, format);
     }
 
     // Validate custom fields if requested
@@ -557,13 +554,15 @@ pub(crate) fn validate_update(
     Ok(update.custom_fields.len())
 }
 
-fn output_update_dry_run(id: &str, fields_validated: usize, format: OutputFormat) {
+fn output_update_dry_run(id: &str, fields_validated: usize, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Json => {
-            println!(
-                r#"{{"valid": true, "message": "Validation passed", "issue": "{}", "fields_validated": {}}}"#,
-                id, fields_validated
-            );
+            output_json(&serde_json::json!({
+                "valid": true,
+                "message": "Validation passed",
+                "issue": id,
+                "fields_validated": fields_validated,
+            }))?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -575,6 +574,7 @@ fn output_update_dry_run(id: &str, fields_validated: usize, format: OutputFormat
             );
         }
     }
+    Ok(())
 }
 
 /// Build a list of custom field updates from CLI arguments.
@@ -616,31 +616,40 @@ pub(crate) fn build_custom_fields(
         ));
     }
 
-    // Add state if provided
-    if let Some(state_value) = state {
-        custom_fields.push(CustomFieldUpdate::State {
-            name: "State".to_string(),
-            value: state_value.to_string(),
-        });
-    }
-
-    // Add priority if provided
-    if let Some(priority_value) = priority {
-        custom_fields.push(CustomFieldUpdate::SingleEnum {
-            name: "Priority".to_string(),
-            value: priority_value.to_string(),
-        });
-    }
-
-    // Add assignee if provided
-    if let Some(assignee_login) = assignee {
-        custom_fields.push(CustomFieldUpdate::SingleUser {
-            name: "Assignee".to_string(),
-            login: assignee_login.to_string(),
-        });
-    }
-
+    custom_fields.extend(shorthand_field_updates(state, priority, assignee));
     Ok(custom_fields)
+}
+
+/// Updates for the `state`, `priority`, and `assignee` shorthands, which
+/// target the conventional "State", "Priority", and "Assignee" fields.
+pub(crate) fn shorthand_field_updates(
+    state: Option<&str>,
+    priority: Option<&str>,
+    assignee: Option<&str>,
+) -> impl Iterator<Item = CustomFieldUpdate> {
+    let state = state.map(|value| CustomFieldUpdate::State {
+        name: "State".to_string(),
+        value: value.to_string(),
+    });
+    let priority = priority.map(|value| CustomFieldUpdate::SingleEnum {
+        name: "Priority".to_string(),
+        value: value.to_string(),
+    });
+    let assignee = assignee.map(|login| CustomFieldUpdate::SingleUser {
+        name: "Assignee".to_string(),
+        login: login.to_string(),
+    });
+    state.into_iter().chain(priority).chain(assignee)
+}
+
+/// Name of the field a custom field update targets.
+fn update_field_name(update: &CustomFieldUpdate) -> &str {
+    match update {
+        CustomFieldUpdate::SingleEnum { name, .. }
+        | CustomFieldUpdate::MultiEnum { name, .. }
+        | CustomFieldUpdate::State { name, .. }
+        | CustomFieldUpdate::SingleUser { name, .. } => name,
+    }
 }
 
 pub(crate) fn build_custom_field_update(
@@ -686,12 +695,7 @@ pub(crate) fn validate_custom_fields(
         .with_context(|| format!("Failed to fetch custom fields for project '{}'", project_id))?;
 
     for field in custom_fields {
-        let field_name = match field {
-            CustomFieldUpdate::SingleEnum { name, .. } => name.as_str(),
-            CustomFieldUpdate::MultiEnum { name, .. } => name.as_str(),
-            CustomFieldUpdate::State { name, .. } => name.as_str(),
-            CustomFieldUpdate::SingleUser { name, .. } => name.as_str(),
-        };
+        let field_name = update_field_name(field);
 
         // Find the field definition
         let field_def = project_fields
@@ -966,8 +970,8 @@ fn handle_search(
         record_issue_access(first);
     }
 
-    // JSONL or JSON `--select` uses projection. Text mode ignores `--select`
-    // in this slice so existing human output stays unchanged.
+    // JSONL or JSON `--select` uses projection. `--select` in text mode is
+    // rejected before dispatch, so text output is never projected.
     if jsonl || (select.is_some() && format != OutputFormat::Text) {
         output_projected(&issues, select, jsonl)?;
     } else {
@@ -1327,105 +1331,77 @@ fn handle_link(
     link_type: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    let outcome = link_issues_with_type(client, source, target, link_type)?;
+    let description = link_issues_with_type(client, source, target, link_type)?;
 
     match format {
         OutputFormat::Json => {
-            println!(
-                r#"{{"success":true,"source":"{}","target":"{}","linkType":"{}","description":"{}"}}"#,
-                outcome.source, outcome.target, outcome.link_type, outcome.description
-            );
+            output_json(&serde_json::json!({
+                "success": true,
+                "source": source,
+                "target": target,
+                "linkType": link_type,
+                "description": description,
+            }))?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
             println!(
                 "{} {} {}",
-                outcome.source.cyan().bold(),
-                outcome.description.dimmed(),
-                outcome.target.cyan().bold()
+                source.cyan().bold(),
+                description.dimmed(),
+                target.cyan().bold()
             );
         }
     }
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct LinkOutcome {
-    pub source: String,
-    pub target: String,
-    pub link_type: String,
-    pub description: String,
-}
-
+/// Link `source` to `target` and return the relation as read from `source`,
+/// e.g. "depends on". `link_type` is a canonical type (relates, depends,
+/// subtask, ...) or a backend-native link type name.
 pub(crate) fn link_issues_with_type(
     client: &dyn IssueTracker,
     source: &str,
     target: &str,
     link_type: &str,
-) -> Result<LinkOutcome> {
+) -> Result<String> {
+    let lowered = link_type.to_lowercase();
+
     // Parent-child relationships use link_subtask() — each backend implements this natively.
-    match link_type.to_lowercase().as_str() {
+    match lowered.as_str() {
         "subtask" | "subtask-of" => {
             client
                 .link_subtask(source, target)
                 .with_context(|| format!("Failed to set {} as subtask of {}", source, target))?;
-            return Ok(LinkOutcome {
-                source: source.to_string(),
-                target: target.to_string(),
-                link_type: link_type.to_string(),
-                description: "is subtask of".to_string(),
-            });
+            return Ok("is subtask of".to_string());
         }
         "parent" | "parent-of" => {
             client
                 .link_subtask(target, source)
                 .with_context(|| format!("Failed to set {} as parent of {}", source, target))?;
-            return Ok(LinkOutcome {
-                source: source.to_string(),
-                target: target.to_string(),
-                link_type: link_type.to_string(),
-                description: "is parent of".to_string(),
-            });
+            return Ok("is parent of".to_string());
         }
         _ => {}
     }
 
     // All other link types use link_issues().
-    let lowered = link_type.to_lowercase();
     let (canonical_type, direction, description) = match lowered.as_str() {
-        "relates" => ("relates".to_string(), "BOTH", "relates to".to_string()),
-        "depends" => ("depends".to_string(), "OUTWARD", "depends on".to_string()),
-        "required" | "required-for" => (
-            "required".to_string(),
-            "INWARD",
-            "is required for".to_string(),
-        ),
-        "duplicates" | "duplicate" => (
-            "duplicates".to_string(),
-            "OUTWARD",
-            "duplicates".to_string(),
-        ),
-        "duplicated-by" => (
-            "duplicated-by".to_string(),
-            "INWARD",
-            "is duplicated by".to_string(),
-        ),
-        // Pass through unrecognized types to the backend as-is (bidirectional default).
-        // This supports custom link types defined by backend admins, either directly
-        // by native name or via link_mappings config.
-        _ => (lowered.clone(), "BOTH", lowered),
+        "relates" => ("relates", "BOTH", "relates to"),
+        "depends" => ("depends", "OUTWARD", "depends on"),
+        "required" | "required-for" => ("required", "INWARD", "is required for"),
+        "duplicates" | "duplicate" => ("duplicates", "OUTWARD", "duplicates"),
+        "duplicated-by" => ("duplicated-by", "INWARD", "is duplicated by"),
+        // Pass unrecognized types through to the backend lowercased (bidirectional
+        // default). This supports custom link types defined by backend admins,
+        // either directly by native name or via link_mappings config.
+        other => (other, "BOTH", other),
     };
 
     client
-        .link_issues(source, target, &canonical_type, direction)
+        .link_issues(source, target, canonical_type, direction)
         .with_context(|| format!("Failed to link {} to {}", source, target))?;
 
-    Ok(LinkOutcome {
-        source: source.to_string(),
-        target: target.to_string(),
-        link_type: link_type.to_string(),
-        description,
-    })
+    Ok(description.to_string())
 }
 
 fn handle_unlink(
@@ -1440,10 +1416,11 @@ fn handle_unlink(
 
     match format {
         OutputFormat::Json => {
-            println!(
-                r#"{{"success":true,"source":"{}","linkId":"{}"}}"#,
-                source, link_id
-            );
+            output_json(&serde_json::json!({
+                "success": true,
+                "source": source,
+                "linkId": link_id,
+            }))?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -1534,18 +1511,9 @@ fn handle_state_transition(
     action: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    let field = match &field_update {
-        CustomFieldUpdate::SingleEnum { name, .. }
-        | CustomFieldUpdate::MultiEnum { name, .. }
-        | CustomFieldUpdate::State { name, .. }
-        | CustomFieldUpdate::SingleUser { name, .. } => name.clone(),
-    };
     let update = UpdateIssue {
-        summary: None,
-        description: None,
         custom_fields: vec![field_update],
-        tags: vec![],
-        parent: None,
+        ..Default::default()
     };
 
     let issue = client
@@ -1557,10 +1525,13 @@ fn handle_state_transition(
 
     match format {
         OutputFormat::Json => {
-            println!(
-                r#"{{"success":true,"id":"{}","idReadable":"{}","action":"{}","state":"{}"}}"#,
-                issue.id, issue.id_readable, action, state
-            );
+            output_json(&serde_json::json!({
+                "success": true,
+                "id": issue.id,
+                "idReadable": issue.id_readable,
+                "action": action,
+                "state": state,
+            }))?;
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -1568,7 +1539,7 @@ fn handle_state_transition(
                 "{} {} ({}={})",
                 issue.id_readable.cyan().bold(),
                 action.green(),
-                field.dimmed(),
+                update_field_name(&update.custom_fields[0]).dimmed(),
                 state.green()
             );
         }
@@ -1591,6 +1562,29 @@ struct BatchResult<'a> {
     id_readable: Option<Cow<'a, str>>,
 }
 
+impl<'a> BatchResult<'a> {
+    /// Record one issue's outcome. On success, `id_readable` (when known) is
+    /// shown in place of `id`.
+    fn new(id: &'a str, outcome: Result<Option<Cow<'a, str>>>) -> Self {
+        match outcome {
+            Ok(id_readable) => Self {
+                id,
+                success: true,
+                error: None,
+                id_readable,
+            },
+            // `{:#}` keeps the cause chain: a context such as "Failed to update
+            // issue 'X'" alone would not say why the issue failed.
+            Err(e) => Self {
+                id,
+                success: false,
+                error: Some(format!("{:#}", e)),
+                id_readable: None,
+            },
+        }
+    }
+}
+
 /// Summary of a batch operation
 #[derive(serde::Serialize)]
 struct BatchSummary<'a> {
@@ -1607,46 +1601,29 @@ fn handle_update_batch(
     format: OutputFormat,
     verbose: bool,
 ) -> Result<()> {
+    let ids = batch_issue_ids(ids)?;
     // Single issue - delegate to original handler
-    if ids.len() == 1 {
-        return handle_update(client, &ids[0], args, format, verbose);
+    if let [id] = ids[..] {
+        return handle_update(client, id, args, format, verbose);
     }
 
-    // Batch update
-    let mut results = Vec::new();
-
-    for id in ids {
-        let result = if args.dry_run {
-            build_update(client, id, args)
-                .and_then(|update| validate_update(client, id, &update))
-                .map(|_| None)
-        } else {
-            handle_update_single(client, id, args, format).map(Some)
-        };
-
-        match result {
-            Ok(issue) => {
-                results.push(BatchResult {
-                    id,
-                    success: true,
-                    error: None,
-                    id_readable: issue.map(|issue| Cow::Owned(issue.id_readable)),
-                });
-            }
-            Err(e) => {
-                results.push(BatchResult {
-                    id,
-                    success: false,
-                    error: Some(e.to_string()),
-                    id_readable: None,
-                });
-            }
-        }
-    }
+    let results: Vec<BatchResult> = ids
+        .iter()
+        .map(|&id| {
+            let outcome = if args.dry_run {
+                build_update(client, id, args)
+                    .and_then(|update| validate_update(client, id, &update))
+                    .map(|_| None)
+            } else {
+                handle_update_single(client, id, args, format)
+                    .map(|issue| Some(Cow::Owned(issue.id_readable)))
+            };
+            BatchResult::new(id, outcome)
+        })
+        .collect();
 
     let action = if args.dry_run { "validated" } else { "updated" };
-    output_batch_results(&results, action, format)?;
-    Ok(())
+    output_batch_results(&results, action, format)
 }
 
 /// Internal update function that returns the issue instead of printing
@@ -1680,44 +1657,44 @@ fn prefix_warnings(id: &str, warnings: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// Trimmed, non-empty IDs from a comma-separated ID list, so a trailing comma
+/// or a space after a comma does not become an issue ID. Errors when no ID is
+/// left, since an empty batch would report success without touching anything.
+fn batch_issue_ids(ids: &[String]) -> Result<Vec<&str>> {
+    let ids: Vec<&str> = ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return Err(anyhow!("At least one issue ID is required"));
+    }
+    Ok(ids)
+}
+
 fn handle_delete_batch(
     client: &dyn IssueTracker,
     ids: &[String],
     format: OutputFormat,
 ) -> Result<()> {
+    let ids = batch_issue_ids(ids)?;
     // Single issue - delegate to original handler
-    if ids.len() == 1 {
-        return handle_delete(client, &ids[0], format);
+    if let [id] = ids[..] {
+        return handle_delete(client, id, format);
     }
 
-    // Batch delete
-    let mut results = Vec::new();
+    let results: Vec<BatchResult> = ids
+        .iter()
+        .map(|&id| {
+            let outcome = client
+                .delete_issue(id)
+                .map(|()| Some(Cow::Borrowed(id)))
+                .map_err(anyhow::Error::from);
+            BatchResult::new(id, outcome)
+        })
+        .collect();
 
-    for id in ids {
-        let result = client.delete_issue(id);
-
-        match result {
-            Ok(()) => {
-                results.push(BatchResult {
-                    id,
-                    success: true,
-                    error: None,
-                    id_readable: Some(Cow::Borrowed(id.as_str())),
-                });
-            }
-            Err(e) => {
-                results.push(BatchResult {
-                    id,
-                    success: false,
-                    error: Some(e.to_string()),
-                    id_readable: None,
-                });
-            }
-        }
-    }
-
-    output_batch_results(&results, "deleted", format)?;
-    Ok(())
+    output_batch_results(&results, "deleted", format)
 }
 
 fn handle_state_transition_batch(
@@ -1728,6 +1705,7 @@ fn handle_state_transition_batch(
     action: &str,
     format: OutputFormat,
 ) -> Result<()> {
+    let ids = batch_issue_ids(ids)?;
     // Explicit --field wins; otherwise resolve the state field name from each
     // issue's project schema, caching lookups per project id. Auto-resolved
     // fields are state-typed by construction, so they always get the State
@@ -1743,51 +1721,35 @@ fn handle_state_transition_batch(
     };
 
     // Single issue - delegate to original handler
-    if ids.len() == 1 {
-        let field_update = update_for(&ids[0]);
-        return handle_state_transition(client, &ids[0], field_update, state, action, format);
+    if let [id] = ids[..] {
+        let field_update = update_for(id);
+        return handle_state_transition(client, id, field_update, state, action, format);
     }
 
-    // Batch state transition
-    let mut results = Vec::new();
+    let results: Vec<BatchResult> = ids
+        .iter()
+        .map(|&id| {
+            let update = UpdateIssue {
+                custom_fields: vec![update_for(id)],
+                ..Default::default()
+            };
+            let outcome = client
+                .update_issue(id, &update)
+                .map(|issue| {
+                    let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
+                    crate::output::output_verification_warnings(&warnings, format);
+                    Some(Cow::Owned(issue.id_readable))
+                })
+                .map_err(anyhow::Error::from);
+            BatchResult::new(id, outcome)
+        })
+        .collect();
 
-    for id in ids {
-        let update = UpdateIssue {
-            summary: None,
-            description: None,
-            custom_fields: vec![update_for(id)],
-            tags: vec![],
-            parent: None,
-        };
-        let result = client.update_issue(id, &update);
-
-        match result {
-            Ok(issue) => {
-                let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
-                crate::output::output_verification_warnings(&warnings, format);
-                results.push(BatchResult {
-                    id,
-                    success: true,
-                    error: None,
-                    id_readable: Some(Cow::Owned(issue.id_readable)),
-                });
-            }
-            Err(e) => {
-                results.push(BatchResult {
-                    id,
-                    success: false,
-                    error: Some(e.to_string()),
-                    id_readable: None,
-                });
-            }
-        }
-    }
-
-    output_batch_results(&results, action, format)?;
-    Ok(())
+    output_batch_results(&results, action, format)
 }
 
-/// Output batch operation results in the appropriate format
+/// Print the batch report, then fail if any issue failed so the exit code
+/// reflects partial failure as it does for a single issue.
 fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFormat) -> Result<()> {
     let succeeded = results.iter().filter(|r| r.success).count();
     let failed = results.len() - succeeded;
@@ -1842,6 +1804,14 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
         }
     }
 
+    if failed > 0 {
+        return Err(anyhow!(
+            "{} of {} issues were not {}",
+            failed,
+            results.len(),
+            action
+        ));
+    }
     Ok(())
 }
 
@@ -1907,20 +1877,15 @@ fn verify_field_match(
 ) -> Option<String> {
     use tracker_core::CustomField;
 
-    let req_name = match requested {
-        CustomFieldUpdate::SingleEnum { name, .. } => name,
-        CustomFieldUpdate::MultiEnum { name, .. } => name,
-        CustomFieldUpdate::State { name, .. } => name,
-        CustomFieldUpdate::SingleUser { name, .. } => name,
-    };
+    let req_name = update_field_name(requested);
 
     let actual = actual_fields.iter().find(|f| match f {
-        CustomField::SingleEnum { name, .. } => unicode_eq_ignore_case(name, req_name),
-        CustomField::State { name, .. } => unicode_eq_ignore_case(name, req_name),
-        CustomField::SingleUser { name, .. } => unicode_eq_ignore_case(name, req_name),
-        CustomField::Text { name, .. } => unicode_eq_ignore_case(name, req_name),
-        CustomField::MultiEnum { name, .. } => unicode_eq_ignore_case(name, req_name),
-        CustomField::Unknown { name, .. } => unicode_eq_ignore_case(name, req_name),
+        CustomField::SingleEnum { name, .. }
+        | CustomField::State { name, .. }
+        | CustomField::SingleUser { name, .. }
+        | CustomField::Text { name, .. }
+        | CustomField::MultiEnum { name, .. }
+        | CustomField::Unknown { name, .. } => unicode_eq_ignore_case(name, req_name),
     });
 
     // A State update targets the tracker's workflow state field whatever the backend
@@ -2073,6 +2038,18 @@ mod tests {
     #[test]
     fn rejects_field_value_with_empty_value() {
         assert!(parse_field_value("Name=").is_err());
+    }
+
+    #[test]
+    fn batch_issue_ids_trims_and_drops_blank_entries() {
+        let ids = ["A-1".to_string(), " B-2 ".to_string(), String::new()];
+        assert_eq!(batch_issue_ids(&ids).unwrap(), vec!["A-1", "B-2"]);
+    }
+
+    #[test]
+    fn batch_issue_ids_rejects_an_empty_list() {
+        assert!(batch_issue_ids(&[]).is_err());
+        assert!(batch_issue_ids(&[" ".to_string()]).is_err());
     }
 
     #[test]

@@ -177,18 +177,8 @@ pub fn handle_context(
 
     // Fetch unresolved issues if requested
     if include_issues {
-        let target_project = project.or(default_project);
-        if let Some(proj) = target_project {
-            // Build query based on backend type
-            let query = match backend_type {
-                "jira" => format!("project = {} AND resolution IS EMPTY", proj),
-                "github" => format!("repo:{} is:issue state:open", proj),
-                "gitlab" => "state=opened".to_string(),
-                "linear" => format!("project: {} #Unresolved", proj),
-                _ => format!("project: {} #Unresolved", proj), // YouTrack default
-            };
-
-            match client.search_issues(&query, issue_limit, 0) {
+        match unresolved_issues_query(backend_type, project.or(default_project)) {
+            Some(query) => match client.search_issues(&query, issue_limit, 0) {
                 Ok(result) => {
                     context.issues = Some(result.items.iter().map(IssueSummary::from).collect());
                 }
@@ -196,7 +186,10 @@ pub fn handle_context(
                     // Don't fail the whole command, just skip issues
                     eprintln!("Warning: Failed to fetch issues: {}", e);
                 }
-            }
+            },
+            None => eprintln!(
+                "Warning: --include-issues needs --project or a default project; skipping issues"
+            ),
         }
     }
 
@@ -235,8 +228,7 @@ pub fn handle_context(
             if !context.issue_counts.is_empty() {
                 println!();
                 println!("{}:", "Issue Counts".white().bold());
-                // Group by project
-                // ⚡ Bolt: Use a HashSet to avoid O(n^2) Vec lookup and borrow string references to remove redundant clones on the hot path
+                // One line per project, in first-seen order
                 let mut projects_seen = std::collections::HashSet::new();
                 for ic in &context.issue_counts {
                     if projects_seen.insert(&ic.project_short_name) {
@@ -444,6 +436,23 @@ pub fn handle_context(
     Ok(())
 }
 
+/// Search query for unresolved issues in the backend's query syntax.
+///
+/// GitHub and GitLab clients are already scoped to one repository/project, so
+/// they need no project (`track init` sets no default project for them); the
+/// other backends return `None` without one.
+fn unresolved_issues_query(backend_type: &str, project: Option<&str>) -> Option<String> {
+    match (backend_type, project) {
+        ("gitlab", _) => Some("state=opened".to_string()),
+        ("github", Some(project)) => Some(format!("repo:{} is:issue state:open", project)),
+        ("github", None) => Some("is:issue state:open".to_string()),
+        ("jira", Some(project)) => Some(format!("project = {} AND resolution IS EMPTY", project)),
+        // YouTrack and Linear
+        (_, Some(project)) => Some(format!("project: {} #Unresolved", project)),
+        (_, None) => None,
+    }
+}
+
 fn print_workflow_pack_text(loaded: &LoadedWorkflowPack) {
     println!();
     println!("{}:", "Workflow Pack".white().bold());
@@ -463,4 +472,31 @@ fn print_workflow_pack_text(loaded: &LoadedWorkflowPack) {
         "  {}",
         "Pack queries take precedence over cached built-ins.".yellow()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_issues_query_needs_project_only_for_unscoped_backends() {
+        assert_eq!(
+            unresolved_issues_query("gitlab", None).as_deref(),
+            Some("state=opened")
+        );
+        assert_eq!(
+            unresolved_issues_query("github", None).as_deref(),
+            Some("is:issue state:open")
+        );
+        assert_eq!(unresolved_issues_query("youtrack", None), None);
+        assert_eq!(unresolved_issues_query("jira", None), None);
+        assert_eq!(
+            unresolved_issues_query("jira", Some("PROJ")).as_deref(),
+            Some("project = PROJ AND resolution IS EMPTY")
+        );
+        assert_eq!(
+            unresolved_issues_query("linear", Some("ENG")).as_deref(),
+            Some("project: ENG #Unresolved")
+        );
+    }
 }
