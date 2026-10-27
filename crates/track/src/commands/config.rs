@@ -8,6 +8,9 @@ use crate::{
     output::output_json,
 };
 
+/// Printed in place of a secret value so tokens never reach terminals or logs.
+const HIDDEN_SECRET: &str = "(set - hidden)";
+
 #[derive(Clone, Copy)]
 enum ConfigKey {
     Backend,
@@ -146,6 +149,15 @@ impl ConfigKey {
         )
     }
 
+    /// `value` as safe to print: secrets are replaced by [`HIDDEN_SECRET`].
+    fn displayed(self, value: &str) -> &str {
+        if self.is_secret() {
+            HIDDEN_SECRET
+        } else {
+            value
+        }
+    }
+
     fn set_value(self, cfg: &mut Config, value: &str) -> Result<()> {
         match self {
             Self::Backend => {
@@ -221,6 +233,27 @@ fn parse_config_key(key: &str) -> Result<ConfigKey> {
             key
         )
     })
+}
+
+/// The value of `key` that applies (the project file overrides the global
+/// one), with the level it came from.
+fn effective_value(
+    key: ConfigKey,
+    global_cfg: &Config,
+    project_cfg: &Config,
+) -> Option<(String, &'static str)> {
+    key.get_value(project_cfg)
+        .map(|value| (value, "project"))
+        .or_else(|| key.get_value(global_cfg).map(|value| (value, "global")))
+}
+
+/// Colored `[project]` / `[global]` label for a config level.
+fn level_tag(level: &str) -> String {
+    use colored::Colorize;
+    match level {
+        "global" => "[global]".yellow().to_string(),
+        _ => "[project]".cyan().to_string(),
+    }
 }
 
 /// Handle config backend command
@@ -333,22 +366,17 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
                     output_json(&serde_json::json!({
                         "success": true,
                         "key": config_key.as_str(),
-                        "value": value,
+                        "value": config_key.displayed(value),
                         "level": level
                     }))?;
                 }
                 cli::OutputFormat::Text => {
                     use colored::Colorize;
-                    let tag = if *global {
-                        "[global]".yellow().to_string()
-                    } else {
-                        "[project]".cyan().to_string()
-                    };
                     println!(
                         "{} Set {} = {}",
-                        tag,
+                        level_tag(level),
                         config_key.as_str().cyan().bold(),
-                        value.green()
+                        config_key.displayed(value).green()
                     );
                 }
             }
@@ -360,51 +388,30 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
             // Check both levels to determine source
             let global_cfg = Config::load_global_track_toml()?.unwrap_or_default();
             let project_cfg = Config::load_local_track_toml()?.unwrap_or_default();
-
-            let global_val = config_key.get_value(&global_cfg);
-            let project_val = config_key.get_value(&project_cfg);
-
-            // Effective value: project overrides global
-            let (effective_val, source) = match (&project_val, &global_val) {
-                (Some(_), _) => (&project_val, "project"),
-                (None, Some(_)) => (&global_val, "global"),
-                (None, None) => (&None, ""),
-            };
+            let effective = effective_value(config_key, &global_cfg, &project_cfg);
 
             match format {
                 cli::OutputFormat::Json => {
-                    let display_val = if config_key.is_secret() {
-                        effective_val.as_ref().map(|_| "(set - hidden)".to_string())
-                    } else {
-                        effective_val.clone()
+                    let displayed = |value: Option<String>| {
+                        value.map(|value| config_key.displayed(&value).to_string())
                     };
                     output_json(&serde_json::json!({
                         "key": config_key.as_str(),
-                        "value": display_val,
-                        "source": if source.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(source.to_string()) },
-                        "is_set": effective_val.is_some(),
-                        "global_value": if config_key.is_secret() { global_val.as_ref().map(|_| "(set - hidden)".to_string()) } else { global_val },
-                        "project_value": if config_key.is_secret() { project_val.as_ref().map(|_| "(set - hidden)".to_string()) } else { project_val },
+                        "value": effective.as_ref().map(|(value, _)| config_key.displayed(value)),
+                        "source": effective.as_ref().map(|(_, source)| source),
+                        "is_set": effective.is_some(),
+                        "global_value": displayed(config_key.get_value(&global_cfg)),
+                        "project_value": displayed(config_key.get_value(&project_cfg)),
                     }))?;
                 }
                 cli::OutputFormat::Text => {
                     use colored::Colorize;
-                    if let Some(v) = effective_val {
-                        let display_value = if config_key.is_secret() {
-                            "(set - hidden)".to_string()
-                        } else {
-                            v.to_string()
-                        };
-                        let tag = match source {
-                            "project" => "[project]".cyan().to_string(),
-                            "global" => "[global]".yellow().to_string(),
-                            _ => String::new(),
-                        };
+                    if let Some((value, source)) = &effective {
                         println!(
                             "{} {} = {}",
-                            tag,
+                            level_tag(source),
                             config_key.as_str().cyan(),
-                            display_value.green()
+                            config_key.displayed(value).green()
                         );
                     } else {
                         println!("{} is not set", config_key.as_str().cyan());
@@ -443,26 +450,17 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
 
             match format {
                 cli::OutputFormat::Json => {
-                    let mut entries = Vec::new();
-                    for key in ConfigKey::ALL {
-                        let global_val = key.get_value(&global_cfg);
-                        let project_val = key.get_value(&project_cfg);
-                        let (effective, source) = match (&project_val, &global_val) {
-                            (Some(_), _) => (&project_val, "project"),
-                            (None, Some(_)) => (&global_val, "global"),
-                            (None, None) => continue,
-                        };
-                        let display_val = if key.is_secret() {
-                            Some("(set - hidden)".to_string())
-                        } else {
-                            effective.clone()
-                        };
-                        entries.push(serde_json::json!({
-                            "key": key.as_str(),
-                            "value": display_val,
-                            "source": source,
-                        }));
-                    }
+                    let entries: Vec<serde_json::Value> = ConfigKey::ALL
+                        .into_iter()
+                        .filter_map(|key| {
+                            let (value, source) = effective_value(key, &global_cfg, &project_cfg)?;
+                            Some(serde_json::json!({
+                                "key": key.as_str(),
+                                "value": key.displayed(&value),
+                                "source": source,
+                            }))
+                        })
+                        .collect();
                     output_json(&serde_json::json!({ "config": entries }))?;
                 }
                 cli::OutputFormat::Text => {
@@ -495,190 +493,32 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
                     );
                     println!();
 
-                    // Helper to show a value with source tag
-                    let show_value = |label: &str,
-                                      global_val: &Option<String>,
-                                      project_val: &Option<String>,
-                                      is_secret: bool| {
-                        let (val, tag) = match (project_val, global_val) {
-                            (Some(v), _) => (Some(v.as_str()), "[project]".cyan().to_string()),
-                            (None, Some(v)) => (Some(v.as_str()), "[global]".yellow().to_string()),
-                            (None, None) => return,
+                    // Keys are listed top-level first, then grouped by
+                    // backend section, in ConfigKey::ALL order.
+                    let mut current_section = None;
+                    for key in ConfigKey::ALL {
+                        let Some((value, source)) = effective_value(key, &global_cfg, &project_cfg)
+                        else {
+                            continue;
                         };
-                        if let Some(v) = val {
-                            let display = if is_secret {
-                                "(set)".green().to_string()
-                            } else {
-                                v.cyan().to_string()
-                            };
-                            println!("  {} {}: {}", tag, label.dimmed(), display);
-                        }
-                    };
-
-                    // Top-level keys
-                    show_value(
-                        "backend",
-                        &global_cfg.backend.map(|b| b.to_string()),
-                        &project_cfg.backend.map(|b| b.to_string()),
-                        false,
-                    );
-                    show_value("url", &global_cfg.url, &project_cfg.url, false);
-                    show_value("token", &global_cfg.token, &project_cfg.token, true);
-                    show_value("email", &global_cfg.email, &project_cfg.email, false);
-                    show_value(
-                        "default_project",
-                        &global_cfg.default_project,
-                        &project_cfg.default_project,
-                        false,
-                    );
-
-                    // Backend-specific sections
-                    let show_backend_section = |name: &str,
-                                                pairs: Vec<(
-                        &str,
-                        &Option<String>,
-                        &Option<String>,
-                        bool,
-                    )>| {
-                        let any_set = pairs.iter().any(|(_, g, p, _)| g.is_some() || p.is_some());
-                        if !any_set {
-                            return;
-                        }
-                        println!();
-                        println!("  {}:", format!("[{}]", name).white().bold());
-                        for (label, global_val, project_val, is_secret) in pairs {
-                            show_value(&format!("  {}", label), global_val, project_val, is_secret);
-                        }
-                    };
-
-                    show_backend_section(
-                        "youtrack",
-                        vec![
-                            (
-                                "url",
-                                &global_cfg.youtrack.url,
-                                &project_cfg.youtrack.url,
-                                false,
-                            ),
-                            (
-                                "token",
-                                &global_cfg.youtrack.token,
-                                &project_cfg.youtrack.token,
-                                true,
-                            ),
-                        ],
-                    );
-                    show_backend_section(
-                        "jira",
-                        vec![
-                            ("url", &global_cfg.jira.url, &project_cfg.jira.url, false),
-                            (
-                                "email",
-                                &global_cfg.jira.email,
-                                &project_cfg.jira.email,
-                                false,
-                            ),
-                            (
-                                "token",
-                                &global_cfg.jira.token,
-                                &project_cfg.jira.token,
-                                true,
-                            ),
-                        ],
-                    );
-                    show_backend_section(
-                        "github",
-                        vec![
-                            (
-                                "token",
-                                &global_cfg.github.token,
-                                &project_cfg.github.token,
-                                true,
-                            ),
-                            (
-                                "owner",
-                                &global_cfg.github.owner,
-                                &project_cfg.github.owner,
-                                false,
-                            ),
-                            (
-                                "repo",
-                                &global_cfg.github.repo,
-                                &project_cfg.github.repo,
-                                false,
-                            ),
-                            (
-                                "api_url",
-                                &global_cfg.github.api_url,
-                                &project_cfg.github.api_url,
-                                false,
-                            ),
-                        ],
-                    );
-                    show_backend_section(
-                        "gitlab",
-                        vec![
-                            (
-                                "token",
-                                &global_cfg.gitlab.token,
-                                &project_cfg.gitlab.token,
-                                true,
-                            ),
-                            (
-                                "url",
-                                &global_cfg.gitlab.url,
-                                &project_cfg.gitlab.url,
-                                false,
-                            ),
-                            (
-                                "project_id",
-                                &global_cfg.gitlab.project_id,
-                                &project_cfg.gitlab.project_id,
-                                false,
-                            ),
-                            (
-                                "namespace",
-                                &global_cfg.gitlab.namespace,
-                                &project_cfg.gitlab.namespace,
-                                false,
-                            ),
-                        ],
-                    );
-                    show_backend_section(
-                        "linear",
-                        vec![
-                            (
-                                "token",
-                                &global_cfg.linear.token,
-                                &project_cfg.linear.token,
-                                true,
-                            ),
-                            (
-                                "api_url",
-                                &global_cfg.linear.api_url,
-                                &project_cfg.linear.api_url,
-                                false,
-                            ),
-                            (
-                                "url",
-                                &global_cfg.linear.url,
-                                &project_cfg.linear.url,
-                                false,
-                            ),
-                            (
-                                "default_team",
-                                &global_cfg.linear.default_team,
-                                &project_cfg.linear.default_team,
-                                false,
-                            ),
-                            (
-                                "default_linear_project",
-                                &global_cfg.linear.default_linear_project,
-                                &project_cfg.linear.default_linear_project,
-                                false,
-                            ),
-                        ],
-                    );
+                        let label = match key.as_str().split_once('.') {
+                            Some((section, label)) => {
+                                if current_section != Some(section) {
+                                    current_section = Some(section);
+                                    println!();
+                                    println!("  {}:", format!("[{}]", section).white().bold());
+                                }
+                                format!("  {}", label)
+                            }
+                            None => key.as_str().to_string(),
+                        };
+                        let display = if key.is_secret() {
+                            "(set)".green().to_string()
+                        } else {
+                            value.cyan().to_string()
+                        };
+                        println!("  {} {}: {}", level_tag(source), label.dimmed(), display);
+                    }
                 }
             }
             Ok(())
@@ -709,12 +549,11 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
                     }
                     cli::OutputFormat::Text => {
                         use colored::Colorize;
-                        let tag = if *global {
-                            "[global]".yellow().to_string()
-                        } else {
-                            "[project]".cyan().to_string()
-                        };
-                        println!("{} {}", tag, "Default project and backend cleared.".green());
+                        println!(
+                            "{} {}",
+                            level_tag(level),
+                            "Default project and backend cleared.".green()
+                        );
                     }
                 }
             } else {
@@ -869,5 +708,68 @@ pub fn handle_config(
         | ConfigCommands::Backend { .. } => {
             unreachable!("Local config commands should be handled before API validation")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn displayed_hides_every_secret_key() {
+        for key in ConfigKey::ALL {
+            let shown = key.displayed("ghp_secret");
+            if key.is_secret() {
+                assert_eq!(shown, HIDDEN_SECRET, "{} leaked its value", key.as_str());
+            } else {
+                assert_eq!(shown, "ghp_secret", "{} must show its value", key.as_str());
+            }
+        }
+        assert!(ConfigKey::GitHubToken.is_secret());
+    }
+
+    #[test]
+    fn effective_value_prefers_project_over_global() {
+        let global_cfg = Config {
+            url: Some("https://global.example.com".to_string()),
+            email: Some("global@example.com".to_string()),
+            ..Default::default()
+        };
+        let project_cfg = Config {
+            url: Some("https://project.example.com".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            effective_value(ConfigKey::Url, &global_cfg, &project_cfg),
+            Some(("https://project.example.com".to_string(), "project"))
+        );
+        assert_eq!(
+            effective_value(ConfigKey::Email, &global_cfg, &project_cfg),
+            Some(("global@example.com".to_string(), "global"))
+        );
+        assert_eq!(
+            effective_value(ConfigKey::Token, &global_cfg, &project_cfg),
+            None
+        );
+    }
+
+    #[test]
+    fn config_keys_are_grouped_by_section() {
+        // `config show` prints a section header whenever the section changes,
+        // so top-level keys must come first and each section's keys must be
+        // contiguous.
+        let sections: Vec<Option<&str>> = ConfigKey::ALL
+            .iter()
+            .map(|key| key.as_str().split_once('.').map(|(section, _)| section))
+            .collect();
+        for (index, section) in sections.iter().enumerate() {
+            let first = sections.iter().position(|s| s == section).unwrap();
+            assert!(
+                sections[first..=index].iter().all(|s| s == section),
+                "keys of section {section:?} must be contiguous"
+            );
+        }
+        assert!(sections[0].is_none(), "top-level keys must come first");
     }
 }
