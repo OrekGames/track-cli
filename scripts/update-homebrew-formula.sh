@@ -11,6 +11,10 @@
 # The checksums file must contain lines like:
 #   abc123...  track-0.2.0-aarch64-apple-darwin.tar.gz
 #
+# The formula carries its version in the four release URLs (Homebrew scans it
+# from there); a formula with a legacy `version` line is still read correctly,
+# so an older tap formula works as --baseline.
+#
 # Safety guarantees:
 #   * Exactly one valid SHA256 entry is required for each of the four
 #     versioned Homebrew archives, matched on the full filename (never on
@@ -109,11 +113,23 @@ expected_file() {
 # --- Enforce no downgrades before any other work ---------------------------
 
 read_formula_version() {
-    local path="$1" version
+    local path="$1" version target line url_re
+    # Legacy formulas declare `version`; current ones carry it in every URL.
     version=$(sed -n 's/^  version "\(.*\)"/\1/p' "$path" | head -n1)
     if [[ -z "$version" ]]; then
-        echo "Error: could not read current version from $path" >&2
-        return 1
+        for target in "${TARGETS[@]}"; do
+            line=$(grep -F -- "-${target}.tar.gz\"" "$path" | grep -m1 'url "' || true)
+            url_re="/download/v([^/\"]+)/track-([^\"]+)-${target}\\.tar\\.gz\""
+            if ! [[ "$line" =~ $url_re ]] || [[ "${BASH_REMATCH[1]}" != "${BASH_REMATCH[2]}" ]]; then
+                echo "Error: could not read the version from the $target url in $path" >&2
+                return 1
+            fi
+            if [[ -n "$version" && "${BASH_REMATCH[1]}" != "$version" ]]; then
+                echo "Error: url versions disagree in $path ($version vs ${BASH_REMATCH[1]})" >&2
+                return 1
+            fi
+            version="${BASH_REMATCH[1]}"
+        done
     fi
     if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
         echo "Error: invalid current version '$version' in $path" >&2
@@ -217,7 +233,7 @@ if [[ "$VERSION" == "$CURRENT_VERSION" ]]; then
         file=$(expected_file "$target")
         want="${FILE_SHA[$file]}"
         have=$(awk -v target="$target" '
-            index($0, "track-#{version}-" target ".tar.gz") {
+            index($0, "url \"") && index($0, "-" target ".tar.gz\"") {
                 inblock=1
                 next
             }
@@ -306,8 +322,14 @@ fi
 for target in "${TARGETS[@]}"; do
     file=$(expected_file "$target")
     want="${FILE_SHA[$file]}"
-    if ! awk -v target="$target" -v sha="$want" '
-        index($0, "track-#{version}-" target ".tar.gz") {
+    if ! awk -v target="$target" -v sha="$want" -v version="$VERSION" '
+        index($0, "url \"") && index($0, "-" target ".tar.gz\"") {
+            # Literal URLs carry the version; legacy #{version} ones follow
+            # the version line rendered above.
+            if (!index($0, "#{version}")) {
+                sub("/download/v[^/\"]+/track-[^\"]+-" target "\\.tar\\.gz\"",
+                    "/download/v" version "/track-" version "-" target ".tar.gz\"")
+            }
             print
             if ((getline line) <= 0) {
                 print "Error: no sha256 line after url for " target > "/dev/stderr"
@@ -336,7 +358,13 @@ for target in "${TARGETS[@]}"; do
     mv "${TMP_FORMULA}.out" "$TMP_FORMULA"
 done
 
+RENDERED_VERSION=$(read_formula_version "$TMP_FORMULA")
+if [[ "$RENDERED_VERSION" != "$VERSION" ]]; then
+    echo "Error: rendered formula reads as version $RENDERED_VERSION, expected $VERSION" >&2
+    exit 1
+fi
+
 mv "$TMP_FORMULA" "$FORMULA_PATH"
 
 echo "Formula updated to version $VERSION:"
-sed -n '/^  version /p; /sha256 "/p' "$FORMULA_PATH"
+sed -n '/^  version /p; /url "/p; /sha256 "/p' "$FORMULA_PATH"
