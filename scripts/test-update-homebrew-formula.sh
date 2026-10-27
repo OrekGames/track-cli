@@ -155,6 +155,7 @@ if [ $rc -ne 0 ] && grep -q "SHA256 mismatch" "$WORK/out.log" && [ "$BEFORE" = "
 else
     ko "corrupt archive refused, formula untouched (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
 fi
+if [ ! -e "$T/archives" ]; then ok "downloads cleaned up after failed verification"; else ko "downloads cleaned up after failed verification (dir left behind)"; fi
 
 # --- Test 9: missing download target refused ----------------------------------
 T="$WORK/t9"; mkdir -p "$T"
@@ -169,6 +170,7 @@ if [ $rc -ne 0 ] && grep -q "failed to download" "$WORK/out.log" && [ "$BEFORE" 
 else
     ko "missing archive refused, formula untouched (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
 fi
+if [ ! -e "$T/archives" ]; then ok "downloads cleaned up after failed download"; else ko "downloads cleaned up after failed download (dir left behind)"; fi
 
 # --- Test 10: same version but different checksums updates checksums -----------
 T="$WORK/t10"; mkdir -p "$T"
@@ -196,6 +198,19 @@ if [ $rc -ne 0 ] && grep -q "refusing downgrade" "$WORK/out.log" && grep -q 'ver
     ok "release to prerelease of same core refused"
 else
     ko "release to prerelease of same core refused (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
+fi
+
+# --- Test 12: TRACK_KEEP_DOWNLOADS=1 keeps downloads after a failure ----------
+T="$WORK/t12"; mkdir -p "$T"
+make_release "$T/release" "1.2.0"
+echo "CORRUPTED" >> "$T/release/track-1.2.0-aarch64-apple-darwin.tar.gz"
+make_formula "$T/formula.rb"
+eval "env $(common_env "$T/release" "$T") TRACK_KEEP_DOWNLOADS=1 bash '$SCRIPT' --formula '$T/formula.rb' 1.2.0 '$T/release/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
+rc=$?
+if [ $rc -ne 0 ] && [ -f "$T/archives/track-1.2.0-aarch64-apple-darwin.tar.gz" ]; then
+    ok "downloads kept on failure with TRACK_KEEP_DOWNLOADS=1"
+else
+    ko "downloads kept on failure with TRACK_KEEP_DOWNLOADS=1 (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
 fi
 
 echo

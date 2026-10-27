@@ -213,6 +213,19 @@ fi
 
 # --- Download and verify every archive before touching the formula ----------
 
+# From here on, remove the downloads and any temporary formula on every exit,
+# success or failure (unless TRACK_KEEP_DOWNLOADS=1 is set).
+TMP_FORMULA=""
+cleanup() {
+    if [[ -n "$TMP_FORMULA" ]]; then
+        rm -f "$TMP_FORMULA" "${TMP_FORMULA}.out"
+    fi
+    if [[ "$KEEP_DOWNLOADS" != "1" ]]; then
+        rm -rf "$DOWNLOAD_DIR"
+    fi
+}
+trap cleanup EXIT
+
 mkdir -p "$DOWNLOAD_DIR"
 
 for target in "${TARGETS[@]}"; do
@@ -243,7 +256,6 @@ done
 # --- Render the formula ------------------------------------------------------
 
 TMP_FORMULA=$(mktemp)
-trap 'rm -f "$TMP_FORMULA" "${TMP_FORMULA}.out"' EXIT
 
 awk -v version="$VERSION" '
     /^  version "/ {
@@ -296,12 +308,7 @@ for target in "${TARGETS[@]}"; do
     mv "${TMP_FORMULA}.out" "$TMP_FORMULA"
 done
 
-if [[ "$KEEP_DOWNLOADS" != "1" ]]; then
-    rm -rf "$DOWNLOAD_DIR"
-fi
-
 mv "$TMP_FORMULA" "$FORMULA_PATH"
-trap - EXIT
 
 echo "Formula updated to version $VERSION:"
 sed -n '/^  version /p; /sha256 "/p' "$FORMULA_PATH"
