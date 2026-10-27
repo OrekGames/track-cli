@@ -4,7 +4,7 @@
 mod tests {
     use crate::client::LinearClient;
     use crate::error::LinearError;
-    use tracker_core::{IssueTracker, TrackerError};
+    use tracker_core::{CreateIssue, CustomFieldUpdate, IssueTracker, TrackerError};
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -81,6 +81,36 @@ mod tests {
 
     fn request_variables(request: &wiremock::Request) -> serde_json::Value {
         request.body_json::<serde_json::Value>().unwrap()["variables"].clone()
+    }
+
+    /// A `query TeamConnection` response page; an `end_cursor` means more
+    /// pages follow.
+    fn team_connection_page(
+        nodes: Vec<serde_json::Value>,
+        end_cursor: Option<&str>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "data": {
+                "team": {
+                    "connection": {
+                        "nodes": nodes,
+                        "pageInfo": {
+                            "hasNextPage": end_cursor.is_some(),
+                            "endCursor": end_cursor
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    fn mock_user(name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": format!("user-{name}"),
+            "name": name,
+            "displayName": name,
+            "email": format!("{name}@example.com")
+        })
     }
 
     struct SearchAllIssuePages;
@@ -312,6 +342,10 @@ mod tests {
         assert_eq!(result.items[0].id_readable, "ORE-26");
         assert_eq!(result.items[19].id_readable, "ORE-45");
         assert_eq!(result.total, None);
+
+        // Only the skip + limit window is requested, not a full page.
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(request_variables(&requests[0])["first"], 45);
     }
 
     #[tokio::test]
@@ -705,5 +739,211 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].to.as_deref(), Some("Done"));
         assert_eq!(events[1].to.as_deref(), Some("In Progress"));
+    }
+
+    #[tokio::test]
+    async fn test_find_label_searches_every_page_of_team_labels() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query TeamConnection"))
+            .and(body_string_contains("cursor-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(team_connection_page(
+                vec![serde_json::json!({ "id": "label-ui", "name": "UI", "color": null, "description": null })],
+                None,
+            )))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query TeamConnection"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(team_connection_page(
+                vec![serde_json::json!({ "id": "label-bug", "name": "Bug", "color": null, "description": null })],
+                Some("cursor-1"),
+            )))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let label = client.find_label("team-ore", "ui").unwrap();
+
+        assert_eq!(label.id, "label-ui");
+    }
+
+    #[tokio::test]
+    async fn test_project_custom_fields_include_members_beyond_first_page() {
+        let mock_server = MockServer::start().await;
+        let empty_page = serde_json::json!({ "hasNextPage": false, "endCursor": null });
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query TeamDetails"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "team": {
+                        "id": "team-ore",
+                        "key": "ORE",
+                        "name": "Orek",
+                        "description": null,
+                        "states": { "nodes": [], "pageInfo": empty_page },
+                        "members": {
+                            "nodes": [mock_user("ada")],
+                            "pageInfo": { "hasNextPage": true, "endCursor": "members-1" }
+                        },
+                        "labels": { "nodes": [], "pageInfo": empty_page },
+                        "projects": { "nodes": [], "pageInfo": empty_page }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query TeamConnection"))
+            .and(body_string_contains("members-1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(team_connection_page(vec![mock_user("bob")], None)),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let fields =
+            <LinearClient as IssueTracker>::get_project_custom_fields(&client, "team-ore").unwrap();
+
+        let assignee = fields
+            .iter()
+            .find(|field| field.name == "Assignee")
+            .unwrap();
+        assert_eq!(assignee.values, ["ada@example.com", "bob@example.com"]);
+    }
+
+    #[tokio::test]
+    async fn test_list_teams_errors_when_cursor_does_not_advance() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Teams"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "teams": {
+                        "nodes": [mock_team("ORE")],
+                        "pageInfo": { "hasNextPage": true, "endCursor": null }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let err = client.list_teams().unwrap_err();
+
+        assert!(matches!(err, LinearError::PaginationStalled(_)));
+    }
+
+    #[tokio::test]
+    async fn test_get_issue_links_includes_relations_pointing_at_the_issue() {
+        let mock_server = MockServer::start().await;
+        let empty_page = serde_json::json!({ "hasNextPage": false, "endCursor": null });
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Issue("))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "issue": mock_linear_issue("ORE-2", "Blocked issue") }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // ORE-1 blocks ORE-2, so Linear lists the relation under ORE-2's
+        // `inverseRelations`, not its `relations`.
+        Mock::given(method("POST"))
+            .and(body_string_contains("query IssueRelations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issue": {
+                        "parent": null,
+                        "children": { "nodes": [], "pageInfo": empty_page },
+                        "relations": { "nodes": [], "pageInfo": empty_page },
+                        "inverseRelations": {
+                            "nodes": [{
+                                "id": "relation-1",
+                                "type": "blocks",
+                                "issue": { "id": "issue-ore-1", "identifier": "ORE-1", "title": "Blocker" },
+                                "relatedIssue": { "id": "issue-ore-2", "identifier": "ORE-2", "title": "Blocked issue" }
+                            }],
+                            "pageInfo": empty_page
+                        }
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let links = <LinearClient as IssueTracker>::get_issue_links(&client, "ORE-2").unwrap();
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].id, "relation-1");
+        assert_eq!(links[0].link_type.id, "blocks");
+        assert_eq!(links[0].direction.as_deref(), Some("INWARD"));
+        assert_eq!(links[0].issues[0].id_readable.as_deref(), Some("ORE-1"));
+    }
+
+    #[tokio::test]
+    async fn test_create_issue_matches_non_ascii_state_name_case_insensitively() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query TeamConnection"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(team_connection_page(
+                vec![
+                    serde_json::json!({ "id": "state-open", "name": "Geöffnet", "type": "unstarted", "position": 1.0 }),
+                    serde_json::json!({ "id": "state-done", "name": "Erledigt", "type": "completed", "position": 2.0 }),
+                ],
+                None,
+            )))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("mutation IssueCreate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issueCreate": {
+                        "success": true,
+                        "issue": mock_linear_issue("ORE-9", "New issue")
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let create = CreateIssue {
+            project_id: "team-ore".to_string(),
+            summary: "New issue".to_string(),
+            description: None,
+            custom_fields: vec![CustomFieldUpdate::State {
+                name: "Status".to_string(),
+                value: "GEÖFFNET".to_string(),
+            }],
+            tags: vec![],
+            parent: None,
+        };
+        <LinearClient as IssueTracker>::create_issue(&client, &create).unwrap();
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let create_request = requests
+            .iter()
+            .find(|request| String::from_utf8_lossy(&request.body).contains("mutation IssueCreate"))
+            .unwrap();
+        assert_eq!(
+            request_variables(create_request)["input"]["stateId"],
+            "state-open"
+        );
     }
 }

@@ -4,13 +4,16 @@ use tracker_core::{
     Article, ArticleAttachment, AttachmentUpload, Comment, CreateArticle, CreateIssue,
     CreateProject, CreateTag, CustomFieldUpdate, Issue, IssueHistoryEvent, IssueLink,
     IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result,
-    SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
+    SearchResult, TrackerError, UpdateArticle, UpdateIssue, User, unicode_eq_ignore_case,
 };
+
+use serde_json::Value;
 
 use crate::client::LinearClient;
 use crate::convert::{
-    build_filter_from_parsed, linear_history_to_events, linear_issue_to_core, linear_link_types,
-    linear_relations_to_core, parse_linear_query, priority_from_label, team_details_custom_fields,
+    ParsedLinearQuery, build_filter_from_parsed, linear_history_to_events, linear_issue_to_core,
+    linear_link_types, linear_relations_to_core, parse_linear_query, priority_from_label,
+    team_details_custom_fields,
 };
 use crate::models::{
     LinearIssueCreateInput, LinearIssueLabelCreateInput, LinearIssueLabelUpdateInput,
@@ -28,26 +31,8 @@ impl IssueTracker for LinearClient {
         }
 
         let parsed = parse_linear_query(query);
-        let team_id = if let Some(team) = parsed.team.as_deref() {
-            Some(self.resolve_team_id(team)?)
-        } else {
-            None
-        };
-        let assignee_id = if parsed
-            .assignee
-            .as_deref()
-            .is_some_and(|assignee| assignee.eq_ignore_ascii_case("me"))
-        {
-            Some(self.viewer()?.id)
-        } else {
-            None
-        };
-        let filter = build_filter_from_parsed(&parsed, team_id.as_deref(), assignee_id.as_deref());
-        let term = if parsed.text.is_empty() {
-            None
-        } else {
-            Some(parsed.text.join(" "))
-        };
+        let filter = self.search_filter(&parsed)?;
+        let term = parsed.search_term();
 
         let mut items = Vec::new();
         let mut total = None;
@@ -55,8 +40,11 @@ impl IssueTracker for LinearClient {
         let mut remaining_skip = skip;
 
         while items.len() < limit {
+            // Request no more than the rest of the skip/limit window: every
+            // node carries the full issue projection.
+            let page_size = remaining_skip.saturating_add(limit - items.len());
             let (page, page_total, page_info) =
-                self.search_issues_page(filter.clone(), term.as_deref(), 100, after)?;
+                self.search_issues_page(filter.clone(), term.as_deref(), page_size, after)?;
             if total.is_none() {
                 total = page_total;
             }
@@ -93,26 +81,8 @@ impl IssueTracker for LinearClient {
         }
 
         let parsed = parse_linear_query(query);
-        let team_id = if let Some(team) = parsed.team.as_deref() {
-            Some(self.resolve_team_id(team)?)
-        } else {
-            None
-        };
-        let assignee_id = if parsed
-            .assignee
-            .as_deref()
-            .is_some_and(|assignee| assignee.eq_ignore_ascii_case("me"))
-        {
-            Some(self.viewer()?.id)
-        } else {
-            None
-        };
-        let filter = build_filter_from_parsed(&parsed, team_id.as_deref(), assignee_id.as_deref());
-        let term = if parsed.text.is_empty() {
-            None
-        } else {
-            Some(parsed.text.join(" "))
-        };
+        let filter = self.search_filter(&parsed)?;
+        let term = parsed.search_term();
 
         let mut items = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -169,27 +139,13 @@ impl IssueTracker for LinearClient {
     }
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
+        // Only full-text search (`searchIssues`) reports a total count.
         let parsed = parse_linear_query(query);
-        if parsed.text.is_empty() {
+        let Some(term) = parsed.search_term() else {
             return Ok(None);
-        }
+        };
 
-        let team_id = if let Some(team) = parsed.team.as_deref() {
-            Some(self.resolve_team_id(team)?)
-        } else {
-            None
-        };
-        let assignee_id = if parsed
-            .assignee
-            .as_deref()
-            .is_some_and(|assignee| assignee.eq_ignore_ascii_case("me"))
-        {
-            Some(self.viewer()?.id)
-        } else {
-            None
-        };
-        let filter = build_filter_from_parsed(&parsed, team_id.as_deref(), assignee_id.as_deref());
-        let term = parsed.text.join(" ");
+        let filter = self.search_filter(&parsed)?;
         let (_issues, total, _page_info) = self.search_issues_page(filter, Some(&term), 1, None)?;
         Ok(total)
     }
@@ -495,26 +451,65 @@ impl IssueTracker for LinearClient {
 
 const MAX_NO_PROGRESS_PAGES: usize = 5;
 
+/// Linear issue fields set through [`CustomFieldUpdate`]s, resolved to the
+/// ids that both the issue create and update inputs take.
+#[derive(Default)]
+struct ResolvedFields {
+    state_id: Option<String>,
+    priority: Option<i64>,
+    assignee_id: Option<String>,
+    project_id: Option<String>,
+    label_ids: Option<Vec<String>>,
+}
+
 impl LinearClient {
+    /// Build the `IssueFilter` for a parsed search query, resolving the team
+    /// and an `assignee: me` to their Linear ids.
+    fn search_filter(&self, parsed: &ParsedLinearQuery) -> Result<Option<Value>> {
+        let team_id = parsed
+            .team
+            .as_deref()
+            .map(|team| self.resolve_team_id(team))
+            .transpose()?;
+        let assignee_id = if parsed
+            .assignee
+            .as_deref()
+            .is_some_and(|assignee| assignee.eq_ignore_ascii_case("me"))
+        {
+            Some(self.viewer()?.id)
+        } else {
+            None
+        };
+        Ok(build_filter_from_parsed(
+            parsed,
+            team_id.as_deref(),
+            assignee_id.as_deref(),
+        ))
+    }
+
     fn build_create_input(&self, issue: &CreateIssue) -> Result<LinearIssueCreateInput> {
-        let team_id = issue.project_id.clone();
+        let team_id = issue.project_id.as_str();
+        let fields = self.resolve_custom_fields(team_id, &issue.custom_fields)?;
         let mut input = LinearIssueCreateInput {
             title: issue.summary.clone(),
-            team_id: team_id.clone(),
+            team_id: team_id.to_string(),
             description: issue.description.clone(),
-            ..Default::default()
+            state_id: fields.state_id,
+            assignee_id: fields.assignee_id,
+            priority: fields.priority,
+            label_ids: fields.label_ids,
+            project_id: fields.project_id,
+            parent_id: None,
         };
 
-        self.apply_custom_fields_to_create(&team_id, &issue.custom_fields, &mut input)?;
-
         if !issue.tags.is_empty() {
-            input.label_ids = Some(self.resolve_label_ids(&team_id, &issue.tags)?);
+            input.label_ids = Some(self.resolve_label_ids(team_id, &issue.tags)?);
         }
 
         if input.project_id.is_none()
             && let Some(default_project) = self.default_linear_project()
         {
-            input.project_id = Some(self.find_project(&team_id, default_project)?.id);
+            input.project_id = Some(self.find_project(team_id, default_project)?.id);
         }
 
         if let Some(parent) = issue.parent.as_deref() {
@@ -529,13 +524,17 @@ impl LinearClient {
         team_id: &str,
         update: &UpdateIssue,
     ) -> Result<LinearIssueUpdateInput> {
+        let fields = self.resolve_custom_fields(team_id, &update.custom_fields)?;
         let mut input = LinearIssueUpdateInput {
             title: update.summary.clone(),
             description: update.description.clone(),
-            ..Default::default()
+            state_id: fields.state_id,
+            assignee_id: fields.assignee_id,
+            priority: fields.priority,
+            label_ids: fields.label_ids,
+            project_id: fields.project_id,
+            parent_id: None,
         };
-
-        self.apply_custom_fields_to_update(team_id, &update.custom_fields, &mut input)?;
 
         if !update.tags.is_empty() {
             input.label_ids = Some(self.resolve_label_ids(team_id, &update.tags)?);
@@ -548,21 +547,21 @@ impl LinearClient {
         Ok(input)
     }
 
-    fn apply_custom_fields_to_create(
+    fn resolve_custom_fields(
         &self,
         team_id: &str,
         fields: &[CustomFieldUpdate],
-        input: &mut LinearIssueCreateInput,
-    ) -> Result<()> {
+    ) -> Result<ResolvedFields> {
+        let mut resolved = ResolvedFields::default();
         for field in fields {
             match field {
                 CustomFieldUpdate::State { name, value } if is_state_field(name) => {
-                    input.state_id = Some(self.resolve_state_id(team_id, value)?);
+                    resolved.state_id = Some(self.resolve_state_id(team_id, value)?);
                 }
                 CustomFieldUpdate::SingleEnum { name, value }
                     if name.eq_ignore_ascii_case("priority") =>
                 {
-                    input.priority = Some(priority_from_label(value).ok_or_else(|| {
+                    resolved.priority = Some(priority_from_label(value).ok_or_else(|| {
                         TrackerError::InvalidInput(format!(
                             "Invalid Linear priority '{}'. Valid values: No priority, Urgent, High, Medium, Low",
                             value
@@ -572,87 +571,37 @@ impl LinearClient {
                 CustomFieldUpdate::SingleUser { name, login }
                     if name.eq_ignore_ascii_case("assignee") =>
                 {
-                    input.assignee_id = Some(self.find_user(team_id, login)?.id);
+                    resolved.assignee_id = Some(self.find_user(team_id, login)?.id);
                 }
                 CustomFieldUpdate::SingleEnum { name, value }
                     if name.eq_ignore_ascii_case("project") =>
                 {
-                    input.project_id = Some(self.find_project(team_id, value)?.id);
+                    resolved.project_id = Some(self.find_project(team_id, value)?.id);
                 }
                 CustomFieldUpdate::MultiEnum { name, values }
                     if name.eq_ignore_ascii_case("labels") || name.eq_ignore_ascii_case("tags") =>
                 {
-                    input.label_ids = Some(self.resolve_label_ids(team_id, values)?);
+                    resolved.label_ids = Some(self.resolve_label_ids(team_id, values)?);
                 }
                 CustomFieldUpdate::SingleEnum { name, value }
                     if name.eq_ignore_ascii_case("label")
                         || name.eq_ignore_ascii_case("labels")
                         || name.eq_ignore_ascii_case("tag") =>
                 {
-                    input.label_ids =
+                    resolved.label_ids =
                         Some(self.resolve_label_ids(team_id, std::slice::from_ref(value))?);
                 }
                 other => return Err(unsupported_linear_field(other)),
             }
         }
-        Ok(())
-    }
-
-    fn apply_custom_fields_to_update(
-        &self,
-        team_id: &str,
-        fields: &[CustomFieldUpdate],
-        input: &mut LinearIssueUpdateInput,
-    ) -> Result<()> {
-        for field in fields {
-            match field {
-                CustomFieldUpdate::State { name, value } if is_state_field(name) => {
-                    input.state_id = Some(self.resolve_state_id(team_id, value)?);
-                }
-                CustomFieldUpdate::SingleEnum { name, value }
-                    if name.eq_ignore_ascii_case("priority") =>
-                {
-                    input.priority = Some(priority_from_label(value).ok_or_else(|| {
-                        TrackerError::InvalidInput(format!(
-                            "Invalid Linear priority '{}'. Valid values: No priority, Urgent, High, Medium, Low",
-                            value
-                        ))
-                    })?);
-                }
-                CustomFieldUpdate::SingleUser { name, login }
-                    if name.eq_ignore_ascii_case("assignee") =>
-                {
-                    input.assignee_id = Some(self.find_user(team_id, login)?.id);
-                }
-                CustomFieldUpdate::SingleEnum { name, value }
-                    if name.eq_ignore_ascii_case("project") =>
-                {
-                    input.project_id = Some(self.find_project(team_id, value)?.id);
-                }
-                CustomFieldUpdate::MultiEnum { name, values }
-                    if name.eq_ignore_ascii_case("labels") || name.eq_ignore_ascii_case("tags") =>
-                {
-                    input.label_ids = Some(self.resolve_label_ids(team_id, values)?);
-                }
-                CustomFieldUpdate::SingleEnum { name, value }
-                    if name.eq_ignore_ascii_case("label")
-                        || name.eq_ignore_ascii_case("labels")
-                        || name.eq_ignore_ascii_case("tag") =>
-                {
-                    input.label_ids =
-                        Some(self.resolve_label_ids(team_id, std::slice::from_ref(value))?);
-                }
-                other => return Err(unsupported_linear_field(other)),
-            }
-        }
-        Ok(())
+        Ok(resolved)
     }
 
     fn resolve_state_id(&self, team_id: &str, value: &str) -> Result<String> {
         let states = self.list_team_states(team_id)?;
         if let Some(state) = states
             .iter()
-            .find(|state| state.name.eq_ignore_ascii_case(value))
+            .find(|state| unicode_eq_ignore_case(&state.name, value))
         {
             return Ok(state.id.clone());
         }
