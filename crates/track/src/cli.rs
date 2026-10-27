@@ -514,7 +514,7 @@ pub enum IssueCommands {
     ))]
     Update {
         /// Issue ID(s) - comma-separated for batch updates (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
-        #[arg(value_delimiter = ',')]
+        #[arg(value_delimiter = ',', required = true)]
         ids: Vec<String>,
         /// New summary
         #[arg(long, short = 's')]
@@ -641,7 +641,7 @@ pub enum IssueCommands {
     #[command(visible_alias = "rm", visible_alias = "del")]
     Delete {
         /// Issue ID(s) - comma-separated for batch deletion (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
-        #[arg(value_delimiter = ',')]
+        #[arg(value_delimiter = ',', required = true)]
         ids: Vec<String>,
     },
     /// List attachments on an issue
@@ -675,7 +675,12 @@ pub enum IssueCommands {
         /// Issue ID (e.g., PROJ-123)
         id: String,
         /// Comment text
-        #[arg(short = 'm', long = "message", required_unless_present = "body_file")]
+        #[arg(
+            short = 'm',
+            long = "message",
+            required_unless_present = "body_file",
+            allow_hyphen_values = true
+        )]
         text: Option<String>,
         /// Read comment text from a file ("-" for stdin)
         #[arg(long, value_name = "PATH", conflicts_with = "text")]
@@ -737,7 +742,7 @@ pub enum IssueCommands {
     /// Start work on issue(s) (set state to in-progress) - supports comma-separated IDs
     Start {
         /// Issue ID(s) - comma-separated for batch (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
-        #[arg(value_delimiter = ',')]
+        #[arg(value_delimiter = ',', required = true)]
         ids: Vec<String>,
         /// State field name; auto-detected from the project schema when omitted.
         /// "State"/"Stage"/"Status" route to workflow transitions
@@ -751,7 +756,7 @@ pub enum IssueCommands {
     #[command(visible_alias = "done", visible_alias = "resolve")]
     Complete {
         /// Issue ID(s) - comma-separated for batch (e.g., PROJ-123 or PROJ-1,PROJ-2,PROJ-3)
-        #[arg(value_delimiter = ',')]
+        #[arg(value_delimiter = ',', required = true)]
         ids: Vec<String>,
         /// State field name; auto-detected from the project schema when omitted.
         /// "State"/"Stage"/"Status" route to workflow transitions
@@ -990,7 +995,7 @@ pub enum ArticleCommands {
         #[arg(long, short = 's', required = true)]
         summary: String,
         /// Article content (Markdown)
-        #[arg(long, short = 'c')]
+        #[arg(long, short = 'c', allow_hyphen_values = true)]
         content: Option<String>,
         /// Read body text from a file ("-" for stdin), sets content
         #[arg(long, value_name = "PATH", conflicts_with_all = ["content", "content_file"])]
@@ -1014,7 +1019,7 @@ pub enum ArticleCommands {
         #[arg(long, short = 's')]
         summary: Option<String>,
         /// New content (Markdown)
-        #[arg(long, short = 'c')]
+        #[arg(long, short = 'c', allow_hyphen_values = true)]
         content: Option<String>,
         /// Read body text from a file ("-" for stdin), sets content
         #[arg(long, value_name = "PATH", conflicts_with_all = ["content", "content_file"])]
@@ -1079,7 +1084,12 @@ pub enum ArticleCommands {
         /// Article ID
         id: String,
         /// Comment text
-        #[arg(short = 'm', long = "message", required_unless_present = "body_file")]
+        #[arg(
+            short = 'm',
+            long = "message",
+            required_unless_present = "body_file",
+            allow_hyphen_values = true
+        )]
         text: Option<String>,
         /// Read comment text from a file ("-" for stdin)
         #[arg(long, value_name = "PATH", conflicts_with = "text")]
@@ -2934,6 +2944,72 @@ mod tests {
                 _ => panic!("expected article comment"),
             },
             _ => panic!("expected article command"),
+        }
+    }
+
+    #[test]
+    fn rejects_batch_commands_without_ids() {
+        // Without IDs these used to parse and report "0 issues <action>" as success.
+        for args in [
+            &["track", "issue", "update", "--state", "Done"][..],
+            &["track", "issue", "delete"],
+            &["track", "issue", "start"],
+            &["track", "issue", "complete"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "expected missing IDs to be rejected: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_markdown_text_starting_with_hyphen() {
+        // Bullet lists, rules, and "-1" votes used to be rejected as unknown flags.
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?} rejected: {e}"))
+        };
+
+        let create = parse(&[
+            "track",
+            "article",
+            "create",
+            "-p",
+            "KB",
+            "-s",
+            "Title",
+            "-c",
+            "- item one",
+        ]);
+        match create.command {
+            Commands::Article {
+                action: ArticleCommands::Create { content, .. },
+            } => assert_eq!(content.as_deref(), Some("- item one")),
+            _ => panic!("expected article create"),
+        }
+
+        let update = parse(&["track", "article", "update", "KB-A-1", "--content", "---"]);
+        match update.command {
+            Commands::Article {
+                action: ArticleCommands::Update { content, .. },
+            } => assert_eq!(content.as_deref(), Some("---")),
+            _ => panic!("expected article update"),
+        }
+
+        let issue_comment = parse(&["track", "issue", "comment", "PROJ-1", "-m", "-1"]);
+        match issue_comment.command {
+            Commands::Issue {
+                action: IssueCommands::Comment { text, .. },
+            } => assert_eq!(text.as_deref(), Some("-1")),
+            _ => panic!("expected issue comment"),
+        }
+
+        let article_comment = parse(&["track", "article", "comment", "KB-A-1", "-m", "- [ ] todo"]);
+        match article_comment.command {
+            Commands::Article {
+                action: ArticleCommands::Comment { text, .. },
+            } => assert_eq!(text.as_deref(), Some("- [ ] todo")),
+            _ => panic!("expected article comment"),
         }
     }
 
