@@ -138,20 +138,26 @@ impl KnowledgeBase for ConfluenceClient {
     }
 
     fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
-        // First get the current page to get the version number and current status
+        // The v2 page update needs the next version number, and requires title,
+        // status, and body on every PUT: resend the current values for any the
+        // caller leaves unchanged.
         let current = self.get_page(id).map_err(TrackerError::from)?;
         let current_version = current.version.as_ref().map(|v| v.number).unwrap_or(1);
         let current_status = current
             .status
             .clone()
             .unwrap_or_else(|| "current".to_string());
+        let body = match &update.content {
+            Some(content) => Some(markdown_to_storage(content)),
+            None => current.body.and_then(|b| b.storage).and_then(|s| s.value),
+        };
 
         let update_request = UpdateConfluencePage {
             id: id.to_string(),
-            title: update.summary.clone(),
-            body: update.content.as_ref().map(|c| CreateConfluenceBody {
+            title: Some(update.summary.clone().unwrap_or(current.title)),
+            body: body.map(|value| CreateConfluenceBody {
                 representation: "storage".to_string(),
-                value: markdown_to_storage(c),
+                value,
             }),
             version: UpdateConfluenceVersion {
                 number: current_version + 1,
@@ -180,36 +186,13 @@ impl KnowledgeBase for ConfluenceClient {
             .map_err(TrackerError::from)
     }
 
-    fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article> {
-        // Get current page
-        let current = self.get_page(article_id).map_err(TrackerError::from)?;
-        let current_version = current.version.as_ref().map(|v| v.number).unwrap_or(1);
-
-        // Update with new parent
-        // Note: Confluence v2 API may not support changing parent directly via PUT
-        // This might need to use the move endpoint if available
-        let update_request = UpdateConfluencePage {
-            id: article_id.to_string(),
-            title: None,
-            body: None,
-            version: UpdateConfluenceVersion {
-                number: current_version + 1,
-                message: Some("Moved article".to_string()),
-            },
-            status: None,
-        };
-
-        // For now, just return the current article
-        // A full implementation would need to use the proper move API
-        if new_parent_id.is_some() {
-            return Err(TrackerError::InvalidInput(
-                "Moving articles to a new parent is not yet supported in Confluence".to_string(),
-            ));
-        }
-
-        self.update_page(article_id, &update_request)
-            .map(confluence_page_to_article)
-            .map_err(TrackerError::from)
+    fn move_article(&self, _article_id: &str, _new_parent_id: Option<&str>) -> Result<Article> {
+        // Re-parenting needs Confluence's move API, which is not wired up. A
+        // plain page update leaves the parent unchanged, so report the gap
+        // rather than claim a move (to root or elsewhere) that never happened.
+        Err(TrackerError::InvalidInput(
+            "Moving articles is not yet supported in Confluence".to_string(),
+        ))
     }
 
     fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
@@ -436,7 +419,9 @@ fn confluence_comment_to_comment(comment: ConfluenceComment) -> Comment {
 mod tests {
     use super::*;
     use tracker_core::KnowledgeBase;
-    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::matchers::{
+        body_partial_json, method, path, query_param, query_param_is_missing,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn page(id: &str, title: &str) -> serde_json::Value {
@@ -532,5 +517,89 @@ mod tests {
         assert_eq!(articles[0].id, "1");
         assert_eq!(articles[1].id, "2");
         assert_eq!(articles[2].id, "3");
+    }
+
+    #[tokio::test]
+    async fn update_article_resends_unchanged_title_and_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/wiki/api/v2/pages/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "42",
+                "title": "Runbook",
+                "status": "current",
+                "version": { "number": 3 },
+                "body": { "storage": { "representation": "storage", "value": "<p>Old body</p>" } }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Confluence's v2 page update requires title and body on every PUT.
+        Mock::given(method("PUT"))
+            .and(path("/wiki/api/v2/pages/42"))
+            .and(body_partial_json(serde_json::json!({
+                "title": "Runbook",
+                "status": "current",
+                "body": { "representation": "storage", "value": "<p>New body</p>" },
+                "version": { "number": 4 }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page("42", "Runbook")))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("PUT"))
+            .and(path("/wiki/api/v2/pages/42"))
+            .and(body_partial_json(serde_json::json!({
+                "title": "Renamed",
+                "body": { "representation": "storage", "value": "<p>Old body</p>" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page("42", "Renamed")))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        client
+            .update_article(
+                "42",
+                &UpdateArticle {
+                    summary: None,
+                    content: Some("New body".to_string()),
+                    tags: vec![],
+                },
+            )
+            .unwrap();
+        client
+            .update_article(
+                "42",
+                &UpdateArticle {
+                    summary: Some("Renamed".to_string()),
+                    content: None,
+                    tags: vec![],
+                },
+            )
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn move_article_to_root_is_rejected_instead_of_faked() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/wiki/api/v2/pages/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page("42", "Runbook")))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page("42", "Runbook")))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        let err = client.move_article("42", None).unwrap_err();
+
+        assert!(matches!(err, TrackerError::InvalidInput(_)), "got: {err:?}");
     }
 }

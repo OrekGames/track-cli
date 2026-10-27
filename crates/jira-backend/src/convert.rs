@@ -257,7 +257,7 @@ fn json_value_to_custom_field(
                 display_name,
             })
         }
-        (Some("array"), Value::Array(arr)) => convert_array_field(name, arr, schema),
+        (Some("array"), Value::Array(arr)) => convert_array_field(name, arr),
 
         // Heuristic fallbacks when no schema is available
         (None, Value::Number(n)) => Some(CustomField::Text {
@@ -300,7 +300,7 @@ fn json_value_to_custom_field(
                 })
             }
         }
-        (None, Value::Array(arr)) => convert_array_field(name, arr, None),
+        (None, Value::Array(arr)) => convert_array_field(name, arr),
 
         _ => Some(CustomField::Unknown {
             name,
@@ -310,16 +310,10 @@ fn json_value_to_custom_field(
 }
 
 /// Convert a JSON array field value to a core CustomField.
-fn convert_array_field(
-    name: String,
-    arr: &[Value],
-    schema: Option<&JiraFieldSchema>,
-) -> Option<CustomField> {
+fn convert_array_field(name: String, arr: &[Value]) -> Option<CustomField> {
     if arr.is_empty() {
         return None;
     }
-
-    let _items_type = schema.and_then(|s| s.items.as_deref());
 
     // HEURISTIC: an array whose items are objects carrying sub-fields beyond a
     // single display key (e.g. Sprint objects with id/state/goal/board) would
@@ -492,12 +486,14 @@ impl From<JiraIssueLink> for IssueLink {
             });
         }
 
+        // Upper case, as the other backends report it: the CLI matches these
+        // values to choose the link type's outward or inward description.
         let direction = if l.outward_issue.is_some() && l.inward_issue.is_none() {
-            Some("outward".to_string())
+            Some("OUTWARD".to_string())
         } else if l.inward_issue.is_some() && l.outward_issue.is_none() {
-            Some("inward".to_string())
+            Some("INWARD".to_string())
         } else {
-            Some("both".to_string())
+            Some("BOTH".to_string())
         };
 
         Self {
@@ -834,20 +830,11 @@ fn resolve_field_info<'a>(
         return Some((id, schema));
     }
 
-    // Custom field names can be localized: compare ASCII-only names cheaply,
-    // falling back to Unicode case folding otherwise.
-    let name_is_ascii = name.is_ascii();
-    if let Some(field) = fields.iter().find(|f| {
-        if name_is_ascii && f.name.is_ascii() {
-            f.name.eq_ignore_ascii_case(name)
-        } else {
-            unicode_eq_ignore_case(&f.name, name)
-        }
-    }) {
-        return Some((field.id.as_str(), field.schema.as_ref()));
-    }
-
-    None
+    // Custom field names can be localized, so compare with Unicode case folding.
+    fields
+        .iter()
+        .find(|f| unicode_eq_ignore_case(&f.name, name))
+        .map(|field| (field.id.as_str(), field.schema.as_ref()))
 }
 
 /// Convert a custom field value to the appropriate JSON representation
@@ -857,52 +844,40 @@ fn custom_field_to_json(
     value: &str,
     schema: Option<&JiraFieldSchema>,
 ) -> serde_json::Value {
+    let text = || serde_json::Value::String(value.to_string());
     match schema.map(|s| s.field_type.as_str()) {
-        Some("number") => value
-            .parse::<f64>()
-            .map(|n| serde_json::Value::Number(serde_json::Number::from_f64(n).unwrap()))
-            .unwrap_or_else(|_| serde_json::Value::String(value.to_string())),
+        Some("number") => json_number(value).unwrap_or_else(text),
         Some("option") => serde_json::json!({ "value": value }),
+        // User pickers take Jira Cloud account IDs wrapped in an object.
+        Some("user") => serde_json::json!({ "accountId": value }),
         Some("array") => {
             let items_type = schema.and_then(|s| s.items.as_deref());
-            let values: Vec<&str> = value.split(',').map(|v| v.trim()).collect();
-            match items_type {
-                Some("option") => {
-                    let items: Vec<serde_json::Value> = values
-                        .iter()
-                        .map(|v| serde_json::json!({ "value": *v }))
-                        .collect();
-                    serde_json::Value::Array(items)
-                }
+            let items = value.split(',').map(str::trim).map(|v| match items_type {
+                Some("option") => serde_json::json!({ "value": v }),
                 // Multi-group pickers, components, and versions must be written
                 // as an array of objects keyed by `name`. Jira rejects bare
                 // strings with: "Operation value must be an array of ... objects".
                 Some("group") | Some("component") | Some("version") => {
-                    let items: Vec<serde_json::Value> = values
-                        .iter()
-                        .map(|v| serde_json::json!({ "name": *v }))
-                        .collect();
-                    serde_json::Value::Array(items)
+                    serde_json::json!({ "name": v })
                 }
-                _ => {
-                    let items: Vec<serde_json::Value> = values
-                        .iter()
-                        .map(|v| serde_json::Value::String(v.to_string()))
-                        .collect();
-                    serde_json::Value::Array(items)
-                }
-            }
+                Some("user") => serde_json::json!({ "accountId": v }),
+                _ => serde_json::Value::String(v.to_string()),
+            });
+            serde_json::Value::Array(items.collect())
         }
-        _ => {
-            // Default: if it starts with "customfield_", try number first
-            if field_id.starts_with("customfield_")
-                && let Ok(n) = value.parse::<f64>()
-            {
-                return serde_json::Value::Number(serde_json::Number::from_f64(n).unwrap());
-            }
-            serde_json::Value::String(value.to_string())
-        }
+        // Without a schema, guess from the value: numeric-looking values on
+        // custom fields are most likely numbers (e.g. story points). A known
+        // non-number type (string, date, ...) must never be coerced.
+        None if field_id.starts_with("customfield_") => json_number(value).unwrap_or_else(text),
+        _ => text(),
     }
+}
+
+/// Parse `value` as a JSON number. `None` when it is not a number, or is one
+/// JSON cannot represent (NaN, infinity).
+fn json_number(value: &str) -> Option<serde_json::Value> {
+    let n = value.parse::<f64>().ok()?;
+    serde_json::Number::from_f64(n).map(serde_json::Value::Number)
 }
 
 /// Field names that are handled by the strongly-typed JiraFields struct
@@ -980,8 +955,8 @@ fn dropped_reserved_field_warning(name: &str, silently_handled: &[&str]) -> Opti
     ))
 }
 
-/// Resolve custom field updates to Jira extra fields using field metadata.
-/// Returns a map of field_id → JSON value for fields not handled by the standard struct.
+/// Insert one resolved field update into `extra`, redirecting the estimate
+/// fields into Jira's `timetracking` object.
 fn insert_resolved_field(
     extra: &mut HashMap<String, serde_json::Value>,
     field_id: &str,
@@ -1026,6 +1001,10 @@ fn insert_resolved_field(
     Ok(())
 }
 
+/// Resolve custom field updates to Jira extra fields using field metadata.
+/// Returns a map of field_id → JSON value for fields not handled by the
+/// standard struct. Reserved fields are skipped, with a warning unless
+/// `silently_handled` names them; fields absent from `jira_fields` are skipped.
 pub fn resolve_extra_fields(
     custom_fields: &[CustomFieldUpdate],
     jira_fields: &[JiraField],
@@ -1034,42 +1013,39 @@ pub fn resolve_extra_fields(
     let mut extra = HashMap::new();
 
     for cf in custom_fields {
-        match cf {
-            CustomFieldUpdate::SingleEnum { name, value }
-            | CustomFieldUpdate::State { name, value }
-            | CustomFieldUpdate::SingleUser { name, login: value } => {
-                if is_reserved_field(name) {
-                    if let Some(msg) = dropped_reserved_field_warning(name, silently_handled) {
-                        eprintln!("Warning: {}", msg);
-                    }
-                    continue;
-                }
-                if let Some((field_id, schema)) = resolve_field_info(jira_fields, name) {
-                    insert_resolved_field(&mut extra, field_id, value, schema)?;
-                }
+        let (CustomFieldUpdate::SingleEnum { name, .. }
+        | CustomFieldUpdate::MultiEnum { name, .. }
+        | CustomFieldUpdate::State { name, .. }
+        | CustomFieldUpdate::SingleUser { name, .. }) = cf;
+        if is_reserved_field(name) {
+            if let Some(msg) = dropped_reserved_field_warning(name, silently_handled) {
+                eprintln!("Warning: {}", msg);
             }
-            CustomFieldUpdate::MultiEnum { name, values } => {
-                if is_reserved_field(name) {
-                    if let Some(msg) = dropped_reserved_field_warning(name, silently_handled) {
-                        eprintln!("Warning: {}", msg);
-                    }
-                    continue;
-                }
-                if let Some((field_id, schema)) = resolve_field_info(jira_fields, name) {
-                    if values.is_empty() {
-                        // An empty array clears the field. Jira needs [] for an
-                        // array/multi field and null for a scalar; detect it here,
-                        // before the lossy join(",") below (which would otherwise
-                        // collapse [] and [""] to the same single-element value).
-                        let cleared = match schema.map(|s| s.field_type.as_str()) {
-                            Some("array") => serde_json::Value::Array(vec![]),
-                            _ => serde_json::Value::Null,
-                        };
-                        extra.insert(field_id.to_string(), cleared);
-                    } else {
-                        insert_resolved_field(&mut extra, field_id, &values.join(","), schema)?;
-                    }
-                }
+            continue;
+        }
+        let Some((field_id, schema)) = resolve_field_info(jira_fields, name) else {
+            continue;
+        };
+
+        match cf {
+            CustomFieldUpdate::SingleEnum { value, .. }
+            | CustomFieldUpdate::State { value, .. }
+            | CustomFieldUpdate::SingleUser { login: value, .. } => {
+                insert_resolved_field(&mut extra, field_id, value, schema)?;
+            }
+            CustomFieldUpdate::MultiEnum { values, .. } if values.is_empty() => {
+                // An empty array clears the field. Jira needs [] for an
+                // array/multi field and null for a scalar; detect it here,
+                // before the lossy join(",") below (which would otherwise
+                // collapse [] and [""] to the same single-element value).
+                let cleared = match schema.map(|s| s.field_type.as_str()) {
+                    Some("array") => serde_json::Value::Array(vec![]),
+                    _ => serde_json::Value::Null,
+                };
+                extra.insert(field_id.to_string(), cleared);
+            }
+            CustomFieldUpdate::MultiEnum { values, .. } => {
+                insert_resolved_field(&mut extra, field_id, &values.join(","), schema)?;
             }
         }
     }
@@ -2424,6 +2400,86 @@ mod tests {
         let events = jira_changelog_to_history_events(page.values);
         // The entry with no timestamp is dropped rather than fabricated.
         assert_eq!(events.len(), 1);
+    }
+
+    fn schema(field_type: &str, items: Option<&str>) -> JiraFieldSchema {
+        JiraFieldSchema {
+            field_type: field_type.to_string(),
+            custom: None,
+            items: items.map(String::from),
+        }
+    }
+
+    #[test]
+    fn custom_field_to_json_keeps_numeric_looking_text_as_string() {
+        let string_schema = schema("string", None);
+        assert_eq!(
+            custom_field_to_json("customfield_10100", "00123", Some(&string_schema)),
+            serde_json::json!("00123")
+        );
+        // Without a schema the value shape is the only hint, so numbers stay numbers.
+        assert_eq!(
+            custom_field_to_json("customfield_10100", "5", None),
+            serde_json::json!(5.0)
+        );
+    }
+
+    #[test]
+    fn custom_field_to_json_sends_non_finite_numbers_as_text() {
+        let number_schema = schema("number", None);
+        for value in ["NaN", "inf", "-infinity"] {
+            assert_eq!(
+                custom_field_to_json("customfield_10016", value, Some(&number_schema)),
+                serde_json::json!(value)
+            );
+            assert_eq!(
+                custom_field_to_json("customfield_10016", value, None),
+                serde_json::json!(value)
+            );
+        }
+    }
+
+    #[test]
+    fn custom_field_to_json_wraps_user_pickers_as_account_ids() {
+        assert_eq!(
+            custom_field_to_json("customfield_10200", "5b10ac8d", Some(&schema("user", None))),
+            serde_json::json!({ "accountId": "5b10ac8d" })
+        );
+        assert_eq!(
+            custom_field_to_json(
+                "customfield_10201",
+                "5b10ac8d, 6c21bd9e",
+                Some(&schema("array", Some("user")))
+            ),
+            serde_json::json!([{ "accountId": "5b10ac8d" }, { "accountId": "6c21bd9e" }])
+        );
+    }
+
+    #[test]
+    fn issue_link_direction_uses_cli_casing() {
+        let link = |outward: bool| -> IssueLink {
+            let issue_ref = JiraIssueRef {
+                id: "10002".to_string(),
+                key: "PROJ-2".to_string(),
+                self_url: None,
+                fields: None,
+            };
+            JiraIssueLink {
+                id: Some("1".to_string()),
+                link_type: JiraIssueLinkType {
+                    id: None,
+                    name: "Blocks".to_string(),
+                    inward: Some("is blocked by".to_string()),
+                    outward: Some("blocks".to_string()),
+                },
+                inward_issue: (!outward).then(|| issue_ref.clone()),
+                outward_issue: outward.then_some(issue_ref),
+            }
+            .into()
+        };
+
+        assert_eq!(link(true).direction.as_deref(), Some("OUTWARD"));
+        assert_eq!(link(false).direction.as_deref(), Some("INWARD"));
     }
 }
 

@@ -497,7 +497,7 @@ fn convert_simple_query_to_jql(query: &str) -> String {
             {
                 parts.push("status = \"In Progress\"".to_string());
             } else {
-                parts.push(format!("status = \"{}\"", state));
+                parts.push(format!("status = {}", jql_string(state)));
             }
         } else {
             keywords.push(token);
@@ -505,8 +505,7 @@ fn convert_simple_query_to_jql(query: &str) -> String {
     }
 
     if !keywords.is_empty() {
-        let joined_keywords = keywords.join(" ");
-        parts.push(format!("text ~ \"{}\"", joined_keywords));
+        parts.push(format!("text ~ {}", jql_string(&keywords.join(" "))));
     }
 
     if parts.is_empty() {
@@ -514,6 +513,12 @@ fn convert_simple_query_to_jql(query: &str) -> String {
     } else {
         parts.join(" AND ")
     }
+}
+
+/// Quote `value` as a JQL string literal, escaping the characters that would
+/// otherwise end the literal early.
+fn jql_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn jira_attachment_to_core(attachment: crate::models::JiraAttachment) -> IssueAttachment {
@@ -560,6 +565,18 @@ mod tests {
         let pure_keyword = "bug fixing";
         let jql_pure_keyword = convert_simple_query_to_jql(pure_keyword);
         assert_eq!(jql_pure_keyword, "text ~ \"bug fixing\"");
+    }
+
+    #[test]
+    fn convert_simple_query_to_jql_escapes_string_literals() {
+        assert_eq!(
+            convert_simple_query_to_jql(r#"say "hi" C:\temp"#),
+            r#"text ~ "say \"hi\" C:\\temp""#
+        );
+        assert_eq!(
+            convert_simple_query_to_jql(r#"#Won't"Fix"#),
+            r#"status = "Won't\"Fix""#
+        );
     }
 
     #[test]
