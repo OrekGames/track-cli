@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -31,6 +31,32 @@ fn create_dir_all_secure(path: &Path) -> Result<()> {
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
     }
     Ok(())
+}
+
+/// Directory name of a project's shard under `projects/`.
+///
+/// Project keys may contain path separators (GitHub `owner/repo`, GitLab
+/// `group/project`); joined as-is they would nest the shard where
+/// `ensure_projects` never looks. Escaping `%` too keeps names distinct.
+fn project_shard_dir_name(project_key: &str) -> String {
+    let mut name = String::with_capacity(project_key.len());
+    for c in project_key.chars() {
+        match c {
+            '%' => name.push_str("%25"),
+            '/' => name.push_str("%2F"),
+            '\\' => name.push_str("%5C"),
+            _ => name.push(c),
+        }
+    }
+    name
+}
+
+/// Temp file used to atomically replace `path`. The process id keeps
+/// concurrent `track` runs from truncating each other's half-written file.
+fn atomic_write_temp_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.tmp", std::process::id()));
+    path.with_file_name(name)
 }
 
 const CACHE_DIR_NAME: &str = ".tracker-cache";
@@ -436,16 +462,13 @@ impl TrackerCache {
         })
     }
 
-    /// Save cache in sharded directory layout
+    /// Save cache in sharded directory layout.
+    ///
+    /// Writes every shard from this in-memory cache (a freshly refreshed one),
+    /// and removes shards of projects it no longer lists.
     pub fn save(&self, cache_dir: Option<PathBuf>) -> Result<()> {
         let root = Self::cache_dir_path(cache_dir.clone())?;
         create_dir_all_secure(&root)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&root, fs::Permissions::from_mode(0o700));
-        }
 
         // 1. Save index.json
         let index = CacheIndexV2 {
@@ -483,10 +506,15 @@ impl TrackerCache {
         // 3. Save project shards
         let projects_dir = root.join("projects");
         create_dir_all_secure(&projects_dir)?;
+        let shard_names: HashSet<String> = self
+            .projects
+            .iter()
+            .map(|project| project_shard_dir_name(&project.short_name))
+            .collect();
+        Self::remove_stale_project_shards(&projects_dir, &shard_names)?;
 
         for project in &self.projects {
-            let project_key = &project.short_name;
-            let project_dir = projects_dir.join(project_key);
+            let project_dir = projects_dir.join(project_shard_dir_name(&project.short_name));
             create_dir_all_secure(&project_dir)?;
 
             let meta = ProjectShardMeta {
@@ -566,6 +594,24 @@ impl TrackerCache {
             serde_json::to_string_pretty(&self.recent_issues)?.as_bytes(),
         )?;
 
+        Ok(())
+    }
+
+    /// Delete project shard directories not named in `keep`, so projects that
+    /// were removed, or that belong to a previously used backend, do not
+    /// reappear on the next load. Removal is best effort: a leftover shard is
+    /// only stale data and must not fail the refresh.
+    fn remove_stale_project_shards(projects_dir: &Path, keep: &HashSet<String>) -> Result<()> {
+        for entry in fs::read_dir(projects_dir)? {
+            let entry = entry?;
+            let is_kept = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| keep.contains(name));
+            if !is_kept && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
         Ok(())
     }
 
@@ -706,7 +752,9 @@ impl TrackerCache {
         }
 
         let root = Self::cache_dir_path(self.cache_dir.clone())?;
-        let project_dir = root.join("projects").join(project_key);
+        let project_dir = root
+            .join("projects")
+            .join(project_shard_dir_name(project_key));
         if !project_dir.exists() {
             return Ok(());
         }
@@ -813,20 +861,11 @@ impl TrackerCache {
     }
 
     fn atomic_write_inner(path: &Path, content: &[u8], durable: bool) -> Result<()> {
-        let temp_path = path.with_extension("tmp");
+        let temp_path = atomic_write_temp_path(path);
 
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
             create_dir_all_secure(parent)?;
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(
-                path.parent().unwrap_or(path),
-                fs::Permissions::from_mode(0o700),
-            );
         }
 
         {
@@ -1951,5 +1990,105 @@ mod tests {
         assert_eq!(loaded.projects[0].short_name, "P2");
 
         fs::remove_dir_all(&cache_dir).unwrap();
+    }
+
+    fn cache_with_projects(short_names: &[&str]) -> TrackerCache {
+        TrackerCache {
+            updated_at: Some(Utc::now().to_rfc3339()),
+            backend_metadata: Some(CachedBackendMetadata {
+                backend_type: "github".to_string(),
+                base_url: "https://api.github.com".to_string(),
+            }),
+            projects: short_names
+                .iter()
+                .map(|short_name| CachedProject {
+                    id: format!("id-{short_name}"),
+                    short_name: short_name.to_string(),
+                    name: short_name.to_string(),
+                    description: None,
+                })
+                .collect(),
+            project_fields: short_names
+                .iter()
+                .map(|short_name| ProjectFieldsCache {
+                    project_short_name: short_name.to_string(),
+                    project_id: format!("id-{short_name}"),
+                    fields: vec![CachedField {
+                        name: "Priority".to_string(),
+                        field_id: None,
+                        field_type: "enum".to_string(),
+                        required: false,
+                        values: vec!["High".to_string()],
+                    }],
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn project_keys_with_path_separators_survive_reload() {
+        // GitHub (owner/repo) and GitLab (group/project) keys contain '/'.
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache_dir = Some(dir.path().to_path_buf());
+        cache_with_projects(&["acme/widgets", "group/sub/project"])
+            .save(cache_dir.clone())
+            .unwrap();
+
+        let loaded = TrackerCache::load_all(cache_dir).unwrap();
+        let mut names: Vec<&str> = loaded
+            .projects
+            .iter()
+            .map(|p| p.short_name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["acme/widgets", "group/sub/project"]);
+        assert!(loaded.get_project_fields("acme/widgets").is_some());
+        assert!(loaded.get_project_fields("group/sub/project").is_some());
+    }
+
+    #[test]
+    fn project_shard_dir_name_is_a_single_distinct_component() {
+        assert_eq!(project_shard_dir_name("DEMO"), "DEMO");
+        assert_eq!(project_shard_dir_name("acme/widgets"), "acme%2Fwidgets");
+        assert_eq!(project_shard_dir_name("a\\b"), "a%5Cb");
+        assert_ne!(
+            project_shard_dir_name("a/b"),
+            project_shard_dir_name("a%2Fb")
+        );
+    }
+
+    #[test]
+    fn save_removes_shards_of_projects_no_longer_listed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cache_dir = Some(dir.path().to_path_buf());
+        cache_with_projects(&["OLD", "KEPT"])
+            .save(cache_dir.clone())
+            .unwrap();
+
+        // A later refresh (e.g. after a project was deleted, or after switching
+        // backends) no longer lists OLD.
+        cache_with_projects(&["KEPT"])
+            .save(cache_dir.clone())
+            .unwrap();
+
+        let loaded = TrackerCache::load_all(cache_dir).unwrap();
+        let names: Vec<&str> = loaded
+            .projects
+            .iter()
+            .map(|p| p.short_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["KEPT"]);
+        assert!(loaded.get_project_fields("OLD").is_none());
+    }
+
+    #[test]
+    fn atomic_write_temp_path_is_unique_per_process() {
+        let temp = atomic_write_temp_path(Path::new("cache").join("index.json").as_path());
+        assert_eq!(temp.parent(), Some(Path::new("cache")));
+        assert_eq!(
+            temp.file_name().unwrap().to_str().unwrap(),
+            format!("index.json.{}.tmp", std::process::id())
+        );
     }
 }
