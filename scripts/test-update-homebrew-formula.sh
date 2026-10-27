@@ -213,6 +213,33 @@ else
     ko "downloads kept on failure with TRACK_KEEP_DOWNLOADS=1 (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
 fi
 
+# --- Test 13: --baseline sets the downgrade floor ------------------------------
+# Mirrors CI: render the in-repo template (low placeholder version) while
+# guarding against the tap's published formula.
+T="$WORK/t13"; mkdir -p "$T"
+make_release "$T/old" "1.1.0"
+make_release "$T/release" "1.2.0"
+make_formula "$T/formula.rb"
+sed 's/version "1.0.0"/version "1.2.0"/' "$T/formula.rb" > "$T/tap.rb"
+BEFORE=$(cat "$T/formula.rb")
+eval "env $(common_env "$T/old" "$T") bash '$SCRIPT' --formula '$T/formula.rb' --baseline '$T/tap.rb' 1.1.0 '$T/old/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
+rc=$?
+if [ $rc -ne 0 ] && grep -q "refusing downgrade" "$WORK/out.log" && [ "$BEFORE" = "$(cat "$T/formula.rb")" ]; then
+    ok "downgrade below baseline refused, formula untouched"
+else
+    ko "downgrade below baseline refused, formula untouched (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
+fi
+TAP_BEFORE=$(cat "$T/tap.rb")
+eval "env $(common_env "$T/release" "$T") bash '$SCRIPT' --formula '$T/formula.rb' --baseline '$T/tap.rb' 1.2.0 '$T/release/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
+rc=$?
+if [ $rc -eq 0 ] && grep -q 'version "1.2.0"' "$T/formula.rb" && [ "$TAP_BEFORE" = "$(cat "$T/tap.rb")" ]; then
+    ok "baseline version renders formula, baseline untouched"
+else
+    ko "baseline version renders formula, baseline untouched (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
+fi
+run_case "missing baseline refused" 1 \
+    bash "$SCRIPT" --formula "$T/formula.rb" --baseline "$T/missing.rb" 1.2.0 "$T/release/checksums-sha256.txt"
+
 echo
 echo "Passed: $PASS, Failed: $FAIL"
 [ $FAIL -eq 0 ]

@@ -1,7 +1,12 @@
 #!/bin/bash
 # Update the Homebrew formula with a new version and checksums.
 #
-# Usage: ./scripts/update-homebrew-formula.sh [--formula <path>] <version> <checksums-file>
+# Usage: ./scripts/update-homebrew-formula.sh [--formula <path>] [--baseline <path>] <version> <checksums-file>
+#
+# --formula   formula to render (default: homebrew/Formula/track.rb).
+# --baseline  formula whose version is the downgrade floor (default: the
+#             --formula file). Pass the tap's published formula when
+#             rendering the in-repo template, whose version is a placeholder.
 #
 # The checksums file must contain lines like:
 #   abc123...  track-0.2.0-aarch64-apple-darwin.tar.gz
@@ -13,19 +18,20 @@
 #     entries are fatal errors.
 #   * All four archives are downloaded and their bytes verified against the
 #     checksums before the formula is modified.
-#   * Version downgrades are refused.
+#   * Version downgrades (relative to the --baseline formula) are refused.
 #   * Re-running with the same version is idempotent: if the formula already
 #     matches (version + all four checksums), the script exits 0 without
 #     changing anything.
 set -euo pipefail
 
 FORMULA_PATH="homebrew/Formula/track.rb"
+BASELINE_PATH=""
 DOWNLOAD_DIR="${TRACK_DOWNLOAD_DIR:-dist/homebrew-archives}"
 ASSET_URL_TEMPLATE="${TRACK_ARCHIVE_URL_TEMPLATE:-$(printf '%s' 'https://github.com/OrekGames/track-cli/releases/download/' 'v{VERSION}/' '{FILE}')}"
 KEEP_DOWNLOADS="${TRACK_KEEP_DOWNLOADS:-0}"
 
 usage() {
-    echo "Usage: $0 [--formula <path>] <version> <checksums-file>"
+    echo "Usage: $0 [--formula <path>] [--baseline <path>] <version> <checksums-file>"
     echo "Example: $0 0.2.0 dist/checksums-sha256.txt"
     exit 1
 }
@@ -34,6 +40,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --formula)
             FORMULA_PATH="$2"
+            shift 2
+            ;;
+        --baseline)
+            BASELINE_PATH="$2"
             shift 2
             ;;
         -h|--help)
@@ -71,6 +81,13 @@ if [[ ! -f "$FORMULA_PATH" ]]; then
     exit 1
 fi
 
+BASELINE_PATH="${BASELINE_PATH:-$FORMULA_PATH}"
+
+if [[ ! -f "$BASELINE_PATH" ]]; then
+    echo "Error: baseline formula file not found: $BASELINE_PATH" >&2
+    exit 1
+fi
+
 # The four versioned archives the Homebrew formula references.
 TARGETS=(
     "aarch64-apple-darwin"
@@ -85,17 +102,22 @@ expected_file() {
 
 # --- Enforce no downgrades before any other work ---------------------------
 
-CURRENT_VERSION=$(sed -n 's/^  version "\(.*\)"/\1/p' "$FORMULA_PATH" | head -n1)
+read_formula_version() {
+    local path="$1" version
+    version=$(sed -n 's/^  version "\(.*\)"/\1/p' "$path" | head -n1)
+    if [[ -z "$version" ]]; then
+        echo "Error: could not read current version from $path" >&2
+        return 1
+    fi
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+        echo "Error: invalid current version '$version' in $path" >&2
+        return 1
+    fi
+    echo "$version"
+}
 
-if [[ -z "$CURRENT_VERSION" ]]; then
-    echo "Error: could not read current version from $FORMULA_PATH" >&2
-    exit 1
-fi
-
-if ! [[ "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-    echo "Error: invalid current version '$CURRENT_VERSION' in $FORMULA_PATH" >&2
-    exit 1
-fi
+CURRENT_VERSION=$(read_formula_version "$FORMULA_PATH")
+BASELINE_VERSION=$(read_formula_version "$BASELINE_PATH")
 
 version_lt() {
     # Compare MAJOR.MINOR.PATCH[-PRERELEASE] versions; true if $1 < $2.
@@ -114,8 +136,8 @@ version_lt() {
     [[ "$1" == *-* && "$2" != *-* ]]
 }
 
-if version_lt "$VERSION" "$CURRENT_VERSION"; then
-    echo "Error: refusing downgrade: formula is at $CURRENT_VERSION, refusing to move to $VERSION" >&2
+if version_lt "$VERSION" "$BASELINE_VERSION"; then
+    echo "Error: refusing downgrade: $BASELINE_PATH is at $BASELINE_VERSION, refusing to move to $VERSION" >&2
     exit 1
 fi
 

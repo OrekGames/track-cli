@@ -432,11 +432,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update formula with version and checksums
-        run: |
-          VERSION="${{ needs.detect-release.outputs.version }}"
-          ./scripts/update-homebrew-formula.sh "$VERSION" dist/checksums-sha256.txt
-
       - name: Check out tap repo (isolated, no credential persistence)
         run: |
           if [ -z "$TAP_TOKEN" ]; then
@@ -449,6 +444,16 @@ jobs:
           git -C tap-repo remote set-url origin https://github.com/OrekGames/homebrew-tap.git
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update formula with version and checksums
+        run: |
+          VERSION="${{ needs.detect-release.outputs.version }}"
+          # Refuse downgrades relative to the tap, not the in-repo template.
+          BASELINE=()
+          if [ -f tap-repo/Formula/track.rb ]; then
+            BASELINE=(--baseline tap-repo/Formula/track.rb)
+          fi
+          ./scripts/update-homebrew-formula.sh "${BASELINE[@]}" "$VERSION" dist/checksums-sha256.txt
 
       - name: Copy formula into tap
         run: |
@@ -520,11 +525,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update formula with version and checksums
-        run: |
-          VERSION="${{ steps.resolve.outputs.version }}"
-          ./scripts/update-homebrew-formula.sh "$VERSION" dist/checksums-sha256.txt
-
       - name: Check out tap repo (isolated, no credential persistence)
         run: |
           if [ -z "$TAP_TOKEN" ]; then
@@ -535,6 +535,16 @@ jobs:
           git -C tap-repo remote set-url origin https://github.com/OrekGames/homebrew-tap.git
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update formula with version and checksums
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          # Refuse downgrades relative to the tap, not the in-repo template.
+          BASELINE=()
+          if [ -f tap-repo/Formula/track.rb ]; then
+            BASELINE=(--baseline tap-repo/Formula/track.rb)
+          fi
+          ./scripts/update-homebrew-formula.sh "${BASELINE[@]}" "$VERSION" dist/checksums-sha256.txt
 
       - name: Copy formula into tap
         run: |
