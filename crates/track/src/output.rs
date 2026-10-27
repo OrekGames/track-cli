@@ -21,23 +21,11 @@ pub fn output_json<T: Serialize + ?Sized>(value: &T) -> anyhow::Result<()> {
 }
 
 /// Output verification warnings to stderr.
-pub fn output_verification_warnings(warnings: &[String], format: OutputFormat) {
-    if warnings.is_empty() {
-        return;
-    }
-
-    match format {
-        OutputFormat::Text => {
-            for warning in warnings {
-                eprintln!("{} {}", "⚠ Warning:".yellow().bold(), warning);
-            }
-        }
-        OutputFormat::Json => {
-            // Print to stderr to avoid polluting stdout JSON, but still provide the information.
-            for warning in warnings {
-                eprintln!("{} {}", "⚠ Warning:".yellow().bold(), warning);
-            }
-        }
+///
+/// Every format writes to stderr, so JSON on stdout stays parseable.
+pub fn output_verification_warnings(warnings: &[String], _format: OutputFormat) {
+    for warning in warnings {
+        eprintln!("{} {}", "⚠ Warning:".yellow().bold(), warning);
     }
 }
 
@@ -239,8 +227,6 @@ pub fn output_change_summary(
         return;
     }
 
-    use colored::Colorize;
-
     println!("{}", "--- Change Summary ---".bright_black());
 
     // 1. Identify which fields were requested. Keys are Unicode-folded via
@@ -333,7 +319,6 @@ pub fn output_change_summary(
 }
 
 fn display_change(name: &str, old: Option<&str>, new: Option<&str>, requested: &HashSet<String>) {
-    use colored::Colorize;
     let is_requested = requested.contains(&case_key(name));
     let prefix = if is_requested { "" } else { "(Side Effect) " };
     let label = if is_requested {
@@ -458,7 +443,6 @@ pub fn output_error(err: &anyhow::Error, format: OutputFormat) {
 /// Output a progress message to stderr if stdout is a TTY and format is text
 pub fn output_progress(message: &str, format: OutputFormat) {
     if format == OutputFormat::Text && std::io::stdout().is_terminal() {
-        use colored::Colorize;
         eprintln!("{} {}", "→".cyan().bold(), message);
     }
 }
@@ -717,53 +701,56 @@ impl Displayable for Article {
         }
 
         if let Some(content) = &self.content {
-            // Truncate content for display
-            let preview: String = content.chars().take(200).collect();
-            if content.len() > 200 {
-                output.push_str(&format!("\n  {}: {}...", "Content".dimmed(), preview));
-            } else {
-                output.push_str(&format!("\n  {}: {}", "Content".dimmed(), preview));
-            }
+            let mut chars = content.chars();
+            let preview: String = chars.by_ref().take(ARTICLE_PREVIEW_CHARS).collect();
+            // Count chars, not bytes: multi-byte text within the limit is shown whole.
+            let ellipsis = if chars.next().is_some() { "..." } else { "" };
+            output.push_str(&format!(
+                "\n  {}: {}{}",
+                "Content".dimmed(),
+                preview,
+                ellipsis
+            ));
         }
 
         output
     }
 }
 
+/// Maximum number of article content characters shown in text output.
+const ARTICLE_PREVIEW_CHARS: usize = 200;
+
+/// Render an attachment size in bytes, KB, or MB.
+fn format_attachment_size(size: i64) -> String {
+    const KB: i64 = 1024;
+    const MB: i64 = 1024 * KB;
+    if size > MB {
+        format!("{:.1} MB", size as f64 / MB as f64)
+    } else if size > KB {
+        format!("{:.1} KB", size as f64 / KB as f64)
+    } else {
+        format!("{} bytes", size)
+    }
+}
+
 impl Displayable for ArticleAttachment {
     fn display(&self) -> String {
-        let size_str = if self.size > 1024 * 1024 {
-            format!("{:.1} MB", self.size as f64 / (1024.0 * 1024.0))
-        } else if self.size > 1024 {
-            format!("{:.1} KB", self.size as f64 / 1024.0)
-        } else {
-            format!("{} bytes", self.size)
-        };
-
         format!(
             "{} ({}) - {}",
             self.name.white().bold(),
             self.mime_type.as_deref().unwrap_or("unknown").dimmed(),
-            size_str.dimmed()
+            format_attachment_size(self.size).dimmed()
         )
     }
 }
 
 impl Displayable for IssueAttachment {
     fn display(&self) -> String {
-        let size_str = if self.size > 1024 * 1024 {
-            format!("{:.1} MB", self.size as f64 / (1024.0 * 1024.0))
-        } else if self.size > 1024 {
-            format!("{:.1} KB", self.size as f64 / 1024.0)
-        } else {
-            format!("{} bytes", self.size)
-        };
-
         let mut output = format!(
             "{} ({}) - {}",
             self.name.white().bold(),
             self.mime_type.as_deref().unwrap_or("unknown").dimmed(),
-            size_str.dimmed()
+            format_attachment_size(self.size).dimmed()
         );
 
         if let Some(comment_id) = &self.comment_id {
@@ -1062,6 +1049,53 @@ mod tests {
             resolve_requested_field_name(&requested, &issue),
             "Component"
         );
+    }
+
+    fn article_with_content(content: String) -> Article {
+        Article {
+            id: "1".into(),
+            id_readable: "KB-A-1".into(),
+            summary: "test".into(),
+            content: Some(content),
+            project: tracker_core::ProjectRef {
+                id: "p1".into(),
+                name: None,
+                short_name: Some("KB".into()),
+            },
+            parent_article: None,
+            has_children: false,
+            tags: vec![],
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+            reporter: None,
+        }
+    }
+
+    #[test]
+    fn article_display_keeps_multibyte_content_within_limit_whole() {
+        // 150 chars but 300 bytes: under the char limit, so no ellipsis.
+        let content = "ж".repeat(150);
+        let rendered = article_with_content(content.clone()).display();
+        assert!(rendered.contains(&content), "got:\n{rendered}");
+        assert!(!rendered.contains("..."), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn article_display_truncates_content_over_limit() {
+        let rendered = article_with_content("ж".repeat(ARTICLE_PREVIEW_CHARS + 1)).display();
+        let preview = "ж".repeat(ARTICLE_PREVIEW_CHARS);
+        assert!(
+            rendered.contains(&format!("{preview}...")),
+            "got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn attachment_size_uses_bytes_kb_and_mb() {
+        assert_eq!(format_attachment_size(512), "512 bytes");
+        assert_eq!(format_attachment_size(1024), "1024 bytes");
+        assert_eq!(format_attachment_size(1536), "1.5 KB");
+        assert_eq!(format_attachment_size(3 * 1024 * 1024 / 2), "1.5 MB");
     }
 
     #[test]
