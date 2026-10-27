@@ -7,33 +7,40 @@
 # Installation:
 #   brew tap OrekGames/tap
 #   brew install track
+#
+# The version is read from the release URLs, so they carry it literally;
+# scripts/update-homebrew-formula.sh rewrites the URLs and checksums.
 
 class Track < Formula
   desc "CLI for issue tracking systems (YouTrack, Jira, GitHub, GitLab)"
   homepage "https://github.com/OrekGames/track-cli"
-  version "0.1.0"
   license "MIT"
+
+  livecheck do
+    url :homepage
+    strategy :github_latest
+  end
 
   on_macos do
     on_arm do
-      url "https://github.com/OrekGames/track-cli/releases/download/v#{version}/track-#{version}-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/OrekGames/track-cli/releases/download/v0.1.0/track-0.1.0-aarch64-apple-darwin.tar.gz"
       sha256 "PLACEHOLDER_SHA256_ARM64"
     end
 
     on_intel do
-      url "https://github.com/OrekGames/track-cli/releases/download/v#{version}/track-#{version}-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/OrekGames/track-cli/releases/download/v0.1.0/track-0.1.0-x86_64-apple-darwin.tar.gz"
       sha256 "PLACEHOLDER_SHA256_X86_64"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/OrekGames/track-cli/releases/download/v#{version}/track-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/OrekGames/track-cli/releases/download/v0.1.0/track-0.1.0-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "PLACEHOLDER_SHA256_LINUX_ARM64"
     end
 
     on_intel do
-      url "https://github.com/OrekGames/track-cli/releases/download/v#{version}/track-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/OrekGames/track-cli/releases/download/v0.1.0/track-0.1.0-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "PLACEHOLDER_SHA256_LINUX_X86_64"
     end
   end
@@ -50,22 +57,10 @@ class Track < Formula
     doc.install "README.md" if File.exist?("README.md")
     doc.install "agent_guide.md" if File.exist?("agent_guide.md")
 
-    # Install agent skill file to share prefix (used by post_install)
-    if File.exist?("agent-skills/SKILL.md")
-      (share/"track").install "agent-skills/SKILL.md"
-    end
-  end
-
-  def post_install
-    skill_src = share/"track/SKILL.md"
-    return unless skill_src.exist?
-
-    # Install skill globally for all supported AI coding tools
-    %w[.claude .copilot .cursor .gemini].each do |tool_dir|
-      skill_dir = Pathname.new(Dir.home)/tool_dir/"skills"/"track"
-      skill_dir.mkpath
-      cp skill_src, skill_dir/"SKILL.md"
-    end
+    # Keep a reference copy of the agent skill. Homebrew runs post-install
+    # with an isolated HOME, so the skill is installed per user by
+    # `track init --skills` (see caveats) rather than by the formula.
+    pkgshare.install "agent-skills/SKILL.md" if File.exist?("agent-skills/SKILL.md")
   end
 
   def caveats
@@ -78,10 +73,11 @@ class Track < Formula
         export TRACKER_URL="https://your-tracker-instance.com"
         export TRACKER_TOKEN="your-api-token"
 
-      AI coding tool skills installed for:
-        Claude Code, Copilot, Cursor, and Gemini CLI
-        (~/.claude/skills/track/, ~/.copilot/skills/track/,
-         ~/.cursor/skills/track/, ~/.gemini/skills/track/)
+      To install the track skill for Claude Code, Copilot, Cursor, and Gemini CLI
+      (~/.claude/skills/track/, ~/.copilot/skills/track/,
+       ~/.cursor/skills/track/, ~/.gemini/skills/track/), run:
+
+        track init --skills
 
       For more information, see:
         track --help

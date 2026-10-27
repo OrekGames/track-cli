@@ -18,36 +18,49 @@ FAIL=0
 ok() { echo "PASS: $1"; PASS=$((PASS+1)); }
 ko() { echo "FAIL: $1"; FAIL=$((FAIL+1)); }
 
-# Build a fresh formula fixture (mirrors homebrew/Formula/track.rb shape).
+# Build a fresh formula fixture (mirrors homebrew/Formula/track.rb shape: the
+# version is carried literally in every url).
 make_formula() {
     cat > "$1" <<'EOF'
 class Track < Formula
   desc "CLI for issue tracking systems (YouTrack, Jira, GitHub, GitLab)"
   homepage "https://github.com/OrekGames/track-cli"
-  version "1.0.0"
   license "MIT"
   on_macos do
     on_arm do
-      url "https://github.com/OrekGames/track-cli/releases/download/v#{version}/track-#{version}-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/OrekGames/track-cli/releases/download/v1.0.0/track-1.0.0-aarch64-apple-darwin.tar.gz"
       sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     end
     on_intel do
-      url "https://github.com/OrekGames/track-cli/releases/download/v#{version}/track-#{version}-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/OrekGames/track-cli/releases/download/v1.0.0/track-1.0.0-x86_64-apple-darwin.tar.gz"
       sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     end
   end
   on_linux do
     on_arm do
-      url "https://github.com/OrekGames/track-cli/releases/download/v#{version}/track-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/OrekGames/track-cli/releases/download/v1.0.0/track-1.0.0-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     end
     on_intel do
-      url "https://github.com/OrekGames/track-cli/releases/download/v#{version}/track-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/OrekGames/track-cli/releases/download/v1.0.0/track-1.0.0-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
     end
   end
 end
 EOF
+}
+
+# Legacy formula shape (explicit `version`, #{version} urls), as published to
+# the tap up to 1.18.2. Still read as a --baseline and still renderable.
+make_legacy_formula() {
+    make_formula "$1"
+    sed -i -e 's|^  license "MIT"|  version "1.0.0"\n  license "MIT"|' \
+        -e 's|/download/v1\.0\.0/track-1\.0\.0-|/download/v#{version}/track-#{version}-|' "$1"
+}
+
+# True if all four urls in formula $1 are at version $2.
+has_version() {
+    [ "$(grep -c "url \".*/download/v$2/track-$2-.*\.tar\.gz\"" "$1")" -eq 4 ]
 }
 
 # Build a local "release" with four archives and a checksums file.
@@ -81,7 +94,7 @@ make_release "$T/release" "1.1.0"
 make_formula "$T/formula.rb"
 eval "env $(common_env "$T/release" "$T") bash '$SCRIPT' --formula '$T/formula.rb' 1.1.0 '$T/release/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
 rc=$?
-if [ $rc -eq 0 ] && grep -q 'version "1.1.0"' "$T/formula.rb" && \
+if [ $rc -eq 0 ] && has_version "$T/formula.rb" 1.1.0 && \
    grep -q "$(grep 'aarch64-apple-darwin' "$T/release/checksums-sha256.txt" | awk '{print $1}')" "$T/formula.rb"; then
     ok "update to new version"
 else
@@ -188,13 +201,13 @@ make_release "$T/release" "1.2.0"
 make_formula "$T/formula.rb"
 eval "env $(common_env "$T/rc" "$T") bash '$SCRIPT' --formula '$T/formula.rb' 1.2.0-rc.1 '$T/rc/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
 rc=$?
-if [ $rc -eq 0 ] && grep -q 'version "1.2.0-rc.1"' "$T/formula.rb"; then ok "update to prerelease"; else ko "update to prerelease (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"; fi
+if [ $rc -eq 0 ] && has_version "$T/formula.rb" 1.2.0-rc.1; then ok "update to prerelease"; else ko "update to prerelease (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"; fi
 eval "env $(common_env "$T/release" "$T") bash '$SCRIPT' --formula '$T/formula.rb' 1.2.0 '$T/release/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
 rc=$?
-if [ $rc -eq 0 ] && grep -q 'version "1.2.0"' "$T/formula.rb"; then ok "prerelease to release of same core"; else ko "prerelease to release of same core (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"; fi
+if [ $rc -eq 0 ] && has_version "$T/formula.rb" 1.2.0; then ok "prerelease to release of same core"; else ko "prerelease to release of same core (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"; fi
 eval "env $(common_env "$T/rc" "$T") bash '$SCRIPT' --formula '$T/formula.rb' 1.2.0-rc.1 '$T/rc/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
 rc=$?
-if [ $rc -ne 0 ] && grep -q "refusing downgrade" "$WORK/out.log" && grep -q 'version "1.2.0"' "$T/formula.rb"; then
+if [ $rc -ne 0 ] && grep -q "refusing downgrade" "$WORK/out.log" && has_version "$T/formula.rb" 1.2.0; then
     ok "release to prerelease of same core refused"
 else
     ko "release to prerelease of same core refused (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
@@ -220,25 +233,67 @@ T="$WORK/t13"; mkdir -p "$T"
 make_release "$T/old" "1.1.0"
 make_release "$T/release" "1.2.0"
 make_formula "$T/formula.rb"
-sed 's/version "1.0.0"/version "1.2.0"/' "$T/formula.rb" > "$T/tap.rb"
+make_legacy_formula "$T/legacy.rb"
+sed 's/version "1.0.0"/version "1.2.0"/' "$T/legacy.rb" > "$T/tap.rb"
 BEFORE=$(cat "$T/formula.rb")
 eval "env $(common_env "$T/old" "$T") bash '$SCRIPT' --formula '$T/formula.rb' --baseline '$T/tap.rb' 1.1.0 '$T/old/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
 rc=$?
 if [ $rc -ne 0 ] && grep -q "refusing downgrade" "$WORK/out.log" && [ "$BEFORE" = "$(cat "$T/formula.rb")" ]; then
-    ok "downgrade below baseline refused, formula untouched"
+    ok "downgrade below legacy-format baseline refused, formula untouched"
 else
-    ko "downgrade below baseline refused, formula untouched (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
+    ko "downgrade below legacy-format baseline refused, formula untouched (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
 fi
 TAP_BEFORE=$(cat "$T/tap.rb")
 eval "env $(common_env "$T/release" "$T") bash '$SCRIPT' --formula '$T/formula.rb' --baseline '$T/tap.rb' 1.2.0 '$T/release/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
 rc=$?
-if [ $rc -eq 0 ] && grep -q 'version "1.2.0"' "$T/formula.rb" && [ "$TAP_BEFORE" = "$(cat "$T/tap.rb")" ]; then
+if [ $rc -eq 0 ] && has_version "$T/formula.rb" 1.2.0 && [ "$TAP_BEFORE" = "$(cat "$T/tap.rb")" ]; then
     ok "baseline version renders formula, baseline untouched"
 else
     ko "baseline version renders formula, baseline untouched (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
 fi
 run_case "missing baseline refused" 1 \
     bash "$SCRIPT" --formula "$T/formula.rb" --baseline "$T/missing.rb" 1.2.0 "$T/release/checksums-sha256.txt"
+
+# --- Test 14: a current-format baseline (version only in the urls) ------------
+T="$WORK/t14"; mkdir -p "$T"
+make_release "$T/old" "1.1.0"
+make_formula "$T/formula.rb"
+sed 's|/download/v1\.0\.0/track-1\.0\.0-|/download/v1.2.0/track-1.2.0-|' "$T/formula.rb" > "$T/tap.rb"
+eval "env $(common_env "$T/old" "$T") bash '$SCRIPT' --formula '$T/formula.rb' --baseline '$T/tap.rb' 1.1.0 '$T/old/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
+rc=$?
+if [ $rc -ne 0 ] && grep -q "refusing downgrade: .* is at 1.2.0" "$WORK/out.log"; then
+    ok "downgrade below url-versioned baseline refused"
+else
+    ko "downgrade below url-versioned baseline refused (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
+fi
+
+# --- Test 15: urls that disagree on the version are refused -------------------
+T="$WORK/t15"; mkdir -p "$T"
+make_release "$T/release" "1.2.0"
+make_formula "$T/formula.rb"
+sed -i '0,/v1\.0\.0\/track-1\.0\.0-/s//v1.0.1\/track-1.0.1-/' "$T/formula.rb"
+BEFORE=$(cat "$T/formula.rb")
+eval "env $(common_env "$T/release" "$T") bash '$SCRIPT' --formula '$T/formula.rb' 1.2.0 '$T/release/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
+rc=$?
+if [ $rc -ne 0 ] && grep -q "url versions disagree" "$WORK/out.log" && [ "$BEFORE" = "$(cat "$T/formula.rb")" ]; then
+    ok "disagreeing url versions refused, formula untouched"
+else
+    ko "disagreeing url versions refused, formula untouched (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
+fi
+
+# --- Test 16: a legacy-format formula still renders ---------------------------
+T="$WORK/t16"; mkdir -p "$T"
+make_release "$T/release" "1.2.0"
+make_legacy_formula "$T/formula.rb"
+eval "env $(common_env "$T/release" "$T") bash '$SCRIPT' --formula '$T/formula.rb' 1.2.0 '$T/release/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
+rc=$?
+want=$(sha_of "$T/release/track-1.2.0-x86_64-unknown-linux-gnu.tar.gz")
+if [ $rc -eq 0 ] && grep -q 'version "1.2.0"' "$T/formula.rb" && \
+   [ "$(grep -c 'track-#{version}-' "$T/formula.rb")" -eq 4 ] && grep -q "$want" "$T/formula.rb"; then
+    ok "legacy-format formula renders"
+else
+    ko "legacy-format formula renders (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
+fi
 
 echo
 echo "Passed: $PASS, Failed: $FAIL"

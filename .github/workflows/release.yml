@@ -576,7 +576,9 @@ jobs:
         run: |
           VERSION="${{ steps.resolve.outputs.version }}"
           sleep 5
-          ACTUAL=$(git -C tap-repo fetch origin main && git -C tap-repo show origin/main:Formula/track.rb | sed -n 's/^  version "\(.*\)"/\1/p' | head -n1)
+          git -C tap-repo fetch origin main
+          # The version lives in the release URLs; all of them must agree.
+          ACTUAL=$(git -C tap-repo show origin/main:Formula/track.rb | sed -n 's|.*url ".*/releases/download/v\([^/"]*\)/.*|\1|p' | sort -u | paste -sd' ')
           if [ "$ACTUAL" != "$VERSION" ]; then
             echo "::error::Remote formula version is ${ACTUAL:-unknown}, expected ${VERSION}"
             exit 1
