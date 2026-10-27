@@ -179,6 +179,25 @@ rc=$?
 want=$(sha_of "$T/release/track-1.0.0-aarch64-apple-darwin.tar.gz")
 if [ $rc -eq 0 ] && grep -q "$want" "$T/formula.rb"; then ok "same-version checksum repair"; else ko "same-version checksum repair (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"; fi
 
+# --- Test 11: prerelease versions compare on their numeric core ----------------
+T="$WORK/t11"; mkdir -p "$T"
+make_release "$T/rc" "1.2.0-rc.1"
+make_release "$T/release" "1.2.0"
+make_formula "$T/formula.rb"
+eval "env $(common_env "$T/rc" "$T") bash '$SCRIPT' --formula '$T/formula.rb' 1.2.0-rc.1 '$T/rc/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
+rc=$?
+if [ $rc -eq 0 ] && grep -q 'version "1.2.0-rc.1"' "$T/formula.rb"; then ok "update to prerelease"; else ko "update to prerelease (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"; fi
+eval "env $(common_env "$T/release" "$T") bash '$SCRIPT' --formula '$T/formula.rb' 1.2.0 '$T/release/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
+rc=$?
+if [ $rc -eq 0 ] && grep -q 'version "1.2.0"' "$T/formula.rb"; then ok "prerelease to release of same core"; else ko "prerelease to release of same core (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"; fi
+eval "env $(common_env "$T/rc" "$T") bash '$SCRIPT' --formula '$T/formula.rb' 1.2.0-rc.1 '$T/rc/checksums-sha256.txt'" >"$WORK/out.log" 2>&1
+rc=$?
+if [ $rc -ne 0 ] && grep -q "refusing downgrade" "$WORK/out.log" && grep -q 'version "1.2.0"' "$T/formula.rb"; then
+    ok "release to prerelease of same core refused"
+else
+    ko "release to prerelease of same core refused (rc=$rc)"; sed 's/^/    /' "$WORK/out.log"
+fi
+
 echo
 echo "Passed: $PASS, Failed: $FAIL"
 [ $FAIL -eq 0 ]

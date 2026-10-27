@@ -92,18 +92,26 @@ if [[ -z "$CURRENT_VERSION" ]]; then
     exit 1
 fi
 
+if ! [[ "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+    echo "Error: invalid current version '$CURRENT_VERSION' in $FORMULA_PATH" >&2
+    exit 1
+fi
+
 version_lt() {
-    # Compare dot-separated numeric versions; true if $1 < $2
+    # Compare MAJOR.MINOR.PATCH[-PRERELEASE] versions; true if $1 < $2.
+    # Only the numeric core is compared arithmetically. For equal cores a
+    # prerelease is lower than the release (1.2.0-rc.1 < 1.2.0); two
+    # prereleases of the same core are not ordered against each other.
     local -a a b
     local i x y
-    IFS=. read -r -a a <<< "$1"
-    IFS=. read -r -a b <<< "$2"
-    for i in 0 1 2 3 4; do
-        x=${a[$i]:-0} y=${b[$i]:-0}
-        if (( x < y )); then return 0; fi
-        if (( x > y )); then return 1; fi
+    IFS=. read -r -a a <<< "${1%%-*}"
+    IFS=. read -r -a b <<< "${2%%-*}"
+    for i in 0 1 2; do
+        x=${a[$i]} y=${b[$i]}
+        if (( 10#$x < 10#$y )); then return 0; fi
+        if (( 10#$x > 10#$y )); then return 1; fi
     done
-    return 1
+    [[ "$1" == *-* && "$2" != *-* ]]
 }
 
 if version_lt "$VERSION" "$CURRENT_VERSION"; then
