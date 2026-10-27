@@ -847,7 +847,7 @@ mod tests {
         assert_eq!(core_link.direction, Some("outward".to_string()));
         assert_eq!(core_link.link_type.id, "blocks");
         assert_eq!(core_link.link_type.name, "Blocks");
-        assert_eq!(core_link.link_type.directed, true);
+        assert!(core_link.link_type.directed);
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "123");
         assert_eq!(core_link.issues[0].id_readable, Some("#456".to_string()));
@@ -873,7 +873,7 @@ mod tests {
         assert_eq!(core_link.direction, Some("inward".to_string()));
         assert_eq!(core_link.link_type.id, "is_blocked_by");
         assert_eq!(core_link.link_type.name, "Is Blocked By");
-        assert_eq!(core_link.link_type.directed, true);
+        assert!(core_link.link_type.directed);
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "124");
         assert_eq!(core_link.issues[0].id_readable, Some("#457".to_string()));
@@ -899,7 +899,7 @@ mod tests {
         assert_eq!(core_link.direction, Some("both".to_string()));
         assert_eq!(core_link.link_type.id, "relates_to");
         assert_eq!(core_link.link_type.name, "Relates");
-        assert_eq!(core_link.link_type.directed, false);
+        assert!(!core_link.link_type.directed);
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "125");
         assert_eq!(core_link.issues[0].id_readable, Some("#458".to_string()));
@@ -926,7 +926,7 @@ mod tests {
         assert_eq!(core_link.direction, Some("both".to_string()));
         assert_eq!(core_link.link_type.id, "relates_to");
         assert_eq!(core_link.link_type.name, "Relates");
-        assert_eq!(core_link.link_type.directed, false);
+        assert!(!core_link.link_type.directed);
         assert_eq!(core_link.issues.len(), 1);
         assert_eq!(core_link.issues[0].id, "126");
         assert_eq!(core_link.issues[0].id_readable, Some("#459".to_string()));
