@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Points deducted per expected outcome that was not achieved.
+const FAILED_OUTCOME_PENALTY: i32 = -25;
+
 /// Result of evaluating an agent's performance on a scenario
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResult {
@@ -192,11 +195,9 @@ impl Evaluator {
 
             ExpectedOutcome::String(expected_value) => {
                 // Check if any call references this value (e.g., issue ID)
-                let found = calls.iter().any(|call| {
-                    call.args
-                        .values()
-                        .any(|v| v.as_str() == Some(expected_value.as_str()))
-                });
+                let found = calls
+                    .iter()
+                    .any(|call| references_value(call, expected_value));
 
                 OutcomeResult {
                     name: name.to_string(),
@@ -225,9 +226,14 @@ impl Evaluator {
         let mut expected_parts = Vec::new();
         let mut actual_parts = Vec::new();
 
+        // The `issue` and `contains` criteria are checked against calls to
+        // `method_called` only, so a value that shows up in some other call
+        // (e.g. a preceding get_issue) cannot satisfy them.
+        let method_to_check = outcome.method_called.as_deref();
+
         // Check method_called
-        if let Some(method) = &outcome.method_called {
-            let call_count = calls.iter().filter(|c| c.method == *method).count();
+        if let Some(method) = method_to_check {
+            let call_count = calls.iter().filter(|c| c.method == method).count();
             let method_called = call_count > 0;
 
             expected_parts.push(format!("method '{}' called", method));
@@ -260,11 +266,10 @@ impl Evaluator {
 
         // Check issue reference
         if let Some(issue) = &outcome.issue {
-            let issue_referenced = calls.iter().any(|call| {
-                call.args
-                    .values()
-                    .any(|v| v.as_str() == Some(issue.as_str()))
-            });
+            let issue_referenced = calls
+                .iter()
+                .filter(|call| method_to_check.is_none_or(|method| call.method == method))
+                .any(|call| references_value(call, issue));
 
             expected_parts.push(format!("issue '{}'", issue));
 
@@ -278,20 +283,12 @@ impl Evaluator {
 
         // Check field/value (for update operations)
         if let (Some(field), Some(value)) = (&outcome.field, &outcome.value) {
-            let update_calls: Vec<_> = calls
-                .iter()
-                .filter(|c| c.method == "update_issue")
-                .collect();
-
-            // For now, we just check if update was called with the right issue
-            // In a full implementation, we'd parse the body to check field/value
-            let value_found = update_calls.iter().any(|_call| {
-                // Simplified check - in reality would need to inspect request body
-                true
-            });
+            // Simplified: only verifies that some update was made, not that
+            // it set `field` to `value`.
+            let update_called = calls.iter().any(|c| c.method == "update_issue");
 
             expected_parts.push(format!("{} = '{}'", field, value));
-            if value_found && !update_calls.is_empty() {
+            if update_called {
                 actual_parts.push("update called (field check simplified)".to_string());
             } else {
                 actual_parts.push("no update with matching field/value".to_string());
@@ -301,59 +298,33 @@ impl Evaluator {
 
         // Check contains (for comment text or issue summary)
         if let Some(contains) = &outcome.contains {
-            // Determine which method to check based on method_called
-            let method_to_check = outcome.method_called.as_deref();
             let contains_lower = contains.to_lowercase();
 
-            let text_found = match method_to_check {
-                Some("create_issue") => {
-                    // For create_issue, check the summary field
-                    calls.iter().any(|call| {
-                        call.method == "create_issue"
-                            && call
-                                .args
-                                .get("summary")
-                                .and_then(|v| v.as_str())
-                                .map(|t| {
-                                    tracker_core::strings::contains_ignore_case(t, &contains_lower)
-                                })
-                                .unwrap_or(false)
-                    })
+            // Which argument holds the text; `None` searches every string argument.
+            let (text_arg, expected_desc) = match method_to_check {
+                Some("create_issue") => (
+                    Some("summary"),
+                    format!("issue summary containing '{}'", contains),
+                ),
+                Some("add_comment" | "add_article_comment") | None => {
+                    (Some("text"), format!("comment containing '{}'", contains))
                 }
-                Some("add_comment") | Some("add_article_comment") | None => {
-                    // For comments, check the text field
-                    calls.iter().any(|call| {
-                        (call.method == "add_comment" || call.method == "add_article_comment")
-                            && call
-                                .args
-                                .get("text")
-                                .and_then(|v| v.as_str())
-                                .map(|t| {
-                                    tracker_core::strings::contains_ignore_case(t, &contains_lower)
-                                })
-                                .unwrap_or(false)
-                    })
-                }
-                _ => {
-                    // For other methods, check all string args
-                    calls.iter().any(|call| {
-                        call.args.values().any(|v| {
-                            v.as_str()
-                                .map(|t| {
-                                    tracker_core::strings::contains_ignore_case(t, &contains_lower)
-                                })
-                                .unwrap_or(false)
-                        })
-                    })
-                }
+                Some(method) => (
+                    None,
+                    format!("'{}' argument containing '{}'", method, contains),
+                ),
             };
 
-            let expected_desc = match method_to_check {
-                Some("create_issue") => format!("issue summary containing '{}'", contains),
-                _ => format!("comment containing '{}'", contains),
-            };
+            // Without `method_called`, `contains` means comment text.
+            let text_found = calls
+                .iter()
+                .filter(|call| match method_to_check {
+                    Some(method) => call.method == method,
+                    None => matches!(call.method.as_str(), "add_comment" | "add_article_comment"),
+                })
+                .any(|call| arg_contains(call, text_arg, &contains_lower));
 
-            expected_parts.push(expected_desc.clone());
+            expected_parts.push(expected_desc);
             if text_found {
                 actual_parts.push(format!("found text with '{}'", contains));
             } else {
@@ -378,21 +349,16 @@ impl Evaluator {
     ) -> EfficiencyRating {
         let optimal = scoring.optimal_commands.unwrap_or(usize::MAX);
         let max = scoring.max_commands.unwrap_or(usize::MAX);
-        let min = scoring.min_commands.unwrap_or(0);
 
-        if total_calls < min {
-            // Suspiciously few calls - might have cheated or failed early
-            EfficiencyRating::Excellent
-        } else if total_calls <= optimal {
-            if total_calls < optimal {
-                EfficiencyRating::Excellent
-            } else {
-                EfficiencyRating::Optimal
-            }
-        } else if total_calls <= max {
-            EfficiencyRating::Acceptable
-        } else {
+        // Exceeding max_commands is inefficient even when no optimum is configured.
+        if total_calls > max {
             EfficiencyRating::Inefficient
+        } else if total_calls < optimal {
+            EfficiencyRating::Excellent
+        } else if total_calls == optimal {
+            EfficiencyRating::Optimal
+        } else {
+            EfficiencyRating::Acceptable
         }
     }
 
@@ -411,8 +377,7 @@ impl Evaluator {
         // Penalty: Failed outcomes
         let failed_outcomes = outcomes.iter().filter(|o| !o.achieved).count();
         if failed_outcomes > 0 {
-            // Major penalty for each failed outcome
-            let penalty = -(failed_outcomes as i32 * 25);
+            let penalty = failed_outcomes as i32 * FAILED_OUTCOME_PENALTY;
             breakdown.penalties.push(ScoreAdjustment {
                 reason: "Failed expected outcomes".to_string(),
                 points: penalty,
@@ -510,10 +475,8 @@ impl Evaluator {
                 continue;
             };
 
-            if seen.contains(&key) {
+            if !seen.insert(key) {
                 redundant += 1;
-            } else {
-                seen.insert(key);
             }
         }
 
@@ -571,6 +534,24 @@ impl Evaluator {
         }
 
         suggestions
+    }
+}
+
+/// Whether any argument of `call` is exactly `value` (e.g. an issue ID).
+fn references_value(call: &CallLogEntry, value: &str) -> bool {
+    call.args.values().any(|v| v.as_str() == Some(value))
+}
+
+/// Whether the string argument `arg` of `call` (any string argument when
+/// `None`) contains `needle_lower`, ignoring case.
+fn arg_contains(call: &CallLogEntry, arg: Option<&str>, needle_lower: &str) -> bool {
+    let contains = |v: &serde_json::Value| {
+        v.as_str()
+            .is_some_and(|text| tracker_core::strings::contains_ignore_case(text, needle_lower))
+    };
+    match arg {
+        Some(name) => call.args.get(name).is_some_and(contains),
+        None => call.args.values().any(contains),
     }
 }
 
@@ -809,6 +790,105 @@ mod tests {
         assert!(
             cache_bonus.is_none(),
             "no cache bonus without cache/context commands"
+        );
+    }
+
+    /// Evaluate `calls` against a scenario whose only expected outcome is
+    /// `outcome` (a JSON object in the shape of a scenario.toml inline table).
+    fn achieves(outcome: serde_json::Value, calls: &[CallLogEntry]) -> bool {
+        let scenario = Scenario {
+            expected_outcomes: [(
+                "outcome".to_string(),
+                serde_json::from_value(outcome).unwrap(),
+            )]
+            .into_iter()
+            .collect(),
+            ..make_test_scenario()
+        };
+        Evaluator::new(scenario).evaluate(calls).success
+    }
+
+    #[test]
+    fn test_issue_must_be_referenced_by_method_called() {
+        let outcome = serde_json::json!({ "method_called": "update_issue", "issue": "DEMO-2" });
+
+        // DEMO-2 was only fetched; the update went to another issue.
+        let wrong_issue = vec![
+            make_call("get_issue", vec![("id", "DEMO-2")]),
+            make_call("update_issue", vec![("id", "DEMO-1")]),
+        ];
+        assert!(!achieves(outcome.clone(), &wrong_issue));
+
+        let right_issue = vec![make_call("update_issue", vec![("id", "DEMO-2")])];
+        assert!(achieves(outcome, &right_issue));
+    }
+
+    #[test]
+    fn test_contains_must_match_method_called_args() {
+        let outcome =
+            serde_json::json!({ "method_called": "update_article", "contains": "KB-A-1" });
+
+        // KB-A-1 was only fetched; the update went to another article.
+        let wrong_article = vec![
+            make_call("get_article", vec![("id", "KB-A-1")]),
+            make_call("update_article", vec![("id", "KB-A-2")]),
+        ];
+        assert!(!achieves(outcome.clone(), &wrong_article));
+
+        let right_article = vec![make_call("update_article", vec![("id", "kb-a-1")])];
+        assert!(achieves(outcome, &right_article));
+    }
+
+    #[test]
+    fn test_contains_without_method_checks_comment_text() {
+        let outcome = serde_json::json!({ "contains": "starting" });
+
+        let not_a_comment = vec![make_call("search_issues", vec![("query", "Starting")])];
+        assert!(!achieves(outcome.clone(), &not_a_comment));
+
+        let comment = vec![make_call(
+            "add_article_comment",
+            vec![("article_id", "KB-A-1"), ("text", "Starting review")],
+        )];
+        assert!(achieves(outcome, &comment));
+    }
+
+    #[test]
+    fn test_efficiency_inefficient_over_max_without_optimal() {
+        let scoring = ScoringConfig {
+            max_commands: Some(2),
+            optimal_commands: None,
+            ..Default::default()
+        };
+        let evaluator = Evaluator::new(make_test_scenario());
+
+        assert_eq!(
+            evaluator.calculate_efficiency(3, &scoring),
+            EfficiencyRating::Inefficient
+        );
+        assert_eq!(
+            evaluator.calculate_efficiency(2, &scoring),
+            EfficiencyRating::Excellent
+        );
+    }
+
+    #[test]
+    fn test_efficiency_ratings_around_optimal() {
+        let scoring = make_test_scenario().scoring; // optimal 2, max 5
+        let evaluator = Evaluator::new(make_test_scenario());
+
+        let ratings: Vec<_> = [1, 2, 5, 6]
+            .into_iter()
+            .map(|calls| evaluator.calculate_efficiency(calls, &scoring))
+            .collect();
+        assert_eq!(
+            ratings,
+            vec![
+                EfficiencyRating::Excellent,
+                EfficiencyRating::Optimal,
+                EfficiencyRating::Acceptable,
+                EfficiencyRating::Inefficient,
+            ]
         );
     }
 }
