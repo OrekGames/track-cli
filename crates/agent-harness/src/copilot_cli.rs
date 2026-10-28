@@ -2,16 +2,20 @@
 //!
 //! Invokes GitHub Copilot CLI as a subprocess and captures its behavior for evaluation.
 //! This allows testing how GitHub Copilot performs on scenarios using the track CLI.
-//! Supports both legacy `gh copilot` mode and new standalone `copilot` agent mode.
+//! Drives the interactive Q&A of the legacy `gh copilot suggest` command.
 
-use crate::runner::{CommandExecution, SessionResult};
+use crate::runner::{CommandExecution, SessionResult, load_skill_file};
+use crate::subprocess::{StderrCapture, ensure_success, route_track_to_mock};
+use crate::tools::{find_track_binary, is_track_command, parse_track_args};
 use anyhow::{Context, Result};
 use colored::Colorize;
-use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use tracker_mock::Scenario;
+
+/// Reply to a Copilot question that is not a command confirmation, to keep it going
+const CONTINUE_REPLY: &str = "Yes, please proceed with the track CLI command.";
 
 /// Copilot CLI operation mode
 #[derive(Debug, Clone, Copy)]
@@ -30,31 +34,26 @@ pub struct CopilotCliConfig {
 }
 
 /// A single interaction with Copilot CLI
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CopilotInteraction {
-    pub prompt: String,
-    pub response: String,
-    pub command_suggested: Option<String>,
-    pub command_executed: bool,
+#[derive(Debug)]
+struct CopilotInteraction {
+    response: String,
+    /// The track command Copilot suggested and the harness confirmed
+    command_suggested: Option<String>,
 }
 
-/// Result of a Copilot CLI session
-pub struct CopilotCliResult {
-    pub turns_used: usize,
-    pub commands_executed: Vec<CommandExecution>,
+/// The interactions of a Copilot session, and whether the harness cut it short
+struct InteractiveSession {
+    interactions: Vec<CopilotInteraction>,
+    reached_turn_limit: bool,
 }
 
 /// Run Copilot CLI against a scenario
-pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<CopilotCliResult> {
+pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<SessionResult> {
     // Build system prompt
     let system_prompt = build_system_prompt(&config.scenario);
 
     // Find track binary path
     let track_bin = find_track_binary();
-    let track_bin_dir = std::path::Path::new(&track_bin)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
 
     if config.verbose {
         println!("\n{}", "Starting Copilot CLI session...".cyan());
@@ -67,32 +66,9 @@ pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<CopilotCliResult> {
 
     // Build command
     let mut cmd = build_copilot_command(config);
+    route_track_to_mock(&mut cmd, &config.scenario_path, &track_bin);
 
-    // Set environment - route track commands through mock
-    cmd.env("TRACK_MOCK_DIR", &config.scenario_path);
-
-    // Add track binary to PATH if needed
-    if !track_bin_dir.is_empty() {
-        let current_path = std::env::var("PATH").unwrap_or_default();
-        cmd.env("PATH", format!("{}:{}", track_bin_dir, current_path));
-    }
-
-    // Set up stdio
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    // Spawn process
-    let mut child = cmd.spawn().context("Failed to spawn Copilot CLI")?;
-
-    // Run interactive session
-    let interactions = run_interactive_session(&mut child, &system_prompt, config)?;
-
-    // Wait for completion
-    let status = child.wait().context("Failed to wait for Copilot CLI")?;
-    if !status.success() {
-        anyhow::bail!("Copilot CLI exited with status {status}");
-    }
+    let interactions = run_session(cmd, &system_prompt, config.max_turns, config.verbose)?;
 
     // Extract commands from interactions
     let commands_executed = extract_track_commands(&interactions);
@@ -107,56 +83,12 @@ pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<CopilotCliResult> {
         );
     }
 
-    Ok(CopilotCliResult {
+    Ok(SessionResult {
         turns_used,
+        total_input_tokens: None,  // Not available from CLI
+        total_output_tokens: None, // Not available from CLI
         commands_executed,
     })
-}
-
-/// Path to the skill file relative to the project root
-const SKILL_FILE_PATH: &str = "agent-skills/SKILL.md";
-
-/// Strip YAML frontmatter (--- ... ---) from skill file content
-fn strip_frontmatter(content: &str) -> &str {
-    if let Some(stripped) = content.strip_prefix("---\n")
-        && let Some(close) = stripped.find("\n---\n")
-    {
-        return stripped[close + 5..].trim_start();
-    }
-    content
-}
-
-/// Load the skill file content, stripping frontmatter
-fn load_skill_file() -> Option<String> {
-    // Try to find the skill file relative to the current working directory
-    let paths_to_try = [
-        SKILL_FILE_PATH.to_string(),
-        format!("./{}", SKILL_FILE_PATH),
-        format!("../{}", SKILL_FILE_PATH),
-        format!("../../{}", SKILL_FILE_PATH),
-    ];
-
-    for path in &paths_to_try {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            return Some(strip_frontmatter(&content).to_string());
-        }
-    }
-
-    // Also try from CARGO_MANIFEST_DIR if available
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let path = std::path::Path::new(&manifest_dir)
-            .parent() // crates/
-            .and_then(|p| p.parent()) // project root
-            .map(|p| p.join(SKILL_FILE_PATH));
-
-        if let Some(path) = path
-            && let Ok(content) = std::fs::read_to_string(&path)
-        {
-            return Some(strip_frontmatter(&content).to_string());
-        }
-    }
-
-    None
 }
 
 /// Build system prompt for Copilot CLI using the track skill file
@@ -224,41 +156,55 @@ fn build_copilot_command(config: &CopilotCliConfig) -> Command {
     }
 }
 
-/// Find the track binary
-fn find_track_binary() -> String {
-    // Check for debug build first
-    let debug_path = "./target/debug/track";
-    if std::path::Path::new(debug_path).exists() {
-        return std::fs::canonicalize(debug_path)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| debug_path.to_string());
+/// Spawn Copilot, run its interactive session, and reap the process
+fn run_session(
+    mut cmd: Command,
+    system_prompt: &str,
+    max_turns: usize,
+    verbose: bool,
+) -> Result<Vec<CopilotInteraction>> {
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().context("Failed to spawn Copilot CLI")?;
+    let stderr = StderrCapture::start(&mut child);
+
+    // Our ends of Copilot's stdin and stdout are closed when this returns, so
+    // Copilot cannot stay blocked on them while we wait for it below.
+    let session = run_interactive_session(&mut child, system_prompt, max_turns, verbose);
+
+    let reached_turn_limit = matches!(&session, Ok(s) if s.reached_turn_limit);
+    if reached_turn_limit {
+        // The harness ended the session, so stop Copilot instead of waiting
+        // for it to give up on its closed pipes.
+        let _ = child.kill();
+    }
+    let status = child.wait().context("Failed to wait for Copilot CLI")?;
+    // After a kill the exit status is meaningless. Otherwise check it before
+    // the session result: if Copilot died, its stderr explains a session error
+    // such as a broken pipe.
+    if !reached_turn_limit {
+        ensure_success("Copilot CLI", status, stderr)?;
     }
 
-    // Check for release build
-    let release_path = "./target/release/track";
-    if std::path::Path::new(release_path).exists() {
-        return std::fs::canonicalize(release_path)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| release_path.to_string());
-    }
-
-    // Fall back to PATH
-    "track".to_string()
+    Ok(session?.interactions)
 }
 
 /// Run interactive session with Copilot CLI
 fn run_interactive_session(
-    child: &mut std::process::Child,
+    child: &mut Child,
     system_prompt: &str,
-    config: &CopilotCliConfig,
-) -> Result<Vec<CopilotInteraction>> {
+    max_turns: usize,
+    verbose: bool,
+) -> Result<InteractiveSession> {
     let mut interactions = Vec::new();
+    let mut reached_turn_limit = false;
     let mut stdin = child.stdin.take().context("Failed to get stdin")?;
     let stdout = child.stdout.take().context("Failed to get stdout")?;
     let mut reader = BufReader::new(stdout);
 
     // Send initial prompt
-    if config.verbose {
+    if verbose {
         println!("{}: Sending task prompt", "Copilot".cyan());
     }
 
@@ -267,14 +213,13 @@ fn run_interactive_session(
 
     let mut current_output = String::new();
     let mut turn_count = 0;
-    let _waiting_for_response = true;
 
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => break, // EOF
             Ok(_) => {
-                if config.verbose {
+                if verbose {
                     print!("{}", line);
                 }
 
@@ -283,10 +228,11 @@ fn run_interactive_session(
                 // Detect if Copilot is asking for input
                 if detect_input_prompt(&line) {
                     turn_count += 1;
-                    if turn_count > config.max_turns {
-                        if config.verbose {
+                    if turn_count > max_turns {
+                        if verbose {
                             println!("\n{}: Max turns reached", "Stopping".yellow());
                         }
+                        reached_turn_limit = true;
                         break;
                     }
 
@@ -294,17 +240,15 @@ fn run_interactive_session(
                     if let Some(cmd) = extract_command_suggestion(&current_output) {
                         if is_track_command(&cmd) {
                             interactions.push(CopilotInteraction {
-                                prompt: system_prompt.to_string(),
                                 response: current_output.clone(),
-                                command_suggested: Some(cmd.clone()),
-                                command_executed: true,
+                                command_suggested: Some(cmd),
                             });
 
                             // Auto-confirm execution
                             writeln!(stdin, "yes")?;
                             stdin.flush()?;
 
-                            if config.verbose {
+                            if verbose {
                                 println!("{}: Auto-confirming track command", "Action".green());
                             }
                         } else {
@@ -312,14 +256,12 @@ fn run_interactive_session(
                             writeln!(stdin, "no")?;
                             stdin.flush()?;
 
-                            if config.verbose {
+                            if verbose {
                                 println!("{}: Rejecting non-track command", "Action".yellow());
                             }
                         }
                     } else {
-                        // Send a generic response to continue
-                        let response = generate_response(&current_output, config);
-                        writeln!(stdin, "{}", response)?;
+                        writeln!(stdin, "{}", CONTINUE_REPLY)?;
                         stdin.flush()?;
                     }
 
@@ -327,7 +269,7 @@ fn run_interactive_session(
                 }
             }
             Err(e) => {
-                if config.verbose {
+                if verbose {
                     eprintln!("{}: {}", "Read error".red(), e);
                 }
                 break;
@@ -338,14 +280,15 @@ fn run_interactive_session(
     // Add final interaction if any
     if !current_output.is_empty() {
         interactions.push(CopilotInteraction {
-            prompt: system_prompt.to_string(),
             response: current_output,
             command_suggested: None,
-            command_executed: false,
         });
     }
 
-    Ok(interactions)
+    Ok(InteractiveSession {
+        interactions,
+        reached_turn_limit,
+    })
 }
 
 /// Detect if a line indicates Copilot is waiting for user input
@@ -404,91 +347,19 @@ fn extract_command_suggestion(output: &str) -> Option<String> {
     None
 }
 
-/// Generate an automated response to continue the conversation
-fn generate_response(_output: &str, _config: &CopilotCliConfig) -> String {
-    // Simple response to keep Copilot engaged
-    "Yes, please proceed with the track CLI command.".to_string()
-}
-
-/// Check if a command is a track command
-fn is_track_command(cmd: &str) -> bool {
-    let trimmed = cmd.trim();
-    // Check for direct track command
-    if trimmed.starts_with("track ") || trimmed == "track" {
-        return true;
-    }
-    // Check for path-based track command (e.g., /path/to/track or ./target/debug/track)
-    if trimmed.contains("track ") {
-        // Extract the command name from a potential path
-        if let Some(track_idx) = trimmed.find("track ") {
-            // Verify "track" is preceded by a path separator or start of string
-            if track_idx == 0 {
-                return true;
-            }
-            let prev_char = trimmed.chars().nth(track_idx - 1);
-            if prev_char == Some('/') || prev_char == Some('\\') {
-                return true;
-            }
-        }
-    }
-    // Check for track at end of path without args
-    if trimmed.ends_with("/track") || trimmed.ends_with("\\track") {
-        return true;
-    }
-    false
-}
-
-/// Parse track command into args
-fn parse_track_args(cmd: &str) -> Vec<String> {
-    let trimmed = cmd.trim();
-
-    // Handle path-based track command
-    let Some(idx) = trimmed.find("track ") else {
-        // No "track " found - either ends with "track" (no args) or not a track command
-        return vec![];
-    };
-
-    let track_part = &trimmed[idx + 6..];
-
-    // Simple arg splitting (doesn't handle all quoting edge cases)
-    shell_words::split(track_part).unwrap_or_else(|_| {
-        track_part
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect()
-    })
-}
-
-/// Extract track commands from interactions
+/// Extract the confirmed track commands from interactions
 fn extract_track_commands(interactions: &[CopilotInteraction]) -> Vec<CommandExecution> {
-    let mut commands = Vec::new();
-
-    for interaction in interactions {
-        if let Some(cmd) = &interaction.command_suggested
-            && is_track_command(cmd)
-            && interaction.command_executed
-        {
-            let args = parse_track_args(cmd);
-            commands.push(CommandExecution {
-                args,
+    interactions
+        .iter()
+        .filter_map(|interaction| {
+            let cmd = interaction.command_suggested.as_ref()?;
+            Some(CommandExecution {
+                args: parse_track_args(cmd),
                 output: interaction.response.clone(),
                 is_error: None, // Would need to parse from output
-            });
-        }
-    }
-
-    commands
-}
-
-impl From<CopilotCliResult> for SessionResult {
-    fn from(result: CopilotCliResult) -> Self {
-        SessionResult {
-            turns_used: result.turns_used,
-            total_input_tokens: None,  // Not available from CLI
-            total_output_tokens: None, // Not available from CLI
-            commands_executed: result.commands_executed,
-        }
-    }
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -523,30 +394,41 @@ mod tests {
         assert_eq!(extract_command_suggestion("No command here"), None);
     }
 
-    #[test]
-    fn test_is_track_command() {
-        assert!(is_track_command("track issue get DEMO-1"));
-        assert!(is_track_command("  track issue get DEMO-1  "));
-        assert!(is_track_command("/path/to/track issue get DEMO-1"));
-        assert!(is_track_command("./target/debug/track issue list"));
-        assert!(!is_track_command("ls -la"));
-        assert!(!is_track_command("cat file.txt"));
-        assert!(!is_track_command("git commit"));
+    #[cfg(unix)]
+    fn fake_copilot(script: &str) -> Command {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_parse_track_args() {
-        assert_eq!(
-            parse_track_args("track issue get DEMO-1"),
-            vec!["issue", "get", "DEMO-1"]
+    fn turn_limit_keeps_interactions_when_copilot_exits_with_error() {
+        // Suggests a track command after every answer, and fails once its
+        // stdin closes, as an interactive CLI may when the harness stops it.
+        let copilot = fake_copilot(
+            r#"while read -r answer; do
+                 echo '$ track issue get DEMO-1'
+                 echo 'What would you like to do?'
+               done
+               exit 1"#,
         );
-        assert_eq!(
-            parse_track_args("track issue comment DEMO-1 -m \"Hello world\""),
-            vec!["issue", "comment", "DEMO-1", "-m", "Hello world"]
-        );
-        assert_eq!(
-            parse_track_args("/path/to/track i s \"query\""),
-            vec!["i", "s", "query"]
+        let interactions = run_session(copilot, "task", 1, false)
+            .expect("stopping at the turn limit should keep the session");
+        let commands = extract_track_commands(&interactions);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].args, vec!["issue", "get", "DEMO-1"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copilot_failure_is_an_error_that_quotes_stderr() {
+        let copilot = fake_copilot(r#"echo 'unknown command "copilot" for "gh"' >&2; exit 1"#);
+        let err = run_session(copilot, "task", 5, false).unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with(r#"unknown command "copilot" for "gh""#),
+            "{err}"
         );
     }
 }

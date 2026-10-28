@@ -43,7 +43,7 @@ fn strip_frontmatter(content: &str) -> &str {
 }
 
 /// Load the skill file content, stripping frontmatter
-fn load_skill_file() -> Option<String> {
+pub(crate) fn load_skill_file() -> Option<String> {
     let paths_to_try = [
         SKILL_FILE_PATH.to_string(),
         format!("./{}", SKILL_FILE_PATH),
@@ -128,8 +128,7 @@ impl SessionRunner {
 
         // Agentic loop
         loop {
-            turns += 1;
-            if turns > self.max_turns {
+            if turns == self.max_turns {
                 if self.verbose {
                     println!(
                         "{} Maximum turns ({}) reached",
@@ -139,6 +138,7 @@ impl SessionRunner {
                 }
                 break;
             }
+            turns += 1;
 
             if self.verbose {
                 println!("{} {}", "Turn".cyan().bold(), turns);

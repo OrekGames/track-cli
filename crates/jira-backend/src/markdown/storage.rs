@@ -2,78 +2,31 @@
 // Content Format Conversion
 // ============================================================================
 
-/// Convert Confluence storage format (XHTML) to plain text
+/// Convert Confluence storage format (XHTML) to plain text.
+///
+/// Tags are stripped (line breaks and closing block tags become newlines) and
+/// entities in text are decoded. CDATA sections, which hold code macro bodies,
+/// are copied verbatim: their markup and entities are literal code.
 pub(crate) fn storage_to_text(storage: &str) -> String {
-    let mut result = storage.to_string();
+    const CDATA_START: &str = "<![CDATA[";
+    const CDATA_END: &str = "]]>";
 
-    // Replace common block elements with newlines
-    result = result.replace("<br/>", "\n");
-    result = result.replace("<br />", "\n");
-    result = result.replace("<br>", "\n");
-    result = result.replace("</p>", "\n");
-    result = result.replace("</div>", "\n");
-    result = result.replace("</li>", "\n");
-    result = result.replace("</h1>", "\n\n");
-    result = result.replace("</h2>", "\n\n");
-    result = result.replace("</h3>", "\n\n");
-    result = result.replace("</h4>", "\n");
-    result = result.replace("</h5>", "\n");
-    result = result.replace("</h6>", "\n");
-
-    // Strip HTML tags while fully preserving CDATA contents
-    let chars: Vec<char> = result.chars().collect();
-    let mut output = String::new();
-    let mut i = 0;
-    let mut in_tag = false;
-    let mut in_cdata = false;
-
-    while i < chars.len() {
-        if in_cdata {
-            // Check if we are at the end of CDATA: "]]>"
-            if i + 2 < chars.len() && chars[i] == ']' && chars[i + 1] == ']' && chars[i + 2] == '>'
-            {
-                in_cdata = false;
-                i += 3;
-            } else {
-                output.push(chars[i]);
-                i += 1;
-            }
-        } else if in_tag {
-            if chars[i] == '>' {
-                in_tag = false;
-            }
-            i += 1;
+    let mut output = String::with_capacity(storage.len());
+    let mut rest = storage;
+    while let Some(tag_start) = rest.find('<') {
+        output.push_str(&decode_html_entities(&rest[..tag_start]));
+        rest = &rest[tag_start..];
+        if let Some(cdata) = rest.strip_prefix(CDATA_START) {
+            let (body, after) = cdata.split_once(CDATA_END).unwrap_or((cdata, ""));
+            output.push_str(body);
+            rest = after;
         } else {
-            // Check for CDATA start: "<![CDATA["
-            if chars[i] == '<'
-                && i + 8 < chars.len()
-                && chars[i + 1] == '!'
-                && chars[i + 2] == '['
-                && chars[i + 3] == 'C'
-                && chars[i + 4] == 'D'
-                && chars[i + 5] == 'A'
-                && chars[i + 6] == 'T'
-                && chars[i + 7] == 'A'
-                && chars[i + 8] == '['
-            {
-                in_cdata = true;
-                i += 9;
-            } else if chars[i] == '<' {
-                in_tag = true;
-                i += 1;
-            } else {
-                output.push(chars[i]);
-                i += 1;
-            }
+            let tag_end = rest.find('>').map_or(rest.len(), |i| i + 1);
+            output.push_str(text_for_tag(&rest[..tag_end]));
+            rest = &rest[tag_end..];
         }
     }
-
-    // Decode common HTML entities
-    output = output.replace("&nbsp;", " ");
-    output = output.replace("&amp;", "&");
-    output = output.replace("&lt;", "<");
-    output = output.replace("&gt;", ">");
-    output = output.replace("&quot;", "\"");
+    output.push_str(&decode_html_entities(rest));
 
     // Clean up multiple newlines
     while output.contains("\n\n\n") {
@@ -81,6 +34,34 @@ pub(crate) fn storage_to_text(storage: &str) -> String {
     }
 
     output.trim().to_string()
+}
+
+/// The plain-text stand-in for a stripped tag: line breaks and the ends of
+/// block elements become newlines (two after major headings), anything else
+/// disappears.
+fn text_for_tag(tag: &str) -> &'static str {
+    let name = tag
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim_end_matches('/')
+        .split_whitespace()
+        .next()
+        .unwrap_or_default();
+    match name.to_ascii_lowercase().as_str() {
+        "br" | "/p" | "/div" | "/li" | "/h4" | "/h5" | "/h6" => "\n",
+        "/h1" | "/h2" | "/h3" => "\n\n",
+        _ => "",
+    }
+}
+
+/// Decode the HTML entities Confluence emits for plain text. `&amp;` goes
+/// last so an escaped entity such as `&amp;lt;` decodes once, to `&lt;`.
+fn decode_html_entities(text: &str) -> String {
+    text.replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
 }
 
 /// Convert Markdown to Confluence storage format.
@@ -299,7 +280,7 @@ fn escape_cdata(input: &str) -> String {
     input.replace("]]>", "]]]]><![CDATA[>")
 }
 
-fn html_escape(input: &str) -> String {
+pub(crate) fn html_escape(input: &str) -> String {
     input
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -412,5 +393,23 @@ echo hi
         let storage_xml = "<ac:structured-macro ac:name=\"code\"><ac:plain-text-body><![CDATA[if x < 5 && y > 3 { println!(\"hi\"); }]]></ac:plain-text-body></ac:structured-macro>";
         let plain_text = storage_to_text(storage_xml);
         assert_eq!(plain_text, "if x < 5 && y > 3 { println!(\"hi\"); }");
+    }
+
+    #[test]
+    fn storage_to_text_decodes_escaped_entities_only_once() {
+        // The page text is literally "&lt;br&gt;", stored with its `&` escaped.
+        assert_eq!(
+            storage_to_text("<p>Write &amp;lt;br&amp;gt; for a break</p>"),
+            "Write &lt;br&gt; for a break"
+        );
+    }
+
+    #[test]
+    fn storage_to_text_keeps_cdata_markup_and_entities_verbatim() {
+        let storage_xml = "<p>Example:</p><ac:structured-macro ac:name=\"code\"><ac:plain-text-body><![CDATA[<p>a &amp; b</p><br/>]]></ac:plain-text-body></ac:structured-macro>";
+        assert_eq!(
+            storage_to_text(storage_xml),
+            "Example:\n<p>a &amp; b</p><br/>"
+        );
     }
 }

@@ -1733,7 +1733,14 @@ fn test_jira_cli_trims_whitespace_in_basic_auth_header() {
         "\rFAKE-TOKEN-DO-NOT-USE\t ",
     );
 
+    // Credentials in the environment override the config file, so a
+    // developer's own JIRA_TOKEN would replace the one under test.
     cargo_bin_cmd!("track")
+        .env_remove("JIRA_URL")
+        .env_remove("JIRA_EMAIL")
+        .env_remove("JIRA_TOKEN")
+        .env_remove("TRACKER_URL")
+        .env_remove("TRACKER_TOKEN")
         .args(["-b", "jira", "--config"])
         .arg(&cfg)
         .args(["issue", "get", "TEST-123"])

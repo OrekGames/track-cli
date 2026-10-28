@@ -157,53 +157,63 @@ impl From<yt::Project> for core::Project {
     }
 }
 
+/// Build a core ProjectCustomField from the parts shared by the project-fields
+/// listing and the attach-field response.
+///
+/// `bundle_values` yields `(name, is_resolved, ordinal)` for each bundle value.
+/// Every value contributes its name; state fields additionally keep each
+/// value's resolved flag and ordinal for workflow hints.
+fn project_custom_field_to_core(
+    id: String,
+    name: String,
+    field_type: String,
+    can_be_empty: bool,
+    bundle_values: impl Iterator<Item = (String, Option<bool>, Option<i32>)>,
+) -> core::ProjectCustomField {
+    let is_state_field = field_type.starts_with("state");
+    let mut values = Vec::new();
+    let mut state_values = Vec::new();
+    for (value_name, is_resolved, ordinal) in bundle_values {
+        if is_state_field {
+            state_values.push(core::StateValueInfo {
+                name: value_name.clone(),
+                is_resolved: is_resolved.unwrap_or(false),
+                ordinal: ordinal.unwrap_or(0),
+            });
+        }
+        values.push(value_name);
+    }
+
+    core::ProjectCustomField {
+        id,
+        name,
+        field_type,
+        required: !can_be_empty,
+        values,
+        state_values,
+    }
+}
+
 /// Convert YouTrack ProjectCustomFieldExt to tracker-core ProjectCustomField (with values)
 impl From<yt::ProjectCustomFieldExt> for core::ProjectCustomField {
     fn from(field: yt::ProjectCustomFieldExt) -> Self {
         let field_type = field
             .field
             .field_type
-            .as_ref()
-            .and_then(|ft| ft.presentation.clone())
+            .and_then(|ft| ft.presentation)
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Check if this is a state field (field_type starts with "state")
-        let is_state_field = field_type.starts_with("state");
-
-        // Extract enum values and state values from bundle if available
-        let (values, state_values) = match field.bundle {
-            Some(bundle) => {
-                let mut values: Vec<String> = Vec::with_capacity(bundle.values.len());
-                let mut state_values: Vec<core::StateValueInfo> = if is_state_field {
-                    Vec::with_capacity(bundle.values.len())
-                } else {
-                    Vec::new()
-                };
-
-                for v in bundle.values {
-                    if is_state_field {
-                        state_values.push(core::StateValueInfo {
-                            name: v.name.clone(),
-                            is_resolved: v.is_resolved.unwrap_or(false),
-                            ordinal: v.ordinal.unwrap_or(0),
-                        });
-                    }
-                    values.push(v.name);
-                }
-
-                (values, state_values)
-            }
-            None => (vec![], vec![]),
-        };
-
-        Self {
-            id: field.id,
-            name: field.field.name,
+        project_custom_field_to_core(
+            field.id,
+            field.field.name,
             field_type,
-            required: !field.can_be_empty,
-            values,
-            state_values,
-        }
+            field.can_be_empty,
+            field
+                .bundle
+                .into_iter()
+                .flat_map(|bundle| bundle.values)
+                .map(|v| (v.name, v.is_resolved, v.ordinal)),
+        )
     }
 }
 
@@ -253,6 +263,7 @@ impl From<yt::IssueTag> for core::IssueTag {
 /// link-type + direction.  We produce a composite ID `"bucket/TARGET"` so
 /// each pair is individually addressable for unlinking.
 pub fn flatten_youtrack_link(link: yt::IssueLink) -> Vec<core::IssueLink> {
+    let link_type = core::IssueLinkType::from(link.link_type);
     link.issues
         .into_iter()
         .map(|issue| {
@@ -260,13 +271,7 @@ pub fn flatten_youtrack_link(link: yt::IssueLink) -> Vec<core::IssueLink> {
             core::IssueLink {
                 id: format!("{}/{}", link.id, target_id),
                 direction: link.direction.clone(),
-                link_type: core::IssueLinkType {
-                    id: link.link_type.id.clone(),
-                    name: link.link_type.name.clone(),
-                    source_to_target: link.link_type.source_to_target.clone(),
-                    target_to_source: link.link_type.target_to_source.clone(),
-                    directed: link.link_type.directed,
-                },
+                link_type: link_type.clone(),
                 issues: vec![issue.into()],
             }
         })
@@ -561,45 +566,20 @@ pub fn project_custom_field_response_to_core(
     let field_type = field
         .field
         .field_type
-        .as_ref()
-        .map(|ft| ft.id.clone())
+        .map(|ft| ft.id)
         .unwrap_or_else(|| "unknown".to_string());
 
-    let is_state_field = field_type.starts_with("state");
-
-    let (values, state_values) = match field.bundle {
-        Some(bundle) => {
-            let mut values: Vec<String> = Vec::with_capacity(bundle.values.len());
-            let mut state_values: Vec<core::StateValueInfo> = if is_state_field {
-                Vec::with_capacity(bundle.values.len())
-            } else {
-                Vec::new()
-            };
-
-            for v in bundle.values {
-                if is_state_field {
-                    state_values.push(core::StateValueInfo {
-                        name: v.name.clone(),
-                        is_resolved: v.is_resolved.unwrap_or(false),
-                        ordinal: v.ordinal.unwrap_or(0),
-                    });
-                }
-                values.push(v.name);
-            }
-
-            (values, state_values)
-        }
-        None => (vec![], vec![]),
-    };
-
-    core::ProjectCustomField {
-        id: field.id,
-        name: field.field.name,
+    project_custom_field_to_core(
+        field.id,
+        field.field.name,
         field_type,
-        required: !field.can_be_empty,
-        values,
-        state_values,
-    }
+        field.can_be_empty,
+        field
+            .bundle
+            .into_iter()
+            .flat_map(|bundle| bundle.values)
+            .map(|v| (v.name, v.is_resolved, v.ordinal)),
+    )
 }
 
 #[cfg(test)]

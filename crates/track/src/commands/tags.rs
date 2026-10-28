@@ -62,13 +62,7 @@ fn handle_create(
 ) -> Result<()> {
     let tag = CreateTag {
         name: name.to_string(),
-        color: color.map(|c| {
-            if c.starts_with('#') {
-                c.to_string()
-            } else {
-                format!("#{}", c)
-            }
-        }),
+        color: color.map(with_hash_prefix),
         description: description.map(|d| d.to_string()),
     };
 
@@ -85,6 +79,15 @@ fn handle_delete(client: &dyn IssueTracker, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Accept hex colors with or without the leading `#` and always send it.
+fn with_hash_prefix(color: &str) -> String {
+    if color.starts_with('#') {
+        color.to_string()
+    } else {
+        format!("#{}", color)
+    }
+}
+
 fn handle_update(
     client: &dyn IssueTracker,
     current_name: &str,
@@ -95,13 +98,7 @@ fn handle_update(
 ) -> Result<()> {
     let tag = CreateTag {
         name: new_name.unwrap_or(current_name).to_string(),
-        color: color.map(|c| {
-            if c.starts_with('#') {
-                c.to_string()
-            } else {
-                format!("#{}", c)
-            }
-        }),
+        color: color.map(with_hash_prefix),
         description: description.map(|d| d.to_string()),
     };
 
@@ -111,4 +108,15 @@ fn handle_update(
 
     output_result(&updated, format)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_hash_prefix_adds_missing_hash_only() {
+        assert_eq!(with_hash_prefix("d73a4a"), "#d73a4a");
+        assert_eq!(with_hash_prefix("#d73a4a"), "#d73a4a");
+    }
 }

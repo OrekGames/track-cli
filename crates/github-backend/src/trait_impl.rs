@@ -13,7 +13,7 @@ use crate::convert::{
     convert_query_to_github, create_issue_from_core, get_standard_custom_fields,
     github_issue_to_core, github_timeline_to_events, update_issue_from_core,
 };
-use crate::wiki::WikiPage;
+use crate::wiki::{WikiAttachment, WikiPage};
 
 /// Parse an issue number from a string identifier.
 ///
@@ -345,6 +345,28 @@ impl IssueTracker for GitHubClient {
         let timeline = self.get_issue_timeline(number)?;
         Ok(github_timeline_to_events(timeline))
     }
+
+    fn web_url(&self, issue_id: Option<&str>) -> Result<Option<String>> {
+        let Some(id) = issue_id else {
+            return Ok(Some(self.issues_web_url(None, None)));
+        };
+        let number = parse_issue_number(id)?;
+        // "owner/repo#N" names its own repository; "N" and "#N" mean this one.
+        let repo_path = id
+            .rsplit_once('#')
+            .map(|(repo_path, _)| repo_path)
+            .filter(|repo_path| repo_path.contains('/'));
+        Ok(Some(self.issues_web_url(repo_path, Some(number))))
+    }
+
+    // GitHub issues are only ever open or closed.
+    fn default_start_state(&self) -> &'static str {
+        "open"
+    }
+
+    fn default_complete_state(&self) -> &'static str {
+        "closed"
+    }
 }
 
 // ============================================================================
@@ -449,13 +471,24 @@ fn wiki_pages_to_articles(
         .collect()
 }
 
-fn wiki_page_matches_query(page: &WikiPage, query_lower: &str) -> bool {
-    tracker_core::strings::contains_ignore_case(&page.title, query_lower)
-        || tracker_core::strings::contains_ignore_case(&page.content, query_lower)
-        || page
-            .tags
-            .iter()
-            .any(|tag| tracker_core::strings::contains_ignore_case(tag, query_lower))
+fn wiki_attachment_to_article_attachment(attachment: WikiAttachment) -> ArticleAttachment {
+    ArticleAttachment {
+        id: attachment.path,
+        name: attachment.name,
+        size: attachment.size,
+        mime_type: attachment.mime_type,
+        url: attachment.url,
+        created: None,
+    }
+}
+
+impl GitHubClient {
+    /// Whether `project_id` names this client's repository. GitHub owner and
+    /// repository names are case-insensitive, and `resolve_project_id` returns
+    /// GitHub's canonical casing, which need not match the configured one.
+    fn is_configured_repo(&self, project_id: &str) -> bool {
+        project_id.eq_ignore_ascii_case(&format!("{}/{}", self.owner(), self.repo()))
+    }
 }
 
 impl KnowledgeBase for GitHubClient {
@@ -478,12 +511,9 @@ impl KnowledgeBase for GitHubClient {
         limit: usize,
         skip: usize,
     ) -> Result<Vec<Article>> {
-        // Filter by project if specified
-        if let Some(proj) = project_id {
-            let expected_project = format!("{}/{}", self.owner(), self.repo());
-            if proj != expected_project {
-                return Ok(Vec::new()); // Project doesn't match
-            }
+        // The wiki only holds this repository's pages.
+        if project_id.is_some_and(|proj| !self.is_configured_repo(proj)) {
+            return Ok(Vec::new());
         }
 
         let wiki = self.wiki();
@@ -511,62 +541,33 @@ impl KnowledgeBase for GitHubClient {
         ))
     }
 
+    // The wiki is read whole, so return everything in one call rather than
+    // letting the default offset paging re-read it for every page.
     fn list_all_articles(
         &self,
         project_id: Option<&str>,
         max_results: usize,
     ) -> Result<Vec<Article>> {
-        if let Some(proj) = project_id {
-            let expected_project = format!("{}/{}", self.owner(), self.repo());
-            if proj != expected_project {
-                return Ok(Vec::new());
-            }
-        }
         if max_results == 0 {
             return Ok(Vec::new());
         }
-
-        let wiki = self.wiki();
-        let pages = wiki.list_pages()?;
-
-        Ok(wiki_pages_to_articles(
-            pages,
-            self.owner(),
-            self.repo(),
-            max_results,
-            0,
-        ))
+        self.list_articles(project_id, max_results, 0)
     }
 
     fn search_all_articles(&self, query: &str, max_results: usize) -> Result<Vec<Article>> {
         if max_results == 0 {
             return Ok(Vec::new());
         }
-
-        let wiki = self.wiki();
-        let query_lower = query.to_lowercase();
-        let pages: Vec<WikiPage> = wiki
-            .list_pages()?
-            .into_iter()
-            .filter(|page| wiki_page_matches_query(page, &query_lower))
-            .collect();
-
-        Ok(wiki_pages_to_articles(
-            pages,
-            self.owner(),
-            self.repo(),
-            max_results,
-            0,
-        ))
+        self.search_articles(query, max_results, 0)
     }
 
     fn create_article(&self, article: &CreateArticle) -> Result<Article> {
-        // Only accept the canonical owner/repo format
-        let expected_project = format!("{}/{}", self.owner(), self.repo());
-        if article.project_id != expected_project {
+        if !self.is_configured_repo(&article.project_id) {
             return Err(TrackerError::InvalidInput(format!(
-                "Project '{}' does not match current repository '{}'",
-                article.project_id, expected_project
+                "Project '{}' does not match current repository '{}/{}'",
+                article.project_id,
+                self.owner(),
+                self.repo()
             )));
         }
 
@@ -631,18 +632,10 @@ impl KnowledgeBase for GitHubClient {
     }
 
     fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
-        let wiki = self.wiki();
-        let attachments = wiki.list_attachments(article_id)?;
+        let attachments = self.wiki().list_attachments(article_id)?;
         Ok(attachments
             .into_iter()
-            .map(|attachment| ArticleAttachment {
-                id: attachment.path,
-                name: attachment.name,
-                size: attachment.size,
-                mime_type: attachment.mime_type,
-                url: attachment.url,
-                created: None,
-            })
+            .map(wiki_attachment_to_article_attachment)
             .collect())
     }
 
@@ -651,18 +644,10 @@ impl KnowledgeBase for GitHubClient {
         article_id: &str,
         upload: &AttachmentUpload,
     ) -> Result<Vec<ArticleAttachment>> {
-        let wiki = self.wiki();
-        let attachments = wiki.add_attachments(article_id, upload)?;
+        let attachments = self.wiki().add_attachments(article_id, upload)?;
         Ok(attachments
             .into_iter()
-            .map(|attachment| ArticleAttachment {
-                id: attachment.path,
-                name: attachment.name,
-                size: attachment.size,
-                mime_type: attachment.mime_type,
-                url: attachment.url,
-                created: None,
-            })
+            .map(wiki_attachment_to_article_attachment)
             .collect())
     }
 
@@ -681,7 +666,8 @@ impl KnowledgeBase for GitHubClient {
 
 #[cfg(test)]
 mod slugify_tests {
-    use super::{slugify, wiki_page_matches_query, wiki_pages_to_articles};
+    use super::{slugify, wiki_pages_to_articles};
+    use crate::client::GitHubClient;
     use crate::wiki::WikiPage;
 
     fn wiki_page(slug: &str, title: &str, content: &str, parent: Option<&str>) -> WikiPage {
@@ -779,9 +765,21 @@ mod slugify_tests {
         let mut page = wiki_page("Guide", "Install Guide", "setup notes", None);
         page.tags = vec!["docs".to_string()];
 
-        assert!(wiki_page_matches_query(&page, "install"));
-        assert!(wiki_page_matches_query(&page, "setup"));
-        assert!(wiki_page_matches_query(&page, "docs"));
-        assert!(!wiki_page_matches_query(&page, "missing"));
+        assert!(page.matches_query("install"));
+        assert!(page.matches_query("setup"));
+        assert!(page.matches_query("docs"));
+        assert!(!page.matches_query("missing"));
+    }
+
+    #[test]
+    fn configured_repo_matches_canonical_casing() {
+        // `resolve_project_id` returns GitHub's canonical `full_name`, which can
+        // differ in case from the owner/repo typed into the config.
+        let client = GitHubClient::new("orekgames", "track-cli", "token");
+
+        assert!(client.is_configured_repo("OrekGames/track-cli"));
+        assert!(client.is_configured_repo("orekgames/Track-CLI"));
+        assert!(!client.is_configured_repo("orekgames/other-repo"));
+        assert!(!client.is_configured_repo("track-cli"));
     }
 }

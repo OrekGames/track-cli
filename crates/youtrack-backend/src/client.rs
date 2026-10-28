@@ -1,14 +1,23 @@
 use crate::error::{Result, YouTrackError};
 use crate::models::*;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::time::Duration;
 use tracker_core::{AttachmentUpload, unicode_eq_ignore_case};
 use ureq::Agent;
+use ureq::http::Response;
 use ureq::unversioned::multipart::{Form, Part};
 
 const DEFAULT_ISSUE_FIELDS: &str = "id,idReadable,summary,description,project(id,name,shortName),customFields(name,$type,value(name,login,isResolved,text,minutes,presentation,color(id))),tags(id,name),created,updated,resolved";
 const DEFAULT_PROJECT_FIELDS: &str = "id,name,shortName,description";
 const DEFAULT_ARTICLE_FIELDS: &str = "id,idReadable,summary,content,project(id,name,shortName),parentArticle(id,idReadable,summary),hasChildren,tags(id,name),created,updated,reporter(login,name)";
+const USER_FIELDS: &str = "id,login,fullName";
+const TAG_FIELDS: &str = "id,name,color(id,background,foreground)";
+const COMMENT_FIELDS: &str = "id,text,author(login,name),created";
+const ISSUE_ATTACHMENT_FIELDS: &str =
+    "id,name,size,mimeType,url,created,author(login,name),comment(id)";
+const ARTICLE_ATTACHMENT_FIELDS: &str = "id,name,size,mimeType,url,created,author(login,name)";
 
 pub struct YouTrackClient {
     agent: Agent,
@@ -17,9 +26,15 @@ pub struct YouTrackClient {
     link_mappings: HashMap<String, String>,
 }
 
+/// Decode a JSON response body.
+fn read_json<T: DeserializeOwned>(mut response: Response<ureq::Body>) -> Result<T> {
+    Ok(response.body_mut().read_json()?)
+}
+
 impl YouTrackClient {
     pub fn new(base_url: &str, token: &str) -> Self {
         let agent = Agent::config_builder()
+            .tls_config(tracker_core::tls::tls_config())
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
             .build()
@@ -60,15 +75,8 @@ impl YouTrackClient {
         format!("Bearer {}", self.token)
     }
 
-    fn handle_error(&self, err: ureq::Error) -> YouTrackError {
-        YouTrackError::Http(err)
-    }
-
     /// Check response status and return error with body details if not successful
-    fn check_response(
-        &self,
-        mut response: ureq::http::Response<ureq::Body>,
-    ) -> Result<ureq::http::Response<ureq::Body>> {
+    fn check_response(&self, mut response: Response<ureq::Body>) -> Result<Response<ureq::Body>> {
         let status = response.status().as_u16();
 
         if (200..300).contains(&status) {
@@ -112,46 +120,107 @@ impl YouTrackClient {
         }
     }
 
-    pub fn get_issue(&self, id: &str) -> Result<Issue> {
-        let url = format!(
-            "{}/api/issues/{}?fields={}",
-            self.base_url, id, DEFAULT_ISSUE_FIELDS
-        );
+    /// GET a JSON endpoint and decode the response.
+    fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
+        let response = self
+            .agent
+            .get(url)
+            .header("Authorization", &self.auth_header())
+            .header("Accept", "application/json")
+            .call()?;
+
+        read_json(self.check_response(response)?)
+    }
+
+    /// GET a JSON endpoint, returning None on 404 and propagating other errors.
+    fn get_json_opt<T: DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
+        match self.get_json(url) {
+            Ok(value) => Ok(Some(value)),
+            Err(YouTrackError::Api { status: 404, .. }) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// POST a JSON body, returning the response once its status is checked.
+    fn post(&self, url: &str, body: &impl Serialize) -> Result<Response<ureq::Body>> {
+        let response = self
+            .agent
+            .post(url)
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .send_json(body)?;
+
+        self.check_response(response)
+    }
+
+    /// POST a JSON body and decode the JSON response.
+    fn post_json<T: DeserializeOwned>(&self, url: &str, body: &impl Serialize) -> Result<T> {
+        read_json(self.post(url, body)?)
+    }
+
+    /// DELETE a resource, discarding the response body.
+    fn delete(&self, url: &str) -> Result<()> {
+        let response = self
+            .agent
+            .delete(url)
+            .header("Authorization", &self.auth_header())
+            .call()?;
+
+        self.check_response(response)?;
+        Ok(())
+    }
+
+    /// POST `upload.files` as a multipart form under YouTrack's `upload` field,
+    /// muting update notifications when `upload.silent` is set.
+    fn post_attachment_form<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<T>> {
+        let mut url = url.to_string();
+        if upload.silent {
+            url.push_str("&muteUpdateNotifications=true");
+        }
+
+        let mut form = Form::new();
+        for file in &upload.files {
+            let mut part = Part::file(&file.path)?;
+            if let Some(name) = &file.name {
+                part = part.file_name(name);
+            }
+            if let Some(mime_type) = &file.mime_type {
+                part = part.mime_str(mime_type)?;
+            }
+            form = form.part("upload", part);
+        }
 
         let response = self
             .agent
-            .get(&url)
+            .post(&url)
             .header("Authorization", &self.auth_header())
             .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
+            .send(form)?;
 
-        let mut response = self.check_response(response)?;
-        let issue: Issue = response.body_mut().read_json()?;
-        Ok(issue)
+        read_json(self.check_response(response)?)
+    }
+
+    pub fn get_issue(&self, id: &str) -> Result<Issue> {
+        self.get_json(&format!(
+            "{}/api/issues/{}?fields={}",
+            self.base_url, id, DEFAULT_ISSUE_FIELDS
+        ))
     }
 
     pub fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Issue>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/issues?query={}&fields={}&$top={}&$skip={}",
             self.base_url,
             urlencoding::encode(query),
             DEFAULT_ISSUE_FIELDS,
             limit,
             skip
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let issues: Vec<Issue> = response.body_mut().read_json()?;
-        Ok(issues)
+        ))
     }
 
     /// Count issues matching a query via POST /api/issuesGetter/count.
@@ -176,17 +245,7 @@ impl YouTrackClient {
         let body = serde_json::json!({ "query": query });
 
         for attempt in 0..max_attempts {
-            let response = self
-                .agent
-                .post(&url)
-                .header("Authorization", &self.auth_header())
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .send_json(&body)
-                .map_err(|e| self.handle_error(e))?;
-
-            let mut response = self.check_response(response)?;
-            let count_resp: IssueCountResponse = response.body_mut().read_json()?;
+            let count_resp: IssueCountResponse = self.post_json(&url, &body)?;
 
             if count_resp.count >= 0 {
                 return Ok(Some(count_resp.count as u64));
@@ -202,23 +261,13 @@ impl YouTrackClient {
     }
 
     pub fn create_issue(&self, create: &CreateIssue) -> Result<Issue> {
-        let url = format!(
-            "{}/api/issues?fields={}",
-            self.base_url, DEFAULT_ISSUE_FIELDS
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(create)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let issue: Issue = response.body_mut().read_json()?;
-        Ok(issue)
+        self.post_json(
+            &format!(
+                "{}/api/issues?fields={}",
+                self.base_url, DEFAULT_ISSUE_FIELDS
+            ),
+            create,
+        )
     }
 
     pub fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
@@ -249,23 +298,13 @@ impl YouTrackClient {
             return self.get_issue(id);
         }
 
-        let url = format!(
-            "{}/api/issues/{}?fields={}",
-            self.base_url, id, DEFAULT_ISSUE_FIELDS
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(update)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let issue: Issue = response.body_mut().read_json()?;
-        Ok(issue)
+        self.post_json(
+            &format!(
+                "{}/api/issues/{}?fields={}",
+                self.base_url, id, DEFAULT_ISSUE_FIELDS
+            ),
+            update,
+        )
     }
 
     /// Apply a YouTrack command to one or more issues via the Commands API.
@@ -281,51 +320,20 @@ impl YouTrackClient {
             "issues": issue_ids.iter().map(|id| serde_json::json!({"idReadable": id})).collect::<Vec<_>>()
         });
 
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(&body)
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
+        self.post(&url, &body)?;
         Ok(())
     }
 
     pub fn delete_issue(&self, id: &str) -> Result<()> {
-        let url = format!("{}/api/issues/{}", self.base_url, id);
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("Authorization", &self.auth_header())
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
-        Ok(())
+        self.delete(&format!("{}/api/issues/{}", self.base_url, id))
     }
 
     /// List attachments on an issue.
     pub fn list_issue_attachments(&self, issue_id: &str) -> Result<Vec<IssueAttachment>> {
-        let url = format!(
-            "{}/api/issues/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name),comment(id)",
-            self.base_url, issue_id
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let attachments: Vec<IssueAttachment> = response.body_mut().read_json()?;
-        Ok(attachments)
+        self.get_json(&format!(
+            "{}/api/issues/{}/attachments?fields={}",
+            self.base_url, issue_id, ISSUE_ATTACHMENT_FIELDS
+        ))
     }
 
     /// Upload attachments to an issue.
@@ -341,15 +349,11 @@ impl YouTrackClient {
             });
         }
 
-        let mut url = format!(
-            "{}/api/issues/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name),comment(id)",
-            self.base_url, issue_id
+        let url = format!(
+            "{}/api/issues/{}/attachments?fields={}",
+            self.base_url, issue_id, ISSUE_ATTACHMENT_FIELDS
         );
-        if upload.silent {
-            url.push_str("&muteUpdateNotifications=true");
-        }
-
-        self.post_issue_attachment_form(&url, upload)
+        self.post_attachment_form(&url, upload)
     }
 
     /// Upload attachments to an issue comment.
@@ -367,148 +371,65 @@ impl YouTrackClient {
             });
         }
 
-        let mut url = format!(
-            "{}/api/issues/{}/comments/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name),comment(id)",
-            self.base_url, issue_id, comment_id
+        let url = format!(
+            "{}/api/issues/{}/comments/{}/attachments?fields={}",
+            self.base_url, issue_id, comment_id, ISSUE_ATTACHMENT_FIELDS
         );
-        if upload.silent {
-            url.push_str("&muteUpdateNotifications=true");
-        }
-
-        self.post_issue_attachment_form(&url, upload)
-    }
-
-    fn post_issue_attachment_form(
-        &self,
-        url: &str,
-        upload: &AttachmentUpload,
-    ) -> Result<Vec<IssueAttachment>> {
-        let mut form = Form::new();
-        for file in &upload.files {
-            let mut part = Part::file(&file.path)?;
-            if let Some(name) = &file.name {
-                part = part.file_name(name);
-            }
-            if let Some(mime_type) = &file.mime_type {
-                part = part.mime_str(mime_type)?;
-            }
-            form = form.part("upload", part);
-        }
-
-        let response = self
-            .agent
-            .post(url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .send(form)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let attachments: Vec<IssueAttachment> = response.body_mut().read_json()?;
-        Ok(attachments)
+        self.post_attachment_form(&url, upload)
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/admin/projects?fields={}",
             self.base_url, DEFAULT_PROJECT_FIELDS
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let projects: Vec<Project> = response.body_mut().read_json()?;
-        Ok(projects)
+        ))
     }
 
     pub fn get_project(&self, id: &str) -> Result<Project> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/admin/projects/{}?fields={}",
             self.base_url, id, DEFAULT_PROJECT_FIELDS
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let project: Project = response.body_mut().read_json()?;
-        Ok(project)
+        ))
     }
 
     /// Get the currently authenticated user details.
     pub fn get_current_user(&self) -> Result<User> {
-        let url = format!("{}/api/users/me?fields=id,login,fullName", self.base_url);
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let user: User = response.body_mut().read_json()?;
-        Ok(user)
-    }
-
-    /// GET a JSON endpoint, returning None on 404 and propagating other errors.
-    fn get_json_opt<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
-        let response = self
-            .agent
-            .get(url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        if response.status().as_u16() == 404 {
-            return Ok(None);
-        }
-        let mut response = self.check_response(response)?;
-        let value: T = response.body_mut().read_json()?;
-        Ok(Some(value))
+        self.get_json(&format!(
+            "{}/api/users/me?fields={}",
+            self.base_url, USER_FIELDS
+        ))
     }
 
     /// Resolve a user identifier (database ID, login, or "me") to a YouTrack database user ID.
     pub fn resolve_user_id(&self, identifier: &str) -> Result<String> {
         let trimmed = identifier.trim();
-        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("me") {
+        if trimmed.eq_ignore_ascii_case("me") {
             return self.get_current_user().map(|u| u.id);
         }
 
         // 1. Search users by query, matching login or database ID exactly
         let search_url = format!(
-            "{}/api/users?query={}&fields=id,login,fullName&$top=50",
+            "{}/api/users?query={}&fields={}&$top=50",
             self.base_url,
-            urlencoding::encode(trimmed)
+            urlencoding::encode(trimmed),
+            USER_FIELDS
         );
         let users: Option<Vec<User>> = self.get_json_opt(&search_url)?;
 
         if let Some(user) = users.as_ref().and_then(|found| {
             found
                 .iter()
-                .find(|u| u.login.eq_ignore_ascii_case(trimmed) || u.id == trimmed)
+                .find(|u| unicode_eq_ignore_case(&u.login, trimmed) || u.id == trimmed)
         }) {
             return Ok(user.id.clone());
         }
 
         // 2. Fall back to a direct lookup, in case the identifier is a database ID
         let direct_url = format!(
-            "{}/api/users/{}?fields=id,login,fullName",
+            "{}/api/users/{}?fields={}",
             self.base_url,
-            urlencoding::encode(trimmed)
+            urlencoding::encode(trimmed),
+            USER_FIELDS
         );
         if let Some(user) = self.get_json_opt::<User>(&direct_url)? {
             return Ok(user.id);
@@ -540,23 +461,13 @@ impl YouTrackClient {
     }
 
     pub fn create_project(&self, create: &CreateProject) -> Result<Project> {
-        let url = format!(
-            "{}/api/admin/projects?fields={}",
-            self.base_url, DEFAULT_PROJECT_FIELDS
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(create)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let project: Project = response.body_mut().read_json()?;
-        Ok(project)
+        self.post_json(
+            &format!(
+                "{}/api/admin/projects?fields={}",
+                self.base_url, DEFAULT_PROJECT_FIELDS
+            ),
+            create,
+        )
     }
 
     /// Resolve a project identifier (shortName or ID) to internal ID.
@@ -577,7 +488,7 @@ impl YouTrackClient {
         // Otherwise, search by shortName
         let projects = self.list_projects()?;
         for project in projects {
-            if project.short_name.eq_ignore_ascii_case(identifier) {
+            if unicode_eq_ignore_case(&project.short_name, identifier) {
                 return Ok(project.id);
             }
         }
@@ -591,41 +502,14 @@ impl YouTrackClient {
         &self,
         project_id: &str,
     ) -> Result<Vec<ProjectCustomFieldExt>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/admin/projects/{}/customFields?fields=id,canBeEmpty,emptyFieldText,field(id,name,fieldType(id,presentation)),bundle(id,values(id,name,isResolved,ordinal))",
             self.base_url, project_id
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let fields: Vec<ProjectCustomFieldExt> = response.body_mut().read_json()?;
-        Ok(fields)
+        ))
     }
 
     /// List users that can be assigned to issues in a project
     pub fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
-        let url = format!(
-            "{}/api/admin/projects/{}/team?fields=users(id,login,fullName,email)",
-            self.base_url, project_id
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-
         // Response contains a team object with users array
         #[derive(serde::Deserialize)]
         struct TeamResponse {
@@ -633,125 +517,60 @@ impl YouTrackClient {
             users: Vec<User>,
         }
 
-        let team: TeamResponse = response.body_mut().read_json()?;
+        let team: TeamResponse = self.get_json(&format!(
+            "{}/api/admin/projects/{}/team?fields=users(id,login,fullName,email)",
+            self.base_url, project_id
+        ))?;
         Ok(team.users)
     }
 
     /// List all available issue tags
     pub fn list_tags(&self) -> Result<Vec<IssueTag>> {
-        let url = format!(
-            "{}/api/issueTags?fields=id,name,color(id,background,foreground),issues(id)",
-            self.base_url
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let tags: Vec<IssueTag> = response.body_mut().read_json()?;
-        Ok(tags)
+        // `issues(id)` is fetched only to count each tag's issues.
+        self.get_json(&format!(
+            "{}/api/issueTags?fields={},issues(id)",
+            self.base_url, TAG_FIELDS
+        ))
     }
 
     /// Create a new issue tag
     pub fn create_tag(&self, tag: &CreateIssueTagRequest) -> Result<IssueTag> {
-        let url = format!(
-            "{}/api/issueTags?fields=id,name,color(id,background,foreground)",
-            self.base_url
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(tag)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let created_tag: IssueTag = response.body_mut().read_json()?;
-        Ok(created_tag)
+        self.post_json(
+            &format!("{}/api/issueTags?fields={}", self.base_url, TAG_FIELDS),
+            tag,
+        )
     }
 
     /// Delete an issue tag by ID
     pub fn delete_tag(&self, tag_id: &str) -> Result<()> {
-        let url = format!("{}/api/issueTags/{}", self.base_url, tag_id);
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("Authorization", &self.auth_header())
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
-        Ok(())
+        self.delete(&format!("{}/api/issueTags/{}", self.base_url, tag_id))
     }
 
     /// Update an existing issue tag by ID
     pub fn update_tag(&self, tag_id: &str, tag: &CreateIssueTagRequest) -> Result<IssueTag> {
-        let url = format!(
-            "{}/api/issueTags/{}?fields=id,name,color(id,background,foreground)",
-            self.base_url, tag_id
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(tag)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let updated_tag: IssueTag = response.body_mut().read_json()?;
-        Ok(updated_tag)
+        self.post_json(
+            &format!(
+                "{}/api/issueTags/{}?fields={}",
+                self.base_url, tag_id, TAG_FIELDS
+            ),
+            tag,
+        )
     }
 
     /// List all available issue link types
     pub fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/issueLinkTypes?fields=id,name,sourceToTarget,targetToSource,directed",
             self.base_url
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let link_types: Vec<IssueLinkType> = response.body_mut().read_json()?;
-        Ok(link_types)
+        ))
     }
 
     /// Get links for an issue
     pub fn get_issue_links(&self, issue_id: &str) -> Result<Vec<IssueLink>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/issues/{}/links?fields=id,direction,linkType(id,name,sourceToTarget,targetToSource,directed),issues(id,idReadable,summary)",
             self.base_url, issue_id
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let links: Vec<IssueLink> = response.body_mut().read_json()?;
-        Ok(links)
+        ))
     }
 
     /// Add target issue to a link type for source issue
@@ -773,16 +592,7 @@ impl YouTrackClient {
             id_readable: target_issue_id.to_string(),
         };
 
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(&body)
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
+        self.post(&url, &body)?;
         Ok(())
     }
 
@@ -835,20 +645,10 @@ impl YouTrackClient {
         bucket_id: &str,
         target_issue_id: &str,
     ) -> Result<()> {
-        let url = format!(
+        self.delete(&format!(
             "{}/api/issues/{}/links/{}/issues/{}",
             self.base_url, source_issue_id, bucket_id, target_issue_id
-        );
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("Authorization", &self.auth_header())
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
-        Ok(())
+        ))
     }
 
     /// Link two issues together with the specified link type.
@@ -870,26 +670,15 @@ impl YouTrackClient {
     /// Add a comment to an issue
     pub fn add_comment(&self, issue_id: &str, text: &str) -> Result<IssueComment> {
         let url = format!(
-            "{}/api/issues/{}/comments?fields=id,text,author(login,name),created",
-            self.base_url, issue_id
+            "{}/api/issues/{}/comments?fields={}",
+            self.base_url, issue_id, COMMENT_FIELDS
         );
 
         let comment = CreateComment {
             text: text.to_string(),
         };
 
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(&comment)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let created_comment: IssueComment = response.body_mut().read_json()?;
-        Ok(created_comment)
+        self.post_json(&url, &comment)
     }
 
     /// Get comments for an issue
@@ -904,22 +693,10 @@ impl YouTrackClient {
         limit: usize,
         skip: usize,
     ) -> Result<Vec<IssueComment>> {
-        let url = format!(
-            "{}/api/issues/{}/comments?fields=id,text,author(login,name),created&$top={}&$skip={}",
-            self.base_url, issue_id, limit, skip
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let comments: Vec<IssueComment> = response.body_mut().read_json()?;
-        Ok(comments)
+        self.get_json(&format!(
+            "{}/api/issues/{}/comments?fields={}&$top={}&$skip={}",
+            self.base_url, issue_id, COMMENT_FIELDS, limit, skip
+        ))
     }
 
     // ========================================================================
@@ -938,22 +715,10 @@ impl YouTrackClient {
         top: usize,
         skip: usize,
     ) -> Result<Vec<YouTrackActivity>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/issues/{}/activities?categories=CustomFieldCategory&fields=id,timestamp,author(login,name),field(name,presentation),added(name,text,login,presentation),removed(name,text,login,presentation)&$top={}&$skip={}",
             self.base_url, issue_id, top, skip
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let activities: Vec<YouTrackActivity> = response.body_mut().read_json()?;
-        Ok(activities)
+        ))
     }
 
     /// Fetch an issue's complete custom-field activity timeline, paging through
@@ -992,143 +757,65 @@ impl YouTrackClient {
 
     /// Get an article by ID (database ID or readable ID like PROJ-A-1)
     pub fn get_article(&self, id: &str) -> Result<Article> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/articles/{}?fields={}",
             self.base_url, id, DEFAULT_ARTICLE_FIELDS
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let article: Article = response.body_mut().read_json()?;
-        Ok(article)
+        ))
     }
 
     /// List articles with pagination
     pub fn list_articles(&self, limit: usize, skip: usize) -> Result<Vec<Article>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/articles?fields={}&$top={}&$skip={}",
             self.base_url, DEFAULT_ARTICLE_FIELDS, limit, skip
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let articles: Vec<Article> = response.body_mut().read_json()?;
-        Ok(articles)
+        ))
     }
 
     /// Search articles using YouTrack query language
     pub fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/articles?query={}&fields={}&$top={}&$skip={}",
             self.base_url,
             urlencoding::encode(query),
             DEFAULT_ARTICLE_FIELDS,
             limit,
             skip
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let articles: Vec<Article> = response.body_mut().read_json()?;
-        Ok(articles)
+        ))
     }
 
     /// Create a new article
     pub fn create_article(&self, create: &CreateArticle) -> Result<Article> {
-        let url = format!(
-            "{}/api/articles?fields={}",
-            self.base_url, DEFAULT_ARTICLE_FIELDS
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(create)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let article: Article = response.body_mut().read_json()?;
-        Ok(article)
+        self.post_json(
+            &format!(
+                "{}/api/articles?fields={}",
+                self.base_url, DEFAULT_ARTICLE_FIELDS
+            ),
+            create,
+        )
     }
 
     /// Update an existing article
     pub fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
-        let url = format!(
-            "{}/api/articles/{}?fields={}",
-            self.base_url, id, DEFAULT_ARTICLE_FIELDS
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(update)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let article: Article = response.body_mut().read_json()?;
-        Ok(article)
+        self.post_json(
+            &format!(
+                "{}/api/articles/{}?fields={}",
+                self.base_url, id, DEFAULT_ARTICLE_FIELDS
+            ),
+            update,
+        )
     }
 
     /// Delete an article
     pub fn delete_article(&self, id: &str) -> Result<()> {
-        let url = format!("{}/api/articles/{}", self.base_url, id);
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("Authorization", &self.auth_header())
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
-        Ok(())
+        self.delete(&format!("{}/api/articles/{}", self.base_url, id))
     }
 
     /// Get child articles of a parent article
     pub fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/articles/{}/childArticles?fields={}",
             self.base_url, parent_id, DEFAULT_ARTICLE_FIELDS
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let articles: Vec<Article> = response.body_mut().read_json()?;
-        Ok(articles)
+        ))
     }
 
     /// Move an article to a new parent (or to root if new_parent_id is None)
@@ -1139,10 +826,11 @@ impl YouTrackClient {
             self.base_url, article_id, DEFAULT_ARTICLE_FIELDS
         );
 
+        // `parentArticle` is always sent: an explicit `null` is what moves the
+        // article to the root, whereas omitting it leaves the parent unchanged.
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct MoveArticle {
-            #[serde(skip_serializing_if = "Option::is_none")]
             parent_article: Option<ArticleIdentifier>,
         }
 
@@ -1150,38 +838,15 @@ impl YouTrackClient {
             parent_article: new_parent_id.map(|id| ArticleIdentifier { id: id.to_string() }),
         };
 
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(&body)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let article: Article = response.body_mut().read_json()?;
-        Ok(article)
+        self.post_json(&url, &body)
     }
 
     /// List attachments on an article
     pub fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
-        let url = format!(
-            "{}/api/articles/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name)",
-            self.base_url, article_id
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let attachments: Vec<ArticleAttachment> = response.body_mut().read_json()?;
-        Ok(attachments)
+        self.get_json(&format!(
+            "{}/api/articles/{}/attachments?fields={}",
+            self.base_url, article_id, ARTICLE_ATTACHMENT_FIELDS
+        ))
     }
 
     /// Upload attachments to an article.
@@ -1205,15 +870,11 @@ impl YouTrackClient {
             });
         }
 
-        let mut url = format!(
-            "{}/api/articles/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name)",
-            self.base_url, article_id
+        let url = format!(
+            "{}/api/articles/{}/attachments?fields={}",
+            self.base_url, article_id, ARTICLE_ATTACHMENT_FIELDS
         );
-        if upload.silent {
-            url.push_str("&muteUpdateNotifications=true");
-        }
-
-        self.post_article_attachment_form(&url, upload)
+        self.post_attachment_form(&url, upload)
     }
 
     /// Upload attachments to an article comment.
@@ -1238,90 +899,33 @@ impl YouTrackClient {
             });
         }
 
-        let mut url = format!(
-            "{}/api/articles/{}/comments/{}/attachments?fields=id,name,size,mimeType,url,created,author(login,name)",
-            self.base_url, article_id, comment_id
+        let url = format!(
+            "{}/api/articles/{}/comments/{}/attachments?fields={}",
+            self.base_url, article_id, comment_id, ARTICLE_ATTACHMENT_FIELDS
         );
-        if upload.silent {
-            url.push_str("&muteUpdateNotifications=true");
-        }
-
-        self.post_article_attachment_form(&url, upload)
-    }
-
-    fn post_article_attachment_form(
-        &self,
-        url: &str,
-        upload: &AttachmentUpload,
-    ) -> Result<Vec<ArticleAttachment>> {
-        let mut form = Form::new();
-        for file in &upload.files {
-            let mut part = Part::file(&file.path)?;
-            if let Some(name) = &file.name {
-                part = part.file_name(name);
-            }
-            if let Some(mime_type) = &file.mime_type {
-                part = part.mime_str(mime_type)?;
-            }
-            form = form.part("upload", part);
-        }
-
-        let response = self
-            .agent
-            .post(url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .send(form)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let attachments: Vec<ArticleAttachment> = response.body_mut().read_json()?;
-        Ok(attachments)
+        self.post_attachment_form(&url, upload)
     }
 
     /// Get comments on an article
     pub fn get_article_comments(&self, article_id: &str) -> Result<Vec<ArticleComment>> {
-        let url = format!(
-            "{}/api/articles/{}/comments?fields=id,text,author(login,name),created",
-            self.base_url, article_id
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let comments: Vec<ArticleComment> = response.body_mut().read_json()?;
-        Ok(comments)
+        self.get_json(&format!(
+            "{}/api/articles/{}/comments?fields={}",
+            self.base_url, article_id, COMMENT_FIELDS
+        ))
     }
 
     /// Add a comment to an article
     pub fn add_article_comment(&self, article_id: &str, text: &str) -> Result<ArticleComment> {
         let url = format!(
-            "{}/api/articles/{}/comments?fields=id,text,author(login,name),created",
-            self.base_url, article_id
+            "{}/api/articles/{}/comments?fields={}",
+            self.base_url, article_id, COMMENT_FIELDS
         );
 
         let comment = CreateArticleComment {
             text: text.to_string(),
         };
 
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(&comment)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let created_comment: ArticleComment = response.body_mut().read_json()?;
-        Ok(created_comment)
+        self.post_json(&url, &comment)
     }
 
     // ========================================================================
@@ -1334,23 +938,11 @@ impl YouTrackClient {
 
     /// List all custom field definitions (instance-wide)
     pub fn list_custom_field_definitions(&self) -> Result<Vec<CustomFieldResponse>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/admin/customFieldSettings/customFields?fields={}",
             self.base_url,
             Self::DEFAULT_CUSTOM_FIELD_FIELDS
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let fields: Vec<CustomFieldResponse> = response.body_mut().read_json()?;
-        Ok(fields)
+        ))
     }
 
     /// Create a new custom field definition
@@ -1358,46 +950,24 @@ impl YouTrackClient {
         &self,
         create: &CreateCustomFieldRequest,
     ) -> Result<CustomFieldResponse> {
-        let url = format!(
-            "{}/api/admin/customFieldSettings/customFields?fields={}",
-            self.base_url,
-            Self::DEFAULT_CUSTOM_FIELD_FIELDS
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(create)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let field: CustomFieldResponse = response.body_mut().read_json()?;
-        Ok(field)
+        self.post_json(
+            &format!(
+                "{}/api/admin/customFieldSettings/customFields?fields={}",
+                self.base_url,
+                Self::DEFAULT_CUSTOM_FIELD_FIELDS
+            ),
+            create,
+        )
     }
 
     /// List bundles of a given type (enum, state, etc.)
     pub fn list_bundles(&self, bundle_type: &str) -> Result<Vec<BundleResponse>> {
-        let url = format!(
+        self.get_json(&format!(
             "{}/api/admin/customFieldSettings/bundles/{}?fields={}",
             self.base_url,
             bundle_type,
             Self::DEFAULT_BUNDLE_FIELDS
-        );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let bundles: Vec<BundleResponse> = response.body_mut().read_json()?;
-        Ok(bundles)
+        ))
     }
 
     /// Create a new bundle
@@ -1406,25 +976,15 @@ impl YouTrackClient {
         bundle_type: &str,
         create: &CreateBundleRequest,
     ) -> Result<BundleResponse> {
-        let url = format!(
-            "{}/api/admin/customFieldSettings/bundles/{}?fields={}",
-            self.base_url,
-            bundle_type,
-            Self::DEFAULT_BUNDLE_FIELDS
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(create)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let bundle: BundleResponse = response.body_mut().read_json()?;
-        Ok(bundle)
+        self.post_json(
+            &format!(
+                "{}/api/admin/customFieldSettings/bundles/{}?fields={}",
+                self.base_url,
+                bundle_type,
+                Self::DEFAULT_BUNDLE_FIELDS
+            ),
+            create,
+        )
     }
 
     /// Add a value to an existing bundle
@@ -1434,23 +994,13 @@ impl YouTrackClient {
         bundle_id: &str,
         value: &CreateBundleValueRequest,
     ) -> Result<BundleValueResponse> {
-        let url = format!(
-            "{}/api/admin/customFieldSettings/bundles/{}/{}/values?fields=id,name,description,isResolved,ordinal",
-            self.base_url, bundle_type, bundle_id
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(value)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let created_value: BundleValueResponse = response.body_mut().read_json()?;
-        Ok(created_value)
+        self.post_json(
+            &format!(
+                "{}/api/admin/customFieldSettings/bundles/{}/{}/values?fields=id,name,description,isResolved,ordinal",
+                self.base_url, bundle_type, bundle_id
+            ),
+            value,
+        )
     }
 
     /// Attach a custom field to a project
@@ -1459,22 +1009,12 @@ impl YouTrackClient {
         project_id: &str,
         attach: &AttachFieldRequest,
     ) -> Result<ProjectCustomFieldResponse> {
-        let url = format!(
-            "{}/api/admin/projects/{}/customFields?fields=id,field(id,name,fieldType(id,presentation)),bundle(id,values(id,name,isResolved,ordinal)),canBeEmpty,emptyFieldText",
-            self.base_url, project_id
-        );
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header())
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(attach)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let field: ProjectCustomFieldResponse = response.body_mut().read_json()?;
-        Ok(field)
+        self.post_json(
+            &format!(
+                "{}/api/admin/projects/{}/customFields?fields=id,field(id,name,fieldType(id,presentation)),bundle(id,values(id,name,isResolved,ordinal)),canBeEmpty,emptyFieldText",
+                self.base_url, project_id
+            ),
+            attach,
+        )
     }
 }

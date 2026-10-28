@@ -873,3 +873,83 @@ id = "DEMO-1"
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A plan that creates an issue and then updates it through its `$ref`.
+fn create_then_update_plan(update_fields: Value) -> Value {
+    json!({
+        "version": 1,
+        "defaults": {"project": "DEMO", "validate": true},
+        "operations": [
+            {"ref": "parent", "op": "create_issue", "summary": "Parent issue"},
+            {"op": "update_issue", "issue": "$parent", "fields": update_fields}
+        ]
+    })
+}
+
+/// A dry run creates nothing, so updating a planned `$ref` must validate
+/// against the planned issue's project rather than fetch a placeholder ID.
+#[test]
+fn apply_dry_run_updates_planned_issue_without_fetching_it() {
+    let dir = temp_dir();
+    let scenario = write_scenario(&dir, &base_manifest(""), &standard_responses());
+    let plan = write_plan(
+        &dir,
+        "plan.json",
+        create_then_update_plan(json!({"State": "In Progress", "Priority": "Major"})),
+    );
+
+    let output = track_in(&dir, &scenario)
+        .args(["-o", "json", "apply"])
+        .arg(&plan)
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json = parse_stdout_json(&output);
+
+    assert_eq!(json["success"], true);
+    assert_eq!(json["results"][1]["op"], "update_issue");
+    assert_eq!(json["results"][1]["status"], "dry_run");
+    assert_eq!(json["results"][1]["issue"], "planned:parent");
+
+    let methods = mock_call_methods(&scenario);
+    assert_eq!(method_count(&methods, "get_issue"), 0);
+    assert_eq!(method_count(&methods, "create_issue"), 0);
+    assert_eq!(method_count(&methods, "update_issue"), 0);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn apply_dry_run_rejects_invalid_update_of_planned_issue() {
+    let dir = temp_dir();
+    let scenario = write_scenario(&dir, &base_manifest(""), &standard_responses());
+    let plan = write_plan(
+        &dir,
+        "plan.json",
+        create_then_update_plan(json!({"Priority": "Impossible"})),
+    );
+
+    let output = track_in(&dir, &scenario)
+        .args(["-o", "json", "apply"])
+        .arg(&plan)
+        .arg("--dry-run")
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json = parse_stdout_json(&output);
+
+    assert_eq!(json["success"], false);
+    assert_eq!(json["results"][1]["status"], "failed");
+    let error = json["results"][1]["error"].as_str().unwrap();
+    assert!(
+        error.contains("Invalid value 'Impossible'"),
+        "planned update must still be validated, got: {error}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

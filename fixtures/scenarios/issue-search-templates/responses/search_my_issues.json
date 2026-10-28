@@ -7,9 +7,15 @@
       "id": "0-1",
       "short_name": "DEMO"
     },
-    "assignee": {
-      "login": "john.doe"
-    },
+    "custom_fields": [
+      {
+        "SingleUser": {
+          "name": "Assignee",
+          "login": "john.doe",
+          "display_name": "John Doe"
+        }
+      }
+    ],
     "tags": [],
     "updated": "2024-01-15T14:30:00Z",
     "description": null,

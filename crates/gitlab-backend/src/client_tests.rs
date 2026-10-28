@@ -1652,4 +1652,218 @@ mod tests {
         assert_eq!(events[3].to.as_deref(), Some("opened"));
         assert_eq!(events[3].author.as_ref().unwrap().login, "alice");
     }
+
+    // ==================== Full-collection pagination ====================
+
+    /// Mount a project-scoped collection whose first page is full (so the
+    /// client must ask for page 2) and whose second page holds `second_page`.
+    /// The full first page answers any request without `page=2`, so a client
+    /// that never paginates still gets it.
+    async fn mount_two_page_collection(
+        mock_server: &MockServer,
+        collection_path: &str,
+        first_page: Vec<serde_json::Value>,
+        second_page: Vec<serde_json::Value>,
+    ) {
+        Mock::given(method("GET"))
+            .and(path(collection_path))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(second_page))
+            .with_priority(1)
+            .mount(mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(collection_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(first_page))
+            .mount(mock_server)
+            .await;
+    }
+
+    /// A project with more than 100 labels: a label on page 2 must still be
+    /// found by name, or `tags delete`/`tags update` report "not found".
+    #[tokio::test]
+    async fn trait_delete_tag_finds_label_past_first_page() {
+        let mock_server = MockServer::start().await;
+        let first_page = (1..=100)
+            .map(|id| serde_json::json!({"id": id, "name": format!("label-{id}"), "color": "#ededed"}))
+            .collect();
+        let second_page =
+            vec![serde_json::json!({"id": 101, "name": "target", "color": "#ededed"})];
+        mount_two_page_collection(
+            &mock_server,
+            "/projects/123/labels",
+            first_page,
+            second_page,
+        )
+        .await;
+        Mock::given(method("DELETE"))
+            .and(path("/projects/123/labels/101"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let deleted = <GitLabClient as IssueTracker>::delete_tag(&client, "target");
+
+        assert!(
+            deleted.is_ok(),
+            "label on page 2 must be found: {deleted:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trait_list_project_users_returns_members_past_first_page() {
+        let mock_server = MockServer::start().await;
+        let member = |id: u64| serde_json::json!({"id": id, "username": format!("user{id}"), "name": "User"});
+        mount_two_page_collection(
+            &mock_server,
+            "/projects/123/members/all",
+            (1..=100).map(member).collect(),
+            vec![member(101)],
+        )
+        .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let users = <GitLabClient as IssueTracker>::list_project_users(&client, "123").unwrap();
+
+        assert_eq!(users.len(), 101);
+        assert_eq!(users[100].login.as_deref(), Some("user101"));
+    }
+
+    // ==================== Parent resolution ====================
+
+    /// A parent that cannot be resolved must fail before the issue is written:
+    /// creating first would leave an orphaned issue, updating first would
+    /// leave the issue half-updated.
+    #[tokio::test]
+    async fn trait_unresolvable_parent_writes_nothing() {
+        for (case, parent) in [("missing", "#7"), ("malformed", "not-a-number")] {
+            let mock_server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/projects/123/issues/7"))
+                .respond_with(
+                    ResponseTemplate::new(404)
+                        .set_body_json(serde_json::json!({"message": "404 Not found"})),
+                )
+                .mount(&mock_server)
+                .await;
+            let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+            let created = <GitLabClient as IssueTracker>::create_issue(
+                &client,
+                &CreateIssue {
+                    project_id: "123".to_string(),
+                    summary: "Child".to_string(),
+                    description: None,
+                    custom_fields: vec![],
+                    tags: vec![],
+                    parent: Some(parent.to_string()),
+                },
+            );
+            let updated = <GitLabClient as IssueTracker>::update_issue(
+                &client,
+                "42",
+                &UpdateIssue {
+                    summary: Some("Renamed".to_string()),
+                    parent: Some(parent.to_string()),
+                    ..Default::default()
+                },
+            );
+
+            assert!(created.is_err(), "{case} parent must fail create");
+            assert!(updated.is_err(), "{case} parent must fail update");
+            let requests = mock_server.received_requests().await.unwrap();
+            assert!(
+                requests.iter().all(|r| r.method.as_str() == "GET"),
+                "{case} parent must not write anything, got {:?}",
+                requests
+                    .iter()
+                    .map(|r| format!("{} {}", r.method, r.url.path()))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    // ==================== Wiki hierarchy ====================
+
+    #[tokio::test]
+    async fn test_get_child_articles_returns_direct_children_only() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/123/wikis"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                mock_wiki_page("docs", "docs", "root"),
+                mock_wiki_page("docs/setup", "setup", "child"),
+                mock_wiki_page("docs/setup/linux", "linux", "grandchild"),
+                mock_wiki_page("docs-old/notes", "notes", "unrelated"),
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let children = client.get_child_articles("docs").unwrap();
+
+        let ids: Vec<_> = children.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["docs/setup"]);
+        assert_eq!(
+            children[0].parent_article.as_ref().map(|p| p.id.as_str()),
+            Some("docs")
+        );
+    }
+
+    #[test]
+    fn web_url_builds_project_path_urls_without_the_api() {
+        let client = GitLabClient::new(
+            "https://gitlab.example.com/api/v4",
+            "test-token",
+            Some("group/sub/project"),
+        );
+
+        assert_eq!(
+            client.web_url(Some("#7")).unwrap().as_deref(),
+            Some("https://gitlab.example.com/group/sub/project/-/issues/7")
+        );
+        assert_eq!(
+            client.web_url(None).unwrap().as_deref(),
+            Some("https://gitlab.example.com/group/sub/project/-/issues")
+        );
+    }
+
+    #[tokio::test]
+    async fn web_url_looks_up_numeric_project_ids() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 123,
+                "name": "project",
+                "web_url": "https://gitlab.example.com/group/project"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+        assert_eq!(
+            client.web_url(Some("7")).unwrap().as_deref(),
+            Some("https://gitlab.example.com/group/project/-/issues/7")
+        );
+    }
+
+    #[tokio::test]
+    async fn web_url_rejects_a_malformed_iid_before_any_request() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+        assert!(matches!(
+            client.web_url(Some("PROJ-7")),
+            Err(tracker_core::TrackerError::InvalidInput(_))
+        ));
+    }
 }

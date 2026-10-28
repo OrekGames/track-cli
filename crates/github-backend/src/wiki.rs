@@ -1,3 +1,4 @@
+use crate::client::web_base_url;
 use crate::error::{GitHubError, Result};
 use chrono::{DateTime, Utc};
 use git2::{Cred, RemoteCallbacks, Repository, Signature};
@@ -6,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tracker_core::AttachmentUpload;
+use tracker_core::strings::contains_ignore_case;
 use walkdir::WalkDir;
 
 const ATTACHMENT_ROOT: &str = ".track-attachments";
@@ -42,6 +44,19 @@ pub struct WikiPage {
     pub author: Option<String>,
 }
 
+impl WikiPage {
+    /// Whether the title, content, or any tag contains `query_lower`
+    /// (which must already be lowercased) case-insensitively.
+    pub(crate) fn matches_query(&self, query_lower: &str) -> bool {
+        contains_ignore_case(&self.title, query_lower)
+            || contains_ignore_case(&self.content, query_lower)
+            || self
+                .tags
+                .iter()
+                .any(|tag| contains_ignore_case(tag, query_lower))
+    }
+}
+
 /// Attachment managed in a wiki repository.
 #[derive(Debug, Clone)]
 pub struct WikiAttachment {
@@ -71,20 +86,24 @@ pub struct WikiManager {
     owner: String,
     repo: String,
     token: String,
+    git_base_url: String,
     cache_dir: PathBuf,
     initialized: Mutex<bool>,
     page_cache: Mutex<std::collections::HashMap<PathBuf, WikiPage>>,
 }
 
 impl WikiManager {
-    /// Create a new WikiManager (lightweight, no I/O)
-    pub fn new(owner: &str, repo: &str, token: &str) -> Self {
+    /// Create a new WikiManager (lightweight, no I/O) for the repository
+    /// served by the REST API at `api_base_url`.
+    pub fn new(api_base_url: &str, owner: &str, repo: &str, token: &str) -> Self {
         let cache_dir = Self::get_cache_dir(owner, repo);
 
         Self {
             owner: owner.to_string(),
             repo: repo.to_string(),
             token: token.to_string(),
+            // Wikis are cloned from the web host, not the API host.
+            git_base_url: web_base_url(api_base_url),
             cache_dir,
             initialized: Mutex::new(false),
             page_cache: Mutex::new(std::collections::HashMap::new()),
@@ -104,6 +123,7 @@ impl WikiManager {
             owner: owner.to_string(),
             repo: repo.to_string(),
             token: token.to_string(),
+            git_base_url: "https://github.com".to_string(),
             cache_dir,
             initialized: Mutex::new(true),
             page_cache: Mutex::new(std::collections::HashMap::new()),
@@ -126,8 +146,20 @@ impl WikiManager {
     }
 
     /// Get wiki repository URL (auth is handled via credentials callback)
-    fn wiki_url(&self) -> String {
-        format!("https://github.com/{}/{}.wiki.git", self.owner, self.repo)
+    pub(crate) fn wiki_url(&self) -> String {
+        format!(
+            "{}/{}/{}.wiki.git",
+            self.git_base_url, self.owner, self.repo
+        )
+    }
+
+    /// Remote callbacks that authenticate with the API token.
+    fn remote_callbacks(&self) -> RemoteCallbacks<'_> {
+        let mut callbacks = RemoteCallbacks::new();
+        callbacks.credentials(|_url, _username, _allowed| {
+            Cred::userpass_plaintext(&self.token, "x-oauth-basic")
+        });
+        callbacks
     }
 
     /// Initialize wiki repository (clone or fetch)
@@ -163,13 +195,8 @@ impl WikiManager {
             })?;
         }
 
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(|_url, _username, _allowed| {
-            Cred::userpass_plaintext(&self.token, "x-oauth-basic")
-        });
-
         let mut fetch_opts = git2::FetchOptions::new();
-        fetch_opts.remote_callbacks(callbacks);
+        fetch_opts.remote_callbacks(self.remote_callbacks());
 
         let mut builder = git2::build::RepoBuilder::new();
         builder.fetch_options(fetch_opts);
@@ -196,13 +223,8 @@ impl WikiManager {
             .find_remote("origin")
             .map_err(|e| GitHubError::Wiki(format!("Failed to find origin remote: {}", e)))?;
 
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(|_url, _username, _allowed| {
-            Cred::userpass_plaintext(&self.token, "x-oauth-basic")
-        });
-
         let mut fetch_opts = git2::FetchOptions::new();
-        fetch_opts.remote_callbacks(callbacks);
+        fetch_opts.remote_callbacks(self.remote_callbacks());
 
         // GitHub wikis only use the `master` branch
         remote
@@ -313,7 +335,7 @@ impl WikiManager {
         false
     }
 
-    /// Read a wiki page from disk
+    /// Drop every cached page (the working tree may have changed wholesale)
     fn clear_cache(&self) {
         if let Ok(mut cache) = self.page_cache.lock() {
             cache.clear();
@@ -403,9 +425,14 @@ impl WikiManager {
 
                 if let Ok(front_matter) = serde_yaml::from_str::<FrontMatter>(&yaml_str) {
                     let content_start = (end_idx + 2).min(lines.len());
-                    let content_lines = &lines[content_start..];
-                    let content = content_lines.join("\n");
-                    return (front_matter, content);
+                    let mut content_lines = &lines[content_start..];
+                    // Drop the blank line `generate_markdown_with_frontmatter`
+                    // puts after the front matter; keeping it would add one
+                    // more leading blank line every time the page is rewritten.
+                    if content_lines.first() == Some(&"") {
+                        content_lines = &content_lines[1..];
+                    }
+                    return (front_matter, content_lines.join("\n"));
                 }
             }
         }
@@ -435,20 +462,31 @@ impl WikiManager {
         let mut last_author = None;
 
         for oid in revwalk.flatten() {
-            if let Ok(commit) = repo.find_commit(oid)
-                && let Ok(tree) = commit.tree()
-                && tree.get_path(relative_path).is_ok()
-            {
-                let time = commit.time();
-                let timestamp =
-                    DateTime::from_timestamp(time.seconds(), 0).unwrap_or_else(Utc::now);
-
-                if last_commit_time.is_none() {
-                    last_commit_time = Some(timestamp);
-                    last_author = Some(commit.author().name().unwrap_or("Unknown").to_string());
-                }
-                first_commit_time = Some(timestamp);
+            let Ok(commit) = repo.find_commit(oid) else {
+                continue;
+            };
+            let Some(blob_id) = blob_id_at(&commit, relative_path) else {
+                continue;
+            };
+            // Only commits that add or modify the page count: every later commit
+            // also contains the file, so checking for presence alone would report
+            // the wiki's newest commit as every page's last update and author.
+            let parent_blob_id = commit
+                .parent(0)
+                .ok()
+                .and_then(|parent| blob_id_at(&parent, relative_path));
+            if parent_blob_id == Some(blob_id) {
+                continue;
             }
+
+            let time = commit.time();
+            let timestamp = DateTime::from_timestamp(time.seconds(), 0).unwrap_or_else(Utc::now);
+
+            if last_commit_time.is_none() {
+                last_commit_time = Some(timestamp);
+                last_author = Some(commit.author().name().unwrap_or("Unknown").to_string());
+            }
+            first_commit_time = Some(timestamp);
         }
 
         let created = first_commit_time.unwrap_or_else(Utc::now);
@@ -682,17 +720,25 @@ impl WikiManager {
         // Extract filename from slug
         let filename = Path::new(slug)
             .file_name()
-            .ok_or_else(|| GitHubError::Wiki("Invalid slug".to_string()))?;
+            .ok_or_else(|| GitHubError::Wiki("Invalid slug".to_string()))?
+            .to_string_lossy();
 
-        // Build new path
-        let new_path = if let Some(parent) = new_parent {
-            self.cache_dir
-                .join(parent)
-                .join(filename)
-                .with_extension("md")
-        } else {
-            self.cache_dir.join(filename).with_extension("md")
+        let new_slug = match new_parent {
+            Some(parent) => format!("{}/{}", parent, filename),
+            None => filename.into_owned(),
         };
+        let new_path = self.cache_dir.join(format!("{}.md", new_slug));
+
+        if new_path == old_path {
+            return self.read_page(&old_path);
+        }
+        // `fs::rename` would silently replace the page already at the destination.
+        if new_path.exists() {
+            return Err(GitHubError::Wiki(format!(
+                "Page '{}' already exists",
+                new_slug
+            )));
+        }
 
         // Create parent directory if needed
         if let Some(parent) = new_path.parent() {
@@ -803,9 +849,16 @@ impl WikiManager {
             .find_remote("origin")
             .map_err(|e| GitHubError::Wiki(format!("Failed to find remote: {}", e)))?;
 
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(|_url, _username, _allowed| {
-            Cred::userpass_plaintext(&self.token, "x-oauth-basic")
+        let mut callbacks = self.remote_callbacks();
+        // `Remote::push` succeeds even when the server rejects a ref update; the
+        // rejection only arrives here, so turn it into an error instead of
+        // leaving the change committed locally but never published.
+        callbacks.push_update_reference(|refname, rejection| match rejection {
+            Some(reason) => Err(git2::Error::from_str(&format!(
+                "{} rejected: {}",
+                refname, reason
+            ))),
+            None => Ok(()),
         });
 
         let mut push_opts = git2::PushOptions::new();
@@ -823,24 +876,12 @@ impl WikiManager {
         Ok(())
     }
 
-    /// Search pages by content
+    /// Search pages by title, content, or tag
     pub fn search_pages(&self, query: &str) -> Result<Vec<WikiPage>> {
-        let pages = self.list_pages()?;
         let query_lower = query.to_lowercase();
-
-        let filtered: Vec<WikiPage> = pages
-            .into_iter()
-            .filter(|page| {
-                tracker_core::strings::contains_ignore_case(&page.title, &query_lower)
-                    || tracker_core::strings::contains_ignore_case(&page.content, &query_lower)
-                    || page
-                        .tags
-                        .iter()
-                        .any(|t| tracker_core::strings::contains_ignore_case(t, &query_lower))
-            })
-            .collect();
-
-        Ok(filtered)
+        let mut pages = self.list_pages()?;
+        pages.retain(|page| page.matches_query(&query_lower));
+        Ok(pages)
     }
 
     /// Get child pages of a parent directory
@@ -854,6 +895,12 @@ impl WikiManager {
 
         Ok(children)
     }
+}
+
+/// Id of the blob stored at `relative_path` in `commit`'s tree, if the commit has the file.
+fn blob_id_at(commit: &git2::Commit<'_>, relative_path: &Path) -> Option<git2::Oid> {
+    let entry = commit.tree().ok()?.get_path(relative_path).ok()?;
+    Some(entry.id())
 }
 
 fn attachment_file_name(file: &tracker_core::AttachmentUploadFile) -> Result<String> {

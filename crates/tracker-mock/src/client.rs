@@ -16,6 +16,9 @@ use tracker_core::{
     ProjectCustomField, Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
 };
 
+/// Call log file, relative to the scenario directory.
+const CALL_LOG_FILE: &str = "call_log.jsonl";
+
 /// A mock client that reads responses from fixture files
 pub struct MockClient {
     /// Root directory containing the scenario
@@ -72,7 +75,7 @@ impl MockClient {
             .map_err(|e| TrackerError::Io(format!("Failed to load mock manifest: {}", e)))?;
 
         // Open call log file
-        let log_path = scenario_dir.join("call_log.jsonl");
+        let log_path = scenario_dir.join(CALL_LOG_FILE);
         let log_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -217,7 +220,7 @@ impl MockClient {
 
     /// Get the call log entries
     pub fn read_call_log(&self) -> Result<Vec<CallLogEntry>> {
-        let log_path = self.scenario_dir.join("call_log.jsonl");
+        let log_path = self.scenario_dir.join(CALL_LOG_FILE);
         let content = std::fs::read_to_string(&log_path).unwrap_or_default();
 
         let entries: Vec<CallLogEntry> = content
@@ -230,7 +233,7 @@ impl MockClient {
 
     /// Clear the call log
     pub fn clear_call_log(&self) -> Result<()> {
-        let log_path = self.scenario_dir.join("call_log.jsonl");
+        let log_path = self.scenario_dir.join(CALL_LOG_FILE);
         std::fs::write(&log_path, "")
             .map_err(|e| TrackerError::Io(format!("Failed to clear call log: {}", e)))
     }
@@ -255,10 +258,12 @@ impl IssueTracker for MockClient {
         ]
         .into_iter()
         .collect();
-        // Fixtures are either a bare issue array (total unknown) or a
-        // SearchResult-shaped object ({"items": [...], "total": N}) when the
-        // scenario needs a backend-reported match count.
-        let response: serde_json::Value = self.get_response("search_issues", args, None)?;
+        // The query doubles as the request body so manifests can route
+        // searches with `when.body_contains`. Fixtures are either a bare issue
+        // array (total unknown) or a SearchResult-shaped object
+        // ({"items": [...], "total": N}) when the scenario needs a
+        // backend-reported match count.
+        let response: serde_json::Value = self.get_response("search_issues", args, Some(query))?;
         let parsed = if response.is_array() {
             serde_json::from_value(response).map(SearchResult::from_items)
         } else {
@@ -279,8 +284,13 @@ impl IssueTracker for MockClient {
         ]
         .into_iter()
         .collect();
-        // Note: CreateIssue doesn't implement Serialize, so we just pass None for body
-        self.get_response("create_issue", args, None)
+        // Manifests pick per-issue responses with `when.body_contains`, so
+        // expose the issue text as the request body.
+        let body = match &issue.description {
+            Some(description) => format!("{}\n{}", issue.summary, description),
+            None => issue.summary.clone(),
+        };
+        self.get_response("create_issue", args, Some(&body))
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
@@ -329,12 +339,15 @@ impl IssueTracker for MockClient {
     }
 
     fn create_project(&self, project: &CreateProject) -> Result<Project> {
-        let args = [
+        let mut args: HashMap<String, String> = [
             ("name".to_string(), project.name.clone()),
             ("short_name".to_string(), project.short_name.clone()),
         ]
         .into_iter()
         .collect();
+        if let Some(leader) = &project.leader {
+            args.insert("leader".to_string(), leader.clone());
+        }
         self.get_response("create_project", args, None)
     }
 
@@ -578,12 +591,132 @@ pub fn log_cli_command(scenario_dir: &Path, method: &str, args: &[(&str, &str)])
         duration_ms: 0,
     };
 
-    let log_path = scenario_dir.join("call_log.jsonl");
+    let log_path = scenario_dir.join(CALL_LOG_FILE);
     if let Ok(file) = OpenOptions::new().create(true).append(true).open(&log_path) {
         let mut writer = BufWriter::new(file);
         if let Ok(json) = serde_json::to_string(&entry) {
             let _ = writeln!(writer, "{}", json);
             let _ = writer.flush();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Write a scenario directory holding `manifest` and the given
+    /// `responses/` files.
+    fn scenario_dir(manifest: &str, responses: &[(&str, String)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("manifest.toml"), manifest).unwrap();
+        fs::create_dir(dir.path().join("responses")).unwrap();
+        for (name, content) in responses {
+            fs::write(dir.path().join("responses").join(name), content).unwrap();
+        }
+        dir
+    }
+
+    fn issue_json(id: &str) -> String {
+        format!(
+            r#"{{"id": "{id}", "id_readable": "{id}", "summary": "s",
+                "project": {{"id": "0-1"}}, "custom_fields": [], "tags": [],
+                "created": "2024-01-01T00:00:00Z", "updated": "2024-01-01T00:00:00Z"}}"#
+        )
+    }
+
+    #[test]
+    fn create_issue_routes_on_body_contains() {
+        let dir = scenario_dir(
+            r#"
+[[responses]]
+method = "create_issue"
+file = "login.json"
+[responses.when]
+body_contains = "login"
+
+[[responses]]
+method = "create_issue"
+file = "fallback.json"
+"#,
+            &[
+                ("login.json", issue_json("DEMO-1")),
+                ("fallback.json", issue_json("DEMO-99")),
+            ],
+        );
+        let client = MockClient::new_without_logging(dir.path()).unwrap();
+
+        let issue = client
+            .create_issue(&CreateIssue {
+                project_id: "DEMO".to_string(),
+                summary: "Fix login timeout".to_string(),
+                description: None,
+                custom_fields: Vec::new(),
+                tags: Vec::new(),
+                parent: None,
+            })
+            .unwrap();
+
+        assert_eq!(issue.id, "DEMO-1");
+    }
+
+    #[test]
+    fn search_issues_routes_on_query_body() {
+        let dir = scenario_dir(
+            r##"
+[[responses]]
+method = "search_issues"
+file = "unresolved.json"
+[responses.when]
+body_contains = "#Unresolved"
+
+[[responses]]
+method = "search_issues"
+file = "fallback.json"
+"##,
+            &[
+                ("unresolved.json", format!("[{}]", issue_json("DEMO-1"))),
+                ("fallback.json", "[]".to_string()),
+            ],
+        );
+        let client = MockClient::new_without_logging(dir.path()).unwrap();
+
+        let result = client
+            .search_issues("project: DEMO #Unresolved", 10, 0)
+            .unwrap();
+
+        assert_eq!(result.items.len(), 1);
+    }
+
+    #[test]
+    fn create_project_passes_leader_as_arg() {
+        let dir = scenario_dir(
+            r#"
+[[responses]]
+method = "create_project"
+file = "project.json"
+[responses.args]
+leader = "alice"
+"#,
+            &[(
+                "project.json",
+                r#"{"id": "0-2", "name": "Test", "short_name": "TEST"}"#.to_string(),
+            )],
+        );
+        let client = MockClient::new(dir.path()).unwrap();
+
+        let project = client
+            .create_project(&CreateProject {
+                name: "Test".to_string(),
+                short_name: "TEST".to_string(),
+                description: None,
+                leader: Some("alice".to_string()),
+            })
+            .unwrap();
+
+        assert_eq!(project.id, "0-2");
+        let log = client.read_call_log().unwrap();
+        assert_eq!(log[0].args["leader"], "alice");
     }
 }

@@ -7,7 +7,7 @@ use tracker_core::{
     User, canonical_field_name,
 };
 
-use crate::client::{LinearIssueRelations, add_filter_condition, filter_with_team};
+use crate::client::{LinearIssueRelations, filter_with_team};
 use crate::models::*;
 
 #[derive(Debug, Clone, Default)]
@@ -20,6 +20,13 @@ pub struct ParsedLinearQuery {
     pub assignee: Option<String>,
     pub priority: Option<i64>,
     pub text: Vec<String>,
+}
+
+impl ParsedLinearQuery {
+    /// The free-text words as a full-text search term, if there are any.
+    pub fn search_term(&self) -> Option<String> {
+        (!self.text.is_empty()).then(|| self.text.join(" "))
+    }
 }
 
 pub fn linear_issue_to_core(issue: LinearIssue) -> Issue {
@@ -356,36 +363,10 @@ pub fn team_details_custom_fields(
 }
 
 pub fn linear_link_types() -> Vec<IssueLinkType> {
-    vec![
-        IssueLinkType {
-            id: "related".to_string(),
-            name: "Relates".to_string(),
-            source_to_target: Some("relates to".to_string()),
-            target_to_source: Some("relates to".to_string()),
-            directed: false,
-        },
-        IssueLinkType {
-            id: "blocks".to_string(),
-            name: "Blocks".to_string(),
-            source_to_target: Some("blocks".to_string()),
-            target_to_source: Some("is blocked by".to_string()),
-            directed: true,
-        },
-        IssueLinkType {
-            id: "duplicate".to_string(),
-            name: "Duplicates".to_string(),
-            source_to_target: Some("duplicates".to_string()),
-            target_to_source: Some("is duplicated by".to_string()),
-            directed: true,
-        },
-        IssueLinkType {
-            id: "similar".to_string(),
-            name: "Similar".to_string(),
-            source_to_target: Some("is similar to".to_string()),
-            target_to_source: Some("is similar to".to_string()),
-            directed: false,
-        },
-    ]
+    ["related", "blocks", "duplicate", "similar"]
+        .into_iter()
+        .map(relation_link_type)
+        .collect()
 }
 
 pub fn linear_relations_to_core(
@@ -431,7 +412,12 @@ pub fn linear_relations_to_core(
         } else {
             relation.issue
         };
-        let (link_type, direction) = relation_link_type(&relation.relation_type, is_source);
+        let link_type = relation_link_type(&relation.relation_type);
+        let direction = match (link_type.directed, is_source) {
+            (false, _) => "BOTH",
+            (true, true) => "OUTWARD",
+            (true, false) => "INWARD",
+        };
         links.push(IssueLink {
             id: relation.id,
             direction: Some(direction.to_string()),
@@ -491,143 +477,101 @@ pub fn build_filter_from_parsed(
     team_id: Option<&str>,
     assignee_id: Option<&str>,
 ) -> Option<Value> {
-    let mut filter = filter_with_team(team_id);
+    let mut conditions: Vec<Value> = filter_with_team(team_id).into_iter().collect();
 
     if let Some(state) = parsed.state.as_deref() {
-        add_filter_condition(
-            &mut filter,
-            json!({
-                "state": {
-                    "name": { "eqIgnoreCase": state }
-                }
-            }),
-        );
+        conditions.push(json!({
+            "state": {
+                "name": { "eqIgnoreCase": state }
+            }
+        }));
     }
 
     if let Some(types) = &parsed.state_type_in {
-        add_filter_condition(
-            &mut filter,
-            json!({
-                "state": {
-                    "type": { "in": types }
-                }
-            }),
-        );
+        conditions.push(json!({
+            "state": {
+                "type": { "in": types }
+            }
+        }));
     }
 
     if let Some(types) = &parsed.state_type_nin {
-        add_filter_condition(
-            &mut filter,
-            json!({
-                "state": {
-                    "type": { "nin": types }
-                }
-            }),
-        );
+        conditions.push(json!({
+            "state": {
+                "type": { "nin": types }
+            }
+        }));
     }
 
     for label in &parsed.labels {
-        add_filter_condition(
-            &mut filter,
-            json!({
-                "labels": {
-                    "name": { "eqIgnoreCase": label }
-                }
-            }),
-        );
+        conditions.push(json!({
+            "labels": {
+                "name": { "eqIgnoreCase": label }
+            }
+        }));
     }
 
     if let Some(id) = assignee_id {
-        add_filter_condition(
-            &mut filter,
-            json!({
-                "assignee": {
-                    "id": { "eq": id }
-                }
-            }),
-        );
+        conditions.push(json!({
+            "assignee": {
+                "id": { "eq": id }
+            }
+        }));
     } else if let Some(assignee) = parsed.assignee.as_deref() {
-        add_filter_condition(
-            &mut filter,
-            json!({
-                "or": [
-                    { "assignee": { "name": { "eqIgnoreCase": assignee } } },
-                    { "assignee": { "displayName": { "eqIgnoreCase": assignee } } },
-                    { "assignee": { "email": { "eqIgnoreCase": assignee } } }
-                ]
-            }),
-        );
+        conditions.push(json!({
+            "or": [
+                { "assignee": { "name": { "eqIgnoreCase": assignee } } },
+                { "assignee": { "displayName": { "eqIgnoreCase": assignee } } },
+                { "assignee": { "email": { "eqIgnoreCase": assignee } } }
+            ]
+        }));
     }
 
     if let Some(priority) = parsed.priority {
-        add_filter_condition(
-            &mut filter,
-            json!({
-                "priority": { "eq": priority }
-            }),
-        );
+        conditions.push(json!({
+            "priority": { "eq": priority }
+        }));
     }
 
-    filter
+    // Conditions stay separate `and` operands: merged into one object, two on
+    // the same field (`#bug #ui`, or `state:` with `#unresolved`) would
+    // overwrite each other and silently widen the search.
+    match conditions.len() {
+        0 | 1 => conditions.pop(),
+        _ => Some(json!({ "and": conditions })),
+    }
 }
 
 pub fn priority_from_label(value: &str) -> Option<i64> {
     parse_priority(value)
 }
 
-fn relation_link_type(
-    relation_type: &str,
-    current_is_source: bool,
-) -> (IssueLinkType, &'static str) {
-    match relation_type {
-        "blocks" => (
-            IssueLinkType {
-                id: "blocks".to_string(),
-                name: "Blocks".to_string(),
-                source_to_target: Some("blocks".to_string()),
-                target_to_source: Some("is blocked by".to_string()),
-                directed: true,
-            },
-            if current_is_source {
-                "OUTWARD"
-            } else {
-                "INWARD"
-            },
-        ),
+/// Describe a Linear relation type; unknown types are treated as "related".
+fn relation_link_type(relation_type: &str) -> IssueLinkType {
+    let (id, name, source_to_target, target_to_source, directed) = match relation_type {
+        "blocks" => ("blocks", "Blocks", "blocks", "is blocked by", true),
         "duplicate" => (
-            IssueLinkType {
-                id: "duplicate".to_string(),
-                name: "Duplicates".to_string(),
-                source_to_target: Some("duplicates".to_string()),
-                target_to_source: Some("is duplicated by".to_string()),
-                directed: true,
-            },
-            if current_is_source {
-                "OUTWARD"
-            } else {
-                "INWARD"
-            },
+            "duplicate",
+            "Duplicates",
+            "duplicates",
+            "is duplicated by",
+            true,
         ),
         "similar" => (
-            IssueLinkType {
-                id: "similar".to_string(),
-                name: "Similar".to_string(),
-                source_to_target: Some("is similar to".to_string()),
-                target_to_source: Some("is similar to".to_string()),
-                directed: false,
-            },
-            "BOTH",
+            "similar",
+            "Similar",
+            "is similar to",
+            "is similar to",
+            false,
         ),
-        _ => (
-            IssueLinkType {
-                id: "related".to_string(),
-                name: "Relates".to_string(),
-                source_to_target: Some("relates to".to_string()),
-                target_to_source: Some("relates to".to_string()),
-                directed: false,
-            },
-            "BOTH",
-        ),
+        _ => ("related", "Relates", "relates to", "relates to", false),
+    };
+    IssueLinkType {
+        id: id.to_string(),
+        name: name.to_string(),
+        source_to_target: Some(source_to_target.to_string()),
+        target_to_source: Some(target_to_source.to_string()),
+        directed,
     }
 }
 
@@ -928,6 +872,37 @@ mod tests {
         assert_eq!(
             parsed.state_type_nin,
             Some(vec!["completed".to_string(), "canceled".to_string()])
+        );
+    }
+
+    #[test]
+    fn filter_keeps_every_condition_on_the_same_field() {
+        let parsed = parse_linear_query("state: Todo #Unresolved #bug #ui");
+        let filter = build_filter_from_parsed(&parsed, Some("team-1"), None);
+        assert_eq!(
+            filter,
+            Some(json!({
+                "and": [
+                    { "team": { "id": { "eq": "team-1" } } },
+                    { "state": { "name": { "eqIgnoreCase": "Todo" } } },
+                    { "state": { "type": { "nin": ["completed", "canceled"] } } },
+                    { "labels": { "name": { "eqIgnoreCase": "bug" } } },
+                    { "labels": { "name": { "eqIgnoreCase": "ui" } } }
+                ]
+            }))
+        );
+    }
+
+    #[test]
+    fn filter_with_one_condition_is_not_wrapped() {
+        let filter = build_filter_from_parsed(&parse_linear_query("#Unresolved"), None, None);
+        assert_eq!(
+            filter,
+            Some(json!({ "state": { "type": { "nin": ["completed", "canceled"] } } }))
+        );
+        assert_eq!(
+            build_filter_from_parsed(&parse_linear_query("login"), None, None),
+            None
         );
     }
 

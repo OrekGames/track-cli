@@ -8,7 +8,7 @@
 |--------|---------|
 | **Binary** | `track` (or `target/release/track` if not installed) |
 | **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`), Linear (`-b linear`/`-b lin`) |
-| **Output** | Text (default) or JSON (`-o json`) |
+| **Output** | Text (default), JSON (`-o json`), or the same JSON as JSON Lines (`-o jsonl`) |
 | **Config** | `.track.toml` (project), `~/.tracker-cli/.track.toml` (global), env vars, or CLI flags |
 | **Cache** | `.tracker-cache/` (project) or `~/.tracker-cli/cache/` (global) - run `track cache refresh` for context |
 | **AI Context** | `track context` - aggregated context in single command |
@@ -31,6 +31,11 @@
 **Preferred**: Use a `.track.toml` config file. Avoid passing `--url`/`--token` as CLI flags — those are a last resort for one-off commands.
 
 **Priority** (highest wins): CLI flags → env vars → local `.track.toml` → global `~/.tracker-cli/.track.toml`
+
+A local `.track.toml` that sets a backend URL without its token cannot redirect
+your own token there: commands fail with `Refusing to send your <backend> token
+to <host>`. Only the user should allow it, with `track config trust`; to use
+your own configuration instead, pass `--config ~/.tracker-cli/.track.toml`.
 
 ### Config File (`.track.toml`) — Recommended
 
@@ -377,7 +382,7 @@ track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fix
 | Comments | `track a comments KB-A-1` | `track -b j a comments 123456` |
 | Add comment | `track a cmt KB-A-1 -m "Text"` | `track -b j a cmt 123456 -m "Text"` |
 
-**Note**: Knowledge base is only available for YouTrack and Jira/Confluence. GitHub and GitLab do not support articles. Confluence uses numeric IDs for both pages and spaces. YouTrack uses readable IDs (e.g., `KB-A-1`).
+**Note**: Knowledge base is available for YouTrack, Jira/Confluence, and GitHub/GitLab (via the repo wiki, without article comments). Linear has no knowledge base. Confluence uses numeric IDs for both pages and spaces. YouTrack uses readable IDs (e.g., `KB-A-1`).
 
 ### Command Aliases
 
@@ -466,7 +471,8 @@ track i ix --ids ids.txt --include all -o json
 track i ix --query "project: PROJ #Unresolved" --all --include comments -o json
 track i ix --template unresolved --project PROJ --limit 50 -o json
 
-# JSON Lines: one result object per line (overrides -o)
+# JSON Lines: one result object per line (overrides -o; plain -o jsonl prints
+# the report below on one line)
 track i ix --ids - --include comments --jsonl < ids.txt
 ```
 
@@ -550,6 +556,8 @@ JSON output provides structured results:
   ]
 }
 ```
+
+Every result is printed first; the command then exits `1` if any issue failed.
 
 ---
 
@@ -1188,14 +1196,23 @@ track PROJ-123
 track -o json PROJ-123
 track --format json p ls
 
-# JSONL for `issue search` / `issue inspect` - one compact object per line
+# JSON Lines - the same document, compacted: one issue per line
 track -o jsonl i s "project: PROJ #Unresolved"
+track -o jsonl PROJ-123              # an object prints on a single line
 
 # Projected JSON/JSONL for `issue search` only
 track i s "project: PROJ #Unresolved" -o json --select id_readable,summary
 ```
 
-**Always use `-o json` when parsing output programmatically.**
+**Always use `-o json` or `-o jsonl` when parsing output programmatically.**
+
+`-o jsonl` works for every command that prints JSON (`completions` rejects it) and prints the
+same document as `-o json`, rendered compactly. When the document is an array (list commands
+such as `i s`, `p ls`, `i comments`), each element is one line and an empty array prints
+nothing; anything else (an object such as `i g`, a batch summary, a report) is a single line.
+Nested arrays stay inside their line. In both modes stdout holds only JSON; warnings, progress
+and errors go to stderr. `issue inspect --jsonl` is different: it streams one result per issue
+instead of the report.
 
 `--select` takes comma-separated dotted paths (e.g. `id_readable,project.short_name`)
 and emits only those fields per issue; missing paths are omitted (no error). It is wired for

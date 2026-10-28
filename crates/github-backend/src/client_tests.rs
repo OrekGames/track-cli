@@ -360,6 +360,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_labels_pages_past_100() {
+        let mock_server = MockServer::start().await;
+        let label =
+            |i: u64| serde_json::json!({"id": i, "name": format!("label-{i}"), "color": "ededed"});
+
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/labels"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([label(101)])))
+            .with_priority(1)
+            .mount(&mock_server)
+            .await;
+        // Any other request (the first page) gets a full page of 100 labels.
+        let first_page: Vec<_> = (1..=100).map(label).collect();
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/labels"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(first_page))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let labels = client.list_labels().unwrap();
+
+        assert_eq!(labels.len(), 101);
+        assert_eq!(labels[100].name, "label-101");
+    }
+
+    #[tokio::test]
     async fn test_create_label() {
         let mock_server = MockServer::start().await;
 
@@ -678,6 +706,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_invalid_success_body_is_parse_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let result = client.get_issue(1);
+
+        // A body that is not the expected JSON is a decode failure, not a
+        // transport (`Http`) failure.
+        match result.unwrap_err() {
+            crate::error::GitHubError::Parse(_) => {}
+            other => panic!("Expected Parse error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn test_not_found_error() {
         let mock_server = MockServer::start().await;
 
@@ -753,5 +802,51 @@ mod tests {
             }
             other => panic!("Expected Api error, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn web_url_points_at_the_web_host_not_the_api() {
+        let cases = [
+            ("https://api.github.com", "https://github.com/o/r/issues"),
+            (
+                "https://github.example.com/api/v3",
+                "https://github.example.com/o/r/issues",
+            ),
+            (
+                "https://api.octocorp.ghe.com",
+                "https://octocorp.ghe.com/o/r/issues",
+            ),
+        ];
+        for (api_url, issues_url) in cases {
+            let client = GitHubClient::with_base_url(api_url, "o", "r", "token");
+            assert_eq!(
+                client.web_url(None).unwrap().as_deref(),
+                Some(issues_url),
+                "dashboard for API URL {api_url}"
+            );
+            assert_eq!(
+                client.web_url(Some("42")).unwrap(),
+                Some(format!("{issues_url}/42")),
+                "issue for API URL {api_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn web_url_accepts_every_issue_id_form() {
+        let client = GitHubClient::with_base_url("https://api.github.com", "o", "r", "token");
+
+        assert_eq!(
+            client.web_url(Some("#7")).unwrap().as_deref(),
+            Some("https://github.com/o/r/issues/7")
+        );
+        assert_eq!(
+            client.web_url(Some("other/lib#7")).unwrap().as_deref(),
+            Some("https://github.com/other/lib/issues/7")
+        );
+        assert!(matches!(
+            client.web_url(Some("PROJ-7")),
+            Err(tracker_core::TrackerError::InvalidInput(_))
+        ));
     }
 }

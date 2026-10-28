@@ -63,13 +63,7 @@ impl ArgMatcher {
     /// Check if this matcher matches the given value
     pub fn matches(&self, value: &str) -> bool {
         match self {
-            ArgMatcher::Exact(expected) => {
-                if expected == "*" {
-                    true
-                } else {
-                    expected == value
-                }
-            }
+            ArgMatcher::Exact(expected) => expected == "*" || expected == value,
             ArgMatcher::Wildcard => true,
         }
     }
@@ -96,9 +90,11 @@ impl Manifest {
         toml::from_str(&content).map_err(|e| ManifestError::Parse(path.to_path_buf(), e))
     }
 
-    /// Find the best matching response for a request
+    /// Find the first mapping that matches a request.
     ///
-    /// Returns the matching ResponseMapping and the call index (for sequence tracking)
+    /// Returns the matching ResponseMapping and the response file to serve;
+    /// for a `sequence` mapping, `call_counts` (keyed by [`Self::request_key`])
+    /// picks the file, repeating the last one once the sequence is exhausted.
     pub fn find_response(
         &self,
         method: &str,
@@ -114,27 +110,21 @@ impl Manifest {
                 continue;
             }
 
-            // Check argument matching
             let args_match = mapping
                 .args
                 .iter()
-                .all(|(key, matcher)| args.get(key).map(|v| matcher.matches(v)).unwrap_or(false));
-
-            if !args_match && !mapping.args.is_empty() {
+                .all(|(key, matcher)| args.get(key).is_some_and(|v| matcher.matches(v)));
+            if !args_match {
                 continue;
             }
 
-            // Check condition matching
-            if let Some(condition) = &mapping.when
-                && let Some(body_contains) = &condition.body_contains
+            if let Some(body_contains) = mapping
+                .when
+                .as_ref()
+                .and_then(|condition| condition.body_contains.as_deref())
+                && !body.is_some_and(|body| body.contains(body_contains))
             {
-                if let Some(body) = body {
-                    if !body.contains(body_contains) {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
+                continue;
             }
 
             // Determine response file

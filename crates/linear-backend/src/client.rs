@@ -1,7 +1,8 @@
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::Duration;
+use tracker_core::unicode_eq_ignore_case;
 use ureq::Agent;
 
 use crate::error::{LinearError, Result};
@@ -49,6 +50,14 @@ const TEAM_FIELDS: &str = r#"
     description
 "#;
 
+const WORKFLOW_STATE_FIELDS: &str = "id name type position";
+const USER_FIELDS: &str = "id name displayName email";
+const LABEL_FIELDS: &str = "id name color description";
+const PROJECT_FIELDS: &str = "id name slugId description";
+
+/// Nodes requested per page when walking a connection to its end.
+const PAGE_SIZE: usize = 100;
+
 /// Linear GraphQL API client.
 pub struct LinearClient {
     agent: Agent,
@@ -68,6 +77,7 @@ impl LinearClient {
     /// Create a new Linear client with a custom GraphQL endpoint.
     pub fn with_base_url(api_url: &str, token: &str) -> Self {
         let agent = Agent::config_builder()
+            .tls_config(tracker_core::tls::tls_config())
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
             .build()
@@ -243,23 +253,10 @@ impl LinearClient {
             "#
         );
 
-        let mut teams = Vec::new();
-        let mut after: Option<String> = None;
-        loop {
-            let data: Data = self.graphql(
-                &query,
-                json!({
-                    "first": 100,
-                    "after": after,
-                }),
-            )?;
-            teams.extend(data.teams.nodes);
-            if !data.teams.page_info.has_next_page {
-                break;
-            }
-            after = data.teams.page_info.end_cursor;
-        }
-        Ok(teams)
+        collect_pages("teams", None, |after| {
+            let data: Data = self.graphql(&query, json!({ "first": PAGE_SIZE, "after": after }))?;
+            Ok(data.teams)
+        })
     }
 
     pub fn get_team(&self, id: &str) -> Result<LinearTeam> {
@@ -307,20 +304,20 @@ impl LinearClient {
             query TeamDetails($id: String!) {{
               team(id: $id) {{
                 {TEAM_FIELDS}
-                states(first: 100) {{
-                  nodes {{ id name type position }}
+                states(first: {PAGE_SIZE}) {{
+                  nodes {{ {WORKFLOW_STATE_FIELDS} }}
                   pageInfo {{ hasNextPage endCursor }}
                 }}
-                members(first: 100) {{
-                  nodes {{ id name displayName email }}
+                members(first: {PAGE_SIZE}) {{
+                  nodes {{ {USER_FIELDS} }}
                   pageInfo {{ hasNextPage endCursor }}
                 }}
-                labels(first: 100) {{
-                  nodes {{ id name color description }}
+                labels(first: {PAGE_SIZE}) {{
+                  nodes {{ {LABEL_FIELDS} }}
                   pageInfo {{ hasNextPage endCursor }}
                 }}
-                projects(first: 100) {{
-                  nodes {{ id name slugId description }}
+                projects(first: {PAGE_SIZE}) {{
+                  nodes {{ {PROJECT_FIELDS} }}
                   pageInfo {{ hasNextPage endCursor }}
                 }}
               }}
@@ -329,24 +326,96 @@ impl LinearClient {
         );
 
         let data: Data = self.graphql(&query, json!({ "id": id }))?;
-        data.team
-            .ok_or_else(|| LinearError::ProjectNotFound(id.to_string()))
+        let mut team = data
+            .team
+            .ok_or_else(|| LinearError::ProjectNotFound(id.to_string()))?;
+
+        // One request covers most teams; larger connections are topped up so
+        // the value lists callers validate against are complete.
+        self.fetch_remaining_team_nodes(id, "states", WORKFLOW_STATE_FIELDS, &mut team.states)?;
+        self.fetch_remaining_team_nodes(id, "members", USER_FIELDS, &mut team.members)?;
+        self.fetch_remaining_team_nodes(id, "labels", LABEL_FIELDS, &mut team.labels)?;
+        self.fetch_remaining_team_nodes(id, "projects", PROJECT_FIELDS, &mut team.projects)?;
+        Ok(team)
     }
 
     pub fn list_team_states(&self, team_id: &str) -> Result<Vec<LinearWorkflowState>> {
-        Ok(self.get_team_details(team_id)?.states.nodes)
+        self.list_team_connection(team_id, "states", WORKFLOW_STATE_FIELDS, None)
     }
 
     pub fn list_team_members(&self, team_id: &str) -> Result<Vec<LinearUser>> {
-        Ok(self.get_team_details(team_id)?.members.nodes)
+        self.list_team_connection(team_id, "members", USER_FIELDS, None)
     }
 
     pub fn list_team_labels(&self, team_id: &str) -> Result<Vec<LinearIssueLabel>> {
-        Ok(self.get_team_details(team_id)?.labels.nodes)
+        self.list_team_connection(team_id, "labels", LABEL_FIELDS, None)
     }
 
     pub fn list_team_projects(&self, team_id: &str) -> Result<Vec<LinearProject>> {
-        Ok(self.get_team_details(team_id)?.projects.nodes)
+        self.list_team_connection(team_id, "projects", PROJECT_FIELDS, None)
+    }
+
+    /// Fetch every node of one of a team's connections (`states`, `members`,
+    /// `labels` or `projects`) that comes after the `after` cursor.
+    fn list_team_connection<T: DeserializeOwned>(
+        &self,
+        team_id: &str,
+        connection: &str,
+        node_fields: &str,
+        after: Option<String>,
+    ) -> Result<Vec<T>> {
+        #[derive(serde::Deserialize)]
+        #[serde(bound(deserialize = "T: DeserializeOwned"))]
+        struct TeamConnection<T> {
+            connection: LinearConnection<T>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(bound(deserialize = "T: DeserializeOwned"))]
+        struct Data<T> {
+            team: Option<TeamConnection<T>>,
+        }
+
+        // The `connection` alias gives every connection the same response
+        // shape, so one query template serves them all.
+        let query = format!(
+            r#"
+            query TeamConnection($id: String!, $first: Int!, $after: String) {{
+              team(id: $id) {{
+                connection: {connection}(first: $first, after: $after) {{
+                  nodes {{ {node_fields} }}
+                  pageInfo {{ hasNextPage endCursor }}
+                }}
+              }}
+            }}
+            "#
+        );
+
+        collect_pages(&format!("team {connection}"), after, |after| {
+            let data: Data<T> = self.graphql(
+                &query,
+                json!({ "id": team_id, "first": PAGE_SIZE, "after": after }),
+            )?;
+            data.team
+                .map(|team| team.connection)
+                .ok_or_else(|| LinearError::ProjectNotFound(team_id.to_string()))
+        })
+    }
+
+    /// Append the pages of a team connection that follow `first_page`.
+    fn fetch_remaining_team_nodes<T: DeserializeOwned>(
+        &self,
+        team_id: &str,
+        connection: &str,
+        node_fields: &str,
+        first_page: &mut LinearConnection<T>,
+    ) -> Result<()> {
+        if first_page.page_info.has_next_page {
+            let after = first_page.page_info.end_cursor.clone();
+            let rest = self.list_team_connection(team_id, connection, node_fields, after)?;
+            first_page.nodes.extend(rest);
+        }
+        Ok(())
     }
 
     pub fn list_issue_labels(&self, team_id: Option<&str>) -> Result<Vec<LinearIssueLabel>> {
@@ -365,32 +434,18 @@ impl LinearClient {
             }
         "#;
 
-        let filter = team_id.map(|id| {
-            json!({
-                "team": {
-                    "id": { "eq": id }
-                }
-            })
-        });
-
-        let mut labels = Vec::new();
-        let mut after: Option<String> = None;
-        loop {
+        let filter = filter_with_team(team_id);
+        collect_pages("issue labels", None, |after| {
             let data: Data = self.graphql(
                 query,
                 json!({
-                    "first": 100,
+                    "first": PAGE_SIZE,
                     "after": after,
                     "filter": filter,
                 }),
             )?;
-            labels.extend(data.issue_labels.nodes);
-            if !data.issue_labels.page_info.has_next_page {
-                break;
-            }
-            after = data.issue_labels.page_info.end_cursor;
-        }
-        Ok(labels)
+            Ok(data.issue_labels)
+        })
     }
 
     pub fn find_label(&self, team_id: &str, name_or_id: &str) -> Result<LinearIssueLabel> {
@@ -412,7 +467,7 @@ impl LinearClient {
                         .slug_id
                         .as_deref()
                         .is_some_and(|slug| slug.eq_ignore_ascii_case(name_or_id_or_slug))
-                    || project.name.eq_ignore_ascii_case(name_or_id_or_slug)
+                    || unicode_eq_ignore_case(&project.name, name_or_id_or_slug)
             })
             .ok_or_else(|| LinearError::ProjectNotFound(name_or_id_or_slug.to_string()))
     }
@@ -807,10 +862,12 @@ impl LinearClient {
 
     pub fn get_issue_relations(&self, issue_id: &str) -> Result<LinearIssueRelations> {
         #[derive(Debug, serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
         struct IssueRelationsData {
             parent: Option<LinearIssueRef>,
             children: LinearConnection<LinearIssueRef>,
             relations: LinearConnection<LinearIssueRelation>,
+            inverse_relations: LinearConnection<LinearIssueRelation>,
         }
 
         #[derive(Debug, serde::Deserialize)]
@@ -836,6 +893,15 @@ impl LinearClient {
                   }}
                   pageInfo {{ hasNextPage endCursor }}
                 }}
+                inverseRelations(first: 100) {{
+                  nodes {{
+                    id
+                    type
+                    issue {{ {ISSUE_REF_FIELDS} }}
+                    relatedIssue {{ {ISSUE_REF_FIELDS} }}
+                  }}
+                  pageInfo {{ hasNextPage endCursor }}
+                }}
               }}
             }}
             "#
@@ -846,10 +912,15 @@ impl LinearClient {
             .issue
             .ok_or_else(|| LinearError::IssueNotFound(issue_id.to_string()))?;
 
+        // `relations` only holds the relations this issue is the source of;
+        // the ones pointing at it (e.g. "is blocked by") are `inverseRelations`.
+        let mut relations = issue.relations.nodes;
+        relations.extend(issue.inverse_relations.nodes);
+
         Ok(LinearIssueRelations {
             parent: issue.parent,
             children: issue.children.nodes,
-            relations: issue.relations.nodes,
+            relations,
         })
     }
 
@@ -949,21 +1020,29 @@ pub(crate) fn filter_with_team(team_id: Option<&str>) -> Option<Value> {
     })
 }
 
-pub(crate) fn add_filter_condition(filter: &mut Option<Value>, condition: Value) {
-    match filter {
-        None => *filter = Some(condition),
-        Some(Value::Object(existing)) => {
-            if let Value::Object(new_fields) = condition {
-                merge_filter_objects(existing, new_fields);
-            }
+/// Walk a cursor-paginated connection from `after` to its last page,
+/// collecting every node.
+///
+/// Fails with [`LinearError::PaginationStalled`] instead of looping forever
+/// when the server reports another page without a new cursor.
+fn collect_pages<T>(
+    what: &str,
+    mut after: Option<String>,
+    mut fetch_page: impl FnMut(Option<&str>) -> Result<LinearConnection<T>>,
+) -> Result<Vec<T>> {
+    let mut nodes = Vec::new();
+    loop {
+        let page = fetch_page(after.as_deref())?;
+        nodes.extend(page.nodes);
+        if !page.page_info.has_next_page {
+            return Ok(nodes);
         }
-        Some(_) => {}
-    }
-}
-
-fn merge_filter_objects(existing: &mut Map<String, Value>, new_fields: Map<String, Value>) {
-    for (key, value) in new_fields {
-        existing.insert(key, value);
+        if page.page_info.end_cursor.is_none() || page.page_info.end_cursor == after {
+            return Err(LinearError::PaginationStalled(format!(
+                "Linear {what} cursor did not advance"
+            )));
+        }
+        after = page.page_info.end_cursor;
     }
 }
 
@@ -1018,20 +1097,20 @@ fn parse_error_message(body: &str) -> Option<String> {
 fn team_matches(team: &LinearTeam, identifier: &str) -> bool {
     team.id == identifier
         || team.key.eq_ignore_ascii_case(identifier)
-        || team.name.eq_ignore_ascii_case(identifier)
+        || unicode_eq_ignore_case(&team.name, identifier)
 }
 
 fn id_or_name_matches(id: &str, name: &str, identifier: &str) -> bool {
-    id == identifier || name.eq_ignore_ascii_case(identifier)
+    id == identifier || unicode_eq_ignore_case(name, identifier)
 }
 
 fn user_matches(user: &LinearUser, identifier: &str) -> bool {
     user.id == identifier
-        || user.name.eq_ignore_ascii_case(identifier)
+        || unicode_eq_ignore_case(&user.name, identifier)
         || user
             .display_name
             .as_deref()
-            .is_some_and(|name| name.eq_ignore_ascii_case(identifier))
+            .is_some_and(|name| unicode_eq_ignore_case(name, identifier))
         || user
             .email
             .as_deref()

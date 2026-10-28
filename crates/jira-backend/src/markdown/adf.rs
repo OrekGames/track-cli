@@ -41,12 +41,28 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
     let mut link_href: Option<String> = None;
     // Whether we're currently inside a table header section
     let mut in_table_head = false;
+    // Raw markup of the HTML block being read (pulldown-cmark emits it line by line)
+    let mut html_block = String::new();
     // Counter for ADF localId values required by taskList/taskItem nodes
     let mut local_id: u32 = 0;
     let mut next_id = || {
         local_id += 1;
         local_id.to_string()
     };
+
+    let link_mark = |href: &str| json!({ "type": "link", "attrs": { "href": href } });
+
+    // Append a finished block node to its enclosing block, or to the document root.
+    fn push_block(
+        node: Value,
+        block_stack: &mut [(String, Vec<Value>)],
+        doc_content: &mut Vec<Value>,
+    ) {
+        match block_stack.last_mut() {
+            Some((_, parent)) => parent.push(node),
+            None => doc_content.push(node),
+        }
+    }
 
     // Flush the inline buffer as content into the nearest enclosing block.
     // If no block is open, wraps in a paragraph and pushes to doc_content.
@@ -65,6 +81,8 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
         }
     };
 
+    // Tight list items carry their text without a Paragraph event, but ADF
+    // listItem children must be blocks: wrap pending text in a paragraph.
     let flush_list_item_inline_as_paragraph =
         |inline_buf: &mut Vec<Value>, block_stack: &mut Vec<(String, Vec<Value>)>| {
             if inline_buf.is_empty() {
@@ -80,6 +98,20 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
         };
 
     for event in parser {
+        // A list item's leading text must precede any nested block it contains.
+        if let Event::Start(
+            Tag::Paragraph
+            | Tag::Heading { .. }
+            | Tag::BlockQuote(_)
+            | Tag::CodeBlock(_)
+            | Tag::HtmlBlock
+            | Tag::List(_)
+            | Tag::Table(_),
+        ) = &event
+        {
+            flush_list_item_inline_as_paragraph(&mut inline_buf, &mut block_stack);
+        }
+
         match event {
             // ── Block opens ──────────────────────────────────────────────
             Event::Start(Tag::Heading { level, .. }) => {
@@ -102,11 +134,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                         "attrs": { "level": level },
                         "content": content
                     });
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -117,11 +145,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                 flush_inline(&mut inline_buf, &mut block_stack, &mut doc_content);
                 if let Some((_, content)) = block_stack.pop() {
                     let node = json!({ "type": "paragraph", "content": content });
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -131,16 +155,11 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
             Event::End(TagEnd::BlockQuote(_)) => {
                 if let Some((_, content)) = block_stack.pop() {
                     let node = json!({ "type": "blockquote", "content": content });
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
             Event::Start(Tag::List(None)) => {
-                flush_list_item_inline_as_paragraph(&mut inline_buf, &mut block_stack);
                 block_stack.push(("bulletList".to_string(), Vec::new()));
             }
             Event::End(TagEnd::List(false)) => {
@@ -150,16 +169,11 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                     } else {
                         json!({ "type": "bulletList", "content": content })
                     };
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
             Event::Start(Tag::List(Some(start))) => {
-                flush_list_item_inline_as_paragraph(&mut inline_buf, &mut block_stack);
                 block_stack.push((format!("orderedList:{start}"), Vec::new()));
             }
             Event::End(TagEnd::List(true)) => {
@@ -170,11 +184,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                         "attrs": { "order": order },
                         "content": content
                     });
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -182,38 +192,25 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                 block_stack.push(("listItem".to_string(), Vec::new()));
             }
             Event::End(TagEnd::Item) => {
-                flush_inline(&mut inline_buf, &mut block_stack, &mut doc_content);
+                let is_task_item = block_stack
+                    .last()
+                    .is_some_and(|(key, _)| key.starts_with("taskItem:"));
+                if is_task_item {
+                    // ADF taskItem takes inline content directly — no paragraph wrapper.
+                    flush_inline(&mut inline_buf, &mut block_stack, &mut doc_content);
+                } else {
+                    flush_list_item_inline_as_paragraph(&mut inline_buf, &mut block_stack);
+                }
                 if let Some((key, content)) = block_stack.pop() {
-                    let node = if let Some(state_suffix) = key.strip_prefix("taskItem:") {
-                        // ADF taskItem takes inline content directly — no paragraph wrapper.
-                        let state = Some(state_suffix)
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("TODO");
-                        json!({
+                    let node = match key.strip_prefix("taskItem:") {
+                        Some(state) => json!({
                             "type": "taskItem",
                             "attrs": { "localId": next_id(), "state": state },
                             "content": content
-                        })
-                    } else {
-                        // ADF listItem requires block-level children; wrap bare inline nodes.
-                        let is_inline = content
-                            .first()
-                            .and_then(|n| n.get("type"))
-                            .and_then(|t| t.as_str())
-                            .map(|t| t == "text" || t == "hardBreak")
-                            .unwrap_or(false);
-                        let item_content = if is_inline {
-                            vec![json!({ "type": "paragraph", "content": content })]
-                        } else {
-                            content
-                        };
-                        json!({ "type": "listItem", "content": item_content })
+                        }),
+                        None => json!({ "type": "listItem", "content": content }),
                     };
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -236,11 +233,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                             "content": content
                         })
                     };
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -258,18 +251,6 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
             Event::Start(Tag::Strikethrough) => mark_stack.push("strike".to_string()),
             Event::End(TagEnd::Strikethrough) => {
                 mark_stack.retain(|m| m != "strike");
-            }
-
-            // Only emitted with ENABLE_SUPERSCRIPT / ENABLE_SUBSCRIPT; mapped
-            // to the ADF "subsup" mark for completeness.
-            Event::Start(Tag::Superscript) => mark_stack.push("sup".to_string()),
-            Event::End(TagEnd::Superscript) => {
-                mark_stack.retain(|m| m != "sup");
-            }
-
-            Event::Start(Tag::Subscript) => mark_stack.push("sub".to_string()),
-            Event::End(TagEnd::Subscript) => {
-                mark_stack.retain(|m| m != "sub");
             }
 
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -317,11 +298,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
             Event::End(TagEnd::Table) => {
                 if let Some((_, content)) = block_stack.pop() {
                     let node = json!({ "type": "table", "content": content });
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -335,11 +312,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                 in_table_head = false;
                 if let Some((_, content)) = block_stack.pop() {
                     let node = json!({ "type": "tableRow", "content": content });
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -350,11 +323,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
             Event::End(TagEnd::TableRow) => {
                 if let Some((_, content)) = block_stack.pop() {
                     let node = json!({ "type": "tableRow", "content": content });
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -382,11 +351,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                         content
                     };
                     let node = json!({ "type": key, "attrs": {}, "content": cell_content });
-                    if let Some((_, parent)) = block_stack.last_mut() {
-                        parent.push(node);
-                    } else {
-                        doc_content.push(node);
-                    }
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -396,12 +361,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
                     .iter()
                     .map(|m| {
                         if m == "link" {
-                            json!({
-                                "type": "link",
-                                "attrs": { "href": link_href.as_deref().unwrap_or("") }
-                            })
-                        } else if m == "sup" || m == "sub" {
-                            json!({ "type": "subsup", "attrs": { "type": m } })
+                            link_mark(link_href.as_deref().unwrap_or(""))
                         } else {
                             json!({ "type": m })
                         }
@@ -429,12 +389,12 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
             }
 
             Event::Code(t) => {
-                let node = json!({
-                    "type": "text",
-                    "text": t.as_ref(),
-                    "marks": [{ "type": "code" }]
-                });
-                inline_buf.push(node);
+                // ADF lets the code mark combine with a link, but no other mark.
+                let mut marks = vec![json!({ "type": "code" })];
+                if let Some(href) = &link_href {
+                    marks.push(link_mark(href));
+                }
+                inline_buf.push(json!({ "type": "text", "text": t.as_ref(), "marks": marks }));
             }
 
             Event::SoftBreak => {
@@ -447,6 +407,7 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
             }
 
             Event::Rule => {
+                flush_list_item_inline_as_paragraph(&mut inline_buf, &mut block_stack);
                 flush_inline(&mut inline_buf, &mut block_stack, &mut doc_content);
                 doc_content.push(json!({ "type": "rule" }));
             }
@@ -456,13 +417,21 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
             // tokens themselves can be silently ignored.
             Event::InlineHtml(_) => {}
 
-            // Block HTML: the entire raw block (tags + content) arrives in one
-            // event. Strip the tags and emit any remaining text so content is
-            // not silently lost.
-            Event::Html(raw) => {
-                let stripped = strip_html_tags(raw.as_ref()).trim().to_string();
-                if !stripped.is_empty() {
-                    inline_buf.push(json!({ "type": "text", "text": stripped }));
+            // Block HTML has no ADF equivalent: strip the tags and keep the
+            // remaining text as its own paragraph so it is not silently lost.
+            Event::Html(raw) => html_block.push_str(&raw),
+            Event::End(TagEnd::HtmlBlock) => {
+                let html = std::mem::take(&mut html_block);
+                let text = strip_html_tags(&html)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !text.is_empty() {
+                    let node = json!({
+                        "type": "paragraph",
+                        "content": [{ "type": "text", "text": text }]
+                    });
+                    push_block(node, &mut block_stack, &mut doc_content);
                 }
             }
 
@@ -478,9 +447,15 @@ pub(crate) fn markdown_to_adf(text: &str) -> serde_json::Value {
 
 /// Extract plain text from ADF document
 pub(crate) fn adf_to_text(adf: &serde_json::Value) -> String {
-    fn extract_text(value: &serde_json::Value) -> String {
+    use serde_json::{Map, Value};
+
+    fn attr<'a>(node: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+        node.get("attrs")?.get(key)?.as_str()
+    }
+
+    fn extract_text(value: &Value) -> String {
         match value {
-            serde_json::Value::Object(obj) => {
+            Value::Object(obj) => {
                 let node_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
                 match node_type {
@@ -490,6 +465,24 @@ pub(crate) fn adf_to_text(adf: &serde_json::Value) -> String {
                         .unwrap_or("")
                         .to_string(),
                     "hardBreak" => "\n".to_string(),
+                    // Nodes whose visible text lives in attrs rather than in
+                    // content. Jira Cloud turns every pasted URL into a card.
+                    "inlineCard" => attr(obj, "url").unwrap_or_default().to_string(),
+                    "blockCard" | "embedCard" => {
+                        format!("{}\n\n", attr(obj, "url").unwrap_or_default())
+                    }
+                    // A mention's text already includes the leading '@'.
+                    "mention" | "status" => attr(obj, "text").unwrap_or_default().to_string(),
+                    "emoji" => attr(obj, "text")
+                        .or_else(|| attr(obj, "shortName"))
+                        .unwrap_or_default()
+                        .to_string(),
+                    // ADF dates are UTC midnight timestamps in milliseconds.
+                    "date" => attr(obj, "timestamp")
+                        .and_then(|ms| ms.parse().ok())
+                        .and_then(chrono::DateTime::from_timestamp_millis)
+                        .map(|date| date.format("%Y-%m-%d").to_string())
+                        .unwrap_or_default(),
                     "paragraph" | "heading" | "codeBlock" | "blockquote" => {
                         let inner = obj.get("content").map(extract_text).unwrap_or_default();
                         format!("{}\n\n", inner.trim())
@@ -519,9 +512,7 @@ pub(crate) fn adf_to_text(adf: &serde_json::Value) -> String {
                     }
                 }
             }
-            serde_json::Value::Array(arr) => {
-                arr.iter().map(extract_text).collect::<Vec<_>>().join("")
-            }
+            Value::Array(arr) => arr.iter().map(extract_text).collect::<Vec<_>>().join(""),
             _ => String::new(),
         }
     }
@@ -905,6 +896,72 @@ mod markdown_to_adf_tests {
         assert!(
             all_text.contains("block content"),
             "expected text from block HTML"
+        );
+    }
+
+    #[test]
+    fn block_html_stays_out_of_following_paragraph() {
+        let adf = markdown_to_adf("<div>block content</div>\n\nNext paragraph");
+        let blocks = adf["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "got: {adf}");
+        assert_eq!(blocks[0]["content"][0]["text"], "block content");
+        assert_eq!(blocks[1]["content"][0]["text"], "Next paragraph");
+    }
+
+    #[test]
+    fn inline_code_link_keeps_link_mark() {
+        let adf = markdown_to_adf("[`parse()`](https://docs.example.com/parse)");
+        let node = &first_block(&adf)["content"][0];
+        assert_eq!(node["text"], "parse()");
+        assert_eq!(
+            node["marks"],
+            serde_json::json!([
+                { "type": "code" },
+                { "type": "link", "attrs": { "href": "https://docs.example.com/parse" } }
+            ])
+        );
+    }
+
+    #[test]
+    fn tight_list_item_text_precedes_nested_code_block() {
+        let adf = markdown_to_adf("- Run:\n  ```sh\n  make\n  ```");
+        let item = &first_block(&adf)["content"][0];
+        assert_eq!(item["type"], "listItem");
+        assert_eq!(item["content"][0]["type"], "paragraph");
+        assert_eq!(item["content"][0]["content"][0]["text"], "Run:");
+        assert_eq!(item["content"][1]["type"], "codeBlock");
+        assert_eq!(item["content"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod adf_to_text_tests {
+    use super::*;
+
+    #[test]
+    fn renders_text_carried_in_inline_node_attrs() {
+        let adf = serde_json::json!({
+            "type": "doc",
+            "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    { "type": "mention", "attrs": { "id": "557058:abc", "text": "@Jane Doe" } },
+                    { "type": "text", "text": " see " },
+                    { "type": "inlineCard", "attrs": { "url": "https://example.atlassian.net/browse/PROJ-1" } },
+                    { "type": "text", "text": " " },
+                    { "type": "emoji", "attrs": { "shortName": ":smile:", "text": "😄" } },
+                    { "type": "text", "text": " " },
+                    { "type": "status", "attrs": { "text": "IN REVIEW", "color": "blue" } },
+                    { "type": "text", "text": " by " },
+                    { "type": "date", "attrs": { "timestamp": "1704067200000" } }
+                ]
+            }]
+        });
+
+        assert_eq!(
+            adf_to_text(&adf),
+            "@Jane Doe see https://example.atlassian.net/browse/PROJ-1 😄 IN REVIEW by 2024-01-01"
         );
     }
 }

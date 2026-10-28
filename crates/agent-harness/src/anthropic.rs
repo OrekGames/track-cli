@@ -2,8 +2,6 @@
 //!
 //! Implements the Messages API with tool use support.
 
-#![allow(dead_code)]
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +20,10 @@ impl Client {
         Self {
             api_key,
             model,
-            agent: ureq::Agent::new_with_defaults(),
+            agent: ureq::Agent::config_builder()
+                .tls_config(tracker_core::tls::tls_config())
+                .build()
+                .into(),
         }
     }
 
@@ -84,10 +85,6 @@ impl MessageContent {
     pub fn text(s: impl Into<String>) -> Self {
         MessageContent::Text(s.into())
     }
-
-    pub fn blocks(blocks: Vec<ContentBlock>) -> Self {
-        MessageContent::Blocks(blocks)
-    }
 }
 
 /// Content block in a message
@@ -111,10 +108,6 @@ pub enum ContentBlock {
 }
 
 impl ContentBlock {
-    pub fn text(s: impl Into<String>) -> Self {
-        ContentBlock::Text { text: s.into() }
-    }
-
     pub fn tool_result(id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
         ContentBlock::ToolResult {
             tool_use_id: id.into(),
@@ -135,7 +128,6 @@ pub struct Tool {
 /// Message response from the API
 #[derive(Debug, Deserialize)]
 pub struct MessageResponse {
-    pub id: String,
     pub content: Vec<ContentBlock>,
     pub stop_reason: Option<StopReason>,
     pub usage: Usage,
@@ -156,33 +148,4 @@ pub enum StopReason {
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
-}
-
-impl MessageResponse {
-    /// Check if the response contains tool use
-    pub fn has_tool_use(&self) -> bool {
-        self.content
-            .iter()
-            .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
-    }
-
-    /// Get all tool use blocks
-    pub fn tool_uses(&self) -> Vec<&ContentBlock> {
-        self.content
-            .iter()
-            .filter(|block| matches!(block, ContentBlock::ToolUse { .. }))
-            .collect()
-    }
-
-    /// Get text content
-    pub fn text(&self) -> String {
-        self.content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
 }

@@ -4,40 +4,108 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::io::{BufWriter, IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracker_core::{
     Article, ArticleAttachment, BundleDefinition, Comment, CustomField, CustomFieldDefinition,
     Issue, IssueAttachment, IssueHistoryEvent, IssueTag, Project, ProjectCustomField, case_key,
     unicode_eq_ignore_case,
 };
 
+/// Process-wide JSON render mode, set once from `-o` before dispatch. JSONL is
+/// a rendering of the document `-o json` prints, so handlers stay exhaustive
+/// on Text/Json and only [`output_json`] needs to know.
+static JSONL_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Render every JSON document as compact JSON Lines instead of pretty JSON.
+pub fn set_jsonl_mode(enabled: bool) {
+    JSONL_MODE.store(enabled, Ordering::Relaxed);
+}
+
+/// Print `value` as pretty JSON, or as JSONL under `-o jsonl`.
 pub fn output_json<T: Serialize + ?Sized>(value: &T) -> anyhow::Result<()> {
+    print_json(value, JSONL_MODE.load(Ordering::Relaxed))
+}
+
+fn print_json<T: Serialize + ?Sized>(value: &T, jsonl: bool) -> anyhow::Result<()> {
     let stdout = std::io::stdout();
     let handle = stdout.lock();
     let mut writer = BufWriter::new(handle);
-    serde_json::to_writer_pretty(&mut writer, value)?;
-    writeln!(writer)?;
+    write_json(&mut writer, value, jsonl)?;
     writer.flush()?;
     Ok(())
 }
 
-/// Output verification warnings to stderr.
-pub fn output_verification_warnings(warnings: &[String], format: OutputFormat) {
-    if warnings.is_empty() {
-        return;
+/// Write `value` as pretty JSON, or as compact JSONL when `jsonl` is set.
+///
+/// JSONL is root-aware: a top-level array emits one compact record per
+/// element (nothing for an empty array); a top-level object (or other value)
+/// emits one compact line. Nested arrays stay inside their record.
+fn write_json<W: Write, T: Serialize + ?Sized>(
+    writer: &mut W,
+    value: &T,
+    jsonl: bool,
+) -> anyhow::Result<()> {
+    if !jsonl {
+        serde_json::to_writer_pretty(&mut *writer, value)?;
+        writeln!(writer)?;
+        return Ok(());
     }
+    let compact = serde_json::to_vec(value)?;
+    for record in jsonl_records(&compact) {
+        writer.write_all(record)?;
+        writeln!(writer)?;
+    }
+    Ok(())
+}
 
-    match format {
-        OutputFormat::Text => {
-            for warning in warnings {
-                eprintln!("{} {}", "⚠ Warning:".yellow().bold(), warning);
+/// Split compact JSON into JSONL records: the elements of a top-level array,
+/// or the whole document otherwise. Splitting the serialized bytes instead of
+/// going through [`Value`] keeps each record's key order identical to `-o json`.
+fn jsonl_records(compact: &[u8]) -> Vec<&[u8]> {
+    let Some(inner) = compact
+        .strip_prefix(b"[")
+        .and_then(|rest| rest.strip_suffix(b"]"))
+    else {
+        return vec![compact];
+    };
+    let mut records = Vec::new();
+    if inner.is_empty() {
+        return records;
+    }
+    // Compact output has no whitespace, so a comma outside any string and
+    // nested container ends an element.
+    let (mut depth, mut in_string, mut escaped, mut start) = (0usize, false, false, 0);
+    for (i, &byte) in inner.iter().enumerate() {
+        if in_string {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
             }
+            continue;
         }
-        OutputFormat::Json => {
-            // Print to stderr to avoid polluting stdout JSON, but still provide the information.
-            for warning in warnings {
-                eprintln!("{} {}", "⚠ Warning:".yellow().bold(), warning);
+        match byte {
+            b'"' => in_string = true,
+            b'[' | b'{' => depth += 1,
+            b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                records.push(&inner[start..i]);
+                start = i + 1;
             }
+            _ => {}
         }
+    }
+    records.push(&inner[start..]);
+    records
+}
+
+/// Output verification warnings to stderr.
+///
+/// Every format writes to stderr, so JSON on stdout stays parseable.
+pub fn output_verification_warnings(warnings: &[String], _format: OutputFormat) {
+    for warning in warnings {
+        eprintln!("{} {}", "⚠ Warning:".yellow().bold(), warning);
     }
 }
 
@@ -182,32 +250,8 @@ pub(crate) fn project_value(value: &Value, paths: &[Vec<String>]) -> Value {
     out
 }
 
-fn output_jsonl(value: &Value) -> anyhow::Result<()> {
-    let stdout = std::io::stdout();
-    let handle = stdout.lock();
-    let mut writer = BufWriter::new(handle);
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                serde_json::to_writer(&mut writer, item)?;
-                writeln!(writer)?;
-            }
-        }
-        other => {
-            serde_json::to_writer(&mut writer, other)?;
-            writeln!(writer)?;
-        }
-    }
-    writer.flush()?;
-    Ok(())
-}
-
 /// Serialize `root`, optionally project `--select` paths, then render as
-/// pretty JSON or compact JSONL.
-///
-/// JSONL is root-aware: a top-level array emits one compact record per
-/// element; a top-level object (or other value) emits one compact line.
-/// Nested arrays stay inside their record.
+/// pretty JSON or compact JSONL (see [`write_json`]).
 pub fn output_projected<T: Serialize>(
     root: &T,
     select: Option<&str>,
@@ -221,7 +265,7 @@ pub fn output_projected<T: Serialize>(
         }
     }
     if jsonl {
-        output_jsonl(&value)
+        print_json(&value, true)
     } else {
         output_json(&value)
     }
@@ -238,8 +282,6 @@ pub fn output_change_summary(
     if format != OutputFormat::Text {
         return;
     }
-
-    use colored::Colorize;
 
     println!("{}", "--- Change Summary ---".bright_black());
 
@@ -333,7 +375,6 @@ pub fn output_change_summary(
 }
 
 fn display_change(name: &str, old: Option<&str>, new: Option<&str>, requested: &HashSet<String>) {
-    use colored::Colorize;
     let is_requested = requested.contains(&case_key(name));
     let prefix = if is_requested { "" } else { "(Side Effect) " };
     let label = if is_requested {
@@ -455,10 +496,27 @@ pub fn output_error(err: &anyhow::Error, format: OutputFormat) {
     eprintln!("{}", message);
 }
 
+/// Advice for a request that failed because the server's certificate does
+/// not chain to a trusted root, as happens behind a proxy that inspects HTTPS.
+pub fn untrusted_certificate_tip(error: &str) -> Option<String> {
+    if !error.contains("UnknownIssuer") {
+        return None;
+    }
+    let mut tip = String::from(
+        "The server's certificate is not issued by a certificate authority track trusts. \
+         If a proxy inspects your HTTPS traffic, set SSL_CERT_FILE to its CA certificate \
+         (PEM), or run `track config set system_certs true` to also trust your operating \
+         system's certificates.",
+    );
+    for error in tracker_core::tls::load_errors() {
+        tip.push_str(&format!("\nCould not load certificates: {error}"));
+    }
+    Some(tip)
+}
+
 /// Output a progress message to stderr if stdout is a TTY and format is text
 pub fn output_progress(message: &str, format: OutputFormat) {
     if format == OutputFormat::Text && std::io::stdout().is_terminal() {
-        use colored::Colorize;
         eprintln!("{} {}", "→".cyan().bold(), message);
     }
 }
@@ -717,53 +775,56 @@ impl Displayable for Article {
         }
 
         if let Some(content) = &self.content {
-            // Truncate content for display
-            let preview: String = content.chars().take(200).collect();
-            if content.len() > 200 {
-                output.push_str(&format!("\n  {}: {}...", "Content".dimmed(), preview));
-            } else {
-                output.push_str(&format!("\n  {}: {}", "Content".dimmed(), preview));
-            }
+            let mut chars = content.chars();
+            let preview: String = chars.by_ref().take(ARTICLE_PREVIEW_CHARS).collect();
+            // Count chars, not bytes: multi-byte text within the limit is shown whole.
+            let ellipsis = if chars.next().is_some() { "..." } else { "" };
+            output.push_str(&format!(
+                "\n  {}: {}{}",
+                "Content".dimmed(),
+                preview,
+                ellipsis
+            ));
         }
 
         output
     }
 }
 
+/// Maximum number of article content characters shown in text output.
+const ARTICLE_PREVIEW_CHARS: usize = 200;
+
+/// Render an attachment size in bytes, KB, or MB.
+fn format_attachment_size(size: i64) -> String {
+    const KB: i64 = 1024;
+    const MB: i64 = 1024 * KB;
+    if size > MB {
+        format!("{:.1} MB", size as f64 / MB as f64)
+    } else if size > KB {
+        format!("{:.1} KB", size as f64 / KB as f64)
+    } else {
+        format!("{} bytes", size)
+    }
+}
+
 impl Displayable for ArticleAttachment {
     fn display(&self) -> String {
-        let size_str = if self.size > 1024 * 1024 {
-            format!("{:.1} MB", self.size as f64 / (1024.0 * 1024.0))
-        } else if self.size > 1024 {
-            format!("{:.1} KB", self.size as f64 / 1024.0)
-        } else {
-            format!("{} bytes", self.size)
-        };
-
         format!(
             "{} ({}) - {}",
             self.name.white().bold(),
             self.mime_type.as_deref().unwrap_or("unknown").dimmed(),
-            size_str.dimmed()
+            format_attachment_size(self.size).dimmed()
         )
     }
 }
 
 impl Displayable for IssueAttachment {
     fn display(&self) -> String {
-        let size_str = if self.size > 1024 * 1024 {
-            format!("{:.1} MB", self.size as f64 / (1024.0 * 1024.0))
-        } else if self.size > 1024 {
-            format!("{:.1} KB", self.size as f64 / 1024.0)
-        } else {
-            format!("{} bytes", self.size)
-        };
-
         let mut output = format!(
             "{} ({}) - {}",
             self.name.white().bold(),
             self.mime_type.as_deref().unwrap_or("unknown").dimmed(),
-            size_str.dimmed()
+            format_attachment_size(self.size).dimmed()
         );
 
         if let Some(comment_id) = &self.comment_id {
@@ -1064,6 +1125,53 @@ mod tests {
         );
     }
 
+    fn article_with_content(content: String) -> Article {
+        Article {
+            id: "1".into(),
+            id_readable: "KB-A-1".into(),
+            summary: "test".into(),
+            content: Some(content),
+            project: tracker_core::ProjectRef {
+                id: "p1".into(),
+                name: None,
+                short_name: Some("KB".into()),
+            },
+            parent_article: None,
+            has_children: false,
+            tags: vec![],
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+            reporter: None,
+        }
+    }
+
+    #[test]
+    fn article_display_keeps_multibyte_content_within_limit_whole() {
+        // 150 chars but 300 bytes: under the char limit, so no ellipsis.
+        let content = "ж".repeat(150);
+        let rendered = article_with_content(content.clone()).display();
+        assert!(rendered.contains(&content), "got:\n{rendered}");
+        assert!(!rendered.contains("..."), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn article_display_truncates_content_over_limit() {
+        let rendered = article_with_content("ж".repeat(ARTICLE_PREVIEW_CHARS + 1)).display();
+        let preview = "ж".repeat(ARTICLE_PREVIEW_CHARS);
+        assert!(
+            rendered.contains(&format!("{preview}...")),
+            "got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn attachment_size_uses_bytes_kb_and_mb() {
+        assert_eq!(format_attachment_size(512), "512 bytes");
+        assert_eq!(format_attachment_size(1024), "1024 bytes");
+        assert_eq!(format_attachment_size(1536), "1.5 KB");
+        assert_eq!(format_attachment_size(3 * 1024 * 1024 / 2), "1.5 MB");
+    }
+
     #[test]
     fn project_object_id_readable_and_summary() {
         let value = serde_json::json!({
@@ -1166,6 +1274,71 @@ mod tests {
             serde_json::json!({
                 "items": []
             })
+        );
+    }
+
+    fn render<T: Serialize + ?Sized>(value: &T, jsonl: bool) -> String {
+        let mut out = Vec::new();
+        write_json(&mut out, value, jsonl).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn json_mode_pretty_prints() {
+        let value = serde_json::json!({"a": [1, 2]});
+        assert_eq!(
+            render(&value, false),
+            "{\n  \"a\": [\n    1,\n    2\n  ]\n}\n"
+        );
+    }
+
+    #[test]
+    fn jsonl_array_root_emits_one_record_per_element() {
+        // Strings hold the separators the splitter keys on; nested arrays and
+        // objects stay inside their record.
+        let value = serde_json::json!([
+            {"id": "A", "tags": ["x", "y"], "note": "a,b]}"},
+            {"id": "B", "note": "quote \" and backslash \\", "nested": [[], {}]},
+            "plain, string",
+            7,
+            null
+        ]);
+        let rendered = render(&value, true);
+        let lines: Vec<&str> = rendered.lines().collect();
+        let items = value.as_array().unwrap();
+        assert_eq!(lines.len(), items.len(), "{rendered}");
+        for (line, item) in lines.iter().zip(items) {
+            assert_eq!(&serde_json::from_str::<Value>(line).unwrap(), item);
+        }
+    }
+
+    #[test]
+    fn jsonl_empty_array_emits_nothing() {
+        assert_eq!(render(&serde_json::json!([]), true), "");
+    }
+
+    #[test]
+    fn jsonl_non_array_root_emits_one_line() {
+        assert_eq!(
+            render(&serde_json::json!({"items": [1, 2], "ok": true}), true),
+            "{\"items\":[1,2],\"ok\":true}\n"
+        );
+        assert_eq!(render(&serde_json::json!("[x]"), true), "\"[x]\"\n");
+        assert_eq!(render(&serde_json::json!(null), true), "null\n");
+    }
+
+    #[test]
+    fn jsonl_keeps_struct_field_order() {
+        // Going through `Value` would sort the keys alphabetically.
+        #[derive(Serialize)]
+        struct Record {
+            zeta: u8,
+            alpha: u8,
+        }
+        let records = [Record { zeta: 1, alpha: 2 }, Record { zeta: 3, alpha: 4 }];
+        assert_eq!(
+            render(&records[..], true),
+            "{\"zeta\":1,\"alpha\":2}\n{\"zeta\":3,\"alpha\":4}\n"
         );
     }
 }

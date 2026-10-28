@@ -120,87 +120,94 @@ pub struct ComplexOutcome {
 }
 
 /// Scoring configuration for evaluation
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// Omitted keys (and an omitted `[scoring]` table) take the values from
+/// [`Default`], so a partial table and a missing one score alike.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ScoringConfig {
     /// Minimum commands needed (theoretical optimum)
-    #[serde(default)]
     pub min_commands: Option<usize>,
 
     /// Maximum acceptable commands before penalty
-    #[serde(default)]
     pub max_commands: Option<usize>,
 
     /// Optimal number of commands (good agent behavior)
-    #[serde(default)]
     pub optimal_commands: Option<usize>,
 
     /// Point penalties
-    #[serde(default)]
     pub penalties: PenaltyConfig,
 
     /// Point bonuses
-    #[serde(default)]
     pub bonuses: BonusConfig,
 
     /// Base score (default: 100)
-    #[serde(default = "default_base_score")]
     pub base_score: i32,
 }
 
-fn default_base_score() -> i32 {
-    100
+impl Default for ScoringConfig {
+    fn default() -> Self {
+        Self {
+            min_commands: None,
+            max_commands: None,
+            optimal_commands: None,
+            penalties: PenaltyConfig::default(),
+            bonuses: BonusConfig::default(),
+            base_score: 100,
+        }
+    }
 }
 
 /// Penalty point deductions
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PenaltyConfig {
-    /// Points deducted per command over max_commands
-    #[serde(default = "default_extra_penalty")]
+    /// Points deducted per command over max_commands (default: -5)
     pub extra_command: i32,
 
-    /// Points deducted for redundant fetches (same resource twice)
-    #[serde(default = "default_redundant_penalty")]
+    /// Points deducted for redundant fetches (same resource twice) (default: -10)
     pub redundant_fetch: i32,
 
-    /// Points deducted for unnecessary list operations
-    #[serde(default)]
+    /// Points deducted for unnecessary list operations (default: 0)
     pub unnecessary_list: i32,
 
-    /// Points deducted for failed commands
-    #[serde(default = "default_error_penalty")]
+    /// Points deducted for failed commands (default: -15)
     pub command_error: i32,
 }
 
-fn default_extra_penalty() -> i32 {
-    -5
-}
-
-fn default_redundant_penalty() -> i32 {
-    -10
-}
-
-fn default_error_penalty() -> i32 {
-    -15
+impl Default for PenaltyConfig {
+    fn default() -> Self {
+        Self {
+            extra_command: -5,
+            redundant_fetch: -10,
+            unnecessary_list: 0,
+            command_error: -15,
+        }
+    }
 }
 
 /// Bonus point additions
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BonusConfig {
-    /// Points added for using cache effectively
-    #[serde(default = "default_cache_bonus")]
+    /// Points added for using cache effectively (default: 10)
     pub cache_use: i32,
 
-    /// Points added for completing under optimal commands
-    #[serde(default)]
+    /// Points added for completing under optimal commands (default: 0)
     pub under_optimal: i32,
 
-    /// Points added for using JSON output mode
-    #[serde(default)]
+    /// Points added for using JSON output mode (default: 0)
     pub json_output: i32,
 }
 
-fn default_cache_bonus() -> i32 {
-    10
+impl Default for BonusConfig {
+    fn default() -> Self {
+        Self {
+            cache_use: 10,
+            under_optimal: 0,
+            json_output: 0,
+        }
+    }
 }
 
 impl Scenario {
@@ -308,5 +315,28 @@ cache_use = 10
 
         assert!(scenario.is_compatible_with("youtrack"));
         assert!(scenario.is_compatible_with("jira"));
+    }
+
+    #[test]
+    fn test_omitted_scoring_uses_documented_defaults() {
+        let meta = r#"
+[scenario]
+name = "defaults"
+description = "no explicit scoring"
+
+[setup]
+prompt = "test"
+"#;
+        let no_scoring: Scenario = toml::from_str(meta).unwrap();
+        let partial_scoring: Scenario =
+            toml::from_str(&format!("{meta}\n[scoring]\nmax_commands = 5\n")).unwrap();
+
+        for scoring in [no_scoring.scoring, partial_scoring.scoring] {
+            assert_eq!(scoring.base_score, 100);
+            assert_eq!(scoring.penalties.extra_command, -5);
+            assert_eq!(scoring.penalties.redundant_fetch, -10);
+            assert_eq!(scoring.penalties.command_error, -15);
+            assert_eq!(scoring.bonuses.cache_use, 10);
+        }
     }
 }

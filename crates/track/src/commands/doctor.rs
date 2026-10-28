@@ -152,7 +152,14 @@ fn classify_error(err: &TrackerError) -> (CheckStatus, String) {
         TrackerError::NotFound(_)
         | TrackerError::IssueNotFound(_)
         | TrackerError::ProjectNotFound(_) => (CheckStatus::Degraded, err.to_string()),
-        _ => (CheckStatus::Failed, err.to_string()),
+        _ => {
+            let message = err.to_string();
+            let message = match crate::output::untrusted_certificate_tip(&message) {
+                Some(tip) => format!("{message}. {tip}"),
+                None => message,
+            };
+            (CheckStatus::Failed, message)
+        }
     }
 }
 
@@ -302,7 +309,8 @@ pub fn handle_doctor(cli: &Cli, opts: DoctorOptions) -> Result<()> {
 
 /// The effective backend: global `-b` flag, then config chain, then default.
 fn effective_backend(cli: &Cli) -> Backend {
-    cli.backend.unwrap_or_else(crate::config::resolve_backend)
+    cli.backend
+        .unwrap_or_else(|| crate::config::resolve_backend(cli.config.as_deref()))
 }
 
 /// The global `--url`/`--token` flags belong to the effective backend only;
@@ -412,8 +420,23 @@ fn audit_backend(
     };
 
     // Check: config_valid (reuses Config::validate, which reports missing keys
-    // without leaking secrets).
-    let config_valid = match config.validate(backend) {
+    // without leaking secrets). A repository config redirecting your token
+    // also fails it, so no client is built and nothing is sent.
+    let (cli_url, cli_token) = if apply_cli_overrides {
+        (cli.url.as_deref(), cli.token.as_deref())
+    } else {
+        (None, None)
+    };
+    let config_check = config.validate(backend).and_then(|()| {
+        crate::token_guard::ensure_token_destination_allowed(
+            cli.config.as_deref(),
+            backend,
+            cli_url,
+            cli_token,
+            &config,
+        )
+    });
+    let config_valid = match config_check {
         Ok(()) => {
             checks.push(CheckResult::ok("config_valid"));
             true

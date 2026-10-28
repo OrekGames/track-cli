@@ -11,6 +11,7 @@ use crate::client::GitLabClient;
 use crate::convert::{
     convert_query_to_gitlab_params, get_gitlab_link_types, get_standard_custom_fields,
     gitlab_events_to_history_events, gitlab_issue_to_core, gitlab_link_to_core,
+    gitlab_user_to_author,
 };
 use crate::models::{
     CreateGitLabIssue, CreateGitLabIssueLink, CreateGitLabLabel, CreateGitLabWikiPage,
@@ -30,6 +31,22 @@ fn parse_issue_iid(id: &str) -> std::result::Result<u64, TrackerError> {
             id
         ))
     })
+}
+
+/// Look up an issue's global id, which the GraphQL work-item API needs
+/// (IIDs are only unique within a project).
+fn issue_global_id(client: &GitLabClient, id: &str) -> Result<u64> {
+    Ok(client.get_issue(parse_issue_iid(id)?)?.id)
+}
+
+/// Find a project label's id by exact name; GitLab's label endpoints take ids.
+fn find_label_id(client: &GitLabClient, name: &str) -> Result<u64> {
+    client
+        .list_labels()?
+        .into_iter()
+        .find(|label| label.name == name)
+        .map(|label| label.id)
+        .ok_or_else(|| TrackerError::InvalidInput(format!("Tag '{}' not found", name)))
 }
 
 fn assignee_login(fields: &[tracker_core::CustomFieldUpdate]) -> Option<&str> {
@@ -83,7 +100,7 @@ impl IssueTracker for GitLabClient {
 
         while issues.len() < limit {
             // Use combined methods that read X-Total from the search response itself
-            let (page_issues, page_total) = self.issues_matching(&params, per_page, page)?;
+            let (page_issues, page_total) = self.fetch_project_issues(&params, per_page, page)?;
 
             if total.is_none() {
                 total = page_total;
@@ -114,7 +131,7 @@ impl IssueTracker for GitLabClient {
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
         let params = convert_query_to_gitlab_params(query);
-        Ok(self.issues_matching(&params, 1, 1)?.1)
+        Ok(self.fetch_project_issues(&params, 1, 1)?.1)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
@@ -124,6 +141,13 @@ impl IssueTracker for GitLabClient {
             Some(issue.tags.join(","))
         };
         let assignee_ids = assignee_ids(self, &issue.custom_fields)?;
+        // Resolve the parent before creating anything, so a bad parent
+        // reference fails instead of leaving an orphaned issue behind.
+        let parent_id = issue
+            .parent
+            .as_deref()
+            .map(|parent| issue_global_id(self, parent))
+            .transpose()?;
 
         let create = CreateGitLabIssue {
             title: issue.summary.clone(),
@@ -132,20 +156,14 @@ impl IssueTracker for GitLabClient {
             assignee_ids,
             milestone_id: None,
             // GitLab's work item hierarchy requires child items to be Task type
-            issue_type: if issue.parent.is_some() {
-                Some("task".to_string())
-            } else {
-                None
-            },
+            issue_type: parent_id.map(|_| "task".to_string()),
         };
 
         let created = self.create_issue(&create)?;
 
-        // If a parent was requested, set it via the GraphQL API after creation
-        if let Some(ref parent_id) = issue.parent {
-            let parent_iid = parse_issue_iid(parent_id)?;
-            let parent_issue = self.get_issue(parent_iid)?;
-            self.set_work_item_parent(created.id, parent_issue.id)?;
+        // The REST API cannot set a parent; do it via GraphQL after creation.
+        if let Some(parent_id) = parent_id {
+            self.set_work_item_parent(created.id, parent_id)?;
         }
 
         let project_id = self.project_id_str();
@@ -179,6 +197,13 @@ impl IssueTracker for GitLabClient {
             Some(update.tags.join(","))
         };
         let assignee_ids = assignee_ids(self, &update.custom_fields)?;
+        // Resolve the parent before writing anything, so a bad parent
+        // reference cannot leave the issue half-updated.
+        let parent_id = update
+            .parent
+            .as_deref()
+            .map(|parent| issue_global_id(self, parent))
+            .transpose()?;
 
         let gitlab_update = UpdateGitLabIssue {
             title: update.summary.clone(),
@@ -204,11 +229,9 @@ impl IssueTracker for GitLabClient {
             self.get_issue(iid)?
         };
 
-        // If a parent was requested, set it via the GraphQL API
-        if let Some(ref parent_id) = update.parent {
-            let parent_iid = parse_issue_iid(parent_id)?;
-            let parent_issue = self.get_issue(parent_iid)?;
-            self.set_work_item_parent(updated.id, parent_issue.id)?;
+        // The REST API cannot set a parent; do it via GraphQL.
+        if let Some(parent_id) = parent_id {
+            self.set_work_item_parent(updated.id, parent_id)?;
         }
 
         let project_id = self.project_id_str();
@@ -265,13 +288,7 @@ impl IssueTracker for GitLabClient {
                         .as_deref()
                         .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok())
                         .map(|created| created.with_timezone(&chrono::Utc)),
-                    author: note
-                        .author
-                        .clone()
-                        .map(|author| tracker_core::CommentAuthor {
-                            login: author.username,
-                            name: Some(author.name),
-                        }),
+                    author: note.author.clone().map(gitlab_user_to_author),
                     comment_id: Some(note.id.to_string()),
                     markdown: Some(upload.markdown),
                 }
@@ -317,28 +334,18 @@ impl IssueTracker for GitLabClient {
     }
 
     fn delete_tag(&self, name: &str) -> Result<()> {
-        let labels = self.list_labels()?;
-        let label = labels
-            .into_iter()
-            .find(|l| l.name == name)
-            .ok_or_else(|| TrackerError::InvalidInput(format!("Tag '{}' not found", name)))?;
-        Ok(self.delete_label(label.id)?)
+        let label_id = find_label_id(self, name)?;
+        Ok(self.delete_label(label_id)?)
     }
 
     fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
-        let labels = self.list_labels()?;
-        let label = labels
-            .into_iter()
-            .find(|l| l.name == current_name)
-            .ok_or_else(|| {
-                TrackerError::InvalidInput(format!("Tag '{}' not found", current_name))
-            })?;
+        let label_id = find_label_id(self, current_name)?;
         let update = UpdateGitLabLabel {
             new_name: Some(tag.name.clone()),
             color: tag.color.clone(),
             description: tag.description.clone(),
         };
-        Ok(self.update_label(label.id, &update)?.into())
+        Ok(self.update_label(label_id, &update)?.into())
     }
 
     fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
@@ -358,7 +365,7 @@ impl IssueTracker for GitLabClient {
         Ok(self
             .get_issue_links(iid)?
             .into_iter()
-            .map(|l| gitlab_link_to_core(l, iid))
+            .map(gitlab_link_to_core)
             .collect())
     }
 
@@ -395,15 +402,9 @@ impl IssueTracker for GitLabClient {
     }
 
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
-        let child_iid = parse_issue_iid(child)?;
-        let parent_iid = parse_issue_iid(parent)?;
-
-        // Fetch both issues to get their global IDs (GraphQL needs global, not IID)
-        let child_issue = self.get_issue(child_iid)?;
-        let parent_issue = self.get_issue(parent_iid)?;
-
-        // Use GraphQL workItemUpdate to set the parent
-        Ok(self.set_work_item_parent(child_issue.id, parent_issue.id)?)
+        let child_id = issue_global_id(self, child)?;
+        let parent_id = issue_global_id(self, parent)?;
+        Ok(self.set_work_item_parent(child_id, parent_id)?)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
@@ -456,36 +457,9 @@ impl IssueTracker for GitLabClient {
     }
 
     fn get_all_comments(&self, issue_id: &str, max_results: usize) -> Result<Vec<Comment>> {
-        if max_results == 0 {
-            return Ok(Vec::new());
-        }
-
-        let iid = parse_issue_iid(issue_id)?;
-        let per_page = 100;
-        let mut page = 1;
-        let mut comments = Vec::new();
-
-        while comments.len() < max_results {
-            let raw_notes = self.get_notes_page_raw(iid, per_page, page)?;
-            let page_len = raw_notes.len();
-            let remaining = max_results - comments.len();
-
-            comments.extend(
-                raw_notes
-                    .into_iter()
-                    .filter(|note| !note.system)
-                    .take(remaining)
-                    .map(Into::into),
-            );
-
-            if comments.len() >= max_results || page_len < per_page {
-                break;
-            }
-
-            page += 1;
-        }
-
-        Ok(comments)
+        // From offset 0, `get_comments_page` is already a single pass over the
+        // native note pages, so the trait's windowed default would only refetch.
+        self.get_comments_page(issue_id, max_results, 0)
     }
 
     fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
@@ -498,6 +472,25 @@ impl IssueTracker for GitLabClient {
         let milestone = self.get_milestone_events(iid)?;
 
         Ok(gitlab_events_to_history_events(state, label, milestone))
+    }
+
+    fn web_url(&self, issue_id: Option<&str>) -> Result<Option<String>> {
+        // Parse first so a malformed ID fails before any project lookup.
+        let iid = issue_id.map(parse_issue_iid).transpose()?;
+        let issues_url = format!("{}/-/issues", self.project_web_url()?);
+        Ok(Some(match iid {
+            Some(iid) => format!("{issues_url}/{iid}"),
+            None => issues_url,
+        }))
+    }
+
+    // GitLab issues are only ever open or closed.
+    fn default_start_state(&self) -> &'static str {
+        "Open"
+    }
+
+    fn default_complete_state(&self) -> &'static str {
+        "Closed"
     }
 }
 
@@ -601,12 +594,19 @@ impl KnowledgeBase for GitLabClient {
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
-        let prefix = format!("{}/", parent_id.trim_end_matches('/'));
+        let parent_id = parent_id.trim_end_matches('/');
+        let project_id = self.project_id_str();
+        // Direct children only: a page's parent is its slug minus the last
+        // segment, exactly as `gitlab_wiki_page_to_article` derives it.
         Ok(self
             .list_wiki_pages(true)?
             .into_iter()
-            .filter(|page| page.slug.starts_with(&prefix))
-            .map(|page| gitlab_wiki_page_to_article(page, &self.project_id_str()))
+            .filter(|page| {
+                page.slug
+                    .rsplit_once('/')
+                    .is_some_and(|(parent, _)| parent == parent_id)
+            })
+            .map(|page| gitlab_wiki_page_to_article(page, &project_id))
             .collect())
     }
 

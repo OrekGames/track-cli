@@ -328,6 +328,9 @@ fn execute_plan(execution: ApplyExecution<'_>) -> Result<ExecutionResult> {
         .map(|result| (result.index, result))
         .collect();
     let mut output_results = Vec::new();
+    // Dry runs only: project id of each planned (never created) issue, keyed by
+    // its placeholder id, for later operations that need its project schema.
+    let mut planned_projects = BTreeMap::new();
     let operation_context = OperationContext {
         client: execution.client,
         plan: execution.plan,
@@ -346,7 +349,13 @@ fn execute_plan(execution: ApplyExecution<'_>) -> Result<ExecutionResult> {
             continue;
         }
 
-        match execute_operation(operation_context, operation, index, &mut refs) {
+        match execute_operation(
+            operation_context,
+            operation,
+            index,
+            &mut refs,
+            &mut planned_projects,
+        ) {
             Ok(result) => {
                 if !execution.dry_run {
                     completed.insert(index);
@@ -404,6 +413,7 @@ fn execute_operation(
     operation: &ApplyOperation,
     index: usize,
     refs: &mut BTreeMap<String, String>,
+    planned_projects: &mut BTreeMap<String, String>,
 ) -> Result<ApplyOperationResult> {
     match operation {
         ApplyOperation::CreateIssue {
@@ -427,6 +437,7 @@ fn execute_operation(
             context.validate,
             context.default_project,
             refs,
+            planned_projects,
             ref_name.as_deref(),
             project.as_deref(),
             summary,
@@ -458,6 +469,7 @@ fn execute_operation(
             context.dry_run,
             context.validate,
             refs,
+            planned_projects,
             issue,
             summary.as_deref(),
             description.as_deref(),
@@ -539,6 +551,7 @@ fn execute_create_issue(
     validate: bool,
     default_project: Option<&str>,
     refs: &mut BTreeMap<String, String>,
+    planned_projects: &mut BTreeMap<String, String>,
     ref_name: Option<&str>,
     project: Option<&str>,
     summary: &str,
@@ -564,7 +577,12 @@ fn execute_create_issue(
     let project_id = client
         .resolve_project_id(project_input)
         .with_context(|| format!("Failed to resolve project '{}'", project_input))?;
-    let schema = load_schema_for_detection(client, &project_id, !fields.is_empty());
+    // Generic `fields` need the project schema to detect each field's type.
+    let schema = if fields.is_empty() {
+        None
+    } else {
+        client.get_project_custom_fields(&project_id).ok()
+    };
     let custom_fields = build_custom_field_updates(
         fields,
         raw_custom_fields,
@@ -622,6 +640,7 @@ fn execute_create_issue(
         let issue_id = ref_name.map(planned_ref_value);
         if let (Some(ref_name), Some(issue_id)) = (ref_name, issue_id.as_ref()) {
             refs.insert(ref_name.to_string(), issue_id.clone());
+            planned_projects.insert(issue_id.clone(), create.project_id);
         }
         let mut result = ApplyOperationResult::success(index, "create_issue", "dry_run");
         result.issue = issue_id;
@@ -652,6 +671,7 @@ fn execute_update_issue(
     dry_run: bool,
     validate: bool,
     refs: &BTreeMap<String, String>,
+    planned_projects: &BTreeMap<String, String>,
     issue_ref: &str,
     summary: Option<&str>,
     description: Option<&str>,
@@ -665,21 +685,15 @@ fn execute_update_issue(
 ) -> Result<ApplyOperationResult> {
     let issue_id = resolve_issue_ref(issue_ref, refs)?;
     let effective_validate = validate || plan.defaults.validate.unwrap_or(false);
-    let existing = if !fields.is_empty()
-        || (effective_validate
-            && has_any_custom_field_input(fields, raw_custom_fields, state, priority, assignee))
-    {
-        Some(
-            client
-                .get_issue(&issue_id)
-                .with_context(|| format!("Failed to fetch issue '{}' for validation", issue_id))?,
-        )
-    } else {
+    // Generic `fields` need the project schema to detect each field's type.
+    let schema_project_id = if fields.is_empty() {
         None
+    } else {
+        Some(target_project_id(client, &issue_id, planned_projects)?)
     };
-    let schema = existing.as_ref().and_then(|existing| {
-        load_schema_for_detection(client, &existing.project.id, !fields.is_empty())
-    });
+    let schema = schema_project_id
+        .as_deref()
+        .and_then(|project_id| client.get_project_custom_fields(project_id).ok());
     let custom_fields = build_custom_field_updates(
         fields,
         raw_custom_fields,
@@ -702,13 +716,11 @@ fn execute_update_issue(
     }
 
     if effective_validate && !custom_fields.is_empty() {
-        let existing = match existing {
-            Some(existing) => existing,
-            None => client
-                .get_issue(&issue_id)
-                .with_context(|| format!("Failed to fetch issue '{}' for validation", issue_id))?,
+        let project_id = match schema_project_id {
+            Some(project_id) => project_id,
+            None => target_project_id(client, &issue_id, planned_projects)?,
         };
-        issue::validate_custom_fields(client, &existing.project.id, &custom_fields)?;
+        issue::validate_custom_fields(client, &project_id, &custom_fields)?;
     }
 
     let update = UpdateIssue {
@@ -772,41 +784,26 @@ fn build_custom_field_updates(
     }
 
     updates.extend(issue::parse_custom_fields_json(raw_custom_fields)?);
-
-    if let Some(state) = state {
-        updates.push(CustomFieldUpdate::State {
-            name: "State".to_string(),
-            value: state.to_string(),
-        });
-    }
-    if let Some(priority) = priority {
-        updates.push(CustomFieldUpdate::SingleEnum {
-            name: "Priority".to_string(),
-            value: priority.to_string(),
-        });
-    }
-    if let Some(assignee) = assignee {
-        updates.push(CustomFieldUpdate::SingleUser {
-            name: "Assignee".to_string(),
-            login: assignee.to_string(),
-        });
-    }
-
+    updates.extend(issue::shorthand_field_updates(state, priority, assignee));
     Ok(updates)
 }
 
-fn has_any_custom_field_input(
-    fields: &BTreeMap<String, PlanFieldValue>,
-    raw_custom_fields: &[serde_json::Value],
-    state: Option<&str>,
-    priority: Option<&str>,
-    assignee: Option<&str>,
-) -> bool {
-    !fields.is_empty()
-        || !raw_custom_fields.is_empty()
-        || state.is_some()
-        || priority.is_some()
-        || assignee.is_some()
+/// Project id of the issue an update targets. A dry run creates nothing, so
+/// an issue created earlier in the same dry run is looked up in
+/// `planned_projects` rather than fetched from the backend, where it does not
+/// exist.
+fn target_project_id(
+    client: &dyn IssueTracker,
+    issue_id: &str,
+    planned_projects: &BTreeMap<String, String>,
+) -> Result<String> {
+    if let Some(project_id) = planned_projects.get(issue_id) {
+        return Ok(project_id.clone());
+    }
+    let existing = client
+        .get_issue(issue_id)
+        .with_context(|| format!("Failed to fetch issue '{}' for validation", issue_id))?;
+    Ok(existing.project.id)
 }
 
 fn dedupe_matches(client: &dyn IssueTracker, dedupe: &Dedupe) -> Result<Vec<Issue>> {
@@ -817,18 +814,6 @@ fn dedupe_matches(client: &dyn IssueTracker, dedupe: &Dedupe) -> Result<Vec<Issu
         .search_issues(&dedupe.query, 2, 0)
         .with_context(|| format!("Failed to run dedupe query '{}'", dedupe.query))?
         .items)
-}
-
-fn load_schema_for_detection(
-    client: &dyn IssueTracker,
-    project_id: &str,
-    should_load: bool,
-) -> Option<Vec<tracker_core::ProjectCustomField>> {
-    if should_load {
-        client.get_project_custom_fields(project_id).ok()
-    } else {
-        None
-    }
 }
 
 fn parse_apply_plan(raw_plan: &[u8]) -> Result<ApplyPlan> {

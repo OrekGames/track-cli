@@ -18,7 +18,7 @@ A command-line interface for issue tracking systems, built with Rust. Supports *
 - **Comments & Links**: Add comments and link issues together
 - **Knowledge Base**: Manage articles (YouTrack and Jira/Confluence)
 - **AI-Optimized**: Context aggregation, query templates, workflow hints
-- **Output Formats**: Text (human-readable) and JSON (machine-readable)
+- **Output Formats**: Text (human-readable), pretty JSON, and compact JSON Lines (machine-readable)
 - **Flexible Config**: CLI flags, environment variables, or config file
 
 ## Installation
@@ -278,6 +278,10 @@ export LINEAR_URL=https://linear.app/your-workspace
 export LINEAR_DEFAULT_TEAM=PROJ
 # export LINEAR_API_URL=https://api.linear.app/graphql
 # export LINEAR_DEFAULT_PROJECT="Track CLI"
+
+# HTTPS behind a proxy that inspects it (see "HTTPS proxies and certificates")
+export SSL_CERT_FILE=/path/to/proxy-ca.pem
+export TRACKER_SYSTEM_CERTS=true
 ```
 
 ## Backend Selection
@@ -321,6 +325,51 @@ track -b lin PROJ-123       # Linear
 
 **Priority**: CLI flag > Environment variable > Config file > Default (YouTrack)
 
+### Repository configs and your token
+
+A `.track.toml` committed to a repository is read whenever you run `track` in
+that directory. Because config layers merge key by key, such a file could set
+only a URL and have `track` send the token from your global config,
+environment or `--token` to a host the repository chose. `track` refuses that
+before sending anything:
+
+```
+Error: Refusing to send your youtrack token to https://attacker.example.
+```
+
+The check only applies when the repository file sets a token destination
+(`url`, `[backend].url`, `github.api_url`, `linear.api_url`) that differs from
+your own configuration's and does not also supply the token. A repository
+`.track.toml` holding both URL and token (what `track init` writes), or only
+settings such as `default_project`, is unaffected. To allow a repository you
+trust, or to bypass its config:
+
+```bash
+track config trust          # Allow this directory's .track.toml to receive your token
+track config untrust        # Revoke it (changing the URL also requires trusting again)
+track --config ~/.tracker-cli/.track.toml ...   # Ignore the repository's .track.toml
+```
+
+`track config show` and `track doctor` report a redirected token as well.
+
+### HTTPS proxies and certificates
+
+`track` trusts the Mozilla root certificates built into it, the same set on
+every machine. A corporate proxy that inspects HTTPS re-signs traffic with its
+own certificate authority, so requests fail with `invalid peer certificate:
+UnknownIssuer`. Trust that authority in either of two ways:
+
+```bash
+export SSL_CERT_FILE=/path/to/proxy-ca.pem   # PEM file(s), as OpenSSL-based tools read them
+                                             # (SSL_CERT_DIR works too)
+track config set system_certs true           # Or trust your operating system's certificates
+                                             # (TRACKER_SYSTEM_CERTS=true for one run)
+```
+
+Both add certificates to the built-in roots; nothing they trusted before is
+dropped. `SSL_CERT_FILE` / `SSL_CERT_DIR` take precedence over the system
+store when set. With neither, `track` uses exactly the built-in roots.
+
 ## Commands
 
 ### Issue Shortcuts
@@ -363,7 +412,8 @@ track i s "project: PROJ State: Open"
 track i s --template unresolved --project PROJ  # Use query template
 track i s "project: PROJ #Unresolved" --all     # Fetch all pages
 track i s "project: PROJ #Unresolved" -o json --select id_readable,summary  # Projected JSON
-track i s "project: PROJ #Unresolved" -o jsonl --select id_readable,summary  # JSON Lines
+track i s "project: PROJ #Unresolved" -o jsonl  # JSON Lines: one issue per line
+track i s "project: PROJ #Unresolved" -o jsonl --select id_readable,summary  # Projected JSON Lines
 
 `--select` (JSON/JSONL only) takes comma-separated dotted paths (e.g. `id_readable,project.short_name`)
 and emits only those fields per issue; missing paths are omitted. It is rejected in text mode and
@@ -534,6 +584,9 @@ track config get <key>      # Get a config value
 track config keys           # List all available config keys
 track config clear          # Clear default project and backend
 track config path           # Show config file path
+track config trust          # Allow this directory's .track.toml to receive your own token
+track config untrust        # Revoke config trust for this directory
+track config set system_certs true  # Also trust the OS certificate store (HTTPS proxies)
 ```
 
 ### Doctor (Backend Capability Audit)
@@ -714,7 +767,15 @@ Linear exposes teams as `track` projects. The `Project` field on issues maps to 
 track PROJ-123              # Text (default)
 track -o json PROJ-123      # JSON
 track --format json p ls    # JSON
+track -o jsonl p ls         # JSON Lines: one project per line
 ```
+
+`-o jsonl` prints the same document as `-o json`, compacted for line-based tools: when the
+document is an array (a list command such as `p ls` or `i s`), each element is one line, and an
+empty list prints nothing; anything else (an object such as `track PROJ-123` or a batch summary)
+is a single line. Nested arrays stay inside their line. Every command that prints JSON accepts
+it; `completions` rejects it. In both modes stdout holds only JSON; warnings, progress and
+errors go to stderr.
 
 ## Backend-Specific Notes
 

@@ -1,9 +1,13 @@
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 use tracker_core::AttachmentUpload;
-use ureq::Agent;
+use ureq::http::Response;
+use ureq::typestate::{WithBody, WithoutBody};
 use ureq::unversioned::multipart::{Form, Part};
+use ureq::{Agent, Body, RequestBuilder};
 
 use crate::error::{JiraError, Result};
 use crate::models::*;
@@ -24,22 +28,10 @@ impl JiraClient {
     /// For Jira Cloud, use your email and an API token.
     /// For Jira Server, use your username and password.
     pub fn new(base_url: &str, email: &str, api_token: &str) -> Self {
-        let agent = Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(30)))
-            // Don't treat HTTP errors as errors - we'll handle them ourselves
-            .http_status_as_error(false)
-            .build()
-            .into();
-
-        // Base64 encode credentials for Basic Auth
-        let credentials = format!("{}:{}", email.trim(), api_token.trim());
-        let encoded = base64_encode(&credentials);
-        let auth_header = format!("Basic {}", encoded);
-
         Self {
-            agent,
+            agent: http_agent(),
             base_url: base_url.trim_end_matches('/').to_string(),
-            auth_header,
+            auth_header: basic_auth_header(email, api_token),
             link_mappings: HashMap::new(),
             field_cache: Mutex::new(None),
         }
@@ -68,38 +60,43 @@ impl JiraClient {
         .to_string()
     }
 
-    /// Get the API base URL (v3 for Cloud, v2 for Server)
+    /// Build a Jira REST API v3 URL for `path`.
     fn api_url(&self, path: &str) -> String {
         format!("{}/rest/api/3{}", self.base_url, path)
     }
 
-    /// Handle HTTP errors
-    fn handle_error(&self, err: ureq::Error) -> JiraError {
-        match &err {
-            ureq::Error::StatusCode(status) => {
-                if *status == 401 {
-                    JiraError::Unauthorized
-                } else if *status == 404 {
-                    JiraError::Api {
-                        status: *status,
-                        message: "Not found".to_string(),
-                    }
-                } else {
-                    JiraError::Api {
-                        status: *status,
-                        message: format!("HTTP {}", status),
-                    }
-                }
-            }
-            _ => JiraError::Http(err),
-        }
+    /// Add the authentication and JSON `Accept` headers every request carries.
+    fn authorized<B>(&self, request: RequestBuilder<B>) -> RequestBuilder<B> {
+        request
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+    }
+
+    /// Send a request without a body (GET, DELETE); error on a non-2xx status.
+    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<Response<Body>> {
+        self.check_response(self.authorized(request).call()?)
+    }
+
+    /// Send `body` as JSON (POST, PUT); error on a non-2xx status.
+    fn send_json(
+        &self,
+        request: RequestBuilder<WithBody>,
+        body: &impl Serialize,
+    ) -> Result<Response<Body>> {
+        let response = self
+            .authorized(request)
+            .header("Content-Type", "application/json")
+            .send_json(body)?;
+        self.check_response(response)
+    }
+
+    /// GET `url` and deserialize its JSON response.
+    fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
+        read_json(self.call(self.agent.get(url))?)
     }
 
     /// Check response status and return error if not successful
-    fn check_response(
-        &self,
-        mut response: ureq::http::Response<ureq::Body>,
-    ) -> Result<ureq::http::Response<ureq::Body>> {
+    fn check_response(&self, mut response: Response<Body>) -> Result<Response<Body>> {
         let status = response.status().as_u16();
 
         if (200..300).contains(&status) {
@@ -161,19 +158,7 @@ impl JiraClient {
         // `fields=*all` mirrors the search endpoint so a single-issue read
         // surfaces the same set of (system + custom) fields, keeping the
         // lossless projection consistent between `get` and `search`.
-        let url = self.api_url(&format!("/issue/{}?fields=*all", key));
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let issue: JiraIssue = response.body_mut().read_json()?;
-        Ok(issue)
+        self.get_json(&self.api_url(&format!("/issue/{}?fields=*all", key)))
     }
 
     /// Search issues using JQL.
@@ -204,40 +189,20 @@ impl JiraClient {
             url.push_str(&urlencoding::encode(token));
         }
 
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let result: JiraSearchResult = response.body_mut().read_json()?;
-        Ok(result)
+        self.get_json(&url)
     }
 
     /// Create a new issue
     pub fn create_issue(&self, issue: &CreateJiraIssue) -> Result<JiraIssue> {
         let url = self.api_url("/issue");
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(issue)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
+        let response = self.send_json(self.agent.post(&url), issue)?;
 
         // Jira returns a minimal response on create, we need to fetch the full issue
         #[derive(serde::Deserialize)]
         struct CreateResponse {
             key: String,
         }
-        let created: CreateResponse = response.body_mut().read_json()?;
+        let created: CreateResponse = read_json(response)?;
 
         // Fetch the full issue
         self.get_issue(&created.key)
@@ -246,17 +211,7 @@ impl JiraClient {
     /// Update an existing issue
     pub fn update_issue(&self, key: &str, update: &UpdateJiraIssue) -> Result<JiraIssue> {
         let url = self.api_url(&format!("/issue/{}", key));
-
-        let response = self
-            .agent
-            .put(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(update)
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
+        self.send_json(self.agent.put(&url), update)?;
 
         // Jira returns 204 No Content on update, fetch the updated issue
         self.get_issue(key)
@@ -265,15 +220,7 @@ impl JiraClient {
     /// Delete an issue
     pub fn delete_issue(&self, key: &str) -> Result<()> {
         let url = self.api_url(&format!("/issue/{}", key));
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("Authorization", &self.auth_header)
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
+        self.call(self.agent.delete(&url))?;
         Ok(())
     }
 
@@ -305,53 +252,22 @@ impl JiraClient {
         }
 
         let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
+            .authorized(self.agent.post(&url))
             .header("X-Atlassian-Token", "no-check")
-            .send(form)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let attachments: Vec<JiraAttachment> = response.body_mut().read_json()?;
-        Ok(attachments)
+            .send(form)?;
+        read_json(self.check_response(response)?)
     }
 
     // ==================== Project Operations ====================
 
     /// List all accessible projects
     pub fn list_projects(&self) -> Result<Vec<JiraProject>> {
-        let url = self.api_url("/project");
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let projects: Vec<JiraProject> = response.body_mut().read_json()?;
-        Ok(projects)
+        self.get_json(&self.api_url("/project"))
     }
 
     /// Get a project by key or ID
     pub fn get_project(&self, key: &str) -> Result<JiraProject> {
-        let url = self.api_url(&format!("/project/{}", key));
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let project: JiraProject = response.body_mut().read_json()?;
-        Ok(project)
+        self.get_json(&self.api_url(&format!("/project/{}", key)))
     }
 
     // ==================== Comment Operations ====================
@@ -359,21 +275,8 @@ impl JiraClient {
     /// Add a comment to an issue
     pub fn add_comment(&self, key: &str, body: &str) -> Result<JiraComment> {
         let url = self.api_url(&format!("/issue/{}/comment", key));
-
         let comment = CreateJiraComment::from_text(body);
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(&comment)
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let created: JiraComment = response.body_mut().read_json()?;
-        Ok(created)
+        read_json(self.send_json(self.agent.post(&url), &comment)?)
     }
 
     /// Get comments on an issue
@@ -394,18 +297,8 @@ impl JiraClient {
             start_at,
             max_results
         );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let comments: JiraCommentsResponse = response.body_mut().read_json()?;
-        Ok(comments.comments)
+        let page: JiraCommentsResponse = self.get_json(&url)?;
+        Ok(page.comments)
     }
 
     // ==================== History Operations ====================
@@ -426,18 +319,7 @@ impl JiraClient {
             start_at,
             max_results
         );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let page: JiraChangelogPage = response.body_mut().read_json()?;
-        Ok(page)
+        self.get_json(&url)
     }
 
     /// Fetch an issue's complete changelog, paging through every entry.
@@ -474,32 +356,14 @@ impl JiraClient {
 
     /// Create a link between two issues
     pub fn create_link(&self, link: &CreateJiraIssueLink) -> Result<()> {
-        let url = self.api_url("/issueLink");
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .send_json(link)
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
+        self.send_json(self.agent.post(&self.api_url("/issueLink")), link)?;
         Ok(())
     }
 
     /// Delete an issue link by its link ID
     pub fn delete_link(&self, link_id: &str) -> Result<()> {
         let url = self.api_url(&format!("/issueLink/{}", link_id));
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("Authorization", &self.auth_header)
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
+        self.call(self.agent.delete(&url))?;
         Ok(())
     }
 
@@ -524,65 +388,31 @@ impl JiraClient {
     /// Fetch all field definitions from the Jira instance.
     /// Returns system fields and instance-level custom fields with their IDs, names, and types.
     pub fn get_all_fields(&self) -> Result<Vec<JiraField>> {
-        let url = self.api_url("/field");
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let fields: Vec<JiraField> = response.body_mut().read_json()?;
-        Ok(fields)
+        self.get_json(&self.api_url("/field"))
     }
 
     // ==================== Label Operations ====================
 
     /// List all labels in the Jira instance
     pub fn list_labels(&self) -> Result<Vec<String>> {
-        let url = self.api_url("/label");
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-        let mut response = self.check_response(response)?;
-
         // Jira returns: {"total": N, "maxResults": N, "values": ["label1", "label2"]}
         #[derive(serde::Deserialize)]
         struct LabelResponse {
             values: Vec<String>,
         }
-        let result: LabelResponse = response.body_mut().read_json()?;
+        let result: LabelResponse = self.get_json(&self.api_url("/label"))?;
         Ok(result.values)
     }
 
     /// List all issue link types
     pub fn list_link_types(&self) -> Result<Vec<JiraIssueLinkType>> {
-        let url = self.api_url("/issueLinkType");
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct LinkTypesResponse {
             issue_link_types: Vec<JiraIssueLinkType>,
         }
 
-        let result: LinkTypesResponse = response.body_mut().read_json()?;
+        let result: LinkTypesResponse = self.get_json(&self.api_url("/issueLinkType"))?;
         Ok(result.issue_link_types)
     }
 
@@ -593,18 +423,7 @@ impl JiraClient {
             self.api_url("/user/assignable/search"),
             urlencoding::encode(project_key)
         );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let users: Vec<JiraUser> = response.body_mut().read_json()?;
-        Ok(users)
+        self.get_json(&url)
     }
 
     // ==================== Transition Operations ====================
@@ -612,17 +431,7 @@ impl JiraClient {
     /// GET /rest/api/3/issue/{key}/transitions
     pub fn list_transitions(&self, issue_key: &str) -> Result<Vec<Transition>> {
         let url = self.api_url(&format!("/issue/{}/transitions", issue_key));
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let resp: TransitionsResponse = response.body_mut().read_json()?;
+        let resp: TransitionsResponse = self.get_json(&url)?;
         Ok(resp.transitions)
     }
 
@@ -634,16 +443,7 @@ impl JiraClient {
                 id: transition_id.to_string(),
             },
         };
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .send_json(&body)
-            .map_err(|e| self.handle_error(e))?;
-
-        self.check_response(response)?;
+        self.send_json(self.agent.post(&url), &body)?;
         Ok(())
     }
 
@@ -689,37 +489,35 @@ impl JiraClient {
         &self,
         project_key: &str,
     ) -> Result<Vec<ProjectIssueTypeStatuses>> {
-        let url = self.api_url(&format!("/project/{}/statuses", project_key));
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let statuses: Vec<ProjectIssueTypeStatuses> = response.body_mut().read_json()?;
-        Ok(statuses)
+        self.get_json(&self.api_url(&format!("/project/{}/statuses", project_key)))
     }
 
     /// GET /rest/api/3/project/{projectIdOrKey}/components
     pub fn list_project_components(&self, project_key: &str) -> Result<Vec<JiraComponent>> {
-        let url = self.api_url(&format!("/project/{}/components", project_key));
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(|e| self.handle_error(e))?;
-
-        let mut response = self.check_response(response)?;
-        let components: Vec<JiraComponent> = response.body_mut().read_json()?;
-        Ok(components)
+        self.get_json(&self.api_url(&format!("/project/{}/components", project_key)))
     }
+}
+
+/// HTTP agent shared by the Jira and Confluence clients. Non-2xx responses are
+/// returned rather than raised, so the clients can surface Atlassian's error body.
+pub(crate) fn http_agent() -> Agent {
+    Agent::config_builder()
+        .tls_config(tracker_core::tls::tls_config())
+        .timeout_global(Some(Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+/// `Authorization` header value for Atlassian Basic Auth (email + API token).
+pub(crate) fn basic_auth_header(email: &str, api_token: &str) -> String {
+    let credentials = format!("{}:{}", email.trim(), api_token.trim());
+    format!("Basic {}", base64_encode(&credentials))
+}
+
+/// Deserialize a JSON response body.
+pub(crate) fn read_json<T: DeserializeOwned>(mut response: Response<Body>) -> Result<T> {
+    Ok(response.body_mut().read_json()?)
 }
 
 /// Simple base64 encoding function

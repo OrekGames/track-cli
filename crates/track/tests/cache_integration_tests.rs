@@ -449,6 +449,29 @@ fn test_cache_path_reports_directory() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+#[test]
+fn test_cache_path_json_output() {
+    // Used to print the bare path whatever the output format.
+    let dir = temp_dir();
+
+    let output = track_in_no_mock(&dir)
+        .args(["cache", "path", "-o", "json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|e| panic!("cache path -o json must print JSON ({e}): {output:?}"));
+    let path = json["path"].as_str().unwrap();
+    assert!(
+        path.ends_with(".tracker-cache"),
+        "cache path should end with .tracker-cache, got: {}",
+        path
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
 // =============================================================================
 // cache refresh --if-stale
 // =============================================================================

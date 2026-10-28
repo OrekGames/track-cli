@@ -48,12 +48,17 @@ Connection: close
 }
 
 fn create_temp_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // macOS clocks tick in microseconds, so parallel tests can read the same
+    // time; the counter keeps their directories apart.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut dir = std::env::temp_dir();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    dir.push(format!("track-test-{}-{}", std::process::id(), nanos));
+    dir.push(format!("track-test-{}-{}-{}", std::process::id(), nanos, n));
     std::fs::create_dir_all(&dir).unwrap();
     // GitHub Actions Windows gives `C:\Users\RUNNER~1\...` (8.3). Passing that
     // through `--config` makes `Path::exists()` fail in the child even though
@@ -300,6 +305,80 @@ fn test_config_file_is_used_for_defaults() {
     assert_eq!(json[0]["short_name"], "PROJ");
 
     let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// Write a `TRACK_MOCK_DIR` scenario that answers each `(method, JSON body)`
+/// pair for any arguments.
+fn write_mock_scenario(responses: &[(&str, &str)]) -> PathBuf {
+    let dir = create_temp_dir();
+    let responses_dir = dir.join("responses");
+    std::fs::create_dir_all(&responses_dir).unwrap();
+    let mut manifest = String::new();
+    for (method, body) in responses {
+        let file = format!("{method}.json");
+        std::fs::write(responses_dir.join(&file), body).unwrap();
+        manifest.push_str(&format!(
+            "[[responses]]\nmethod = \"{method}\"\nfile = \"{file}\"\n\n"
+        ));
+    }
+    std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
+    dir
+}
+
+const MOCK_ARTICLE: &str = r#"{
+    "id": "kb-1",
+    "id_readable": "KB-A-1",
+    "summary": "Setup Guide",
+    "content": null,
+    "project": { "id": "0-1", "name": "Demo", "short_name": "DEMO" },
+    "parent_article": { "id": "kb-2", "id_readable": "KB-A-2", "summary": null },
+    "has_children": false,
+    "tags": [],
+    "created": "2024-01-05T11:00:00Z",
+    "updated": "2024-01-10T09:00:00Z",
+    "reporter": null
+}"#;
+
+fn stdout_json(args: &[&str], mock_dir: &Path) -> serde_json::Value {
+    let output = track_with_home(mock_dir)
+        .env("TRACK_MOCK_DIR", mock_dir)
+        .args(args)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&output).unwrap_or_else(|e| {
+        panic!(
+            "stdout of {args:?} is not JSON ({e}):\n{}",
+            String::from_utf8_lossy(&output)
+        )
+    })
+}
+
+#[test]
+fn article_move_json_output_is_only_the_article() {
+    let mock_dir = write_mock_scenario(&[("move_article", MOCK_ARTICLE)]);
+
+    let json = stdout_json(
+        &[
+            "-o", "json", "article", "move", "KB-A-1", "--parent", "KB-A-2",
+        ],
+        &mock_dir,
+    );
+    assert_eq!(json["id_readable"], "KB-A-1");
+
+    let _ = std::fs::remove_dir_all(&mock_dir);
+}
+
+#[test]
+fn article_delete_json_output_is_json() {
+    let mock_dir = write_mock_scenario(&[("delete_article", "null")]);
+
+    let json = stdout_json(&["-o", "json", "article", "delete", "KB-A-1"], &mock_dir);
+    assert_eq!(json["success"], true);
+
+    let _ = std::fs::remove_dir_all(&mock_dir);
 }
 
 // These tests require a mock server or real YouTrack instance

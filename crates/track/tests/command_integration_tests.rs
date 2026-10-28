@@ -985,6 +985,49 @@ fn test_init_skills_only_mode() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn test_init_with_skills_json_is_one_document() {
+    // Used to print the skills JSON and the config JSON as two documents.
+    let dir = temp_dir();
+
+    let output = track_in(&dir)
+        .args([
+            "-o",
+            "json",
+            "init",
+            "--url",
+            "https://yt.test",
+            "--token",
+            "tok",
+            "--skills",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "expected success: {output:?}");
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout must be one JSON document ({e}): {}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+    assert_eq!(json["success"], true);
+    assert!(
+        json["config_path"]
+            .as_str()
+            .unwrap()
+            .contains(".track.toml")
+    );
+    let skills = json["skills_installed"].as_array().unwrap();
+    assert!(!skills.is_empty());
+    for skill in skills {
+        let path = skill["path"].as_str().unwrap();
+        assert!(Path::new(path).exists(), "skill file should exist: {path}");
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // =============================================================================
 // open command help
 // =============================================================================
@@ -2168,21 +2211,20 @@ fn test_issue_search_select_jsonl_projects_fields() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// #292 / #351: `-o jsonl` is wired for `issue search` only. Unwired commands
-/// must reject it (today `CliFormat::output()` silently remaps to pretty JSON).
+/// `-o jsonl` renders the `-o json` document, so only commands that print no
+/// JSON reject it. `completions` prints a shell script.
 #[test]
-fn test_unwired_command_rejects_jsonl_format() {
+fn test_non_json_command_rejects_jsonl_format() {
     let dir = temp_dir();
-    let scenario = copy_scenario(&dir, "basic-workflow");
 
-    let output = track_mock(&dir, &scenario)
-        .args(["project", "list", "-o", "jsonl"])
+    let output = track_in(&dir)
+        .args(["completions", "bash", "-o", "jsonl"])
         .output()
         .unwrap();
 
     assert!(
         !output.status.success(),
-        "unwired -o jsonl must fail, not remap to pretty JSON: {output:?}"
+        "completions -o jsonl must fail, not print a shell script: {output:?}"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2196,15 +2238,7 @@ fn test_unwired_command_rejects_jsonl_format() {
         err.contains("unsupported"),
         "rejection must name unsupported: stdout={stdout:?} stderr={stderr:?}"
     );
-
-    let trimmed = stdout.trim();
-    let is_pretty_json_document = serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
-        && (trimmed.starts_with('{') || trimmed.starts_with('['))
-        && trimmed.contains('\n');
-    assert!(
-        !is_pretty_json_document,
-        "stdout must not be a pretty JSON document: {stdout}"
-    );
+    assert!(stdout.is_empty(), "stdout must stay empty: {stdout}");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -2794,6 +2828,476 @@ fn test_issue_start_resolves_state_field_from_schema() {
         .success()
         .stdout(predicate::str::contains("started"))
         .stdout(predicate::str::contains("Stage=Develop"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_complete_json_output_is_valid_json() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "state-field-resolution");
+
+    let output = track_mock(&dir, &scenario)
+        .args(["-o", "json", "issue", "complete", "ALPHA-1"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected success: {output:?}");
+    let json = parse_json_stdout(&output);
+    assert_eq!(json["success"], true);
+    assert_eq!(json["action"], "completed");
+    assert_eq!(json["state"], "Done");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// batch issue operations
+// =============================================================================
+
+#[test]
+fn test_issue_batch_partial_failure_reports_all_then_fails() {
+    // One failing issue must not hide the others' results, must keep its
+    // cause, and must fail the command just as a single-issue failure does.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "-o",
+            "json",
+            "issue",
+            "update",
+            "DEMO-1,MISSING-1",
+            "--summary",
+            "Renamed",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "a partially failed batch must exit non-zero: {output:?}"
+    );
+    let report = parse_json_stdout(&output);
+    assert_eq!(report["total"], 2);
+    assert_eq!(report["succeeded"], 1);
+    assert_eq!(report["failed"], 1);
+    assert_eq!(report["results"][0]["success"], true);
+    assert_eq!(report["results"][1]["id"], "MISSING-1");
+    let error = report["results"][1]["error"].as_str().unwrap();
+    assert!(
+        error.contains("Failed to update issue 'MISSING-1'") && error.contains("API error (404)"),
+        "batch error must keep its cause, got: {error}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("1 of 2 issues were not updated"),
+        "stderr should summarize the failure: {output:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_batch_ignores_blank_ids_and_succeeds_when_all_pass() {
+    // A space after a comma or a trailing comma must not become an issue ID.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "issue-batch-operations");
+
+    track_mock(&dir, &scenario)
+        .args(["issue", "delete", "DEMO-1, DEMO-2,"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 issues deleted"));
+
+    let deleted: Vec<String> = mock_call_entries(&scenario)
+        .iter()
+        .filter(|entry| entry["method"] == "delete_issue")
+        .map(|entry| entry["args"]["id"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(deleted, vec!["DEMO-1", "DEMO-2"]);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_issue_batch_commands_require_an_id() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "issue-batch-operations");
+
+    for args in [
+        vec!["issue", "start"],
+        vec!["issue", "complete", ","],
+        vec!["issue", "delete"],
+        vec!["issue", "update", "--summary", "Renamed"],
+    ] {
+        track_mock(&dir, &scenario).args(&args).assert().failure();
+    }
+    assert!(mock_call_methods(&scenario).is_empty());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// issue link JSON output
+// =============================================================================
+
+#[test]
+fn test_issue_link_json_output_escapes_values() {
+    // Link types are free text (custom backend types pass through), so the
+    // JSON output must escape them instead of splicing them into a string.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "issue-linking");
+    let link_type = r#"Custom "quoted" \ type"#;
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "-o", "json", "issue", "link", "DEMO-1", "DEMO-2", "--type", link_type,
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected success: {output:?}");
+    let json = parse_json_stdout(&output);
+    assert_eq!(json["success"], true);
+    assert_eq!(json["source"], "DEMO-1");
+    assert_eq!(json["target"], "DEMO-2");
+    assert_eq!(json["linkType"], link_type);
+    assert_eq!(json["description"], link_type.to_lowercase());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// context --include-issues
+// =============================================================================
+
+#[test]
+fn test_context_include_issues_on_gitlab_needs_no_default_project() {
+    // `track init` sets no default project for GitLab, whose client is already
+    // project-scoped, so --include-issues must not require one.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args(["-b", "gitlab", "-o", "json", "context", "--include-issues"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected success: {output:?}");
+    let json = parse_json_stdout(&output);
+    let issues = json["issues"].as_array().unwrap_or_else(|| {
+        panic!(
+            "context should include issues; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    assert!(!issues.is_empty(), "expected open issues: {json}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_context_include_issues_without_project_warns() {
+    // YouTrack needs a project to scope the query; skipping must not be silent.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "context-aggregation");
+
+    let output = track_mock(&dir, &scenario)
+        .args(["-o", "json", "context", "--include-issues"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "expected success: {output:?}");
+    assert!(parse_json_stdout(&output).get("issues").is_none());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--include-issues needs --project"),
+        "skipping issues must warn: {output:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// project create --leader
+// =============================================================================
+
+#[test]
+fn test_project_create_rejects_empty_leader_naming_the_flag() {
+    // An unset shell variable must not silently make the caller the leader.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "project-operations");
+
+    track_mock(&dir, &scenario)
+        .args([
+            "project", "create", "-n", "Test", "-s", "TEST", "--leader", " ",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--leader must not be empty"))
+        .stderr(predicate::str::contains("omit --leader"));
+    assert!(
+        !mock_call_methods(&scenario)
+            .iter()
+            .any(|method| method == "create_project")
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// JSON-mode stdout holds only JSON
+// =============================================================================
+
+#[test]
+fn test_issue_update_verbose_json_stdout_is_only_the_issue() {
+    // `-v` used to print the text change summary's trailing blank line ahead
+    // of the JSON document.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "update",
+            "DEMO-1",
+            "--summary",
+            "Verbose summary",
+            "-v",
+            "-o",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "expected success: {output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with('{'),
+        "JSON stdout must start with the document, not a blank line: {stdout:?}"
+    );
+    assert_eq!(parse_json_stdout(&output)["id_readable"], "DEMO-1");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// =============================================================================
+// -o jsonl
+// =============================================================================
+
+/// Parse JSONL stdout: every line must hold exactly one JSON value.
+fn parse_jsonl_stdout(output: &std::process::Output) -> Vec<serde_json::Value> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("each JSONL line must be one JSON value ({e}): {line:?}\n{stdout}")
+            })
+        })
+        .collect()
+}
+
+/// Strip the whitespace `-o json` puts between tokens, keeping key order.
+fn compact_json(pretty: &str) -> String {
+    let (mut out, mut in_string, mut escaped) = (String::new(), false, false);
+    for c in pretty.chars() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+        } else if c == '"' {
+            in_string = true;
+        } else if c.is_whitespace() {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Run `args` with `-o json` and then `-o jsonl`. Returns the pretty JSON
+/// document and the JSONL records, after checking the JSONL lines are the
+/// `-o json` document compacted byte for byte (same keys, same order).
+fn json_and_jsonl(
+    dir: &Path,
+    scenario: &Path,
+    args: &[&str],
+) -> (serde_json::Value, Vec<serde_json::Value>) {
+    let json = track_mock(dir, scenario)
+        .args(args)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "-o json failed: {json:?}");
+    let document = parse_json_stdout(&json);
+    if document != serde_json::json!([]) {
+        assert!(
+            String::from_utf8_lossy(&json.stdout).contains("\n  "),
+            "-o json must stay pretty-printed: {json:?}"
+        );
+    }
+
+    let jsonl = track_mock(dir, scenario)
+        .args(args)
+        .args(["-o", "jsonl"])
+        .output()
+        .unwrap();
+    assert!(jsonl.status.success(), "-o jsonl failed: {jsonl:?}");
+
+    let jsonl_stdout = String::from_utf8_lossy(&jsonl.stdout);
+    let lines: Vec<&str> = jsonl_stdout.lines().collect();
+    let joined = if document.is_array() {
+        format!("[{}]", lines.join(","))
+    } else {
+        lines.concat()
+    };
+    assert_eq!(
+        joined,
+        compact_json(&String::from_utf8_lossy(&json.stdout)),
+        "{args:?}: -o jsonl must be the -o json document compacted"
+    );
+
+    (document, parse_jsonl_stdout(&jsonl))
+}
+
+#[test]
+fn test_jsonl_list_commands_emit_one_record_per_element() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let cases: [&[&str]; 4] = [
+        &["project", "list"],
+        &["tags", "list"],
+        &["issue", "search", "project: DEMO"],
+        &["issue", "comments", "DEMO-1"],
+    ];
+    for args in cases {
+        let (json, records) = json_and_jsonl(&dir, &scenario, args);
+        let items = json
+            .as_array()
+            .unwrap_or_else(|| panic!("{args:?} -o json should print an array: {json}"));
+        assert!(!items.is_empty(), "{args:?} fixture should not be empty");
+        assert_eq!(&records, items, "{args:?}: one record per array element");
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_jsonl_empty_list_prints_nothing() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+    write_comments_response(&scenario, 0);
+
+    let (json, records) = json_and_jsonl(&dir, &scenario, &["issue", "comments", "DEMO-1"]);
+    assert_eq!(json, serde_json::json!([]));
+    assert!(records.is_empty(), "an empty list has no records");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_jsonl_single_object_commands_emit_one_line() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let cases: [&[&str]; 3] = [
+        &["issue", "get", "DEMO-1"],
+        // Nested arrays (links, comments) stay inside the one record.
+        &["issue", "get", "DEMO-1", "--full"],
+        &["issue", "inspect", "DEMO-1", "--include", "comments"],
+    ];
+    for args in cases {
+        let (json, records) = json_and_jsonl(&dir, &scenario, args);
+        assert!(json.is_object(), "{args:?} -o json should print an object");
+        assert_eq!(records, vec![json], "{args:?}: exactly one line");
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_jsonl_batch_update_emits_one_summary_line() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "issue-batch-operations");
+
+    let (json, records) = json_and_jsonl(
+        &dir,
+        &scenario,
+        &["issue", "update", "DEMO-1,DEMO-2", "--summary", "Batch"],
+    );
+    assert_eq!(json["total"], 2);
+    assert_eq!(json["results"].as_array().unwrap().len(), 2);
+    assert_eq!(records, vec![json]);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_jsonl_verbose_update_emits_only_the_issue() {
+    // `-v` used to print a blank line ahead of the JSON document, which
+    // would be an empty JSONL record.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let (json, records) = json_and_jsonl(
+        &dir,
+        &scenario,
+        &["issue", "update", "DEMO-1", "--summary", "Verbose", "-v"],
+    );
+    assert_eq!(json["id_readable"], "DEMO-1");
+    assert_eq!(records, vec![json]);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_jsonl_works_for_offline_commands() {
+    let dir = temp_dir();
+
+    let output = track_in(&dir)
+        .args(["config", "keys", "-o", "jsonl"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "expected success: {output:?}");
+    let records = parse_jsonl_stdout(&output);
+    assert!(records.len() > 1, "config keys is a list: {records:?}");
+
+    let output = track_in(&dir)
+        .args([
+            "-o",
+            "jsonl",
+            "init",
+            "--url",
+            "https://yt.test",
+            "--token",
+            "tok",
+            "--skills",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "expected success: {output:?}");
+    let records = parse_jsonl_stdout(&output);
+    assert_eq!(records.len(), 1, "init prints one document: {records:?}");
+    assert!(records[0]["skills_installed"].is_array());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_jsonl_does_not_widen_select() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    track_mock(&dir, &scenario)
+        .args(["project", "list", "--select", "id", "-o", "jsonl"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("select is unsupported"));
 
     let _ = fs::remove_dir_all(&dir);
 }

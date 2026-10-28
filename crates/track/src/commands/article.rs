@@ -1,6 +1,7 @@
 use crate::cli::{ArticleCommands, OutputFormat};
 use crate::output::{output_json, output_list, output_page_hint, output_progress, output_result};
 use anyhow::{Context, Result, anyhow};
+use colored::Colorize;
 use tracker_core::{CreateArticle, IssueTracker, KnowledgeBase, UpdateArticle, get_max_results};
 
 pub fn handle_article(
@@ -64,7 +65,7 @@ pub fn handle_article(
                 format,
             )
         }
-        ArticleCommands::Delete { id } => handle_delete(kb_client, id),
+        ArticleCommands::Delete { id } => handle_delete(kb_client, id, format),
         ArticleCommands::Tree { id } => handle_tree(kb_client, id, format),
         ArticleCommands::Move { id, parent } => {
             handle_move(kb_client, id, parent.as_deref(), format)
@@ -256,13 +257,19 @@ fn handle_update(
     Ok(())
 }
 
-fn handle_delete(client: &dyn KnowledgeBase, id: &str) -> Result<()> {
-    use colored::Colorize;
+fn handle_delete(client: &dyn KnowledgeBase, id: &str, format: OutputFormat) -> Result<()> {
     client
         .delete_article(id)
         .with_context(|| format!("Failed to delete article '{}'", id))?;
 
-    println!("Article {} deleted.", id.cyan().bold());
+    match format {
+        // Same shape as `issue delete` so JSON consumers can parse stdout.
+        OutputFormat::Json => output_json(&serde_json::json!({
+            "success": true,
+            "message": "Article deleted",
+        }))?,
+        OutputFormat::Text => println!("Article {} deleted.", id.cyan().bold()),
+    }
     Ok(())
 }
 
@@ -291,7 +298,6 @@ fn handle_tree(client: &dyn KnowledgeBase, id: &str, format: OutputFormat) -> Re
             output_json(&tree)?;
         }
         OutputFormat::Text => {
-            use colored::Colorize;
             println!(
                 "{} - {}",
                 parent.id_readable.cyan().bold(),
@@ -319,8 +325,8 @@ fn handle_move(
         .move_article(id, new_parent)
         .with_context(|| format!("Failed to move article '{}'", id))?;
 
-    {
-        use colored::Colorize;
+    // The confirmation line is text-only: in JSON mode stdout must hold just the article.
+    if format == OutputFormat::Text {
         match new_parent {
             Some(parent) => println!(
                 "Article {} moved to parent {}.",

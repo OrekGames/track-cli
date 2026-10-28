@@ -38,6 +38,17 @@ brew untap OrekGames/tap
 
 ## For Maintainers
 
+### Version Bumps
+
+Any pull request that bumps the `track` version in `crates/track/Cargo.toml`
+gets a companion pull request in [OrekGames/homebrew-tap](https://github.com/OrekGames/homebrew-tap)
+that bumps `Formula/track.rb` to the same version, and each links the other.
+Open it as a draft with the template's `PLACEHOLDER_SHA256_*` checksums: the
+release archives only exist once the version is tagged. After the release is
+published, fill in the checksums with the update script below (`--formula`
+pointing at the tap's formula) and mark it ready, or close it if the release
+workflow already published that version to the tap.
+
 ### Manual Formula Update
 
 If you need to update the formula manually (outside of CI):
