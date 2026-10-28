@@ -377,7 +377,7 @@ track bundle create "Bug Status" -t state -v "Open,Fixed,Closed" --resolved "Fix
 | Comments | `track a comments KB-A-1` | `track -b j a comments 123456` |
 | Add comment | `track a cmt KB-A-1 -m "Text"` | `track -b j a cmt 123456 -m "Text"` |
 
-**Note**: Knowledge base is only available for YouTrack and Jira/Confluence. GitHub and GitLab do not support articles. Confluence uses numeric IDs for both pages and spaces. YouTrack uses readable IDs (e.g., `KB-A-1`).
+**Note**: Knowledge base is available for YouTrack, Jira/Confluence, and GitHub/GitLab (via the repo wiki, without article comments). Linear has no knowledge base. Confluence uses numeric IDs for both pages and spaces. YouTrack uses readable IDs (e.g., `KB-A-1`).
 
 ### Command Aliases
 
@@ -550,6 +550,8 @@ JSON output provides structured results:
   ]
 }
 ```
+
+Every result is printed first; the command then exits `1` if any issue failed.
 
 ---
 

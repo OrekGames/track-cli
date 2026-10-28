@@ -307,7 +307,7 @@ track bundle create "Bug Status" -t state --values "Open,Fixed,Closed" --resolve
 | Add comment | `track a cmt KB-A-1 -m "Text"` | `track -b j a cmt 123456 -m "Text"` |
 
 **Notes**:
-- Content is passed with `-c/--content "# Markdown"` or `--body-file page.md` (mutually exclusive); `--parent <ID>` nests; `a move` without `--parent` moves to root.
+- Content is passed with `-c/--content "# Markdown"` or `--body-file page.md` (mutually exclusive); `--parent <ID>` nests; `a move` without `--parent` moves to root (not supported on Confluence).
 - **GitHub/GitLab support articles via the repo wiki** (`track -b gh a ls`, etc.) — except article comments, which they reject. Linear has no knowledge base.
 - Confluence uses numeric page/space IDs; YouTrack uses readable IDs (e.g., `KB-A-1`).
 
@@ -468,6 +468,8 @@ track i done PROJ-1,PROJ-2 --state Done
 # Delete multiple
 track i del PROJ-1,PROJ-2,PROJ-3
 ```
+
+A batch reports every issue's result, then exits `1` if any of them failed.
 
 ## Declarative Apply Plans
 
