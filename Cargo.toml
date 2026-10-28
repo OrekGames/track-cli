@@ -15,6 +15,9 @@ tracker-mock = { path = "crates/tracker-mock" }
 
 # HTTP & serialization
 ureq = { version = "3.1", features = ["json", "multipart"] }
+# TLS trust roots: the Mozilla set as whole certificates, and the OS store
+webpki-root-certs = "1"
+rustls-native-certs = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
@@ -40,6 +43,9 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # Testing
 tokio = { version = "1", features = ["rt", "macros"] }
 wiremock = "0.6"
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
 assert_cmd = "2.0"
 predicates = "3.1"
 glob = "0.3"

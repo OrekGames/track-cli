@@ -223,6 +223,9 @@ track config set <key> <value>
 track config get <key>
 track config keys            # List available config keys
 track config path            # Show config file path
+track config trust           # Allow this directory's .track.toml to receive your own token
+track config untrust         # Revoke config trust for this directory
+track config set system_certs true  # Also trust the OS certificate store (HTTPS proxies)
 ```
 
 ## Doctor (Backend Capability Audit)

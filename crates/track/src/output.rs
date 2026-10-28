@@ -496,6 +496,24 @@ pub fn output_error(err: &anyhow::Error, format: OutputFormat) {
     eprintln!("{}", message);
 }
 
+/// Advice for a request that failed because the server's certificate does
+/// not chain to a trusted root, as happens behind a proxy that inspects HTTPS.
+pub fn untrusted_certificate_tip(error: &str) -> Option<String> {
+    if !error.contains("UnknownIssuer") {
+        return None;
+    }
+    let mut tip = String::from(
+        "The server's certificate is not issued by a certificate authority track trusts. \
+         If a proxy inspects your HTTPS traffic, set SSL_CERT_FILE to its CA certificate \
+         (PEM), or run `track config set system_certs true` to also trust your operating \
+         system's certificates.",
+    );
+    for error in tracker_core::tls::load_errors() {
+        tip.push_str(&format!("\nCould not load certificates: {error}"));
+    }
+    Some(tip)
+}
+
 /// Output a progress message to stderr if stdout is a TTY and format is text
 pub fn output_progress(message: &str, format: OutputFormat) {
     if format == OutputFormat::Text && std::io::stdout().is_terminal() {

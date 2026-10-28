@@ -232,7 +232,56 @@ export LINEAR_URL=https://linear.app/your-workspace
 export LINEAR_DEFAULT_TEAM=PROJ
 # export LINEAR_API_URL=https://api.linear.app/graphql
 # export LINEAR_DEFAULT_PROJECT="Track CLI"
+
+# HTTPS behind a proxy that inspects it (see below)
+export SSL_CERT_FILE=/path/to/proxy-ca.pem
+export TRACKER_SYSTEM_CERTS=true
 ```
+
+## Repository configs and your token
+
+A `.track.toml` committed to a repository is read whenever you run `track` in
+that directory. Because config layers merge key by key, such a file could set
+only a URL and have `track` send the token from your global config,
+environment or `--token` to a host the repository chose. `track` refuses that
+before sending anything:
+
+```
+Error: Refusing to send your youtrack token to https://attacker.example.
+```
+
+The check only applies when the repository file sets a token destination
+(`url`, `[backend].url`, `github.api_url`, `linear.api_url`) that differs from
+your own configuration's and does not also supply the token. A repository
+`.track.toml` holding both URL and token (what `track init` writes), or only
+settings such as `default_project`, is unaffected. To allow a repository you
+trust, or to bypass its config:
+
+```bash
+track config trust          # Allow this directory's .track.toml to receive your token
+track config untrust        # Revoke it (changing the URL also requires trusting again)
+track --config ~/.tracker-cli/.track.toml ...   # Ignore the repository's .track.toml
+```
+
+`track config show` and `track doctor` report a redirected token as well.
+
+## HTTPS proxies and certificates
+
+`track` trusts the Mozilla root certificates built into it, the same set on
+every machine. A corporate proxy that inspects HTTPS re-signs traffic with its
+own certificate authority, so requests fail with `invalid peer certificate:
+UnknownIssuer`. Trust that authority in either of two ways:
+
+```bash
+export SSL_CERT_FILE=/path/to/proxy-ca.pem   # PEM file(s), as OpenSSL-based tools read them
+                                             # (SSL_CERT_DIR works too)
+track config set system_certs true           # Or trust your operating system's certificates
+                                             # (TRACKER_SYSTEM_CERTS=true for one run)
+```
+
+Both add certificates to the built-in roots; nothing they trusted before is
+dropped. `SSL_CERT_FILE` / `SSL_CERT_DIR` take precedence over the system
+store when set. With neither, `track` uses exactly the built-in roots.
 
 ## Backend selection
 

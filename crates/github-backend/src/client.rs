@@ -59,6 +59,7 @@ impl GitHubClient {
     /// Create a new GitHub client with a custom base URL (for GitHub Enterprise or testing)
     pub fn with_base_url(base_url: &str, owner: &str, repo: &str, token: &str) -> Self {
         let agent = Agent::config_builder()
+            .tls_config(tracker_core::tls::tls_config())
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
             .build()

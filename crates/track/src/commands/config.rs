@@ -20,6 +20,7 @@ enum ConfigKey {
     Token,
     Email,
     DefaultProject,
+    SystemCerts,
     YouTrackUrl,
     YouTrackToken,
     JiraUrl,
@@ -41,12 +42,13 @@ enum ConfigKey {
 }
 
 impl ConfigKey {
-    const ALL: [Self; 23] = [
+    const ALL: [Self; 24] = [
         Self::Backend,
         Self::Url,
         Self::Token,
         Self::Email,
         Self::DefaultProject,
+        Self::SystemCerts,
         Self::YouTrackUrl,
         Self::YouTrackToken,
         Self::JiraUrl,
@@ -81,6 +83,7 @@ impl ConfigKey {
             Self::Token => "token",
             Self::Email => "email",
             Self::DefaultProject => "default_project",
+            Self::SystemCerts => "system_certs",
             Self::YouTrackUrl => "youtrack.url",
             Self::YouTrackToken => "youtrack.token",
             Self::JiraUrl => "jira.url",
@@ -105,6 +108,7 @@ impl ConfigKey {
     fn value_type(self) -> &'static str {
         match self {
             Self::Backend => "youtrack | jira | github | gitlab | linear",
+            Self::SystemCerts => "true | false",
             _ => "string",
         }
     }
@@ -116,6 +120,9 @@ impl ConfigKey {
             Self::Token => "API token",
             Self::Email => "Email for authentication (required for Jira)",
             Self::DefaultProject => "Default project shortName (e.g., \"PROJ\")",
+            Self::SystemCerts => {
+                "Also trust the operating system's certificates for HTTPS (for proxies that inspect HTTPS)"
+            }
             Self::YouTrackUrl => "YouTrack-specific URL (overrides 'url' when backend=youtrack)",
             Self::YouTrackToken => "YouTrack-specific token",
             Self::JiraUrl => "Jira-specific URL (overrides 'url' when backend=jira)",
@@ -175,6 +182,12 @@ impl ConfigKey {
             Self::Token => cfg.token = Some(value.to_string()),
             Self::Email => cfg.email = Some(value.to_string()),
             Self::DefaultProject => cfg.default_project = Some(value.to_string()),
+            Self::SystemCerts => {
+                let enabled = value.parse().map_err(|_| {
+                    anyhow::anyhow!("Invalid system_certs '{}'. Valid: true, false", value)
+                })?;
+                cfg.system_certs = Some(enabled);
+            }
             Self::YouTrackUrl => cfg.youtrack.url = Some(value.to_string()),
             Self::YouTrackToken => cfg.youtrack.token = Some(value.to_string()),
             Self::JiraUrl => cfg.jira.url = Some(value.to_string()),
@@ -206,6 +219,7 @@ impl ConfigKey {
             Self::Token => cfg.token.clone(),
             Self::Email => cfg.email.clone(),
             Self::DefaultProject => cfg.default_project.clone(),
+            Self::SystemCerts => cfg.system_certs.map(|enabled| enabled.to_string()),
             Self::YouTrackUrl => cfg.youtrack.url.clone(),
             Self::YouTrackToken => cfg.youtrack.token.clone(),
             Self::JiraUrl => cfg.jira.url.clone(),

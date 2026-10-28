@@ -20,7 +20,10 @@ impl Client {
         Self {
             api_key,
             model,
-            agent: ureq::Agent::new_with_defaults(),
+            agent: ureq::Agent::config_builder()
+                .tls_config(tracker_core::tls::tls_config())
+                .build()
+                .into(),
         }
     }
 

@@ -77,6 +77,7 @@ impl LinearClient {
     /// Create a new Linear client with a custom GraphQL endpoint.
     pub fn with_base_url(api_url: &str, token: &str) -> Self {
         let agent = Agent::config_builder()
+            .tls_config(tracker_core::tls::tls_config())
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
             .build()

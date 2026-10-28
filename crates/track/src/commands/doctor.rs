@@ -152,7 +152,14 @@ fn classify_error(err: &TrackerError) -> (CheckStatus, String) {
         TrackerError::NotFound(_)
         | TrackerError::IssueNotFound(_)
         | TrackerError::ProjectNotFound(_) => (CheckStatus::Degraded, err.to_string()),
-        _ => (CheckStatus::Failed, err.to_string()),
+        _ => {
+            let message = err.to_string();
+            let message = match crate::output::untrusted_certificate_tip(&message) {
+                Some(tip) => format!("{message}. {tip}"),
+                None => message,
+            };
+            (CheckStatus::Failed, message)
+        }
     }
 }
 

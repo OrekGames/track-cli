@@ -530,6 +530,7 @@ fn create_config_and_finish(
         default_project: validated_project
             .as_ref()
             .and_then(InitProject::default_project),
+        system_certs: None,
         youtrack: Default::default(),
         jira: Default::default(),
         github: Default::default(),

@@ -32,6 +32,7 @@ impl GitLabClient {
     /// it is URL-encoded when request URLs are built, so do not pre-encode it.
     pub fn new(base_url: &str, token: &str, project_id: Option<&str>) -> Self {
         let agent = Agent::config_builder()
+            .tls_config(tracker_core::tls::tls_config())
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
             .build()

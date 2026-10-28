@@ -43,6 +43,10 @@ fn cli_main() -> ExitCode {
 
     if let Err(e) = run(cli) {
         output_error(&e, cli::OutputFormat::Text);
+        if let Some(tip) = output::untrusted_certificate_tip(&format!("{e:#}")) {
+            use colored::Colorize;
+            eprintln!("{} {}", "Tip:".yellow(), tip);
+        }
         return ExitCode::from(1);
     }
 
@@ -72,6 +76,9 @@ fn run(cli: Cli) -> Result<()> {
         ));
     }
     output::set_jsonl_mode(cli.format.is_jsonl());
+    // HTTPS trust roots are fixed when the first client is built, and doctor
+    // and init build clients before the full config load below.
+    tracker_core::tls::set_system_certs(config::resolve_system_certs(cli.config.as_deref()));
 
     // `--select` is wired for `issue search` JSON/JSONL only. Other commands
     // and text mode must not silently print the full document, and a present

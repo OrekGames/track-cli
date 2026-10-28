@@ -502,6 +502,7 @@ impl JiraClient {
 /// returned rather than raised, so the clients can surface Atlassian's error body.
 pub(crate) fn http_agent() -> Agent {
     Agent::config_builder()
+        .tls_config(tracker_core::tls::tls_config())
         .timeout_global(Some(Duration::from_secs(30)))
         .http_status_as_error(false)
         .build()

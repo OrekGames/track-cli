@@ -34,4 +34,6 @@ ureq = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 serial_test = "4"
+rcgen = { workspace = true }
+rustls = { workspace = true }
 tempfile = "3.27.0"

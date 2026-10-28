@@ -2,6 +2,7 @@ pub mod error;
 pub mod models;
 pub mod pagination;
 pub mod strings;
+pub mod tls;
 pub mod traits;
 
 pub use error::{Result, TrackerError};

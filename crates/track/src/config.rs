@@ -35,6 +35,14 @@ pub struct Config {
     /// Default project shortName (e.g., "PROJ")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_project: Option<String>,
+    /// Also trust the operating system's certificate store for HTTPS, as a
+    /// proxy that inspects HTTPS requires (see `tracker_core::tls`)
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_bool"
+    )]
+    pub system_certs: Option<bool>,
     /// YouTrack-specific configuration
     #[serde(default, skip_serializing_if = "BackendConfig::is_empty")]
     pub youtrack: BackendConfig,
@@ -791,6 +799,23 @@ pub fn resolve_backend(explicit: Option<&Path>) -> Backend {
     Config::load_raw(explicit.map(Path::to_path_buf))
         .map(|config| config.get_backend())
         .unwrap_or_default()
+}
+
+/// Whether `system_certs` is enabled in the config chain [`resolve_backend`]
+/// reads. Load errors count as disabled; the full config load reports them.
+pub fn resolve_system_certs(explicit: Option<&Path>) -> bool {
+    Config::load_raw(explicit.map(Path::to_path_buf))
+        .ok()
+        .and_then(|config| config.system_certs)
+        .unwrap_or(false)
+}
+
+/// A boolean from TOML, or from the "true"/"false" string an environment
+/// variable such as `TRACKER_SYSTEM_CERTS` provides.
+fn optional_bool<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<bool>, D::Error> {
+    figment::util::bool_from_str_or_int(deserializer).map(Some)
 }
 
 /// Load the effective workflow pack using whole-pack source selection.
