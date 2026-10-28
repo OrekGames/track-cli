@@ -985,6 +985,49 @@ fn test_init_skills_only_mode() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn test_init_with_skills_json_is_one_document() {
+    // Used to print the skills JSON and the config JSON as two documents.
+    let dir = temp_dir();
+
+    let output = track_in(&dir)
+        .args([
+            "-o",
+            "json",
+            "init",
+            "--url",
+            "https://yt.test",
+            "--token",
+            "tok",
+            "--skills",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "expected success: {output:?}");
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout must be one JSON document ({e}): {}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+    assert_eq!(json["success"], true);
+    assert!(
+        json["config_path"]
+            .as_str()
+            .unwrap()
+            .contains(".track.toml")
+    );
+    let skills = json["skills_installed"].as_array().unwrap();
+    assert!(!skills.is_empty());
+    for skill in skills {
+        let path = skill["path"].as_str().unwrap();
+        assert!(Path::new(path).exists(), "skill file should exist: {path}");
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // =============================================================================
 // open command help
 // =============================================================================

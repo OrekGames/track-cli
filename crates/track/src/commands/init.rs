@@ -200,8 +200,24 @@ fn github_init_probe_error(
 }
 
 fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
-    use colored::Colorize;
+    let installed = write_agent_skills()?;
 
+    match format {
+        cli::OutputFormat::Json => {
+            output_json(&serde_json::json!({
+                "success": true,
+                "skills_installed": installed_skills_json(&installed)
+            }))?;
+        }
+        cli::OutputFormat::Text => print_installed_skills(&installed),
+    }
+
+    Ok(())
+}
+
+/// Write the skill file for every supported AI coding tool and return the
+/// (tool name, path) of each file written.
+fn write_agent_skills() -> Result<Vec<(&'static str, PathBuf)>> {
     // Prefer robust fallback chain for CI/container environments where
     // platform home discovery APIs may fail (notably on Windows runners).
     let home = directories::BaseDirs::new()
@@ -229,30 +245,27 @@ fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
         installed.push((tool_name, skill_path));
     }
 
-    match format {
-        cli::OutputFormat::Json => {
-            let files: Vec<serde_json::Value> = installed
-                .iter()
-                .map(|(tool, path)| {
-                    serde_json::json!({
-                        "tool": tool,
-                        "path": path.display().to_string()
-                    })
-                })
-                .collect();
-            output_json(&serde_json::json!({
-                "success": true,
-                "skills_installed": files
-            }))?;
-        }
-        cli::OutputFormat::Text => {
-            for (tool, path) in &installed {
-                println!("{} {} skill: {}", "Installed".green(), tool, path.display());
-            }
-        }
-    }
+    Ok(installed)
+}
 
-    Ok(())
+fn installed_skills_json(installed: &[(&str, PathBuf)]) -> serde_json::Value {
+    installed
+        .iter()
+        .map(|(tool, path)| {
+            serde_json::json!({
+                "tool": tool,
+                "path": path.display().to_string()
+            })
+        })
+        .collect()
+}
+
+fn print_installed_skills(installed: &[(&str, PathBuf)]) {
+    use colored::Colorize;
+
+    for (tool, path) in installed {
+        println!("{} {} skill: {}", "Installed".green(), tool, path.display());
+    }
 }
 
 fn gitignore_contains_entry(content: &str, entry: &str) -> bool {
@@ -591,10 +604,13 @@ fn create_config_and_finish(
         None
     };
 
-    // If --skills was also passed, install skill files too
-    if skills {
-        install_agent_skills(format)?;
-    }
+    // If --skills was also passed, install skill files too. They are reported
+    // with the config result so JSON mode prints a single document.
+    let installed_skills = if skills {
+        Some(write_agent_skills()?)
+    } else {
+        None
+    };
 
     let level = if global { "global" } else { "project" };
     match format {
@@ -605,6 +621,9 @@ fn create_config_and_finish(
                 "backend": backend.to_string(),
                 "config_path": config_path.display().to_string(),
             });
+            if let Some(installed) = &installed_skills {
+                result["skills_installed"] = installed_skills_json(installed);
+            }
             if let Some(guide) = &guide_path {
                 result["guide_path"] = serde_json::json!(guide.display().to_string());
             }
@@ -620,6 +639,9 @@ fn create_config_and_finish(
             output_json(&result)?;
         }
         cli::OutputFormat::Text => {
+            if let Some(installed) = &installed_skills {
+                print_installed_skills(installed);
+            }
             let tag = if global {
                 "[global]".yellow().to_string()
             } else {
