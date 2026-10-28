@@ -356,9 +356,17 @@ pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
                 || name.eq_ignore_ascii_case("state")
                 || name.eq_ignore_ascii_case("stage") =>
         {
-            let mapped_value = if value.eq_ignore_ascii_case("done") || value.eq_ignore_ascii_case("resolved") || value.eq_ignore_ascii_case("closed") || value.eq_ignore_ascii_case("completed") {
+            let mapped_value = if value.eq_ignore_ascii_case("done")
+                || value.eq_ignore_ascii_case("resolved")
+                || value.eq_ignore_ascii_case("closed")
+                || value.eq_ignore_ascii_case("completed")
+            {
                 "closed"
-            } else if value.eq_ignore_ascii_case("open") || value.eq_ignore_ascii_case("in progress") || value.eq_ignore_ascii_case("develop") || value.eq_ignore_ascii_case("reopened") {
+            } else if value.eq_ignore_ascii_case("open")
+                || value.eq_ignore_ascii_case("in progress")
+                || value.eq_ignore_ascii_case("develop")
+                || value.eq_ignore_ascii_case("reopened")
+            {
                 "open"
             } else {
                 value.as_str() // Fallback

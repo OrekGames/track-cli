@@ -162,9 +162,19 @@ impl IssueTracker for GitLabClient {
                     || name.eq_ignore_ascii_case("state")
                     || name.eq_ignore_ascii_case("stage") =>
             {
-                if value.eq_ignore_ascii_case("closed") || value.eq_ignore_ascii_case("resolved") || value.eq_ignore_ascii_case("done") || value.eq_ignore_ascii_case("completed") {
+                if value.eq_ignore_ascii_case("closed")
+                    || value.eq_ignore_ascii_case("resolved")
+                    || value.eq_ignore_ascii_case("done")
+                    || value.eq_ignore_ascii_case("completed")
+                {
                     Some("close".to_string())
-                } else if value.eq_ignore_ascii_case("open") || value.eq_ignore_ascii_case("opened") || value.eq_ignore_ascii_case("reopen") || value.eq_ignore_ascii_case("reopened") || value.eq_ignore_ascii_case("in progress") || value.eq_ignore_ascii_case("develop") {
+                } else if value.eq_ignore_ascii_case("open")
+                    || value.eq_ignore_ascii_case("opened")
+                    || value.eq_ignore_ascii_case("reopen")
+                    || value.eq_ignore_ascii_case("reopened")
+                    || value.eq_ignore_ascii_case("in progress")
+                    || value.eq_ignore_ascii_case("develop")
+                {
                     Some("reopen".to_string())
                 } else {
                     None
