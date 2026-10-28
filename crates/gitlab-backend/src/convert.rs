@@ -323,12 +323,13 @@ impl From<GitLabUser> for User {
 /// Convert a GitLab issue link to a tracker-core IssueLink.
 ///
 /// The GET endpoint returns linked issues as flat objects with `link_type`
-/// metadata, already oriented from the queried issue's point of view.
+/// metadata, already oriented from the queried issue's point of view, so the
+/// queried issue is always the source of a directed link type.
 pub fn gitlab_link_to_core(link: GitLabIssueLink) -> IssueLink {
     let (link_type_info, direction) = match link.link_type.as_str() {
-        "blocks" => (blocks_link_type(), "outward"),
-        "is_blocked_by" => (is_blocked_by_link_type(), "inward"),
-        _ => (relates_to_link_type(), "both"),
+        "blocks" => (blocks_link_type(), "OUTWARD"),
+        "is_blocked_by" => (is_blocked_by_link_type(), "OUTWARD"),
+        _ => (relates_to_link_type(), "BOTH"),
     };
 
     IssueLink {
@@ -836,7 +837,7 @@ mod tests {
         let core_link = gitlab_link_to_core(link);
 
         assert_eq!(core_link.id, "789");
-        assert_eq!(core_link.direction, Some("outward".to_string()));
+        assert_eq!(core_link.direction.as_deref(), Some("OUTWARD"));
         assert_eq!(core_link.link_type.id, "blocks");
         assert_eq!(core_link.link_type.name, "Blocks");
         assert!(core_link.link_type.directed);
@@ -862,7 +863,7 @@ mod tests {
         let core_link = gitlab_link_to_core(link);
 
         assert_eq!(core_link.id, "790");
-        assert_eq!(core_link.direction, Some("inward".to_string()));
+        assert_eq!(core_link.direction.as_deref(), Some("OUTWARD"));
         assert_eq!(core_link.link_type.id, "is_blocked_by");
         assert_eq!(core_link.link_type.name, "Is Blocked By");
         assert!(core_link.link_type.directed);
@@ -888,7 +889,7 @@ mod tests {
         let core_link = gitlab_link_to_core(link);
 
         assert_eq!(core_link.id, "791");
-        assert_eq!(core_link.direction, Some("both".to_string()));
+        assert_eq!(core_link.direction.as_deref(), Some("BOTH"));
         assert_eq!(core_link.link_type.id, "relates_to");
         assert_eq!(core_link.link_type.name, "Relates");
         assert!(!core_link.link_type.directed);
@@ -915,7 +916,7 @@ mod tests {
 
         // Unknown link types default to "relates_to"
         assert_eq!(core_link.id, "792");
-        assert_eq!(core_link.direction, Some("both".to_string()));
+        assert_eq!(core_link.direction.as_deref(), Some("BOTH"));
         assert_eq!(core_link.link_type.id, "relates_to");
         assert_eq!(core_link.link_type.name, "Relates");
         assert!(!core_link.link_type.directed);
