@@ -4,20 +4,100 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::io::{BufWriter, IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracker_core::{
     Article, ArticleAttachment, BundleDefinition, Comment, CustomField, CustomFieldDefinition,
     Issue, IssueAttachment, IssueHistoryEvent, IssueTag, Project, ProjectCustomField, case_key,
     unicode_eq_ignore_case,
 };
 
+/// Process-wide JSON render mode, set once from `-o` before dispatch. JSONL is
+/// a rendering of the document `-o json` prints, so handlers stay exhaustive
+/// on Text/Json and only [`output_json`] needs to know.
+static JSONL_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Render every JSON document as compact JSON Lines instead of pretty JSON.
+pub fn set_jsonl_mode(enabled: bool) {
+    JSONL_MODE.store(enabled, Ordering::Relaxed);
+}
+
+/// Print `value` as pretty JSON, or as JSONL under `-o jsonl`.
 pub fn output_json<T: Serialize + ?Sized>(value: &T) -> anyhow::Result<()> {
+    print_json(value, JSONL_MODE.load(Ordering::Relaxed))
+}
+
+fn print_json<T: Serialize + ?Sized>(value: &T, jsonl: bool) -> anyhow::Result<()> {
     let stdout = std::io::stdout();
     let handle = stdout.lock();
     let mut writer = BufWriter::new(handle);
-    serde_json::to_writer_pretty(&mut writer, value)?;
-    writeln!(writer)?;
+    write_json(&mut writer, value, jsonl)?;
     writer.flush()?;
     Ok(())
+}
+
+/// Write `value` as pretty JSON, or as compact JSONL when `jsonl` is set.
+///
+/// JSONL is root-aware: a top-level array emits one compact record per
+/// element (nothing for an empty array); a top-level object (or other value)
+/// emits one compact line. Nested arrays stay inside their record.
+fn write_json<W: Write, T: Serialize + ?Sized>(
+    writer: &mut W,
+    value: &T,
+    jsonl: bool,
+) -> anyhow::Result<()> {
+    if !jsonl {
+        serde_json::to_writer_pretty(&mut *writer, value)?;
+        writeln!(writer)?;
+        return Ok(());
+    }
+    let compact = serde_json::to_vec(value)?;
+    for record in jsonl_records(&compact) {
+        writer.write_all(record)?;
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
+/// Split compact JSON into JSONL records: the elements of a top-level array,
+/// or the whole document otherwise. Splitting the serialized bytes instead of
+/// going through [`Value`] keeps each record's key order identical to `-o json`.
+fn jsonl_records(compact: &[u8]) -> Vec<&[u8]> {
+    let Some(inner) = compact
+        .strip_prefix(b"[")
+        .and_then(|rest| rest.strip_suffix(b"]"))
+    else {
+        return vec![compact];
+    };
+    let mut records = Vec::new();
+    if inner.is_empty() {
+        return records;
+    }
+    // Compact output has no whitespace, so a comma outside any string and
+    // nested container ends an element.
+    let (mut depth, mut in_string, mut escaped, mut start) = (0usize, false, false, 0);
+    for (i, &byte) in inner.iter().enumerate() {
+        if in_string {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'[' | b'{' => depth += 1,
+            b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                records.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    records.push(&inner[start..]);
+    records
 }
 
 /// Output verification warnings to stderr.
@@ -170,32 +250,8 @@ pub(crate) fn project_value(value: &Value, paths: &[Vec<String>]) -> Value {
     out
 }
 
-fn output_jsonl(value: &Value) -> anyhow::Result<()> {
-    let stdout = std::io::stdout();
-    let handle = stdout.lock();
-    let mut writer = BufWriter::new(handle);
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                serde_json::to_writer(&mut writer, item)?;
-                writeln!(writer)?;
-            }
-        }
-        other => {
-            serde_json::to_writer(&mut writer, other)?;
-            writeln!(writer)?;
-        }
-    }
-    writer.flush()?;
-    Ok(())
-}
-
 /// Serialize `root`, optionally project `--select` paths, then render as
-/// pretty JSON or compact JSONL.
-///
-/// JSONL is root-aware: a top-level array emits one compact record per
-/// element; a top-level object (or other value) emits one compact line.
-/// Nested arrays stay inside their record.
+/// pretty JSON or compact JSONL (see [`write_json`]).
 pub fn output_projected<T: Serialize>(
     root: &T,
     select: Option<&str>,
@@ -209,7 +265,7 @@ pub fn output_projected<T: Serialize>(
         }
     }
     if jsonl {
-        output_jsonl(&value)
+        print_json(&value, true)
     } else {
         output_json(&value)
     }
@@ -1200,6 +1256,71 @@ mod tests {
             serde_json::json!({
                 "items": []
             })
+        );
+    }
+
+    fn render<T: Serialize + ?Sized>(value: &T, jsonl: bool) -> String {
+        let mut out = Vec::new();
+        write_json(&mut out, value, jsonl).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn json_mode_pretty_prints() {
+        let value = serde_json::json!({"a": [1, 2]});
+        assert_eq!(
+            render(&value, false),
+            "{\n  \"a\": [\n    1,\n    2\n  ]\n}\n"
+        );
+    }
+
+    #[test]
+    fn jsonl_array_root_emits_one_record_per_element() {
+        // Strings hold the separators the splitter keys on; nested arrays and
+        // objects stay inside their record.
+        let value = serde_json::json!([
+            {"id": "A", "tags": ["x", "y"], "note": "a,b]}"},
+            {"id": "B", "note": "quote \" and backslash \\", "nested": [[], {}]},
+            "plain, string",
+            7,
+            null
+        ]);
+        let rendered = render(&value, true);
+        let lines: Vec<&str> = rendered.lines().collect();
+        let items = value.as_array().unwrap();
+        assert_eq!(lines.len(), items.len(), "{rendered}");
+        for (line, item) in lines.iter().zip(items) {
+            assert_eq!(&serde_json::from_str::<Value>(line).unwrap(), item);
+        }
+    }
+
+    #[test]
+    fn jsonl_empty_array_emits_nothing() {
+        assert_eq!(render(&serde_json::json!([]), true), "");
+    }
+
+    #[test]
+    fn jsonl_non_array_root_emits_one_line() {
+        assert_eq!(
+            render(&serde_json::json!({"items": [1, 2], "ok": true}), true),
+            "{\"items\":[1,2],\"ok\":true}\n"
+        );
+        assert_eq!(render(&serde_json::json!("[x]"), true), "\"[x]\"\n");
+        assert_eq!(render(&serde_json::json!(null), true), "null\n");
+    }
+
+    #[test]
+    fn jsonl_keeps_struct_field_order() {
+        // Going through `Value` would sort the keys alphabetically.
+        #[derive(Serialize)]
+        struct Record {
+            zeta: u8,
+            alpha: u8,
+        }
+        let records = [Record { zeta: 1, alpha: 2 }, Record { zeta: 3, alpha: 4 }];
+        assert_eq!(
+            render(&records[..], true),
+            "{\"zeta\":1,\"alpha\":2}\n{\"zeta\":3,\"alpha\":4}\n"
         );
     }
 }

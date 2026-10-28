@@ -972,9 +972,10 @@ fn handle_search(
         record_issue_access(first);
     }
 
-    // JSONL or JSON `--select` uses projection. `--select` in text mode is
-    // rejected before dispatch, so text output is never projected.
-    if jsonl || (select.is_some() && format != OutputFormat::Text) {
+    // JSON/JSONL `--select` uses projection. Without it, `-o jsonl` renders
+    // through `output_list` like every other command, keeping `-o json`'s
+    // key order. Text mode rejects `--select` before dispatch.
+    if select.is_some() && format != OutputFormat::Text {
         output_projected(&issues, select, jsonl)?;
     } else {
         output_list(&issues, format)?;

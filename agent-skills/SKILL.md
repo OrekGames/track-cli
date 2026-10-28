@@ -15,7 +15,7 @@ disable-model-invocation: false
 |--------|---------|
 | **Binary** | `track` (or `target/release/track` if not installed) |
 | **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`), Linear (`-b linear`/`-b lin`) |
-| **Output** | Text (default) or JSON (`-o json`) |
+| **Output** | Text (default), JSON (`-o json`), or the same JSON as JSON Lines (`-o jsonl`) |
 | **Config** | `.track.toml` (local), `~/.tracker-cli/.track.toml` (global), env vars, or CLI flags |
 | **Cache** | `.tracker-cache/` (project) or `~/.tracker-cli/cache/` (global) - run `track cache refresh` for context |
 | **AI Context** | `track context` - aggregated context in single command |
@@ -23,7 +23,7 @@ disable-model-invocation: false
 ## Exit Codes & Output Streams
 
 - **Exit code**: `0` = success, `1` = any failure. A partially-applied update (some fields ignored by the backend) still exits `0` — with a warning on stderr.
-- **stdout** carries only the result (pretty-printed JSON in `-o json` mode).
+- **stdout** carries only the result: pretty-printed JSON in `-o json` mode, or the same document as compact JSON Lines in `-o jsonl` mode. JSONL is root-aware: an array (list commands such as `i s`, `p ls`, `i comments`) prints one element per line and an empty array prints nothing; anything else (an object such as `i g`, a batch summary, a report) prints on a single line. Nested arrays stay inside their line. Every command that prints JSON accepts `-o jsonl`; `completions` rejects it.
 - **stderr** carries ALL diagnostics as plain text — errors (`Error: ...`), `⚠ Warning:` lines, pagination hints, progress — **even in JSON mode**. Never parse stdout for error objects; check the exit code and read stderr.
 
 ## Backend Comparison
@@ -387,7 +387,7 @@ track completions zsh      # Shell completions (bash|zsh|fish|powershell|elvish)
 
 ## JSON Output Shapes
 
-`-o json` is the mode for programmatic use. Key shapes:
+`-o json` is the mode for programmatic use; `-o jsonl` prints the same shapes compacted (one array element per line). Key shapes:
 
 **Issue** (`i g`, each element of `i s`):
 ```json
@@ -455,7 +455,7 @@ track completions zsh      # Shell completions (bash|zsh|fish|powershell|elvish)
 - Each `issues[]` entry is the standard Issue shape plus one array per requested `--include`; unsupported include capabilities are explained in that issue's `warnings`, while other include fetch failures become per-issue errors.
 - `subtasks` is a links-derived view: the subset of `links` whose type is a subtask/parent relationship.
 - Exit code is 0 even with failures unless `--strict` (reports everything first, then exits 1).
-- **`--jsonl`** (overrides `-o`): one compact object per line — success lines are the `issues[]` entry plus `"success": true`; failures are `{"success": false, "id", "error"}`.
+- **`--jsonl`** (overrides `-o`): one compact object per line — success lines are the `issues[]` entry plus `"success": true`; failures are `{"success": false, "id", "error"}`. Plain `-o jsonl` instead prints the report above on a single line.
 
 ---
 
@@ -543,7 +543,7 @@ JSON output includes `success`, `dry_run`, `resumed`, summary counts, `refs`, an
 
 **Safety limit**: `--all` caps at **1000** results. Override with `TRACK_MAX_RESULTS` env var.
 
-**Pagination hints** (text mode only): when a search fills its limit, a hint with the next `--skip` value — and a total when the backend provides one — prints to **stderr**. In `-o json` mode there is no hint and no metadata: treat a full page (`len == limit`) as "possibly more" and re-query with `--skip` or use `--all`.
+**Pagination hints** (text mode only): when a search fills its limit, a hint with the next `--skip` value — and a total when the backend provides one — prints to **stderr**. In `-o json`/`-o jsonl` mode there is no hint and no metadata: treat a full page (`len == limit`) as "possibly more" and re-query with `--skip` or use `--all`.
 
 **Jira specifics**: Jira Cloud search is cursor-based — there is **never a total count**, and `--skip` is emulated client-side by walking pages from the start (deep paging is O(skip)). Prefer `--all` or a narrower JQL over deep `--skip`. Repeating/looping server pages raise a `PaginationStalled` error rather than hanging.
 
@@ -552,6 +552,7 @@ track i s "project: PROJ #Unresolved"                  # First 20 (default)
 track i s "project: PROJ #Unresolved" --limit 20 --skip 20   # Next page
 track i s "project: PROJ #Unresolved" --all             # Fetch ALL results
 track -o json i s "project: PROJ" --all                 # All results as JSON
+track -o jsonl i s "project: PROJ" --all                # All results, one issue per line
 track i comments PROJ-1 --all                           # All comments (default is only 10!)
 TRACK_MAX_RESULTS=5000 track i s "project: PROJ" --all  # Override safety cap
 track i s "project: PROJ" -o json --select id_readable,summary                # Projected JSON
@@ -564,8 +565,8 @@ track i s "project: PROJ" -o jsonl --select id_readable,project.short_name   # J
 (`issue search` only): `--select id_readable,summary` → `[{"id_readable": "PROJ-1", "summary": "..."}, ...]`.
 Missing paths are omitted from the record (no error, no `null`). Restrictions: rejected in text
 mode, rejected for any command other than `issue search`, and a flag with no usable paths is an
-error rather than a no-op. JSONL is root-aware: the array emits one record per line; nested
-arrays stay inside their record.
+error rather than a no-op. With `-o jsonl` each projected issue is one line, like any other
+JSONL array.
 
 ---
 

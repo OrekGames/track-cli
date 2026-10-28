@@ -6,11 +6,11 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "track", version, about = "CLI for issue tracking systems")]
 pub struct Cli {
-    /// Output format
+    /// Output format (jsonl: the json document as compact JSON Lines)
     #[arg(long, short = 'o', value_enum, global = true, default_value_t = CliFormat::Text)]
     pub format: CliFormat,
 
-    /// Comma-separated dotted field paths to project from JSON/JSONL output
+    /// Comma-separated dotted field paths to project from JSON/JSONL output (issue search only)
     #[arg(long, global = true, value_name = "PATHS")]
     pub select: Option<String>,
 
@@ -94,11 +94,15 @@ pub enum OutputFormat {
 
 /// CLI-only output format. Maps onto [`OutputFormat`] so command handlers stay
 /// exhaustive on Text/Json; JSONL is a rendering mode of JSON, not a third
-/// handler variant.
+/// handler variant (`main` switches it on with `output::set_jsonl_mode`).
 #[derive(ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
 pub enum CliFormat {
+    /// Human-readable text
     Text,
+    /// One pretty-printed JSON document
     Json,
+    /// The json document compacted: a top-level array prints one element per
+    /// line, anything else prints on a single line
     Jsonl,
 }
 

@@ -49,9 +49,14 @@ fn cli_main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `-o jsonl` is wired for `issue search` only. Other commands must not
-/// silently remap through [`cli::CliFormat::output`] to pretty JSON.
+/// `-o jsonl` renders the document `-o json` prints, so every command that
+/// prints JSON supports it. `completions` prints a shell script, never JSON.
 fn command_supports_cli_jsonl(command: &Commands) -> bool {
+    !matches!(command, Commands::Completions { .. })
+}
+
+/// `--select` is wired for `issue search` only.
+fn command_supports_select(command: &Commands) -> bool {
     matches!(
         command,
         Commands::Issue {
@@ -62,14 +67,17 @@ fn command_supports_cli_jsonl(command: &Commands) -> bool {
 
 fn run(cli: Cli) -> Result<()> {
     if cli.format.is_jsonl() && !command_supports_cli_jsonl(&cli.command) {
-        return Err(anyhow!("jsonl output is unsupported for this command"));
+        return Err(anyhow!(
+            "jsonl output is unsupported for this command: it does not print JSON"
+        ));
     }
+    output::set_jsonl_mode(cli.format.is_jsonl());
 
     // `--select` is wired for `issue search` JSON/JSONL only. Other commands
     // and text mode must not silently print the full document, and a present
     // flag with no usable paths is not a successful no-op projection.
     if let Some(select) = cli.select.as_deref() {
-        if !command_supports_cli_jsonl(&cli.command) {
+        if !command_supports_select(&cli.command) {
             return Err(anyhow!("select is unsupported for this command"));
         }
         if cli.format == CliFormat::Text {

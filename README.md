@@ -18,7 +18,7 @@ A command-line interface for issue tracking systems, built with Rust. Supports *
 - **Comments & Links**: Add comments and link issues together
 - **Knowledge Base**: Manage articles (YouTrack and Jira/Confluence)
 - **AI-Optimized**: Context aggregation, query templates, workflow hints
-- **Output Formats**: Text (human-readable) and JSON (machine-readable)
+- **Output Formats**: Text (human-readable), pretty JSON, and compact JSON Lines (machine-readable)
 - **Flexible Config**: CLI flags, environment variables, or config file
 
 ## Installation
@@ -390,7 +390,8 @@ track i s "project: PROJ State: Open"
 track i s --template unresolved --project PROJ  # Use query template
 track i s "project: PROJ #Unresolved" --all     # Fetch all pages
 track i s "project: PROJ #Unresolved" -o json --select id_readable,summary  # Projected JSON
-track i s "project: PROJ #Unresolved" -o jsonl --select id_readable,summary  # JSON Lines
+track i s "project: PROJ #Unresolved" -o jsonl  # JSON Lines: one issue per line
+track i s "project: PROJ #Unresolved" -o jsonl --select id_readable,summary  # Projected JSON Lines
 
 `--select` (JSON/JSONL only) takes comma-separated dotted paths (e.g. `id_readable,project.short_name`)
 and emits only those fields per issue; missing paths are omitted. It is rejected in text mode and
@@ -743,7 +744,15 @@ Linear exposes teams as `track` projects. The `Project` field on issues maps to 
 track PROJ-123              # Text (default)
 track -o json PROJ-123      # JSON
 track --format json p ls    # JSON
+track -o jsonl p ls         # JSON Lines: one project per line
 ```
+
+`-o jsonl` prints the same document as `-o json`, compacted for line-based tools: when the
+document is an array (a list command such as `p ls` or `i s`), each element is one line, and an
+empty list prints nothing; anything else (an object such as `track PROJ-123` or a batch summary)
+is a single line. Nested arrays stay inside their line. Every command that prints JSON accepts
+it; `completions` rejects it. In both modes stdout holds only JSON; warnings, progress and
+errors go to stderr.
 
 ## Backend-Specific Notes
 
