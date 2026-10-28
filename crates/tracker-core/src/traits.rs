@@ -302,6 +302,22 @@ pub trait IssueTracker: Send + Sync {
         let _ = issue_id;
         Ok(None)
     }
+
+    // ========== Workflow defaults ==========
+
+    /// State `track issue start` moves issues to when no `--state` is given.
+    ///
+    /// The default is the in-progress stage of YouTrack's agile projects;
+    /// other backends override it with their own name for that state, so the
+    /// update verifies cleanly against the state the issue ends up in.
+    fn default_start_state(&self) -> &'static str {
+        "Develop"
+    }
+
+    /// State `track issue complete` moves issues to when no `--state` is given.
+    fn default_complete_state(&self) -> &'static str {
+        "Done"
+    }
 }
 
 /// Trait for knowledge base / wiki operations

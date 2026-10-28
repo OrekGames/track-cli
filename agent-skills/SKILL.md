@@ -200,8 +200,8 @@ track doctor --all-backends --strict # Exit non-zero if any check or backend fai
 | Comment | `track i cmt PROJ-123 -m "Text"` | `track -b j i cmt PROJ-123 -m "Text"` | `track -b gh i cmt 42 -m "Text"` | `track -b gl i cmt 42 -m "Text"` |
 | Link | `track i link PROJ-1 PROJ-2` | `track -b j i link PROJ-1 PROJ-2` | Subtask/parent only | `track -b gl i link 1 2` |
 | Unlink | `track i ul PROJ-1 <link-id>` | `track -b j i ul PROJ-1 <link-id>` | Not supported | `track -b gl i ul 42 <link-id>` |
-| Start | `track i start PROJ-123` | `track -b j i start PROJ-123 --field Status --state "In Progress"` | `track -b gh i start 42` | `track -b gl i start 42` |
-| Complete | `track i done PROJ-123` | `track -b j i done PROJ-123 --field Status --state Done` | `track -b gh i done 42` (closes) | `track -b gl i done 42` (closes) |
+| Start | `track i start PROJ-123` | `track -b j i start PROJ-123` | `track -b gh i start 42` (reopens) | `track -b gl i start 42` (reopens) |
+| Complete | `track i done PROJ-123` | `track -b j i done PROJ-123` | `track -b gh i done 42` (closes) | `track -b gl i done 42` (closes) |
 | History | `track i history PROJ-123` | `track -b j i history PROJ-123 --field status --since 7d` | `track -b gh i history 42` | `track -b gl i history 42` |
 | Inspect (multi) | `track i ix PROJ-1,PROJ-2 --include comments,links` | `track -b j i ix --query "project = PROJ" --include all` | `track -b gh i ix 42,43 --include comments` | `track -b gl i ix 42,43 --include links` |
 
@@ -214,7 +214,7 @@ track doctor --all-backends --strict # Exit non-zero if any check or backend fai
 - GitHub: no delete (close with `track -b gh i done 42` or `--state closed`), links only for subtask/parent (reference via `#42` in comments for other relationships)
 - Search/get/comment scope is implicit from config (`owner/repo` or `project_id`), but **`issue create` still requires `-p` or `default_project`** (which `track init` does not set for these backends)
 
-**`start`/`done` (all backends)**: both are sugar for a state-field update and accept `--field <STATE_FIELD>` and `--state <VALUE>`. Defaults: `start` = `--field Stage --state Develop`, `done` = `--field Stage --state Done`. On projects using a standard `State`/`Status` field, pass it explicitly (e.g. `track i start PROJ-1 --field State --state "In Progress"`). Jira runs a workflow transition; GitHub/GitLab map to open/close. Discover valid fields/values via `track context -p PROJ` workflow hints.
+**`start`/`done` (all backends)**: both are sugar for a state-field update and accept `--field <STATE_FIELD>` and `--state <VALUE>`. The field defaults to the project's state field. The state defaults to the backend's own name: `start` uses `Develop` (YouTrack), `In Progress` (Jira, Linear) or `open` (GitHub, GitLab); `done` uses `Done` (YouTrack, Jira, Linear) or `closed` (GitHub, GitLab). When a workflow names its states differently, pass the state explicitly (e.g. `track i start PROJ-1 --state "In Review"`). Jira runs a workflow transition; Linear falls back to the team's first started/completed state; GitHub/GitLab map to open/close. Discover valid fields/values via `track context -p PROJ` workflow hints.
 
 **Linear notes**:
 - Use readable identifiers like `ORE-123`; teams are exposed as `track` projects.

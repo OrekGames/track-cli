@@ -178,3 +178,135 @@ fn test_issue_update_verbose_diff() {
             "Summary: Old Summary -> New Summary",
         ));
 }
+
+/// A fake GitHub API for issue #42 of `o/r`: GET returns it in `initial_state`,
+/// PATCH returns it in `final_state`. Returns the server's port and the
+/// `METHOD path body` of every request it answered.
+fn start_github_issue_server(
+    initial_state: &'static str,
+    final_state: &'static str,
+) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to port");
+    let port = listener.local_addr().unwrap().port();
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = requests.clone();
+    let issue = |state: &str| {
+        serde_json::json!({
+            "id": 1042, "number": 42, "title": "Ship it", "body": "", "state": state,
+            "labels": [], "assignee": null, "assignees": [], "milestone": null,
+            "created_at": "2024-01-15T10:30:00Z", "updated_at": "2024-01-15T12:00:00Z",
+            "closed_at": null, "user": {"login": "reporter", "id": 2}, "pull_request": null
+        })
+        .to_string()
+    };
+
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            let _ = reader.read_line(&mut request_line);
+            let mut content_length = 0;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; content_length];
+            let _ = reader.read_exact(&mut body);
+
+            let mut parts = request_line.split_whitespace();
+            let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            let (status, response) = match (method, path) {
+                ("GET", "/repos/o/r/issues/42") => ("200 OK", issue(initial_state)),
+                ("PATCH", "/repos/o/r/issues/42") => ("200 OK", issue(final_state)),
+                _ => ("404 Not Found", r#"{"message":"Not Found"}"#.to_string()),
+            };
+            recorded.lock().unwrap().push(format!(
+                "{method} {path} {}",
+                String::from_utf8_lossy(&body)
+            ));
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            );
+        }
+    });
+
+    (port, requests)
+}
+
+fn track_github(port: u16) -> assert_cmd::Command {
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.args(["-b", "github"])
+        .env("GITHUB_TOKEN", "test-token")
+        .env("GITHUB_OWNER", "o")
+        .env("GITHUB_REPO", "r")
+        .env("GITHUB_API_URL", format!("http://127.0.0.1:{port}"))
+        .env_remove("TRACKER_URL")
+        .env_remove("TRACKER_TOKEN")
+        .env_remove("TRACKER_CONFIG");
+    cmd
+}
+
+/// Without --state, start/complete use the backend's own state names, so the
+/// update verifies cleanly instead of warning that "Done" came back "closed".
+#[test]
+fn test_github_start_and_complete_default_to_open_and_closed() {
+    for (action, initial, expected) in [("complete", "open", "closed"), ("start", "closed", "open")]
+    {
+        let (port, requests) = start_github_issue_server(initial, expected);
+
+        track_github(port)
+            .args(["issue", action, "42"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!("Status={expected}")))
+            .stderr(predicate::str::contains("Warning").not());
+
+        let patch = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|request| request.starts_with("PATCH "))
+            .cloned()
+            .unwrap_or_else(|| panic!("{action} sent no PATCH"));
+        let body: serde_json::Value =
+            serde_json::from_str(patch.splitn(3, ' ').nth(2).unwrap()).unwrap();
+        assert_eq!(body["state"], expected, "{action}: {patch}");
+    }
+}
+
+/// State names are compared case-insensitively, as every backend matches them.
+#[test]
+fn test_state_verification_ignores_case() {
+    let (port, _requests) = start_github_issue_server("open", "closed");
+
+    track_github(port)
+        .args(["issue", "complete", "42", "--state", "Closed"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Warning").not());
+}
+
+/// A transition that did not happen still warns.
+#[test]
+fn test_state_verification_warns_when_state_did_not_change() {
+    let (port, _requests) = start_github_issue_server("open", "open");
+
+    track_github(port)
+        .args(["issue", "complete", "42"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Field 'Status': expected 'closed', got 'open'",
+        ));
+}

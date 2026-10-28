@@ -447,6 +447,16 @@ impl IssueTracker for LinearClient {
             issue_id, MAX_PAGES
         )))
     }
+
+    // State names of Linear's default team workflow. A team that renamed them
+    // still resolves to its first started/completed state by type.
+    fn default_start_state(&self) -> &'static str {
+        "In Progress"
+    }
+
+    fn default_complete_state(&self) -> &'static str {
+        "Done"
+    }
 }
 
 const MAX_NO_PROGRESS_PAGES: usize = 5;

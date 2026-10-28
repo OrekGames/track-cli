@@ -358,6 +358,15 @@ impl IssueTracker for GitHubClient {
             .filter(|repo_path| repo_path.contains('/'));
         Ok(Some(self.issues_web_url(repo_path, Some(number))))
     }
+
+    // GitHub issues are only ever open or closed.
+    fn default_start_state(&self) -> &'static str {
+        "open"
+    }
+
+    fn default_complete_state(&self) -> &'static str {
+        "closed"
+    }
 }
 
 // ============================================================================

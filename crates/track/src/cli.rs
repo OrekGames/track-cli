@@ -761,9 +761,10 @@ pub enum IssueCommands {
         /// "State"/"Stage"/"Status" route to workflow transitions
         #[arg(long)]
         field: Option<String>,
-        /// State value for in-progress (default: "Develop")
-        #[arg(long, default_value = "Develop")]
-        state: String,
+        /// State value for in-progress. Defaults to the backend's own:
+        /// "Develop" (YouTrack), "In Progress" (Jira, Linear), "open" (GitHub, GitLab)
+        #[arg(long)]
+        state: Option<String>,
     },
     /// Complete issue(s) (set state to done/resolved) - supports comma-separated IDs
     #[command(visible_alias = "done", visible_alias = "resolve")]
@@ -775,9 +776,10 @@ pub enum IssueCommands {
         /// "State"/"Stage"/"Status" route to workflow transitions
         #[arg(long)]
         field: Option<String>,
-        /// State value for done (default: "Done")
-        #[arg(long, default_value = "Done")]
-        state: String,
+        /// State value for done. Defaults to the backend's own:
+        /// "Done" (YouTrack, Jira, Linear), "closed" (GitHub, GitLab)
+        #[arg(long)]
+        state: Option<String>,
     },
 }
 
@@ -1771,7 +1773,7 @@ mod tests {
                 IssueCommands::Start { ids, field, state } => {
                     assert_eq!(ids, vec!["PROJ-123"]);
                     assert_eq!(field, None, "field defaults to schema auto-resolution");
-                    assert_eq!(state, "Develop");
+                    assert_eq!(state, None, "state defaults to the backend's own");
                 }
                 _ => panic!("expected issue start"),
             },
@@ -1790,7 +1792,7 @@ mod tests {
                 IssueCommands::Complete { ids, field, state } => {
                     assert_eq!(ids, vec!["PROJ-123"]);
                     assert_eq!(field.as_deref(), Some("State"));
-                    assert_eq!(state, "Resolved");
+                    assert_eq!(state.as_deref(), Some("Resolved"));
                 }
                 _ => panic!("expected issue complete"),
             },
@@ -2473,7 +2475,7 @@ mod tests {
                 IssueCommands::Start { ids, field, state } => {
                     assert_eq!(ids, vec!["PROJ-1", "PROJ-2", "PROJ-3"]);
                     assert_eq!(field, None, "field defaults to schema auto-resolution");
-                    assert_eq!(state, "Develop");
+                    assert_eq!(state, None, "state defaults to the backend's own");
                 }
                 _ => panic!("expected issue start"),
             },
@@ -2496,7 +2498,7 @@ mod tests {
             Commands::Issue { action } => match action {
                 IssueCommands::Complete { ids, state, .. } => {
                     assert_eq!(ids, vec!["PROJ-1", "PROJ-2"]);
-                    assert_eq!(state, "Done");
+                    assert_eq!(state.as_deref(), Some("Done"));
                 }
                 _ => panic!("expected issue complete"),
             },

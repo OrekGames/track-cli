@@ -483,6 +483,15 @@ impl IssueTracker for GitLabClient {
             None => issues_url,
         }))
     }
+
+    // GitLab issues are only ever open or closed.
+    fn default_start_state(&self) -> &'static str {
+        "Open"
+    }
+
+    fn default_complete_state(&self) -> &'static str {
+        "Closed"
+    }
 }
 
 // ==================== KnowledgeBase via project wikis ====================

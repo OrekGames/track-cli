@@ -235,9 +235,11 @@ pub fn handle_issue(
         } => handle_link(client, source, target, link_type, format),
         IssueCommands::Unlink { source, link_id } => handle_unlink(client, source, link_id, format),
         IssueCommands::Start { ids, field, state } => {
+            let state = state.as_deref().unwrap_or(client.default_start_state());
             handle_state_transition_batch(client, ids, field.as_deref(), state, "started", format)
         }
         IssueCommands::Complete { ids, field, state } => {
+            let state = state.as_deref().unwrap_or(client.default_complete_state());
             handle_state_transition_batch(client, ids, field.as_deref(), state, "completed", format)
         }
     }
@@ -1950,7 +1952,8 @@ fn verify_field_match(
                 ..
             }),
         ) => {
-            if actual_val.as_deref().unwrap_or("") != value {
+            // Every backend matches state names case-insensitively.
+            if !unicode_eq_ignore_case(actual_val.as_deref().unwrap_or(""), value) {
                 Some(format!(
                     "Field '{}': expected '{}', got '{}'",
                     actual_name,

@@ -453,6 +453,15 @@ impl IssueTracker for JiraClient {
         let entries = self.get_issue_changelog(issue_id)?;
         Ok(jira_changelog_to_history_events(entries))
     }
+
+    // Status names of Jira's default software workflow.
+    fn default_start_state(&self) -> &'static str {
+        "In Progress"
+    }
+
+    fn default_complete_state(&self) -> &'static str {
+        "Done"
+    }
 }
 
 /// Give up after this many consecutive cursor pages that yield no new
