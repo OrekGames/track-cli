@@ -48,12 +48,17 @@ Connection: close
 }
 
 fn create_temp_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // macOS clocks tick in microseconds, so parallel tests can read the same
+    // time; the counter keeps their directories apart.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut dir = std::env::temp_dir();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    dir.push(format!("track-test-{}-{}", std::process::id(), nanos));
+    dir.push(format!("track-test-{}-{}-{}", std::process::id(), nanos, n));
     std::fs::create_dir_all(&dir).unwrap();
     // GitHub Actions Windows gives `C:\Users\RUNNER~1\...` (8.3). Passing that
     // through `--config` makes `Path::exists()` fail in the child even though
