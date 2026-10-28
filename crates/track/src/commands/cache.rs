@@ -361,7 +361,16 @@ pub fn handle_cache(
         }
         CacheCommands::Path => {
             let path = cache::TrackerCache::resolved_cache_dir()?;
-            println!("{}", path.display());
+            match format {
+                cli::OutputFormat::Json => {
+                    output_json(&serde_json::json!({
+                        "path": path.display().to_string()
+                    }))?;
+                }
+                cli::OutputFormat::Text => {
+                    println!("{}", path.display());
+                }
+            }
             Ok(())
         }
     }
