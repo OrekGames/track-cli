@@ -345,6 +345,19 @@ impl IssueTracker for GitHubClient {
         let timeline = self.get_issue_timeline(number)?;
         Ok(github_timeline_to_events(timeline))
     }
+
+    fn web_url(&self, issue_id: Option<&str>) -> Result<Option<String>> {
+        let Some(id) = issue_id else {
+            return Ok(Some(self.issues_web_url(None, None)));
+        };
+        let number = parse_issue_number(id)?;
+        // "owner/repo#N" names its own repository; "N" and "#N" mean this one.
+        let repo_path = id
+            .rsplit_once('#')
+            .map(|(repo_path, _)| repo_path)
+            .filter(|repo_path| repo_path.contains('/'));
+        Ok(Some(self.issues_web_url(repo_path, Some(number))))
+    }
 }
 
 // ============================================================================

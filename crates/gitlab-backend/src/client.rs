@@ -77,18 +77,48 @@ impl GitLabClient {
             .unwrap_or_else(|| "unknown".to_string())
     }
 
-    /// Build a project-scoped URL. Returns an error if project_id is not configured.
-    fn project_url(&self, path: &str) -> Result<String> {
-        let project_id = self.project_id.as_ref().ok_or_else(|| GitLabError::Api {
+    /// The configured project ID or path; an error if none is configured.
+    fn configured_project_id(&self) -> Result<&str> {
+        self.project_id.as_deref().ok_or_else(|| GitLabError::Api {
             status: 0,
             message: "GitLab project_id is not configured. Set via 'track config set gitlab.project_id <ID>' or GITLAB_PROJECT_ID env var".to_string(),
-        })?;
+        })
+    }
+
+    /// Build a project-scoped URL. Returns an error if project_id is not configured.
+    fn project_url(&self, path: &str) -> Result<String> {
         Ok(format!(
             "{}/projects/{}{}",
             self.base_url,
-            urlencoding::encode(project_id),
+            urlencoding::encode(self.configured_project_id()?),
             path
         ))
+    }
+
+    /// Browser URL of the GitLab instance: the API base without `/api/v4`.
+    pub(crate) fn instance_web_url(&self) -> &str {
+        self.base_url
+            .strip_suffix("/api/v4")
+            .unwrap_or(&self.base_url)
+    }
+
+    /// Browser URL of the configured project, e.g. `https://gitlab.com/group/project`.
+    pub(crate) fn project_web_url(&self) -> Result<String> {
+        let project_id = self.configured_project_id()?;
+        // A path is already the URL's tail; a numeric ID needs the API to learn it.
+        if !project_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Ok(format!(
+                "{}/{}",
+                self.instance_web_url(),
+                project_id.trim_matches('/')
+            ));
+        }
+        self.get_project(project_id)?
+            .web_url
+            .ok_or_else(|| GitLabError::Api {
+                status: 0,
+                message: format!("GitLab returned no web_url for project {project_id}"),
+            })
     }
 
     /// Check response status and return error if not successful

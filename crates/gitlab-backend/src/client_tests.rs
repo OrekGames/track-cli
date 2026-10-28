@@ -1811,4 +1811,59 @@ mod tests {
             Some("docs")
         );
     }
+
+    #[test]
+    fn web_url_builds_project_path_urls_without_the_api() {
+        let client = GitLabClient::new(
+            "https://gitlab.example.com/api/v4",
+            "test-token",
+            Some("group/sub/project"),
+        );
+
+        assert_eq!(
+            client.web_url(Some("#7")).unwrap().as_deref(),
+            Some("https://gitlab.example.com/group/sub/project/-/issues/7")
+        );
+        assert_eq!(
+            client.web_url(None).unwrap().as_deref(),
+            Some("https://gitlab.example.com/group/sub/project/-/issues")
+        );
+    }
+
+    #[tokio::test]
+    async fn web_url_looks_up_numeric_project_ids() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects/123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 123,
+                "name": "project",
+                "web_url": "https://gitlab.example.com/group/project"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+        assert_eq!(
+            client.web_url(Some("7")).unwrap().as_deref(),
+            Some("https://gitlab.example.com/group/project/-/issues/7")
+        );
+    }
+
+    #[tokio::test]
+    async fn web_url_rejects_a_malformed_iid_before_any_request() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+        assert!(matches!(
+            client.web_url(Some("PROJ-7")),
+            Err(tracker_core::TrackerError::InvalidInput(_))
+        ));
+    }
 }

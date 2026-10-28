@@ -17,6 +17,23 @@ const GITHUB_ACCEPT: &str = "application/vnd.github+json";
 /// REST API version the request and response models are written against.
 const GITHUB_API_VERSION: &str = "2022-11-28";
 
+/// Derive the web host (which serves both the UI and git) from the REST API
+/// base URL.
+///
+/// `https://api.github.com` (and GHE.com's `https://api.<tenant>.ghe.com`) drop
+/// the `api.` subdomain, while GitHub Enterprise Server serves its API under
+/// `https://<host>/api/v3`. Any other URL is assumed to already be the web host.
+pub(crate) fn web_base_url(api_base_url: &str) -> String {
+    let api_base_url = api_base_url.trim_end_matches('/');
+    if let Some(host_root) = api_base_url.strip_suffix("/api/v3") {
+        return host_root.to_string();
+    }
+    match api_base_url.split_once("://api.") {
+        Some((scheme, host)) => format!("{}://{}", scheme, host),
+        None => api_base_url.to_string(),
+    }
+}
+
 /// GitHub REST API client
 pub struct GitHubClient {
     agent: Agent,
@@ -65,6 +82,22 @@ impl GitHubClient {
     /// Get the repo for this client
     pub fn repo(&self) -> &str {
         &self.repo
+    }
+
+    /// Browser URL of the repository's issue list, or of `number` within
+    /// `repo_path` (`owner/repo`), defaulting to the configured repository.
+    pub(crate) fn issues_web_url(&self, repo_path: Option<&str>, number: Option<u64>) -> String {
+        let configured_repo_path = format!("{}/{}", self.owner, self.repo);
+        let issues_url = format!(
+            "{}/{}/issues",
+            web_base_url(&self.base_url),
+            repo_path.unwrap_or(&configured_repo_path)
+        );
+        match number {
+            // GitHub redirects /issues/N to /pull/N when N is a pull request.
+            Some(number) => format!("{issues_url}/{number}"),
+            None => issues_url,
+        }
     }
 
     /// Build a repo-scoped URL

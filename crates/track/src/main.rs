@@ -445,9 +445,13 @@ fn run_with_client(
         Commands::Init { .. } => {
             unreachable!("Init command should be handled before API validation")
         }
-        Commands::Open { id } => {
-            commands::open::handle_open(id.as_deref(), config, backend, cli.format.output())
-        }
+        Commands::Open { id } => commands::open::handle_open(
+            issue_client,
+            id.as_deref(),
+            config,
+            backend,
+            cli.format.output(),
+        ),
         Commands::External(args) => {
             commands::open::handle_issue_shortcut(issue_client, args, cli.format.output())
         }

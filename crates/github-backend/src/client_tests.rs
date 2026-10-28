@@ -803,4 +803,50 @@ mod tests {
             other => panic!("Expected Api error, got: {:?}", other),
         }
     }
+
+    #[test]
+    fn web_url_points_at_the_web_host_not_the_api() {
+        let cases = [
+            ("https://api.github.com", "https://github.com/o/r/issues"),
+            (
+                "https://github.example.com/api/v3",
+                "https://github.example.com/o/r/issues",
+            ),
+            (
+                "https://api.octocorp.ghe.com",
+                "https://octocorp.ghe.com/o/r/issues",
+            ),
+        ];
+        for (api_url, issues_url) in cases {
+            let client = GitHubClient::with_base_url(api_url, "o", "r", "token");
+            assert_eq!(
+                client.web_url(None).unwrap().as_deref(),
+                Some(issues_url),
+                "dashboard for API URL {api_url}"
+            );
+            assert_eq!(
+                client.web_url(Some("42")).unwrap(),
+                Some(format!("{issues_url}/42")),
+                "issue for API URL {api_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn web_url_accepts_every_issue_id_form() {
+        let client = GitHubClient::with_base_url("https://api.github.com", "o", "r", "token");
+
+        assert_eq!(
+            client.web_url(Some("#7")).unwrap().as_deref(),
+            Some("https://github.com/o/r/issues/7")
+        );
+        assert_eq!(
+            client.web_url(Some("other/lib#7")).unwrap().as_deref(),
+            Some("https://github.com/other/lib/issues/7")
+        );
+        assert!(matches!(
+            client.web_url(Some("PROJ-7")),
+            Err(tracker_core::TrackerError::InvalidInput(_))
+        ));
+    }
 }

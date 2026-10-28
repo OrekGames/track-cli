@@ -1,3 +1,4 @@
+use crate::client::web_base_url;
 use crate::error::{GitHubError, Result};
 use chrono::{DateTime, Utc};
 use git2::{Cred, RemoteCallbacks, Repository, Signature};
@@ -80,23 +81,6 @@ pub(crate) fn validate_slug(slug: &str) -> Result<()> {
     Ok(())
 }
 
-/// Derive the host that serves git repositories from the REST API base URL.
-///
-/// Wikis are cloned from the web host, not the API host: `https://api.github.com`
-/// (and GHE.com's `https://api.<tenant>.ghe.com`) drop the `api.` subdomain,
-/// while GitHub Enterprise Server serves its API under `https://<host>/api/v3`.
-/// Any other URL is assumed to already be the web host.
-fn git_base_url(api_base_url: &str) -> String {
-    let api_base_url = api_base_url.trim_end_matches('/');
-    if let Some(host_root) = api_base_url.strip_suffix("/api/v3") {
-        return host_root.to_string();
-    }
-    match api_base_url.split_once("://api.") {
-        Some((scheme, host)) => format!("{}://{}", scheme, host),
-        None => api_base_url.to_string(),
-    }
-}
-
 /// Manages a GitHub wiki as a Git repository
 pub struct WikiManager {
     owner: String,
@@ -118,7 +102,8 @@ impl WikiManager {
             owner: owner.to_string(),
             repo: repo.to_string(),
             token: token.to_string(),
-            git_base_url: git_base_url(api_base_url),
+            // Wikis are cloned from the web host, not the API host.
+            git_base_url: web_base_url(api_base_url),
             cache_dir,
             initialized: Mutex::new(false),
             page_cache: Mutex::new(std::collections::HashMap::new()),

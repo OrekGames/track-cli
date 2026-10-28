@@ -290,6 +290,18 @@ pub trait IssueTracker: Send + Sync {
             "Issue history is not supported by this backend".to_string(),
         ))
     }
+
+    // ========== Web UI ==========
+
+    /// Browser URL of `issue_id`, or of the issue list when `issue_id` is `None`.
+    ///
+    /// `Ok(None)` (the default) means the web UI is served from the configured
+    /// tracker URL itself, as with YouTrack and Jira. Backends configured with
+    /// a separate API URL (GitHub, GitLab) override this.
+    fn web_url(&self, issue_id: Option<&str>) -> Result<Option<String>> {
+        let _ = issue_id;
+        Ok(None)
+    }
 }
 
 /// Trait for knowledge base / wiki operations

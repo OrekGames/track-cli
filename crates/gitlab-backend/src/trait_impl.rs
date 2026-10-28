@@ -473,6 +473,16 @@ impl IssueTracker for GitLabClient {
 
         Ok(gitlab_events_to_history_events(state, label, milestone))
     }
+
+    fn web_url(&self, issue_id: Option<&str>) -> Result<Option<String>> {
+        // Parse first so a malformed ID fails before any project lookup.
+        let iid = issue_id.map(parse_issue_iid).transpose()?;
+        let issues_url = format!("{}/-/issues", self.project_web_url()?);
+        Ok(Some(match iid {
+            Some(iid) => format!("{issues_url}/{iid}"),
+            None => issues_url,
+        }))
+    }
 }
 
 // ==================== KnowledgeBase via project wikis ====================

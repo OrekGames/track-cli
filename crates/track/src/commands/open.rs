@@ -19,6 +19,7 @@ fn browser_url(backend: Backend, base_url: &str, issue_id: Option<&str>) -> Stri
 }
 
 pub fn handle_open(
+    client: &dyn IssueTracker,
     id: Option<&str>,
     config: &Config,
     backend: Backend,
@@ -26,11 +27,18 @@ pub fn handle_open(
 ) -> Result<()> {
     use colored::Colorize;
 
-    let base_url = config
-        .url
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No URL configured"))?;
-    let url = browser_url(backend, base_url, id);
+    // GitHub and GitLab are configured with API URLs, so they build their own
+    // browser URLs; the other backends serve their UI from the configured URL.
+    let url = match client.web_url(id)? {
+        Some(url) => url,
+        None => {
+            let base_url = config
+                .url
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("No URL configured"))?;
+            browser_url(backend, base_url, id)
+        }
+    };
 
     // Try to open in browser
     let result = open::that(&url);
