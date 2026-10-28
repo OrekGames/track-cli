@@ -446,7 +446,8 @@ fn handle_create(
     let warnings = verify_issue_create(&create, &issue);
     crate::output::output_verification_warnings(&warnings, format);
 
-    if verbose {
+    // The change summary is text-only; JSON stdout must hold only the issue.
+    if verbose && format == OutputFormat::Text {
         crate::output::output_change_summary(None, &issue, None, Some(&create), format);
         println!();
     }
@@ -489,7 +490,8 @@ fn handle_update(
     let warnings = verify_issue_update(&update, &issue);
     crate::output::output_verification_warnings(&warnings, format);
 
-    if verbose {
+    // The change summary is text-only; JSON stdout must hold only the issue.
+    if verbose && format == OutputFormat::Text {
         crate::output::output_change_summary(
             old_issue.as_ref(),
             &issue,

@@ -3010,3 +3010,39 @@ fn test_project_create_rejects_empty_leader_naming_the_flag() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// =============================================================================
+// JSON-mode stdout holds only JSON
+// =============================================================================
+
+#[test]
+fn test_issue_update_verbose_json_stdout_is_only_the_issue() {
+    // `-v` used to print the text change summary's trailing blank line ahead
+    // of the JSON document.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "update",
+            "DEMO-1",
+            "--summary",
+            "Verbose summary",
+            "-v",
+            "-o",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "expected success: {output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with('{'),
+        "JSON stdout must start with the document, not a blank line: {stdout:?}"
+    );
+    assert_eq!(parse_json_stdout(&output)["id_readable"], "DEMO-1");
+
+    let _ = fs::remove_dir_all(&dir);
+}
