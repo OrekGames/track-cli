@@ -4,6 +4,7 @@ mod color;
 mod commands;
 mod config;
 mod output;
+mod token_guard;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
@@ -122,14 +123,19 @@ fn run(cli: Cli) -> Result<()> {
             | ConfigCommands::Path
             | ConfigCommands::Keys
             | ConfigCommands::Set { .. }
-            | ConfigCommands::Get { .. } => {
-                return commands::config::handle_config_local(action, cli.format.output());
+            | ConfigCommands::Get { .. }
+            | ConfigCommands::Untrust => {
+                return commands::config::handle_config_local(
+                    action,
+                    cli.config.as_deref(),
+                    cli.format.output(),
+                );
             }
             ConfigCommands::Backend { backend } => {
                 return commands::config::handle_config_backend(*backend, cli.format.output());
             }
-            ConfigCommands::Project { .. } | ConfigCommands::Test => {
-                // These commands need API connection
+            ConfigCommands::Project { .. } | ConfigCommands::Test | ConfigCommands::Trust => {
+                // These commands need the loaded config (Trust) or an API connection
             }
         }
     }
@@ -180,6 +186,20 @@ fn run(cli: Cli) -> Result<()> {
     let mut config = Config::load(cli.config.clone(), effective_backend)?;
     config.merge_with_cli(cli.url.clone(), cli.token.clone());
 
+    if let Commands::Config {
+        action: cli::ConfigCommands::Trust,
+    } = &cli.command
+    {
+        return commands::config::handle_config_trust(
+            cli.config.as_deref(),
+            effective_backend,
+            cli.url.as_deref(),
+            cli.token.as_deref(),
+            &config,
+            cli.format.output(),
+        );
+    }
+
     // Workflow commands are offline: after config load + backend selection,
     // before credential validation and client construction.
     if let Commands::Workflow { action } = &cli.command {
@@ -200,6 +220,13 @@ fn run(cli: Cli) -> Result<()> {
     }
 
     config.validate(effective_backend)?;
+    token_guard::ensure_token_destination_allowed(
+        cli.config.as_deref(),
+        effective_backend,
+        cli.url.as_deref(),
+        cli.token.as_deref(),
+        &config,
+    )?;
 
     // Create the appropriate backend client
     let client = build_client(effective_backend, &config)?;
@@ -322,7 +349,7 @@ pub fn build_client(backend: Backend, config: &Config) -> Result<BackendClient> 
                 .linear
                 .api_url
                 .as_deref()
-                .unwrap_or("https://api.linear.app/graphql");
+                .unwrap_or(config::DEFAULT_LINEAR_API_URL);
             let default_team = config
                 .linear
                 .default_team

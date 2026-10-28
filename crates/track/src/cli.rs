@@ -355,6 +355,15 @@ pub enum ConfigCommands {
     Path,
     /// Test connection to the tracker (validates URL and token)
     Test,
+    /// Allow this directory's .track.toml to send your own token to the URL it sets
+    ///
+    /// track refuses when a repository's .track.toml sets a backend URL but not its
+    /// token, since that would send the token from your global config,
+    /// environment or --token to a host the repository chose. Run this inside a
+    /// repository you trust to allow it; changing the URL requires trusting again.
+    Trust,
+    /// Revoke every `config trust` for this directory's .track.toml
+    Untrust,
 }
 
 #[derive(Subcommand, Debug)]

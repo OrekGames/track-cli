@@ -142,6 +142,8 @@ Installed destinations:
 
 **Priority** (highest wins): CLI flags → env vars → local `.track.toml` → global `~/.tracker-cli/.track.toml`. Note `TRACKER_URL`/`TRACKER_TOKEN` bind to the global `--url`/`--token` flags, so they get CLI-flag-level priority.
 
+**Repository configs cannot redirect your token.** If the current directory's `.track.toml` sets a backend URL (or `github.api_url` / `linear.api_url`) but not its token, commands fail with `Refusing to send your <backend> token to <host>` instead of sending the token from your global config, environment, or `--token` there. Do **not** run `track config trust` yourself to get past this: it lets that repository receive the user's credentials, so ask the user. To keep working with the user's own setup, pass `--config ~/.tracker-cli/.track.toml` (or set `TRACKER_CONFIG`), which ignores the repository file.
+
 Every command also accepts `--config <PATH>` to point at an alternate TOML file:
 ```bash
 track --config ./ops/.track.jira.toml i s "project = OPS"
@@ -157,6 +159,8 @@ track config backend github    # Switch default backend
 track config set <key> <value> # Set a value (-g writes the global file)
 track config get <key>         # Get a value
 track config clear [-g]        # Delete a config file
+track config trust             # Let this directory's .track.toml receive your token (user decision only)
+track config untrust           # Revoke that trust
 ```
 
 **Config keys** (settable via `config set`): `backend`, `url`, `token`, `email`, `default_project`, `youtrack.url`, `youtrack.token`, `jira.url`, `jira.email`, `jira.token`, `github.token`, `github.owner`, `github.repo`, `github.api_url`, `gitlab.token`, `gitlab.url`, `gitlab.project_id`, `gitlab.namespace`, `linear.token`, `linear.api_url`, `linear.url`, `linear.default_team`, `linear.default_linear_project`

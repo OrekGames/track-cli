@@ -321,6 +321,33 @@ track -b lin PROJ-123       # Linear
 
 **Priority**: CLI flag > Environment variable > Config file > Default (YouTrack)
 
+### Repository configs and your token
+
+A `.track.toml` committed to a repository is read whenever you run `track` in
+that directory. Because config layers merge key by key, such a file could set
+only a URL and have `track` send the token from your global config,
+environment or `--token` to a host the repository chose. `track` refuses that
+before sending anything:
+
+```
+Error: Refusing to send your youtrack token to https://attacker.example.
+```
+
+The check only applies when the repository file sets a token destination
+(`url`, `[backend].url`, `github.api_url`, `linear.api_url`) that differs from
+your own configuration's and does not also supply the token. A repository
+`.track.toml` holding both URL and token (what `track init` writes), or only
+settings such as `default_project`, is unaffected. To allow a repository you
+trust, or to bypass its config:
+
+```bash
+track config trust          # Allow this directory's .track.toml to receive your token
+track config untrust        # Revoke it (changing the URL also requires trusting again)
+track --config ~/.tracker-cli/.track.toml ...   # Ignore the repository's .track.toml
+```
+
+`track config show` and `track doctor` report a redirected token as well.
+
 ## Commands
 
 ### Issue Shortcuts
@@ -534,6 +561,8 @@ track config get <key>      # Get a config value
 track config keys           # List all available config keys
 track config clear          # Clear default project and backend
 track config path           # Show config file path
+track config trust          # Allow this directory's .track.toml to receive your own token
+track config untrust        # Revoke config trust for this directory
 ```
 
 ### Doctor (Backend Capability Audit)

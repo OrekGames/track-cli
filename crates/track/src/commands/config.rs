@@ -1,11 +1,13 @@
 use anyhow::Result;
 use clap::ValueEnum;
+use std::path::{Path, PathBuf};
 use tracker_core::IssueTracker;
 
 use crate::{
     cli::{self, Backend},
     config::{self, Config},
     output::output_json,
+    token_guard::{self, TokenRedirect},
 };
 
 /// Printed in place of a secret value so tokens never reach terminals or logs.
@@ -239,21 +241,246 @@ fn parse_config_key(key: &str) -> Result<ConfigKey> {
 /// one), with the level it came from.
 fn effective_value(
     key: ConfigKey,
-    global_cfg: &Config,
-    project_cfg: &Config,
+    levels: &[(&'static str, &Config)],
 ) -> Option<(String, &'static str)> {
-    key.get_value(project_cfg)
-        .map(|value| (value, "project"))
-        .or_else(|| key.get_value(global_cfg).map(|value| (value, "global")))
+    // Later levels take precedence, as in the config load order.
+    levels
+        .iter()
+        .rev()
+        .find_map(|(level, cfg)| key.get_value(cfg).map(|value| (value, *level)))
 }
 
-/// Colored `[project]` / `[global]` label for a config level.
+/// Colored `[project]` / `[global]` / `[config]` label for a config level.
 fn level_tag(level: &str) -> String {
     use colored::Colorize;
     match level {
         "global" => "[global]".yellow().to_string(),
+        "config" => "[config]".magenta().to_string(),
         _ => "[project]".cyan().to_string(),
     }
+}
+
+/// A config file `config show` reads, at its precedence level.
+struct ConfigFile {
+    level: &'static str,
+    path: Option<PathBuf>,
+    config: Option<Config>,
+}
+
+/// `config show`: every set key with the file it comes from, then whether
+/// this directory's .track.toml redirects your token.
+fn show_config(explicit_config: Option<&Path>, format: cli::OutputFormat) -> Result<()> {
+    use colored::Colorize;
+
+    // --config / TRACKER_CONFIG replaces both files, so only it is shown.
+    let files = match explicit_config {
+        Some(path) => vec![ConfigFile {
+            level: "config",
+            path: Some(path.to_path_buf()),
+            config: Config::load_from_path(path)?,
+        }],
+        None => vec![
+            ConfigFile {
+                level: "global",
+                path: config::global_config_path(),
+                config: Config::load_global_track_toml()?,
+            },
+            ConfigFile {
+                level: "project",
+                path: Some(config::local_track_config_path()?),
+                config: Config::load_local_track_toml()?,
+            },
+        ],
+    };
+
+    if files.iter().all(|file| file.config.is_none()) {
+        match format {
+            cli::OutputFormat::Json => {
+                println!("{{}}");
+            }
+            cli::OutputFormat::Text => {
+                println!("No configuration found.");
+                println!(
+                    "Run '{}' or '{}' to create one.",
+                    "track init --url <URL> --token <TOKEN>".cyan(),
+                    "track init --global --url <URL> --token <TOKEN>".cyan()
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let empty = Config::default();
+    let levels: Vec<(&'static str, &Config)> = files
+        .iter()
+        .map(|file| (file.level, file.config.as_ref().unwrap_or(&empty)))
+        .collect();
+    let redirect = current_token_redirect(explicit_config);
+
+    match format {
+        cli::OutputFormat::Json => {
+            let entries: Vec<serde_json::Value> = ConfigKey::ALL
+                .into_iter()
+                .filter_map(|key| {
+                    let (value, source) = effective_value(key, &levels)?;
+                    Some(serde_json::json!({
+                        "key": key.as_str(),
+                        "value": key.displayed(&value),
+                        "source": source,
+                    }))
+                })
+                .collect();
+            output_json(&serde_json::json!({
+                "config": entries,
+                "token_redirect": redirect,
+            }))?;
+        }
+        cli::OutputFormat::Text => {
+            println!("{}:", "Configuration".white().bold());
+            for file in &files {
+                let Some(path) = &file.path else { continue };
+                let status = if file.config.is_some() {
+                    "(exists)".green().to_string()
+                } else {
+                    "(not found)".dimmed().to_string()
+                };
+                println!("  {} {} {}", level_tag(file.level), path.display(), status);
+            }
+            println!();
+
+            // Keys are listed top-level first, then grouped by backend
+            // section, in ConfigKey::ALL order.
+            let mut current_section = None;
+            for key in ConfigKey::ALL {
+                let Some((value, source)) = effective_value(key, &levels) else {
+                    continue;
+                };
+                let label = match key.as_str().split_once('.') {
+                    Some((section, label)) => {
+                        if current_section != Some(section) {
+                            current_section = Some(section);
+                            println!();
+                            println!("  {}:", format!("[{}]", section).white().bold());
+                        }
+                        format!("  {}", label)
+                    }
+                    None => key.as_str().to_string(),
+                };
+                let display = if key.is_secret() {
+                    "(set)".green().to_string()
+                } else {
+                    value.cyan().to_string()
+                };
+                println!("  {} {}: {}", level_tag(source), label.dimmed(), display);
+            }
+
+            if let Some(redirect) = &redirect {
+                println!();
+                print_token_redirect(redirect);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The token redirect `config show` reports, if this directory's .track.toml
+/// sends the effective backend's token to a URL of its own. Config errors
+/// are left for the commands that use the config to report.
+fn current_token_redirect(explicit_config: Option<&Path>) -> Option<TokenRedirect> {
+    let backend = config::resolve_backend(explicit_config);
+    let effective = Config::load(explicit_config.map(Path::to_path_buf), backend).ok()?;
+    token_guard::find_token_redirect(explicit_config, backend, None, None, &effective)
+        .ok()
+        .flatten()
+}
+
+fn print_token_redirect(redirect: &TokenRedirect) {
+    use colored::Colorize;
+    let own = redirect
+        .own_endpoint
+        .as_deref()
+        .map(|own| format!(" instead of {own}"))
+        .unwrap_or_default();
+    if redirect.trusted {
+        println!(
+            "  {} {} sends your {} token to {}{} (trusted with 'track config trust').",
+            "✓".green().bold(),
+            redirect.project_config.display(),
+            redirect.backend,
+            redirect.endpoint.cyan(),
+            own
+        );
+    } else {
+        println!(
+            "  {} {} sends your {} token to {}{}.",
+            "⚠ Warning:".yellow().bold(),
+            redirect.project_config.display(),
+            redirect.backend,
+            redirect.endpoint.cyan(),
+            own
+        );
+        println!(
+            "    track refuses to connect until you run '{}' in this directory.",
+            "track config trust".cyan()
+        );
+    }
+}
+
+/// `config trust`: allow this directory's .track.toml to send your token to
+/// the URL it sets.
+pub fn handle_config_trust(
+    explicit_config: Option<&Path>,
+    backend: Backend,
+    cli_url: Option<&str>,
+    cli_token: Option<&str>,
+    effective: &Config,
+    format: cli::OutputFormat,
+) -> Result<()> {
+    use colored::Colorize;
+
+    let Some(redirect) =
+        token_guard::find_token_redirect(explicit_config, backend, cli_url, cli_token, effective)?
+    else {
+        match format {
+            cli::OutputFormat::Json => {
+                output_json(&serde_json::json!({ "trusted": false, "backend": backend }))?;
+            }
+            cli::OutputFormat::Text => println!(
+                "Nothing to trust: this directory's .track.toml does not send your {} token to a URL of its own.",
+                backend
+            ),
+        }
+        return Ok(());
+    };
+
+    let newly_trusted = token_guard::trust(&redirect)?;
+    match format {
+        cli::OutputFormat::Json => {
+            output_json(&serde_json::json!({
+                "trusted": true,
+                "already_trusted": !newly_trusted,
+                "backend": redirect.backend,
+                "config": redirect.project_config,
+                "endpoint": redirect.endpoint,
+            }))?;
+        }
+        cli::OutputFormat::Text => {
+            let verb = if newly_trusted {
+                "Trusted"
+            } else {
+                "Already trusted:"
+            };
+            println!(
+                "{} {} {} to send your {} token to {}.",
+                "✓".green().bold(),
+                verb,
+                redirect.project_config.display(),
+                redirect.backend,
+                redirect.endpoint.cyan()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Handle config backend command
@@ -277,7 +504,11 @@ pub fn handle_config_backend(backend: Backend, format: cli::OutputFormat) -> Res
 }
 
 /// Handle config commands that don't need API connection
-pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputFormat) -> Result<()> {
+pub fn handle_config_local(
+    action: &cli::ConfigCommands,
+    explicit_config: Option<&Path>,
+    format: cli::OutputFormat,
+) -> Result<()> {
     use cli::ConfigCommands;
 
     match action {
@@ -388,7 +619,10 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
             // Check both levels to determine source
             let global_cfg = Config::load_global_track_toml()?.unwrap_or_default();
             let project_cfg = Config::load_local_track_toml()?.unwrap_or_default();
-            let effective = effective_value(config_key, &global_cfg, &project_cfg);
+            let effective = effective_value(
+                config_key,
+                &[("global", &global_cfg), ("project", &project_cfg)],
+            );
 
             match format {
                 cli::OutputFormat::Json => {
@@ -420,109 +654,7 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
             }
             Ok(())
         }
-        ConfigCommands::Show => {
-            use colored::Colorize;
-
-            let global_cfg = Config::load_global_track_toml()?.unwrap_or_default();
-            let project_cfg = Config::load_local_track_toml()?;
-            let has_global = config::global_config_path()
-                .map(|p| p.exists())
-                .unwrap_or(false);
-            let has_project = project_cfg.is_some();
-            let project_cfg = project_cfg.unwrap_or_default();
-
-            if !has_global && !has_project {
-                match format {
-                    cli::OutputFormat::Json => {
-                        println!("{{}}");
-                    }
-                    cli::OutputFormat::Text => {
-                        println!("No configuration found.");
-                        println!(
-                            "Run '{}' or '{}' to create one.",
-                            "track init --url <URL> --token <TOKEN>".cyan(),
-                            "track init --global --url <URL> --token <TOKEN>".cyan()
-                        );
-                    }
-                }
-                return Ok(());
-            }
-
-            match format {
-                cli::OutputFormat::Json => {
-                    let entries: Vec<serde_json::Value> = ConfigKey::ALL
-                        .into_iter()
-                        .filter_map(|key| {
-                            let (value, source) = effective_value(key, &global_cfg, &project_cfg)?;
-                            Some(serde_json::json!({
-                                "key": key.as_str(),
-                                "value": key.displayed(&value),
-                                "source": source,
-                            }))
-                        })
-                        .collect();
-                    output_json(&serde_json::json!({ "config": entries }))?;
-                }
-                cli::OutputFormat::Text => {
-                    // Show file paths
-                    println!("{}:", "Configuration".white().bold());
-                    if let Some(global_path) = config::global_config_path() {
-                        let status = if has_global {
-                            "(exists)".green().to_string()
-                        } else {
-                            "(not found)".dimmed().to_string()
-                        };
-                        println!(
-                            "  {} {} {}",
-                            "[global]".yellow(),
-                            global_path.display(),
-                            status
-                        );
-                    }
-                    let project_path = config::local_track_config_path()?;
-                    let status = if has_project {
-                        "(exists)".green().to_string()
-                    } else {
-                        "(not found)".dimmed().to_string()
-                    };
-                    println!(
-                        "  {} {} {}",
-                        "[project]".cyan(),
-                        project_path.display(),
-                        status
-                    );
-                    println!();
-
-                    // Keys are listed top-level first, then grouped by
-                    // backend section, in ConfigKey::ALL order.
-                    let mut current_section = None;
-                    for key in ConfigKey::ALL {
-                        let Some((value, source)) = effective_value(key, &global_cfg, &project_cfg)
-                        else {
-                            continue;
-                        };
-                        let label = match key.as_str().split_once('.') {
-                            Some((section, label)) => {
-                                if current_section != Some(section) {
-                                    current_section = Some(section);
-                                    println!();
-                                    println!("  {}:", format!("[{}]", section).white().bold());
-                                }
-                                format!("  {}", label)
-                            }
-                            None => key.as_str().to_string(),
-                        };
-                        let display = if key.is_secret() {
-                            "(set)".green().to_string()
-                        } else {
-                            value.cyan().to_string()
-                        };
-                        println!("  {} {}: {}", level_tag(source), label.dimmed(), display);
-                    }
-                }
-            }
-            Ok(())
-        }
+        ConfigCommands::Show => show_config(explicit_config, format),
         ConfigCommands::Clear { global } => {
             let (config_path, loaded) = if *global {
                 let path = config::global_config_path_ensure()?;
@@ -611,9 +743,33 @@ pub fn handle_config_local(action: &cli::ConfigCommands, format: cli::OutputForm
             }
             Ok(())
         }
-        ConfigCommands::Project { .. } | ConfigCommands::Test | ConfigCommands::Backend { .. } => {
+        ConfigCommands::Untrust => {
+            let removed = token_guard::untrust_repository_config()?;
+            match format {
+                cli::OutputFormat::Json => {
+                    output_json(&serde_json::json!({ "removed": removed }))?;
+                }
+                cli::OutputFormat::Text => {
+                    use colored::Colorize;
+                    if removed == 0 {
+                        println!("Nothing to untrust for this directory's .track.toml.");
+                    } else {
+                        println!(
+                            "{} Removed {} trusted token destination(s) for this directory's .track.toml.",
+                            "✓".green().bold(),
+                            removed
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        ConfigCommands::Project { .. }
+        | ConfigCommands::Test
+        | ConfigCommands::Backend { .. }
+        | ConfigCommands::Trust => {
             // This shouldn't be called - handled elsewhere
-            unreachable!("Project/Test/Backend command should be handled elsewhere")
+            unreachable!("Project/Test/Backend/Trust command should be handled elsewhere")
         }
     }
 }
@@ -705,7 +861,9 @@ pub fn handle_config(
         | ConfigCommands::Keys
         | ConfigCommands::Set { .. }
         | ConfigCommands::Get { .. }
-        | ConfigCommands::Backend { .. } => {
+        | ConfigCommands::Backend { .. }
+        | ConfigCommands::Trust
+        | ConfigCommands::Untrust => {
             unreachable!("Local config commands should be handled before API validation")
         }
     }
@@ -741,15 +899,24 @@ mod tests {
         };
 
         assert_eq!(
-            effective_value(ConfigKey::Url, &global_cfg, &project_cfg),
+            effective_value(
+                ConfigKey::Url,
+                &[("global", &global_cfg), ("project", &project_cfg)]
+            ),
             Some(("https://project.example.com".to_string(), "project"))
         );
         assert_eq!(
-            effective_value(ConfigKey::Email, &global_cfg, &project_cfg),
+            effective_value(
+                ConfigKey::Email,
+                &[("global", &global_cfg), ("project", &project_cfg)]
+            ),
             Some(("global@example.com".to_string(), "global"))
         );
         assert_eq!(
-            effective_value(ConfigKey::Token, &global_cfg, &project_cfg),
+            effective_value(
+                ConfigKey::Token,
+                &[("global", &global_cfg), ("project", &project_cfg)]
+            ),
             None
         );
     }

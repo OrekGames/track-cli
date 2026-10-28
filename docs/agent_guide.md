@@ -32,6 +32,11 @@
 
 **Priority** (highest wins): CLI flags → env vars → local `.track.toml` → global `~/.tracker-cli/.track.toml`
 
+A local `.track.toml` that sets a backend URL without its token cannot redirect
+your own token there: commands fail with `Refusing to send your <backend> token
+to <host>`. Only the user should allow it, with `track config trust`; to use
+your own configuration instead, pass `--config ~/.tracker-cli/.track.toml`.
+
 ### Config File (`.track.toml`) — Recommended
 
 Place in your project directory for per-project config, or at `~/.tracker-cli/.track.toml` for global defaults. Created automatically by `track init`.

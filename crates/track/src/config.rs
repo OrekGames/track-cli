@@ -14,6 +14,9 @@ use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
+/// Linear GraphQL endpoint used when `linear.api_url` is not configured.
+pub const DEFAULT_LINEAR_API_URL: &str = "https://api.linear.app/graphql";
+
 /// Main configuration structure supporting multiple backends
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct Config {
@@ -365,16 +368,28 @@ impl Config {
     /// Use this when the per-backend sections themselves matter, e.g. to
     /// enumerate which backends are configured (`track doctor --all-backends`).
     pub fn load_raw(config_path: Option<PathBuf>) -> Result<Self> {
-        let mut figment = Figment::new().merge(Serialized::defaults(Config::default()));
-
         let explicit_path = config_path.as_deref();
         if let Some(path) = explicit_path
             && !path.exists()
         {
             return Err(anyhow!("Config file not found: {}", path.display()));
         }
+        Self::load_layers(&config_paths(explicit_path))
+    }
 
-        for path in config_paths(explicit_path) {
+    /// [`Config::load`] without the current directory's `.track.toml`: only
+    /// the global file and the environment, the layers the user controls.
+    pub fn load_without_project_file(backend: Backend) -> Result<Self> {
+        let mut config = Self::load_layers(&global_config_path().into_iter().collect::<Vec<_>>())?;
+        config.apply_backend_config(backend);
+        Ok(config)
+    }
+
+    /// Merge `paths` (lowest priority first, missing files skipped), then the
+    /// environment, over the defaults.
+    fn load_layers(paths: &[PathBuf]) -> Result<Self> {
+        let mut figment = Figment::new().merge(Serialized::defaults(Config::default()));
+        for path in paths {
             if path.exists() {
                 figment = figment.merge(Toml::file(path));
             }
@@ -509,6 +524,21 @@ impl Config {
         }
     }
 
+    /// Where the token is sent for `backend`, on a config already collapsed
+    /// for it by [`Config::load`].
+    pub fn token_endpoint(&self, backend: Backend) -> Option<&str> {
+        match backend {
+            // Linear's `url` is only the web UI; the token goes to the API.
+            Backend::Linear => Some(
+                self.linear
+                    .api_url
+                    .as_deref()
+                    .unwrap_or(DEFAULT_LINEAR_API_URL),
+            ),
+            _ => self.url.as_deref(),
+        }
+    }
+
     pub fn merge_with_cli(&mut self, cli_url: Option<String>, cli_token: Option<String>) {
         if let Some(url) = cli_url {
             self.url = Some(url);
@@ -608,7 +638,7 @@ impl Config {
     }
 
     /// Load config from a specific path
-    fn load_from_path(path: &Path) -> Result<Option<Self>> {
+    pub fn load_from_path(path: &Path) -> Result<Option<Self>> {
         if !path.exists() {
             return Ok(None);
         }
