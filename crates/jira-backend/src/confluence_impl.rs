@@ -191,7 +191,9 @@ impl KnowledgeBase for ConfluenceClient {
         // plain page update leaves the parent unchanged, so report the gap
         // rather than claim a move (to root or elsewhere) that never happened.
         Err(TrackerError::InvalidInput(
-            "Moving articles is not yet supported in Confluence".to_string(),
+            "Confluence does not support `article move` yet, with or without --parent; \
+             move the page in Confluence instead"
+                .to_string(),
         ))
     }
 

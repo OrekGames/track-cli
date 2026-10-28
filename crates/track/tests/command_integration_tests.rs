@@ -2983,3 +2983,30 @@ fn test_context_include_issues_without_project_warns() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// =============================================================================
+// project create --leader
+// =============================================================================
+
+#[test]
+fn test_project_create_rejects_empty_leader_naming_the_flag() {
+    // An unset shell variable must not silently make the caller the leader.
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "project-operations");
+
+    track_mock(&dir, &scenario)
+        .args([
+            "project", "create", "-n", "Test", "-s", "TEST", "--leader", " ",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--leader must not be empty"))
+        .stderr(predicate::str::contains("omit --leader"));
+    assert!(
+        !mock_call_methods(&scenario)
+            .iter()
+            .any(|method| method == "create_project")
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

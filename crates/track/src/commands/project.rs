@@ -62,6 +62,15 @@ fn handle_create(
     leader: Option<&str>,
     format: OutputFormat,
 ) -> Result<()> {
+    // Only an omitted --leader means "me"; an empty one (e.g. an unset shell
+    // variable) is a mistake that would otherwise pick a leader silently.
+    if leader.is_some_and(|leader| leader.trim().is_empty()) {
+        anyhow::bail!(
+            "--leader must not be empty: pass a user ID, login, or \"me\", \
+             or omit --leader to make yourself the project leader"
+        );
+    }
+
     let create = CreateProject {
         name: name.to_string(),
         short_name: short_name.to_string(),
