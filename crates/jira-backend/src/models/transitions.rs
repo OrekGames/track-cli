@@ -10,8 +10,6 @@ pub struct Transition {
     pub id: String,
     pub name: String,
     pub to: TransitionTarget,
-    #[serde(default)]
-    pub is_available: bool,
 }
 
 #[derive(Debug, Deserialize)]

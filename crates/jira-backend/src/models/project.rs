@@ -33,15 +33,3 @@ pub struct JiraProjectRef {
     #[serde(rename = "self")]
     pub self_url: Option<String>,
 }
-
-/// Request to create a new project
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateJiraProject {
-    pub key: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub project_type_key: String,
-    pub lead_account_id: String,
-}

@@ -1,11 +1,16 @@
 //! Confluence REST API v2 client
 
-use std::time::Duration;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tracker_core::AttachmentUpload;
-use ureq::Agent;
+use ureq::http::Response;
+use ureq::typestate::{WithBody, WithoutBody};
 use ureq::unversioned::multipart::{Form, Part};
+use ureq::{Agent, Body, RequestBuilder};
 
+use crate::client::{basic_auth_header, http_agent, read_json};
 use crate::error::{JiraError, Result};
+use crate::markdown::storage::html_escape;
 use crate::models::confluence::*;
 
 /// Confluence REST API client
@@ -24,17 +29,6 @@ impl ConfluenceClient {
     /// The base_url should be the Confluence wiki URL (e.g., "https://example.atlassian.net/wiki")
     /// For Jira Cloud, Confluence is typically at the same domain with /wiki path.
     pub fn new(base_url: &str, email: &str, api_token: &str) -> Self {
-        let agent = Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(30)))
-            .http_status_as_error(false)
-            .build()
-            .into();
-
-        // Base64 encode credentials for Basic Auth
-        let credentials = format!("{}:{}", email.trim(), api_token.trim());
-        let encoded = base64_encode(&credentials);
-        let auth_header = format!("Basic {}", encoded);
-
         // Ensure base_url ends with /wiki for proper API path construction
         let base_url = base_url.trim_end_matches('/');
         let base_url = if base_url.ends_with("/wiki") {
@@ -44,9 +38,9 @@ impl ConfluenceClient {
         };
 
         Self {
-            agent,
+            agent: http_agent(),
             base_url,
-            auth_header,
+            auth_header: basic_auth_header(email, api_token),
         }
     }
 
@@ -60,11 +54,38 @@ impl ConfluenceClient {
         format!("{}/rest/api{}", self.base_url, path)
     }
 
-    /// Check response status and return error if not successful
-    fn check_response(
+    /// Add the authentication and JSON `Accept` headers every request carries.
+    fn authorized<B>(&self, request: RequestBuilder<B>) -> RequestBuilder<B> {
+        request
+            .header("Authorization", &self.auth_header)
+            .header("Accept", "application/json")
+    }
+
+    /// Send a request without a body (GET, DELETE); error on a non-2xx status.
+    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<Response<Body>> {
+        self.check_response(self.authorized(request).call()?)
+    }
+
+    /// Send `body` as JSON (POST, PUT) and deserialize the JSON response.
+    fn send_json<T: DeserializeOwned>(
         &self,
-        mut response: ureq::http::Response<ureq::Body>,
-    ) -> Result<ureq::http::Response<ureq::Body>> {
+        request: RequestBuilder<WithBody>,
+        body: &impl Serialize,
+    ) -> Result<T> {
+        let response = self
+            .authorized(request)
+            .header("Content-Type", "application/json")
+            .send_json(body)?;
+        read_json(self.check_response(response)?)
+    }
+
+    /// GET `url` and deserialize its JSON response.
+    fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
+        read_json(self.call(self.agent.get(url))?)
+    }
+
+    /// Check response status and return error if not successful
+    fn check_response(&self, mut response: Response<Body>) -> Result<Response<Body>> {
         let status = response.status().as_u16();
 
         if (200..300).contains(&status) {
@@ -122,36 +143,12 @@ impl ConfluenceClient {
 
     /// List all accessible spaces
     pub fn list_spaces(&self, limit: usize) -> Result<ConfluenceSpaceList> {
-        let url = format!("{}?limit={}", self.api_v2_url("/spaces"), limit);
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let spaces: ConfluenceSpaceList = response.body_mut().read_json()?;
-        Ok(spaces)
+        self.get_json(&format!("{}?limit={}", self.api_v2_url("/spaces"), limit))
     }
 
     /// Get a space by ID
     pub fn get_space(&self, space_id: &str) -> Result<ConfluenceSpace> {
-        let url = self.api_v2_url(&format!("/spaces/{}", space_id));
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let space: ConfluenceSpace = response.body_mut().read_json()?;
-        Ok(space)
+        self.get_json(&self.api_v2_url(&format!("/spaces/{}", space_id)))
     }
 
     // ==================== Page Operations ====================
@@ -162,18 +159,7 @@ impl ConfluenceClient {
             "{}?body-format=storage",
             self.api_v2_url(&format!("/pages/{}", page_id))
         );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let page: ConfluencePage = response.body_mut().read_json()?;
-        Ok(page)
+        self.get_json(&url)
     }
 
     /// List pages, optionally filtered by space
@@ -197,17 +183,7 @@ impl ConfluenceClient {
             url.push_str(&format!("&cursor={}", urlencoding::encode(c)));
         }
 
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let pages: ConfluencePageList = response.body_mut().read_json()?;
-        Ok(pages)
+        self.get_json(&url)
     }
 
     /// Search pages using CQL (v1 API)
@@ -228,36 +204,12 @@ impl ConfluenceClient {
             limit,
             start
         );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let result: ConfluenceSearchResult = response.body_mut().read_json()?;
-        Ok(result)
+        self.get_json(&url)
     }
 
     /// Create a new page
     pub fn create_page(&self, page: &CreateConfluencePage) -> Result<ConfluencePage> {
-        let url = self.api_v2_url("/pages");
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(page)
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let created: ConfluencePage = response.body_mut().read_json()?;
-        Ok(created)
+        self.send_json(self.agent.post(&self.api_v2_url("/pages")), page)
     }
 
     /// Update an existing page
@@ -267,33 +219,13 @@ impl ConfluenceClient {
         update: &UpdateConfluencePage,
     ) -> Result<ConfluencePage> {
         let url = self.api_v2_url(&format!("/pages/{}", page_id));
-
-        let response = self
-            .agent
-            .put(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(update)
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let updated: ConfluencePage = response.body_mut().read_json()?;
-        Ok(updated)
+        self.send_json(self.agent.put(&url), update)
     }
 
     /// Delete a page
     pub fn delete_page(&self, page_id: &str) -> Result<()> {
         let url = self.api_v2_url(&format!("/pages/{}", page_id));
-
-        let response = self
-            .agent
-            .delete(&url)
-            .header("Authorization", &self.auth_header)
-            .call()
-            .map_err(JiraError::from)?;
-
-        self.check_response(response)?;
+        self.call(self.agent.delete(&url))?;
         Ok(())
     }
 
@@ -308,18 +240,7 @@ impl ConfluenceClient {
             self.api_v2_url(&format!("/pages/{}/children", parent_id)),
             limit
         );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let children: ConfluenceChildrenResponse = response.body_mut().read_json()?;
-        Ok(children)
+        self.get_json(&url)
     }
 
     // ==================== Comment Operations ====================
@@ -331,24 +252,11 @@ impl ConfluenceClient {
             self.api_v2_url(&format!("/pages/{}/footer-comments", page_id)),
             limit
         );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let comments: ConfluenceCommentList = response.body_mut().read_json()?;
-        Ok(comments)
+        self.get_json(&url)
     }
 
     /// Add a footer comment to a page
     pub fn add_page_comment(&self, page_id: &str, body: &str) -> Result<ConfluenceComment> {
-        let url = self.api_v2_url("/footer-comments");
-
         let comment = CreateConfluenceComment {
             page_id: page_id.to_string(),
             body: CreateConfluenceBody {
@@ -356,19 +264,10 @@ impl ConfluenceClient {
                 value: format!("<p>{}</p>", html_escape(body)),
             },
         };
-
-        let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .send_json(&comment)
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let created: ConfluenceComment = response.body_mut().read_json()?;
-        Ok(created)
+        self.send_json(
+            self.agent.post(&self.api_v2_url("/footer-comments")),
+            &comment,
+        )
     }
 
     // ==================== Attachment Operations ====================
@@ -384,18 +283,7 @@ impl ConfluenceClient {
             self.api_v2_url(&format!("/pages/{}/attachments", page_id)),
             limit
         );
-
-        let response = self
-            .agent
-            .get(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
-            .call()
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let attachments: ConfluenceAttachmentList = response.body_mut().read_json()?;
-        Ok(attachments)
+        self.get_json(&url)
     }
 
     /// Upload attachments to any Confluence content entity (page or comment).
@@ -427,56 +315,11 @@ impl ConfluenceClient {
         }
 
         let response = self
-            .agent
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Accept", "application/json")
+            .authorized(self.agent.post(&url))
             .header("X-Atlassian-Token", "nocheck")
-            .send(form)
-            .map_err(JiraError::from)?;
-
-        let mut response = self.check_response(response)?;
-        let uploaded: ConfluenceAttachmentUploadResponse = response.body_mut().read_json()?;
+            .send(form)?;
+        let uploaded: ConfluenceAttachmentUploadResponse =
+            read_json(self.check_response(response)?)?;
         Ok(uploaded.results)
     }
-}
-
-/// Simple base64 encoding function
-fn base64_encode(input: &str) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let bytes = input.as_bytes();
-    let mut result = String::new();
-
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as usize;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
-
-        result.push(ALPHABET[b0 >> 2] as char);
-        result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
-
-        if chunk.len() > 1 {
-            result.push(ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
-        } else {
-            result.push('=');
-        }
-
-        if chunk.len() > 2 {
-            result.push(ALPHABET[b2 & 0x3f] as char);
-        } else {
-            result.push('=');
-        }
-    }
-
-    result
-}
-
-/// Simple HTML escape for comment body
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }

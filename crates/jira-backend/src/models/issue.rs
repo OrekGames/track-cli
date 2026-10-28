@@ -364,21 +364,6 @@ pub struct IssueKeyRef {
     pub key: String,
 }
 
-/// Request for JQL search
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JiraSearchRequest {
-    pub jql: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub start_at: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_results: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fields: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expand: Option<Vec<String>>,
-}
-
 /// Convert a markdown string to an ADF document.
 ///
 /// Parses CommonMark + GFM and maps constructs to ADF node types.
