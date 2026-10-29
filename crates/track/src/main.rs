@@ -42,7 +42,7 @@ fn cli_main() -> ExitCode {
     color::init(cli.color);
 
     if let Err(e) = run(cli) {
-        output_error(&e, cli::OutputFormat::Text);
+        output_error(&e);
         if let Some(tip) = output::untrusted_certificate_tip(&format!("{e:#}")) {
             use colored::Colorize;
             eprintln!("{} {}", "Tip:".yellow(), tip);
@@ -76,9 +76,16 @@ fn run(cli: Cli) -> Result<()> {
         ));
     }
     output::set_jsonl_mode(cli.format.is_jsonl());
-    // HTTPS trust roots are fixed when the first client is built, and doctor
-    // and init build clients before the full config load below.
-    tracker_core::tls::set_system_certs(config::resolve_system_certs(cli.config.as_deref()));
+    // One read of the config chain serves the HTTPS trust roots, the default
+    // backend and the collapsed config below. Load errors count as defaults
+    // until that collapse reports them. Trust roots are fixed when the first
+    // client is built, and doctor and init build clients before the collapse.
+    let raw_config = Config::load_raw(cli.config.clone());
+    tracker_core::tls::set_system_certs(
+        raw_config
+            .as_ref()
+            .is_ok_and(|config| config.system_certs == Some(true)),
+    );
 
     // `--select` is wired for `issue search` JSON/JSONL only. Other commands
     // and text mode must not silently print the full document, and a present
@@ -178,27 +185,19 @@ fn run(cli: Cli) -> Result<()> {
     // Handle external commands (shortcuts) early if they are clearly invalid
     // to provide better error messages when config is missing
     if let Commands::External(args) = &cli.command {
-        if let Some(cmd) = args.first() {
-            if !commands::open::is_issue_id(cmd) {
-                return Err(anyhow::anyhow!(
-                    "unrecognized subcommand '{}'. Run 'track --help' for usage.",
-                    cmd
-                ));
-            }
-        } else {
-            return Err(anyhow::anyhow!(
-                "unrecognized subcommand. Run 'track --help' for usage."
-            ));
-        }
+        commands::open::shortcut_issue_id(args)?;
     }
 
     // Effective backend: -b / TRACKER_BACKEND, else `backend` from the config
     // files (project over global, or only the --config file), else YouTrack
-    let effective_backend = cli
-        .backend
-        .unwrap_or_else(|| config::resolve_backend(cli.config.as_deref()));
+    let effective_backend = cli.backend.unwrap_or_else(|| {
+        raw_config
+            .as_ref()
+            .map(Config::get_backend)
+            .unwrap_or_default()
+    });
 
-    let mut config = Config::load(cli.config.clone(), effective_backend)?;
+    let mut config = raw_config?.for_backend(effective_backend);
     config.merge_with_cli(cli.url.clone(), cli.token.clone());
 
     if let Commands::Config {

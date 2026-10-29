@@ -313,75 +313,6 @@ impl GitLabClient {
         Ok((issues, total))
     }
 
-    /// List issues for the project
-    pub fn list_issues(
-        &self,
-        state: Option<&str>,
-        per_page: usize,
-        page: usize,
-    ) -> Result<Vec<GitLabIssue>> {
-        let (issues, _total) = self.list_issues_with_total(state, per_page, page, None)?;
-        Ok(issues)
-    }
-
-    /// List issues and also return the X-Total header count (if present).
-    /// This avoids a separate count API call.
-    pub fn list_issues_with_total(
-        &self,
-        state: Option<&str>,
-        per_page: usize,
-        page: usize,
-        assignee_username: Option<&str>,
-    ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
-        self.fetch_project_issues(
-            &GitLabQueryParams {
-                state: state.map(str::to_string),
-                assignee_username: assignee_username.map(str::to_string),
-                ..Default::default()
-            },
-            per_page,
-            page,
-        )
-    }
-
-    /// Search issues with query text, state, and labels
-    pub fn search_issues(
-        &self,
-        search: &str,
-        state: Option<&str>,
-        labels: Option<&str>,
-        per_page: usize,
-        page: usize,
-    ) -> Result<Vec<GitLabIssue>> {
-        let (issues, _total) =
-            self.search_issues_with_total(search, state, labels, None, per_page, page)?;
-        Ok(issues)
-    }
-
-    /// Search issues and also return the X-Total header count (if present).
-    /// This avoids a separate count API call.
-    pub fn search_issues_with_total(
-        &self,
-        search: &str,
-        state: Option<&str>,
-        labels: Option<&str>,
-        assignee_username: Option<&str>,
-        per_page: usize,
-        page: usize,
-    ) -> Result<(Vec<GitLabIssue>, Option<u64>)> {
-        self.fetch_project_issues(
-            &GitLabQueryParams {
-                search: search.to_string(),
-                state: state.map(str::to_string),
-                labels: labels.map(str::to_string),
-                assignee_username: assignee_username.map(str::to_string),
-                ..Default::default()
-            },
-            per_page,
-            page,
-        )
-    }
-
     /// Create a new issue
     pub fn create_issue(&self, issue: &CreateGitLabIssue) -> Result<GitLabIssue> {
         self.post_json(&self.project_url("/issues")?, issue)
@@ -453,15 +384,6 @@ impl GitLabClient {
         self.post_json(&self.project_url(&format!("/issues/{}/notes", iid))?, &note)
     }
 
-    /// Get notes on an issue, filtering out system-generated notes
-    pub fn get_notes(&self, iid: u64) -> Result<Vec<GitLabNote>> {
-        Ok(self
-            .get_notes_page_raw(iid, MAX_PER_PAGE, 1)?
-            .into_iter()
-            .filter(|n| !n.system)
-            .collect())
-    }
-
     /// Get a native GitLab notes page on an issue.
     pub(crate) fn get_notes_page_raw(
         &self,
@@ -511,30 +433,6 @@ impl GitLabClient {
     /// Delete an issue link by issue IID and link ID
     pub fn delete_issue_link(&self, iid: u64, issue_link_id: u64) -> Result<()> {
         self.delete(&self.project_url(&format!("/issues/{}/links/{}", iid, issue_link_id))?)
-    }
-
-    // ==================== Count Operations ====================
-
-    /// Count issues matching search criteria by reading the X-Total header.
-    /// Makes a minimal request with per_page=1 to get the count without
-    /// transferring significant data.
-    pub fn count_issues_by_query(
-        &self,
-        search: &str,
-        state: Option<&str>,
-        assignee_username: Option<&str>,
-    ) -> Result<Option<u64>> {
-        let (_issues, total) = self.fetch_project_issues(
-            &GitLabQueryParams {
-                search: search.to_string(),
-                state: state.map(str::to_string),
-                assignee_username: assignee_username.map(str::to_string),
-                ..Default::default()
-            },
-            1,
-            1,
-        )?;
-        Ok(total)
     }
 
     // ==================== Work Item (GraphQL) Operations ====================

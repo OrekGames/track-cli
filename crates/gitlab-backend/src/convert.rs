@@ -1175,7 +1175,7 @@ mod tests {
     }
 
     fn fields_named<'a>(fields: &'a [CustomField], name: &str) -> Vec<&'a CustomField> {
-        fields.iter().filter(|f| field_name(f) == name).collect()
+        fields.iter().filter(|f| f.name() == name).collect()
     }
 
     #[test]
@@ -1353,7 +1353,7 @@ mod tests {
             "upvotes",
         ] {
             assert!(
-                !core.custom_fields.iter().any(|f| field_name(f) == noise),
+                !core.custom_fields.iter().any(|f| f.name() == noise),
                 "noise field {noise} should not be surfaced"
             );
         }
@@ -1367,10 +1367,7 @@ mod tests {
 
         let core = gitlab_issue_to_core(issue, "100");
         assert!(
-            !core
-                .custom_fields
-                .iter()
-                .any(|f| field_name(f) == "some_field"),
+            !core.custom_fields.iter().any(|f| f.name() == "some_field"),
             "null-valued field should be skipped"
         );
     }
@@ -1405,17 +1402,5 @@ mod tests {
             preserved.as_ref().unwrap(),
             &json!([{ "id": 1, "state": "x" }])
         );
-    }
-
-    /// Helper: the `name` of any CustomField variant.
-    fn field_name(f: &CustomField) -> &str {
-        match f {
-            CustomField::SingleEnum { name, .. }
-            | CustomField::State { name, .. }
-            | CustomField::SingleUser { name, .. }
-            | CustomField::Text { name, .. }
-            | CustomField::MultiEnum { name, .. }
-            | CustomField::Unknown { name, .. } => name,
-        }
     }
 }

@@ -174,7 +174,7 @@ impl IssueTracker for LinearClient {
     }
 
     fn create_project(&self, _project: &CreateProject) -> Result<Project> {
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "Creating Linear teams via this tool is not supported. Create the team in Linear first."
                 .to_string(),
         ))
@@ -731,18 +731,12 @@ fn is_state_field(name: &str) -> bool {
 }
 
 fn unsupported_linear_field(field: &CustomFieldUpdate) -> TrackerError {
-    let name = match field {
-        CustomFieldUpdate::SingleEnum { name, .. }
-        | CustomFieldUpdate::MultiEnum { name, .. }
-        | CustomFieldUpdate::State { name, .. }
-        | CustomFieldUpdate::SingleUser { name, .. } => name,
-    };
     TrackerError::InvalidInput(format!(
         "Linear does not support updating field '{}'. Supported fields: Status/State/Stage, Assignee, Priority, Labels, Project.",
-        name
+        field.name()
     ))
 }
 
 fn linear_articles_unsupported() -> TrackerError {
-    TrackerError::InvalidInput("Linear knowledge base articles are not supported".to_string())
+    TrackerError::Unsupported("Linear knowledge base articles are not supported".to_string())
 }

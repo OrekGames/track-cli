@@ -46,14 +46,6 @@ impl TagIdentifier {
             name: Some(name),
         }
     }
-
-    pub fn from_id(id: String) -> Self {
-        Self {
-            entity_type: "IssueTag".to_string(),
-            id: Some(id),
-            name: None,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

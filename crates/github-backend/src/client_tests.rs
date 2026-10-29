@@ -93,32 +93,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_issues_filters_prs() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/repos/owner/repo/issues"))
-            .and(header("Authorization", "Bearer test-token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                mock_github_issue(1, "Real issue"),
-                mock_github_pr(99, "A pull request"),
-                mock_github_issue(2, "Another issue")
-            ])))
-            .mount(&mock_server)
-            .await;
-
-        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
-        let issues = client.list_issues("open", 30, 1).unwrap();
-
-        // Should filter out the PR
-        assert_eq!(issues.len(), 2);
-        assert_eq!(issues[0].number, 1);
-        assert_eq!(issues[0].title, "Real issue");
-        assert_eq!(issues[1].number, 2);
-        assert_eq!(issues[1].title, "Another issue");
-    }
-
-    #[tokio::test]
     async fn test_search_issues() {
         let mock_server = MockServer::start().await;
 

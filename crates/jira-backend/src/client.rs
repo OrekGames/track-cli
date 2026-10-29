@@ -208,13 +208,12 @@ impl JiraClient {
         self.get_issue(&created.key)
     }
 
-    /// Update an existing issue
-    pub fn update_issue(&self, key: &str, update: &UpdateJiraIssue) -> Result<JiraIssue> {
+    /// Update an existing issue. Jira answers 204 No Content, so callers that
+    /// need the updated issue fetch it themselves.
+    pub fn update_issue(&self, key: &str, update: &UpdateJiraIssue) -> Result<()> {
         let url = self.api_url(&format!("/issue/{}", key));
         self.send_json(self.agent.put(&url), update)?;
-
-        // Jira returns 204 No Content on update, fetch the updated issue
-        self.get_issue(key)
+        Ok(())
     }
 
     /// Delete an issue

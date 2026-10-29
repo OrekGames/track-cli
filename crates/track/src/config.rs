@@ -362,12 +362,14 @@ fn merge_env_as_strings(figment: Figment, env: &Env) -> Figment {
 
 impl Config {
     pub fn load(config_path: Option<PathBuf>, backend: Backend) -> Result<Self> {
-        let mut config = Self::load_raw(config_path)?;
+        Ok(Self::load_raw(config_path)?.for_backend(backend))
+    }
 
-        // Merge backend-specific config with global config
-        config.apply_backend_config(backend);
-
-        Ok(config)
+    /// Collapse a raw config (see [`Config::load_raw`]) for `backend`: its
+    /// section's settings fill the flat url/token fields.
+    pub fn for_backend(mut self, backend: Backend) -> Self {
+        self.apply_backend_config(backend);
+        self
     }
 
     /// Load the merged configuration (files + env) WITHOUT collapsing any
@@ -388,9 +390,8 @@ impl Config {
     /// [`Config::load`] without the current directory's `.track.toml`: only
     /// the global file and the environment, the layers the user controls.
     pub fn load_without_project_file(backend: Backend) -> Result<Self> {
-        let mut config = Self::load_layers(&global_config_path().into_iter().collect::<Vec<_>>())?;
-        config.apply_backend_config(backend);
-        Ok(config)
+        let paths: Vec<PathBuf> = global_config_path().into_iter().collect();
+        Ok(Self::load_layers(&paths)?.for_backend(backend))
     }
 
     /// Merge `paths` (lowest priority first, missing files skipped), then the
@@ -799,15 +800,6 @@ pub fn resolve_backend(explicit: Option<&Path>) -> Backend {
     Config::load_raw(explicit.map(Path::to_path_buf))
         .map(|config| config.get_backend())
         .unwrap_or_default()
-}
-
-/// Whether `system_certs` is enabled in the config chain [`resolve_backend`]
-/// reads. Load errors count as disabled; the full config load reports them.
-pub fn resolve_system_certs(explicit: Option<&Path>) -> bool {
-    Config::load_raw(explicit.map(Path::to_path_buf))
-        .ok()
-        .and_then(|config| config.system_certs)
-        .unwrap_or(false)
 }
 
 /// A boolean from TOML, or from the "true"/"false" string an environment

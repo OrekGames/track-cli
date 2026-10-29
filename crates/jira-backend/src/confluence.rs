@@ -139,18 +139,6 @@ impl ConfluenceClient {
         }
     }
 
-    // ==================== Space Operations ====================
-
-    /// List all accessible spaces
-    pub fn list_spaces(&self, limit: usize) -> Result<ConfluenceSpaceList> {
-        self.get_json(&format!("{}?limit={}", self.api_v2_url("/spaces"), limit))
-    }
-
-    /// Get a space by ID
-    pub fn get_space(&self, space_id: &str) -> Result<ConfluenceSpace> {
-        self.get_json(&self.api_v2_url(&format!("/spaces/{}", space_id)))
-    }
-
     // ==================== Page Operations ====================
 
     /// Get a page by ID

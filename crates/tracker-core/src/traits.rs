@@ -4,6 +4,11 @@ use crate::models::*;
 /// Offset window used by the default `*_all_*` auto-pagination methods.
 const AUTO_PAGINATION_PAGE_SIZE: usize = 100;
 
+/// Error for an operation a backend does not implement.
+fn unsupported<T>(message: &str) -> Result<T> {
+    Err(crate::error::TrackerError::Unsupported(message.to_string()))
+}
+
 /// Common trait for all issue tracker backends
 ///
 /// This trait defines the operations that any issue tracker backend must implement.
@@ -20,8 +25,7 @@ pub trait IssueTracker: Send + Sync {
     /// Get the count of issues matching a query, without fetching the issues themselves.
     /// Returns None if the backend does not support count queries.
     /// Default implementation returns None (opt-in per backend).
-    fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
-        let _ = query;
+    fn get_issue_count(&self, _query: &str) -> Result<Option<u64>> {
         Ok(None)
     }
 
@@ -55,36 +59,27 @@ pub trait IssueTracker: Send + Sync {
     // ========== Attachment Operations ==========
 
     /// List attachments on an issue.
-    fn list_issue_attachments(&self, issue_id: &str) -> Result<Vec<IssueAttachment>> {
-        let _ = issue_id;
-        Err(crate::error::TrackerError::InvalidInput(
-            "Issue attachments are not supported by this backend".to_string(),
-        ))
+    fn list_issue_attachments(&self, _issue_id: &str) -> Result<Vec<IssueAttachment>> {
+        unsupported("Issue attachments are not supported by this backend")
     }
 
     /// Upload one or more files to an issue.
     fn add_issue_attachment(
         &self,
-        issue_id: &str,
-        upload: &AttachmentUpload,
+        _issue_id: &str,
+        _upload: &AttachmentUpload,
     ) -> Result<Vec<IssueAttachment>> {
-        let _ = (issue_id, upload);
-        Err(crate::error::TrackerError::InvalidInput(
-            "Issue attachment upload is not supported by this backend".to_string(),
-        ))
+        unsupported("Issue attachment upload is not supported by this backend")
     }
 
     /// Add a comment with one or more native attachments to an issue.
     fn add_issue_comment_attachment(
         &self,
-        issue_id: &str,
-        text: &str,
-        upload: &AttachmentUpload,
+        _issue_id: &str,
+        _text: &str,
+        _upload: &AttachmentUpload,
     ) -> Result<Comment> {
-        let _ = (issue_id, text, upload);
-        Err(crate::error::TrackerError::InvalidInput(
-            "Issue comment attachment upload is not supported by this backend".to_string(),
-        ))
+        unsupported("Issue comment attachment upload is not supported by this backend")
     }
 
     /// Whether this backend supports native attachments on issue comments.
@@ -110,9 +105,8 @@ pub trait IssueTracker: Send + Sync {
     fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>>;
 
     /// List users that can be assigned to issues in a project
-    fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
+    fn list_project_users(&self, _project_id: &str) -> Result<Vec<User>> {
         // Default implementation returns empty list
-        let _ = project_id;
         Ok(Vec::new())
     }
 
@@ -120,58 +114,41 @@ pub trait IssueTracker: Send + Sync {
 
     /// List all custom field definitions (instance-wide)
     fn list_custom_field_definitions(&self) -> Result<Vec<CustomFieldDefinition>> {
-        Err(crate::error::TrackerError::InvalidInput(
-            "Custom field management not supported by this backend".to_string(),
-        ))
+        unsupported("Custom field management not supported by this backend")
     }
 
     /// Create a new custom field definition
-    fn create_custom_field(&self, field: &CreateCustomField) -> Result<CustomFieldDefinition> {
-        let _ = field;
-        Err(crate::error::TrackerError::InvalidInput(
-            "Custom field creation not supported by this backend".to_string(),
-        ))
+    fn create_custom_field(&self, _field: &CreateCustomField) -> Result<CustomFieldDefinition> {
+        unsupported("Custom field creation not supported by this backend")
     }
 
     /// List all bundles of a given type
-    fn list_bundles(&self, bundle_type: BundleType) -> Result<Vec<BundleDefinition>> {
-        let _ = bundle_type;
-        Err(crate::error::TrackerError::InvalidInput(
-            "Bundle management not supported by this backend".to_string(),
-        ))
+    fn list_bundles(&self, _bundle_type: BundleType) -> Result<Vec<BundleDefinition>> {
+        unsupported("Bundle management not supported by this backend")
     }
 
     /// Create a new bundle with values
-    fn create_bundle(&self, bundle: &CreateBundle) -> Result<BundleDefinition> {
-        let _ = bundle;
-        Err(crate::error::TrackerError::InvalidInput(
-            "Bundle creation not supported by this backend".to_string(),
-        ))
+    fn create_bundle(&self, _bundle: &CreateBundle) -> Result<BundleDefinition> {
+        unsupported("Bundle creation not supported by this backend")
     }
 
     /// Add values to an existing bundle
     fn add_bundle_values(
         &self,
-        bundle_id: &str,
-        bundle_type: BundleType,
-        values: &[CreateBundleValue],
+        _bundle_id: &str,
+        _bundle_type: BundleType,
+        _values: &[CreateBundleValue],
     ) -> Result<Vec<BundleValueDefinition>> {
-        let _ = (bundle_id, bundle_type, values);
-        Err(crate::error::TrackerError::InvalidInput(
-            "Bundle modification not supported by this backend".to_string(),
-        ))
+        unsupported("Bundle modification not supported by this backend")
     }
 
     /// Attach a custom field to a project
     fn attach_field_to_project(
         &self,
-        project_id: &str,
-        attachment: &AttachFieldToProject,
+        _project_id: &str,
+        _attachment: &AttachFieldToProject,
     ) -> Result<ProjectCustomField> {
-        let _ = (project_id, attachment);
-        Err(crate::error::TrackerError::InvalidInput(
-            "Field attachment not supported by this backend".to_string(),
-        ))
+        unsupported("Field attachment not supported by this backend")
     }
 
     // ========== Tag Operations ==========
@@ -180,27 +157,18 @@ pub trait IssueTracker: Send + Sync {
     fn list_tags(&self) -> Result<Vec<IssueTag>>;
 
     /// Create a new tag/label
-    fn create_tag(&self, tag: &CreateTag) -> Result<IssueTag> {
-        let _ = tag;
-        Err(crate::error::TrackerError::InvalidInput(
-            "Tag creation not supported by this backend".to_string(),
-        ))
+    fn create_tag(&self, _tag: &CreateTag) -> Result<IssueTag> {
+        unsupported("Tag creation not supported by this backend")
     }
 
     /// Delete a tag/label by name
-    fn delete_tag(&self, name: &str) -> Result<()> {
-        let _ = name;
-        Err(crate::error::TrackerError::InvalidInput(
-            "Tag deletion not supported by this backend".to_string(),
-        ))
+    fn delete_tag(&self, _name: &str) -> Result<()> {
+        unsupported("Tag deletion not supported by this backend")
     }
 
     /// Update a tag/label (name, color, description)
-    fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
-        let _ = (current_name, tag);
-        Err(crate::error::TrackerError::InvalidInput(
-            "Tag update not supported by this backend".to_string(),
-        ))
+    fn update_tag(&self, _current_name: &str, _tag: &CreateTag) -> Result<IssueTag> {
+        unsupported("Tag update not supported by this backend")
     }
 
     // ========== Link Operations ==========
@@ -232,11 +200,8 @@ pub trait IssueTracker: Send + Sync {
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()>;
 
     /// Remove a link by its link ID (as returned by `get_issue_links`).
-    fn unlink_issues(&self, source: &str, link_id: &str) -> Result<()> {
-        let _ = (source, link_id);
-        Err(crate::error::TrackerError::InvalidInput(
-            "Unlinking issues is not supported by this backend".to_string(),
-        ))
+    fn unlink_issues(&self, _source: &str, _link_id: &str) -> Result<()> {
+        unsupported("Unlinking issues is not supported by this backend")
     }
 
     // ========== Comment Operations ==========
@@ -284,11 +249,8 @@ pub trait IssueTracker: Send + Sync {
     /// Returns field changes — status transitions, assignee changes, etc. —
     /// ordered newest-first. Optional: backends without a changelog/activity
     /// API return an error by default.
-    fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
-        let _ = issue_id;
-        Err(crate::error::TrackerError::InvalidInput(
-            "Issue history is not supported by this backend".to_string(),
-        ))
+    fn get_issue_history(&self, _issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
+        unsupported("Issue history is not supported by this backend")
     }
 
     // ========== Web UI ==========
@@ -298,8 +260,7 @@ pub trait IssueTracker: Send + Sync {
     /// `Ok(None)` (the default) means the web UI is served from the configured
     /// tracker URL itself, as with YouTrack and Jira. Backends configured with
     /// a separate API URL (GitHub, GitLab) override this.
-    fn web_url(&self, issue_id: Option<&str>) -> Result<Option<String>> {
-        let _ = issue_id;
+    fn web_url(&self, _issue_id: Option<&str>) -> Result<Option<String>> {
         Ok(None)
     }
 
@@ -408,13 +369,10 @@ pub trait KnowledgeBase: Send + Sync {
     /// Upload one or more files to an article.
     fn add_article_attachment(
         &self,
-        article_id: &str,
-        upload: &AttachmentUpload,
+        _article_id: &str,
+        _upload: &AttachmentUpload,
     ) -> Result<Vec<ArticleAttachment>> {
-        let _ = (article_id, upload);
-        Err(crate::error::TrackerError::InvalidInput(
-            "Article attachment upload is not supported by this backend".to_string(),
-        ))
+        unsupported("Article attachment upload is not supported by this backend")
     }
 
     // ========== Comment Operations ==========
@@ -428,14 +386,11 @@ pub trait KnowledgeBase: Send + Sync {
     /// Add a comment with one or more native attachments to an article.
     fn add_article_comment_attachment(
         &self,
-        article_id: &str,
-        text: &str,
-        upload: &AttachmentUpload,
+        _article_id: &str,
+        _text: &str,
+        _upload: &AttachmentUpload,
     ) -> Result<Comment> {
-        let _ = (article_id, text, upload);
-        Err(crate::error::TrackerError::InvalidInput(
-            "Article comment attachment upload is not supported by this backend".to_string(),
-        ))
+        unsupported("Article comment attachment upload is not supported by this backend")
     }
 
     /// Whether this backend supports native attachments on article comments.
@@ -536,13 +491,6 @@ mod tests {
                 search_calls: Mutex::new(Vec::new()),
             }
         }
-    }
-
-    /// Error for article operations the pagination tests never exercise.
-    fn unsupported<T>(op: &str) -> Result<T> {
-        Err(TrackerError::InvalidInput(format!(
-            "{op} is not supported by StubKnowledgeBase"
-        )))
     }
 
     impl KnowledgeBase for StubKnowledgeBase {

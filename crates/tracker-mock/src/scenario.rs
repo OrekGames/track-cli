@@ -224,16 +224,6 @@ impl Scenario {
         let scenario_file = dir.join("scenario.toml");
         Self::load(&scenario_file)
     }
-
-    /// Get the agent prompt for this scenario
-    pub fn agent_prompt(&self) -> &str {
-        &self.setup.prompt
-    }
-
-    /// Check if this scenario is compatible with a given backend
-    pub fn is_compatible_with(&self, backend: &str) -> bool {
-        self.scenario.backend == "any" || self.scenario.backend.eq_ignore_ascii_case(backend)
-    }
 }
 
 /// Errors that can occur when loading a scenario
@@ -291,30 +281,6 @@ cache_use = 10
         assert_eq!(scenario.scenario.backend, "youtrack");
         assert!(scenario.setup.cache_available);
         assert_eq!(scenario.scoring.min_commands, Some(2));
-    }
-
-    #[test]
-    fn test_backend_compatibility() {
-        let scenario = Scenario {
-            scenario: ScenarioMeta {
-                name: "test".to_string(),
-                description: "test".to_string(),
-                backend: "any".to_string(),
-                difficulty: "easy".to_string(),
-                tags: vec![],
-            },
-            setup: SetupConfig {
-                prompt: "test".to_string(),
-                default_project: None,
-                context: None,
-                cache_available: false,
-            },
-            expected_outcomes: HashMap::new(),
-            scoring: ScoringConfig::default(),
-        };
-
-        assert!(scenario.is_compatible_with("youtrack"));
-        assert!(scenario.is_compatible_with("jira"));
     }
 
     #[test]

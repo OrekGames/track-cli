@@ -190,7 +190,7 @@ impl KnowledgeBase for ConfluenceClient {
         // Re-parenting needs Confluence's move API, which is not wired up. A
         // plain page update leaves the parent unchanged, so report the gap
         // rather than claim a move (to root or elsewhere) that never happened.
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "Confluence does not support `article move` yet, with or without --parent; \
              move the page in Confluence instead"
                 .to_string(),
@@ -602,6 +602,6 @@ mod tests {
         let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
         let err = client.move_article("42", None).unwrap_err();
 
-        assert!(matches!(err, TrackerError::InvalidInput(_)), "got: {err:?}");
+        assert!(matches!(err, TrackerError::Unsupported(_)), "got: {err:?}");
     }
 }

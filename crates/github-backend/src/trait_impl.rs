@@ -133,7 +133,7 @@ impl IssueTracker for GitHubClient {
     }
 
     fn delete_issue(&self, _id: &str) -> Result<()> {
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "GitHub does not support deleting issues. Use update to close them instead."
                 .to_string(),
         ))
@@ -181,7 +181,7 @@ impl IssueTracker for GitHubClient {
     }
 
     fn create_project(&self, _project: &CreateProject) -> Result<Project> {
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "Creating repositories via this tool is not supported. Please use the GitHub web interface or gh CLI."
                 .to_string(),
         ))
@@ -263,7 +263,7 @@ impl IssueTracker for GitHubClient {
         _link_type: &str,
         _direction: &str,
     ) -> Result<()> {
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "GitHub does not support formal issue links. Reference issues via #number in comments instead."
                 .to_string(),
         ))
@@ -658,7 +658,7 @@ impl KnowledgeBase for GitHubClient {
 
     fn add_article_comment(&self, _article_id: &str, _text: &str) -> Result<Comment> {
         // GitHub wikis don't support comments
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "GitHub wikis do not support comments".to_string(),
         ))
     }

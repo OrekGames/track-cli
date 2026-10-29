@@ -591,7 +591,7 @@ mod tests {
     async fn test_update_issue() {
         let mock_server = MockServer::start().await;
 
-        // First mock: update returns 204 No Content
+        // Update returns 204 No Content; the client does not re-fetch
         Mock::given(method("PUT"))
             .and(path("/rest/api/3/issue/TEST-123"))
             .and(header(
@@ -599,20 +599,12 @@ mod tests {
                 "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
             ))
             .respond_with(ResponseTemplate::new(204))
+            .expect(1)
             .mount(&mock_server)
             .await;
-
-        // Second mock: get issue to fetch updated details
         Mock::given(method("GET"))
-            .and(path("/rest/api/3/issue/TEST-123"))
-            .and(header(
-                "Authorization",
-                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
-            ))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(mock_jira_issue("TEST-123", "Updated summary")),
-            )
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
             .mount(&mock_server)
             .await;
 
@@ -629,15 +621,14 @@ mod tests {
             },
         };
 
-        let issue = client.update_issue("TEST-123", &update).unwrap();
-        assert_eq!(issue.fields.summary, "Updated summary");
+        client.update_issue("TEST-123", &update).unwrap();
     }
 
     #[tokio::test]
     async fn test_update_issue_with_time_tracking() {
         let mock_server = MockServer::start().await;
 
-        // First mock: update returns 204 No Content and asserts body format
+        // Update returns 204 No Content and asserts body format
         Mock::given(method("PUT"))
             .and(path("/rest/api/3/issue/TEST-123"))
             .and(wiremock::matchers::body_json(serde_json::json!({
@@ -648,15 +639,7 @@ mod tests {
                 }
             })))
             .respond_with(ResponseTemplate::new(204))
-            .mount(&mock_server)
-            .await;
-
-        // Second mock: get issue to fetch updated details
-        Mock::given(method("GET"))
-            .and(path("/rest/api/3/issue/TEST-123"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "Summary")),
-            )
+            .expect(1)
             .mount(&mock_server)
             .await;
 
@@ -682,7 +665,7 @@ mod tests {
             },
         };
 
-        let _issue = client.update_issue("TEST-123", &update).unwrap();
+        client.update_issue("TEST-123", &update).unwrap();
     }
 
     #[tokio::test]
@@ -2081,13 +2064,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // 4. Mock GET issue
+        // 4. Mock GET issue: one re-fetch after both writes, none in between
         Mock::given(method("GET"))
             .and(path("/rest/api/3/issue/TEST-123"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(mock_jira_issue("TEST-123", "New Summary")),
             )
+            .expect(1)
             .mount(&mock_server)
             .await;
 

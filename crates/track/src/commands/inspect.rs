@@ -324,7 +324,7 @@ fn unsupported_include_warning(
 }
 
 fn is_unsupported_include_error(error: &TrackerError) -> bool {
-    matches!(error, TrackerError::InvalidInput(message) if message.to_ascii_lowercase().contains("not supported"))
+    matches!(error, TrackerError::Unsupported(_))
 }
 
 fn include_failure(id: &str, include: &str, error: TrackerError) -> InspectOutcome {
@@ -600,10 +600,9 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_include_warning_accepts_not_supported_invalid_input() {
-        let err = TrackerError::InvalidInput(
-            "Issue history is not supported by this backend".to_string(),
-        );
+    fn unsupported_include_warning_accepts_unsupported_error() {
+        let err =
+            TrackerError::Unsupported("Issue history is not supported by this backend".to_string());
         let warning = unsupported_include_warning("history", &err).unwrap();
         assert_eq!(warning.include, "history");
         assert!(
