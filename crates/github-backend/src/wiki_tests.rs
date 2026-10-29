@@ -305,8 +305,8 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let (wiki, _) = setup_wiki(&temp);
 
-        // The KnowledgeBase methods convert the same way, through `?`.
-        let err = TrackerError::from(wiki.get_page("nonexistent").unwrap_err());
+        // The KnowledgeBase methods pass this error through unchanged.
+        let err = wiki.get_page("nonexistent").unwrap_err();
 
         // A missing page is a 500, not NotFound.
         let (status, message) = api_error(err);
@@ -340,7 +340,7 @@ mod tests {
             ),
         ];
         for (result, expected) in failures {
-            let (status, message) = api_error(TrackerError::from(result.unwrap_err()));
+            let (status, message) = api_error(result.unwrap_err());
             assert_eq!(status, 500, "{message}");
             assert!(message.starts_with("Wiki error: "), "{message}");
             assert!(message.contains(expected), "{message}");

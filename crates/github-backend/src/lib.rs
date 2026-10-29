@@ -1,6 +1,5 @@
 pub mod client;
 mod convert;
-pub mod error;
 pub mod models;
 mod trait_impl;
 pub(crate) mod wiki;
@@ -12,8 +11,7 @@ mod convert_tests;
 #[cfg(test)]
 mod wiki_tests;
 
-pub use client::GitHubClient;
-pub use error::{GitHubError, Result};
+pub use client::{GitHubClient, is_rate_limit_error};
 pub use models::*;
 pub use wiki::WikiManager;
 

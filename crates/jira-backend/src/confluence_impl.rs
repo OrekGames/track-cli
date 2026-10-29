@@ -15,7 +15,6 @@ impl KnowledgeBase for ConfluenceClient {
     fn get_article(&self, id: &str) -> Result<Article> {
         self.get_page(id)
             .map(confluence_page_to_article)
-            .map_err(TrackerError::from)
     }
 
     fn list_articles(
@@ -34,8 +33,7 @@ impl KnowledgeBase for ConfluenceClient {
 
         loop {
             let page = self
-                .list_pages(project_id, limit, cursor.as_deref())
-                .map_err(TrackerError::from)?;
+                .list_pages(project_id, limit, cursor.as_deref())?;
             let page_len = page.results.len();
 
             if remaining_skip >= page_len {
@@ -81,8 +79,7 @@ impl KnowledgeBase for ConfluenceClient {
             let remaining = max_results - articles.len();
             let page_limit = remaining.min(100);
             let page = self
-                .list_pages(project_id, page_limit, cursor.as_deref())
-                .map_err(TrackerError::from)?;
+                .list_pages(project_id, page_limit, cursor.as_deref())?;
             let page_len = page.results.len();
 
             articles.extend(
@@ -113,7 +110,6 @@ impl KnowledgeBase for ConfluenceClient {
                     .filter_map(|hit| hit.content.map(search_content_to_article))
                     .collect()
             })
-            .map_err(TrackerError::from)
     }
 
     fn create_article(&self, article: &CreateArticle) -> Result<Article> {
@@ -134,14 +130,13 @@ impl KnowledgeBase for ConfluenceClient {
 
         self.create_page(&page)
             .map(confluence_page_to_article)
-            .map_err(TrackerError::from)
     }
 
     fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
         // The v2 page update needs the next version number, and requires title,
         // status, and body on every PUT: resend the current values for any the
         // caller leaves unchanged.
-        let current = self.get_page(id).map_err(TrackerError::from)?;
+        let current = self.get_page(id)?;
         let current_version = current.version.as_ref().map(|v| v.number).unwrap_or(1);
         let current_status = current
             .status
@@ -168,11 +163,10 @@ impl KnowledgeBase for ConfluenceClient {
 
         self.update_page(id, &update_request)
             .map(confluence_page_to_article)
-            .map_err(TrackerError::from)
     }
 
     fn delete_article(&self, id: &str) -> Result<()> {
-        self.delete_page(id).map_err(TrackerError::from)
+        self.delete_page(id)
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
@@ -183,7 +177,6 @@ impl KnowledgeBase for ConfluenceClient {
                     .map(confluence_page_to_article)
                     .collect()
             })
-            .map_err(TrackerError::from)
     }
 
     fn move_article(&self, _article_id: &str, _new_parent_id: Option<&str>) -> Result<Article> {
@@ -205,7 +198,6 @@ impl KnowledgeBase for ConfluenceClient {
                     .map(confluence_attachment_to_article_attachment)
                     .collect()
             })
-            .map_err(TrackerError::from)
     }
 
     fn add_article_attachment(
@@ -220,7 +212,6 @@ impl KnowledgeBase for ConfluenceClient {
                     .map(confluence_uploaded_attachment_to_article_attachment)
                     .collect()
             })
-            .map_err(TrackerError::from)
     }
 
     fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
@@ -231,13 +222,11 @@ impl KnowledgeBase for ConfluenceClient {
                     .map(confluence_comment_to_comment)
                     .collect()
             })
-            .map_err(TrackerError::from)
     }
 
     fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment> {
         self.add_page_comment(article_id, text)
             .map(confluence_comment_to_comment)
-            .map_err(TrackerError::from)
     }
 
     fn add_article_comment_attachment(
@@ -247,10 +236,8 @@ impl KnowledgeBase for ConfluenceClient {
         upload: &AttachmentUpload,
     ) -> Result<Comment> {
         let comment = self
-            .add_page_comment(article_id, text)
-            .map_err(TrackerError::from)?;
-        self.add_content_attachments(&comment.id, upload)
-            .map_err(TrackerError::from)?;
+            .add_page_comment(article_id, text)?;
+        self.add_content_attachments(&comment.id, upload)?;
         Ok(confluence_comment_to_comment(comment))
     }
 

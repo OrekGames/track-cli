@@ -235,7 +235,7 @@ impl IssueTracker for JiraClient {
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
-        Ok(self.delete_issue(id)?)
+        self.delete_issue(id)
     }
 
     fn list_issue_attachments(&self, issue_id: &str) -> Result<Vec<IssueAttachment>> {
@@ -407,11 +407,11 @@ impl IssueTracker for JiraClient {
             },
         };
 
-        Ok(self.create_link(&link)?)
+        self.create_link(&link)
     }
 
     fn unlink_issues(&self, _source: &str, link_id: &str) -> Result<()> {
-        Ok(self.delete_link(link_id)?)
+        self.delete_link(link_id)
     }
 
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
@@ -425,7 +425,7 @@ impl IssueTracker for JiraClient {
                 ..Default::default()
             },
         };
-        Ok(self.update_issue(child, &update)?)
+        self.update_issue(child, &update)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {

@@ -750,7 +750,7 @@ mod tests {
         let client = YouTrackClient::new(&mock_server.uri(), "test-token");
         let err = client.resolve_user_id("bob").unwrap_err();
 
-        assert!(!matches!(err, crate::error::YouTrackError::Api { .. }));
+        assert!(matches!(err, TrackerError::Parse(_)), "{err:?}");
         assert!(!err.to_string().contains("could not be resolved"));
     }
 
@@ -845,10 +845,7 @@ mod tests {
         let result = client.get_issue("PROJ-123");
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::error::YouTrackError::Unauthorized
-        ));
+        assert!(matches!(result.unwrap_err(), TrackerError::Unauthorized));
     }
 
     #[tokio::test]
@@ -1694,7 +1691,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 400);
                 assert!(
                     message.contains("Missing required field: Priority"),
@@ -1733,7 +1730,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 400);
                 assert!(
                     message.contains("Invalid value for field 'Type'"),
@@ -1773,7 +1770,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 400);
                 assert!(
                     message.contains("Something went wrong"),
@@ -1803,7 +1800,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 404);
                 assert!(
                     message.contains("PROJ-99999 not found"),
@@ -1831,10 +1828,7 @@ mod tests {
         let result = client.get_issue("PROJ-123");
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::error::YouTrackError::Unauthorized
-        ));
+        assert!(matches!(result.unwrap_err(), TrackerError::Unauthorized));
     }
 
     #[tokio::test]
@@ -1863,7 +1857,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 400);
                 assert_eq!(message, "HTTP 400");
             }
@@ -2684,10 +2678,8 @@ mod tests {
 
     // ========== Error and HTTP Plumbing Characterization Tests ==========
     //
-    // These pin the error classification and request shape seen through the
-    // IssueTracker trait, so they hold whether the client returns YouTrackError
-    // or TrackerError. Client-level calls convert with `.into()` for the same
-    // reason.
+    // These pin the error classification and request shape, through the
+    // IssueTracker trait wherever it reaches the path.
 
     fn upload_of(path: PathBuf, mime_type: Option<&str>) -> AttachmentUpload {
         AttachmentUpload {
@@ -3181,36 +3173,31 @@ mod tests {
                 "--comment",
                 client
                     .add_issue_comment_attachments("X-1", "4-1", &with_comment)
-                    .unwrap_err()
-                    .into(),
+                    .unwrap_err(),
             ),
             (
                 "--comment",
                 client
                     .add_article_attachments("KB-A-1", &with_comment)
-                    .unwrap_err()
-                    .into(),
+                    .unwrap_err(),
             ),
             (
                 "--minor-edit",
                 client
                     .add_article_attachments("KB-A-1", &minor_edit)
-                    .unwrap_err()
-                    .into(),
+                    .unwrap_err(),
             ),
             (
                 "--comment",
                 client
                     .add_article_comment_attachments("KB-A-1", "4-2", &with_comment)
-                    .unwrap_err()
-                    .into(),
+                    .unwrap_err(),
             ),
             (
                 "--minor-edit",
                 client
                     .add_article_comment_attachments("KB-A-1", "4-2", &minor_edit)
-                    .unwrap_err()
-                    .into(),
+                    .unwrap_err(),
             ),
         ];
         let _ = std::fs::remove_file(upload_path);

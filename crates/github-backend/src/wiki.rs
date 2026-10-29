@@ -1,18 +1,26 @@
 use crate::client::web_base_url;
-use crate::error::{GitHubError, Result};
 use chrono::{DateTime, Utc};
 use git2::{Cred, RemoteCallbacks, Repository, Signature};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tracker_core::AttachmentUpload;
 use tracker_core::strings::contains_ignore_case;
+use tracker_core::{AttachmentUpload, Result, TrackerError};
 use walkdir::WalkDir;
 
 const ATTACHMENT_ROOT: &str = ".track-attachments";
 const ATTACHMENT_BLOCK_START: &str = "<!-- track:attachments:start -->";
 const ATTACHMENT_BLOCK_END: &str = "<!-- track:attachments:end -->";
+
+/// Every wiki failure reads as a server error: callers and doctor have always
+/// seen wiki problems as `API error (500): Wiki error: ...`.
+fn wiki_error(message: impl std::fmt::Display) -> TrackerError {
+    TrackerError::Api {
+        status: 500,
+        message: format!("Wiki error: {message}"),
+    }
+}
 
 /// YAML front matter for wiki pages
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -76,7 +84,7 @@ pub(crate) fn validate_slug(slug: &str) -> Result<()> {
         || slug.starts_with('\\')
         || slug.contains('\0')
     {
-        return Err(GitHubError::Wiki(format!("Invalid slug: '{}'", slug)));
+        return Err(wiki_error(format!("Invalid slug: '{}'", slug)));
     }
     Ok(())
 }
@@ -167,7 +175,7 @@ impl WikiManager {
         let mut initialized = self
             .initialized
             .lock()
-            .map_err(|_| GitHubError::Wiki("Failed to acquire initialization lock".to_string()))?;
+            .map_err(|_| wiki_error("Failed to acquire initialization lock".to_string()))?;
 
         if *initialized {
             return Ok(());
@@ -190,9 +198,8 @@ impl WikiManager {
         self.clear_cache();
         // Create parent directories
         if let Some(parent) = self.cache_dir.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                GitHubError::Wiki(format!("Failed to create cache directory: {}", e))
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|e| wiki_error(format!("Failed to create cache directory: {}", e)))?;
         }
 
         let mut fetch_opts = git2::FetchOptions::new();
@@ -204,7 +211,7 @@ impl WikiManager {
         builder
             .clone(&self.wiki_url(), &self.cache_dir)
             .map_err(|e| {
-                GitHubError::Wiki(format!(
+                wiki_error(format!(
                     "Failed to clone wiki (wiki may not exist or may be disabled): {}",
                     e
                 ))
@@ -217,11 +224,11 @@ impl WikiManager {
     fn fetch_and_merge(&self) -> Result<()> {
         self.clear_cache();
         let repo = Repository::open(&self.cache_dir)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to open wiki repository: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to open wiki repository: {}", e)))?;
 
         let mut remote = repo
             .find_remote("origin")
-            .map_err(|e| GitHubError::Wiki(format!("Failed to find origin remote: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to find origin remote: {}", e)))?;
 
         let mut fetch_opts = git2::FetchOptions::new();
         fetch_opts.remote_callbacks(self.remote_callbacks());
@@ -229,26 +236,26 @@ impl WikiManager {
         // GitHub wikis only use the `master` branch
         remote
             .fetch(&["master"], Some(&mut fetch_opts), None)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to fetch: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to fetch: {}", e)))?;
 
         // Merge FETCH_HEAD into current branch
         let fetch_head = repo
             .find_reference("FETCH_HEAD")
-            .map_err(|e| GitHubError::Wiki(format!("Failed to find FETCH_HEAD: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to find FETCH_HEAD: {}", e)))?;
         let fetch_commit = repo
             .reference_to_annotated_commit(&fetch_head)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to get fetch commit: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to get fetch commit: {}", e)))?;
 
         let analysis = repo
             .merge_analysis(&[&fetch_commit])
-            .map_err(|e| GitHubError::Wiki(format!("Failed to analyze merge: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to analyze merge: {}", e)))?;
 
         if analysis.0.is_fast_forward() {
             // HEAD is a symbolic ref (points to refs/heads/master), so resolve it
             // to the underlying branch ref before setting the target OID.
             let head = repo
                 .find_reference("HEAD")
-                .map_err(|e| GitHubError::Wiki(format!("Failed to find HEAD: {}", e)))?;
+                .map_err(|e| wiki_error(format!("Failed to find HEAD: {}", e)))?;
             let branch_ref_name = head
                 .symbolic_target()
                 .ok()
@@ -257,19 +264,19 @@ impl WikiManager {
                 .to_string();
             let mut branch_ref = repo
                 .find_reference(&branch_ref_name)
-                .map_err(|e| GitHubError::Wiki(format!("Failed to find branch ref: {}", e)))?;
+                .map_err(|e| wiki_error(format!("Failed to find branch ref: {}", e)))?;
             let msg = "Fast-forward merge".to_string();
             branch_ref
                 .set_target(fetch_commit.id(), &msg)
-                .map_err(|e| GitHubError::Wiki(format!("Failed to fast-forward: {}", e)))?;
+                .map_err(|e| wiki_error(format!("Failed to fast-forward: {}", e)))?;
             repo.set_head(&branch_ref_name)
-                .map_err(|e| GitHubError::Wiki(format!("Failed to set HEAD: {}", e)))?;
+                .map_err(|e| wiki_error(format!("Failed to set HEAD: {}", e)))?;
             repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
-                .map_err(|e| GitHubError::Wiki(format!("Failed to checkout: {}", e)))?;
+                .map_err(|e| wiki_error(format!("Failed to checkout: {}", e)))?;
         } else if analysis.0.is_up_to_date() {
             // Nothing to do
         } else {
-            return Err(GitHubError::Wiki(
+            return Err(wiki_error(
                 "Wiki has diverged; non-fast-forward merge required. \
                  Delete the cache at ~/.cache/track/wikis/ and retry."
                     .to_string(),
@@ -290,7 +297,7 @@ impl WikiManager {
             .min_depth(1)
         {
             let entry =
-                entry.map_err(|e| GitHubError::Wiki(format!("Failed to read directory: {}", e)))?;
+                entry.map_err(|e| wiki_error(format!("Failed to read directory: {}", e)))?;
 
             let path = entry.path();
 
@@ -358,7 +365,7 @@ impl WikiManager {
         }
 
         let content = fs::read_to_string(path)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to read file: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to read file: {}", e)))?;
 
         // Parse front matter and content
         let (front_matter, content) = self.parse_markdown_with_frontmatter(&content);
@@ -366,7 +373,7 @@ impl WikiManager {
         // Get slug from filename
         let relative_path = path
             .strip_prefix(&self.cache_dir)
-            .map_err(|_| GitHubError::Wiki("Invalid path".to_string()))?;
+            .map_err(|_| wiki_error("Invalid path".to_string()))?;
 
         let slug = relative_path
             .with_extension("")
@@ -446,15 +453,15 @@ impl WikiManager {
         path: &Path,
     ) -> Result<(DateTime<Utc>, DateTime<Utc>, Option<String>)> {
         let repo = Repository::open(&self.cache_dir)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to open repository: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to open repository: {}", e)))?;
 
         let relative_path = path
             .strip_prefix(&self.cache_dir)
-            .map_err(|_| GitHubError::Wiki("Invalid path".to_string()))?;
+            .map_err(|_| wiki_error("Invalid path".to_string()))?;
 
         let mut revwalk = repo
             .revwalk()
-            .map_err(|e| GitHubError::Wiki(format!("Failed to walk commits: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to walk commits: {}", e)))?;
         revwalk.push_head().ok();
 
         let mut first_commit_time = None;
@@ -503,7 +510,7 @@ impl WikiManager {
         let page_path = self.cache_dir.join(format!("{}.md", slug));
 
         if !page_path.exists() {
-            return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
+            return Err(wiki_error(format!("Page '{}' not found", slug)));
         }
 
         self.read_page(&page_path)
@@ -523,20 +530,20 @@ impl WikiManager {
         let page_path = self.cache_dir.join(format!("{}.md", slug));
 
         if page_path.exists() {
-            return Err(GitHubError::Wiki(format!("Page '{}' already exists", slug)));
+            return Err(wiki_error(format!("Page '{}' already exists", slug)));
         }
 
         // Create parent directories if needed
         if let Some(parent) = page_path.parent() {
             fs::create_dir_all(parent)
-                .map_err(|e| GitHubError::Wiki(format!("Failed to create directory: {}", e)))?;
+                .map_err(|e| wiki_error(format!("Failed to create directory: {}", e)))?;
         }
 
         // Generate markdown with front matter
         let markdown = self.generate_markdown_with_frontmatter(title, content, &tags);
 
         fs::write(&page_path, markdown)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to write file: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to write file: {}", e)))?;
         self.invalidate_path(&page_path);
 
         // Commit and push
@@ -559,7 +566,7 @@ impl WikiManager {
         let page_path = self.cache_dir.join(format!("{}.md", slug));
 
         if !page_path.exists() {
-            return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
+            return Err(wiki_error(format!("Page '{}' not found", slug)));
         }
 
         // Read existing page
@@ -573,7 +580,7 @@ impl WikiManager {
         let markdown = self.generate_markdown_with_frontmatter(new_title, new_content, &new_tags);
 
         fs::write(&page_path, markdown)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to write file: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to write file: {}", e)))?;
         self.invalidate_path(&page_path);
 
         // Commit and push
@@ -590,11 +597,11 @@ impl WikiManager {
         let page_path = self.cache_dir.join(format!("{}.md", slug));
 
         if !page_path.exists() {
-            return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
+            return Err(wiki_error(format!("Page '{}' not found", slug)));
         }
 
         fs::remove_file(&page_path)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to delete file: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to delete file: {}", e)))?;
         self.invalidate_path(&page_path);
 
         // Commit and push
@@ -633,7 +640,7 @@ impl WikiManager {
         upload: &AttachmentUpload,
     ) -> Result<Vec<WikiAttachment>> {
         if upload.comment.is_some() {
-            return Err(GitHubError::Wiki(
+            return Err(wiki_error(
                 "GitHub wiki attachment fallback does not support --comment".to_string(),
             ));
         }
@@ -643,7 +650,7 @@ impl WikiManager {
 
         let page_path = self.cache_dir.join(format!("{}.md", slug));
         if !page_path.exists() {
-            return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
+            return Err(wiki_error(format!("Page '{}' not found", slug)));
         }
 
         let page = self.read_page(&page_path)?;
@@ -658,12 +665,12 @@ impl WikiManager {
 
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
-                    GitHubError::Wiki(format!("Failed to create attachment directory: {}", e))
+                    wiki_error(format!("Failed to create attachment directory: {}", e))
                 })?;
             }
 
             fs::copy(&file.path, &destination)
-                .map_err(|e| GitHubError::Wiki(format!("Failed to copy attachment: {}", e)))?;
+                .map_err(|e| wiki_error(format!("Failed to copy attachment: {}", e)))?;
 
             let path = relative_path.to_string_lossy().replace('\\', "/");
             existing.retain(|(_, existing_path)| existing_path != &path);
@@ -691,7 +698,7 @@ impl WikiManager {
         let markdown =
             self.generate_markdown_with_frontmatter(&page.title, &updated_content, &page.tags);
         fs::write(&page_path, markdown)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to update page: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to update page: {}", e)))?;
         changed_paths.push(page_path);
 
         let changed_refs: Vec<&Path> = changed_paths.iter().map(PathBuf::as_path).collect();
@@ -714,13 +721,13 @@ impl WikiManager {
         let old_path = self.cache_dir.join(format!("{}.md", slug));
 
         if !old_path.exists() {
-            return Err(GitHubError::Wiki(format!("Page '{}' not found", slug)));
+            return Err(wiki_error(format!("Page '{}' not found", slug)));
         }
 
         // Extract filename from slug
         let filename = Path::new(slug)
             .file_name()
-            .ok_or_else(|| GitHubError::Wiki("Invalid slug".to_string()))?
+            .ok_or_else(|| wiki_error("Invalid slug".to_string()))?
             .to_string_lossy();
 
         let new_slug = match new_parent {
@@ -734,21 +741,18 @@ impl WikiManager {
         }
         // `fs::rename` would silently replace the page already at the destination.
         if new_path.exists() {
-            return Err(GitHubError::Wiki(format!(
-                "Page '{}' already exists",
-                new_slug
-            )));
+            return Err(wiki_error(format!("Page '{}' already exists", new_slug)));
         }
 
         // Create parent directory if needed
         if let Some(parent) = new_path.parent() {
             fs::create_dir_all(parent)
-                .map_err(|e| GitHubError::Wiki(format!("Failed to create directory: {}", e)))?;
+                .map_err(|e| wiki_error(format!("Failed to create directory: {}", e)))?;
         }
 
         // Move file
         fs::rename(&old_path, &new_path)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to move file: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to move file: {}", e)))?;
         self.invalidate_path(&old_path);
         self.invalidate_path(&new_path);
 
@@ -792,43 +796,43 @@ impl WikiManager {
     fn commit_and_push(&self, message: &str, paths: &[&Path]) -> Result<()> {
         self.clear_cache();
         let repo = Repository::open(&self.cache_dir)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to open repository: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to open repository: {}", e)))?;
 
         let mut index = repo
             .index()
-            .map_err(|e| GitHubError::Wiki(format!("Failed to get index: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to get index: {}", e)))?;
 
         // Add or remove files
         for path in paths {
             let relative_path = path
                 .strip_prefix(&self.cache_dir)
-                .map_err(|_| GitHubError::Wiki("Invalid path".to_string()))?;
+                .map_err(|_| wiki_error("Invalid path".to_string()))?;
 
             if path.exists() {
-                index.add_path(relative_path).map_err(|e| {
-                    GitHubError::Wiki(format!("Failed to add file to index: {}", e))
-                })?;
+                index
+                    .add_path(relative_path)
+                    .map_err(|e| wiki_error(format!("Failed to add file to index: {}", e)))?;
             } else {
-                index.remove_path(relative_path).map_err(|e| {
-                    GitHubError::Wiki(format!("Failed to remove file from index: {}", e))
-                })?;
+                index
+                    .remove_path(relative_path)
+                    .map_err(|e| wiki_error(format!("Failed to remove file from index: {}", e)))?;
             }
         }
 
         index
             .write()
-            .map_err(|e| GitHubError::Wiki(format!("Failed to write index: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to write index: {}", e)))?;
 
         let tree_id = index
             .write_tree()
-            .map_err(|e| GitHubError::Wiki(format!("Failed to write tree: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to write tree: {}", e)))?;
 
         let tree = repo
             .find_tree(tree_id)
-            .map_err(|e| GitHubError::Wiki(format!("Failed to find tree: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to find tree: {}", e)))?;
 
         let signature = Signature::now("track-cli", "track@example.com")
-            .map_err(|e| GitHubError::Wiki(format!("Failed to create signature: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to create signature: {}", e)))?;
 
         let parent_commit = repo.head().and_then(|head| head.peel_to_commit()).ok();
 
@@ -842,12 +846,12 @@ impl WikiManager {
             &tree,
             &parents,
         )
-        .map_err(|e| GitHubError::Wiki(format!("Failed to commit: {}", e)))?;
+        .map_err(|e| wiki_error(format!("Failed to commit: {}", e)))?;
 
         // Push to remote
         let mut remote = repo
             .find_remote("origin")
-            .map_err(|e| GitHubError::Wiki(format!("Failed to find remote: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to find remote: {}", e)))?;
 
         let mut callbacks = self.remote_callbacks();
         // `Remote::push` succeeds even when the server rejects a ref update; the
@@ -871,7 +875,7 @@ impl WikiManager {
                 &["refs/heads/master:refs/heads/master"],
                 Some(&mut push_opts),
             )
-            .map_err(|e| GitHubError::Wiki(format!("Failed to push to master: {}", e)))?;
+            .map_err(|e| wiki_error(format!("Failed to push to master: {}", e)))?;
 
         Ok(())
     }
@@ -913,7 +917,7 @@ fn attachment_file_name(file: &tracker_core::AttachmentUploadFile) -> Result<Str
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
         })
-        .ok_or_else(|| GitHubError::Wiki("Attachment file name is required".to_string()))?;
+        .ok_or_else(|| wiki_error("Attachment file name is required".to_string()))?;
 
     if name.contains('/')
         || name.contains('\\')
@@ -921,7 +925,7 @@ fn attachment_file_name(file: &tracker_core::AttachmentUploadFile) -> Result<Str
         || name.contains('\0')
         || name.trim().is_empty()
     {
-        return Err(GitHubError::Wiki(format!(
+        return Err(wiki_error(format!(
             "Invalid attachment file name '{}'",
             name
         )));

@@ -3,7 +3,6 @@
 #[cfg(test)]
 mod tests {
     use crate::client::LinearClient;
-    use crate::error::LinearError;
     use tracker_core::{CreateIssue, CustomFieldUpdate, IssueTracker, TrackerError};
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -231,7 +230,7 @@ mod tests {
         let err = client.get_issue("ORE-1").unwrap_err();
 
         match err {
-            LinearError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(status, 200);
                 assert!(message.contains("Cannot query field"));
             }
@@ -260,7 +259,10 @@ mod tests {
         let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
         let err = client.get_issue("ORE-1").unwrap_err();
 
-        assert!(matches!(err, LinearError::RateLimited));
+        assert!(matches!(
+            err,
+            TrackerError::Api { status: 429, ref message } if message == "Linear API rate limit exceeded"
+        ));
     }
 
     #[tokio::test]
@@ -277,7 +279,7 @@ mod tests {
         let client = LinearClient::with_base_url(&mock_server.uri(), "bad-token");
         let err = client.get_issue("ORE-1").unwrap_err();
 
-        assert!(matches!(err, LinearError::Unauthorized));
+        assert!(matches!(err, TrackerError::Unauthorized));
     }
 
     #[tokio::test]
@@ -841,7 +843,7 @@ mod tests {
         let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
         let err = client.list_teams().unwrap_err();
 
-        assert!(matches!(err, LinearError::PaginationStalled(_)));
+        assert!(matches!(err, TrackerError::PaginationStalled(_)));
     }
 
     #[tokio::test]
@@ -944,6 +946,427 @@ mod tests {
         assert_eq!(
             request_variables(create_request)["input"]["stateId"],
             "state-open"
+        );
+    }
+
+    // ==================== Error and HTTP Plumbing ====================
+    //
+    // These pin how failures surface through the IssueTracker trait.
+
+    /// Unwrap a `TrackerError::Api` into its status and message.
+    #[track_caller]
+    fn api_error(err: TrackerError) -> (u16, String) {
+        match err {
+            TrackerError::Api { status, message } => (status, message),
+            other => panic!("expected Api error, got: {other:?}"),
+        }
+    }
+
+    /// The error `IssueTracker::get_issue` reports when every request is
+    /// answered with `response`.
+    async fn trait_get_issue_error(response: ResponseTemplate) -> TrackerError {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(response)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        <LinearClient as IssueTracker>::get_issue(&client, "ORE-1").unwrap_err()
+    }
+
+    /// A `query Teams` response holding every team in one page.
+    fn teams_page(nodes: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "data": {
+                "teams": {
+                    "nodes": nodes,
+                    "pageInfo": { "hasNextPage": false, "endCursor": null }
+                }
+            }
+        })
+    }
+
+    /// Mount the teams-list query `get_team` falls back to, expected to be
+    /// requested `times` times. `query Team(` (the by-id lookup) does not
+    /// match it.
+    async fn mount_list_teams(mock_server: &MockServer, times: u64) {
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Teams"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(teams_page(vec![mock_team("ORE"), mock_team("ENG")])),
+            )
+            .expect(times)
+            .mount(mock_server)
+            .await;
+    }
+
+    /// Serve one canned raw HTTP response, then close the connection. Used for
+    /// responses wiremock cannot produce, such as a body cut off mid-stream.
+    fn serve_raw_response_once(response: &'static str) -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+                let mut buffer = [0; 4096];
+                let _ = stream.read(&mut buffer);
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn test_http_429_is_api_429_rate_limit() {
+        let err =
+            trait_get_issue_error(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "errors": [{ "message": "slow" }]
+            })))
+            .await;
+
+        // The body's message is dropped for a fixed rate-limit message.
+        assert_eq!(
+            api_error(err),
+            (429, "Linear API rate limit exceeded".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_2xx_graphql_errors_joined() {
+        let err =
+            trait_get_issue_error(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "errors": [{ "message": "a" }, { "x": 1 }, { "message": "b" }]
+            })))
+            .await;
+
+        // Errors without a message are skipped.
+        assert_eq!(api_error(err), (400, "a; b".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_non_2xx_top_level_message_and_empty_message() {
+        let cases = [
+            (
+                ResponseTemplate::new(400).set_body_json(serde_json::json!({ "message": "m" })),
+                400,
+                "m",
+            ),
+            (
+                ResponseTemplate::new(400).set_body_json(serde_json::json!({ "message": "" })),
+                400,
+                "",
+            ),
+            (ResponseTemplate::new(500), 500, "HTTP 500"),
+            (
+                ResponseTemplate::new(503).set_body_string("down"),
+                503,
+                "down",
+            ),
+        ];
+
+        for (response, status, message) in cases {
+            let err = trait_get_issue_error(response).await;
+            assert_eq!(api_error(err), (status, message.to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_non_2xx_error_message_fallbacks() {
+        let cases = [
+            // Errors without any message fall back to the top-level message.
+            (400, r#"{"errors":[{"x":1}],"message":"m"}"#, "m"),
+            // Error messages win over the top-level message.
+            (400, r#"{"errors":[{"message":"a"}],"message":"m"}"#, "a"),
+            // No string message anywhere: the body verbatim.
+            (400, r#"{"errors":[{"x":1}]}"#, r#"{"errors":[{"x":1}]}"#),
+            (400, r#"{"message":5}"#, r#"{"message":5}"#),
+            // Only 401 and 429 are special-cased.
+            (403, r#"{"message":"forbidden"}"#, "forbidden"),
+            (404, r#"{"message":"missing"}"#, "missing"),
+        ];
+
+        for (status, body, message) in cases {
+            let err =
+                trait_get_issue_error(ResponseTemplate::new(status).set_body_string(body)).await;
+            assert_eq!(
+                api_error(err),
+                (status, message.to_string()),
+                "body: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ratelimited_code_on_non_2xx_is_api() {
+        let err =
+            trait_get_issue_error(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "errors": [{ "message": "limited", "extensions": { "code": "RATELIMITED" } }]
+            })))
+            .await;
+
+        // The RATELIMITED code is only looked at on a 2xx response.
+        assert_eq!(api_error(err), (400, "limited".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_unauthorized_ignores_body_via_trait() {
+        for response in [
+            ResponseTemplate::new(401).set_body_string("nope"),
+            ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "errors": [{ "message": "limited", "extensions": { "code": "RATELIMITED" } }]
+            })),
+        ] {
+            let err = trait_get_issue_error(response).await;
+            assert!(
+                matches!(err, TrackerError::Unauthorized),
+                "expected Unauthorized, got: {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_graphql_ratelimited_code_on_200_is_api_429() {
+        let err =
+            trait_get_issue_error(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "errors": [
+                    { "message": "other" },
+                    { "message": "Too many", "extensions": { "code": "ratelimited" } }
+                ]
+            })))
+            .await;
+
+        // Any error carrying the code counts, compared case-insensitively.
+        assert_eq!(
+            api_error(err),
+            (429, "Linear API rate limit exceeded".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_graphql_errors_on_200_are_api_200_joined() {
+        let err =
+            trait_get_issue_error(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "issue": mock_linear_issue("ORE-1", "Partial") },
+                "errors": [{ "message": "a" }, { "message": "b" }]
+            })))
+            .await;
+
+        // Errors win even when data came back too.
+        assert_eq!(api_error(err), (200, "a; b".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_graphql_error_without_message_on_200_is_parse() {
+        let err =
+            trait_get_issue_error(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "errors": [{ "extensions": { "code": "INTERNAL" } }]
+            })))
+            .await;
+
+        // Unlike the non-2xx path, a 2xx envelope requires every error to have
+        // a message, so this does not decode.
+        assert!(
+            matches!(err, TrackerError::Parse(_)),
+            "expected Parse, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_empty_graphql_errors_array_is_ignored() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "issue": mock_linear_issue("ORE-1", "Found") },
+                "errors": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let issue = <LinearClient as IssueTracker>::get_issue(&client, "ORE-1").unwrap();
+
+        assert_eq!(issue.id_readable, "ORE-1");
+    }
+
+    #[tokio::test]
+    async fn test_non_json_success_body_is_parse() {
+        let err =
+            trait_get_issue_error(ResponseTemplate::new(200).set_body_string("not-json")).await;
+
+        // Agreed behavior for every backend; Linear already decodes the
+        // envelope with serde_json, so this is Parse before the migration too.
+        assert!(
+            matches!(err, TrackerError::Parse(_)),
+            "expected Parse, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_missing_data_is_api_200() {
+        for body in [serde_json::json!({}), serde_json::json!({ "data": null })] {
+            let err =
+                trait_get_issue_error(ResponseTemplate::new(200).set_body_json(body.clone())).await;
+            assert_eq!(
+                api_error(err),
+                (
+                    200,
+                    "Linear GraphQL response did not contain data".to_string()
+                ),
+                "body: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_non_2xx_unreadable_body_is_http_status() {
+        // The body is cut off before its Content-Length; the failed read
+        // counts as an empty body.
+        let uri = serve_raw_response_once(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"message\":",
+        );
+
+        let client = LinearClient::with_base_url(&uri, "test-token");
+        let err = <LinearClient as IssueTracker>::get_issue(&client, "ORE-1").unwrap_err();
+
+        assert_eq!(api_error(err), (500, "HTTP 500".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_connection_failure_is_http() {
+        // Bind and drop a listener so nothing accepts on the port.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+
+        let client = LinearClient::with_base_url(&format!("http://{addr}"), "test-token");
+        let err = <LinearClient as IssueTracker>::get_issue(&client, "ORE-1").unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Http(_)),
+            "expected Http, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_team_rate_limit_propagates_without_list_teams() {
+        let mock_server = MockServer::start().await;
+        mount_list_teams(&mock_server, 0).await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Team("))
+            .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "errors": [{ "message": "slow" }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let err = <LinearClient as IssueTracker>::get_project(&client, "ENG").unwrap_err();
+
+        assert_eq!(
+            api_error(err),
+            (429, "Linear API rate limit exceeded".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_team_other_errors_propagate_without_list_teams() {
+        type IsExpected = fn(&TrackerError) -> bool;
+
+        let cases: [(&str, ResponseTemplate, IsExpected); 3] = [
+            ("401", ResponseTemplate::new(401), |err| {
+                matches!(err, TrackerError::Unauthorized)
+            }),
+            (
+                "RATELIMITED code",
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "errors": [{ "message": "slow", "extensions": { "code": "RATELIMITED" } }]
+                })),
+                |err| {
+                    matches!(
+                        err,
+                        TrackerError::Api { status: 429, message }
+                            if message == "Linear API rate limit exceeded"
+                    )
+                },
+            ),
+            (
+                "non-JSON body",
+                ResponseTemplate::new(200).set_body_string("not-json"),
+                |err| matches!(err, TrackerError::Parse(_)),
+            ),
+        ];
+
+        for (case, response, expected) in cases {
+            let mock_server = MockServer::start().await;
+            mount_list_teams(&mock_server, 0).await;
+
+            Mock::given(method("POST"))
+                .and(body_string_contains("query Team("))
+                .respond_with(response)
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+
+            let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+            let err = <LinearClient as IssueTracker>::get_project(&client, "ENG").unwrap_err();
+
+            assert!(expected(&err), "{case}: unexpected error: {err:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_team_api_error_falls_back_to_list_teams() {
+        let mock_server = MockServer::start().await;
+        mount_list_teams(&mock_server, 1).await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Team("))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "errors": [{ "message": "Entity not found" }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let project = <LinearClient as IssueTracker>::get_project(&client, "ENG").unwrap();
+
+        assert_eq!(project.id, "team-eng");
+        assert_eq!(project.short_name, "ENG");
+    }
+
+    #[tokio::test]
+    async fn test_get_team_null_team_falls_back_to_list_teams() {
+        let mock_server = MockServer::start().await;
+        mount_list_teams(&mock_server, 1).await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Team("))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "team": null }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let err = <LinearClient as IssueTracker>::get_project(&client, "OPS").unwrap_err();
+
+        // No listed team matches either, so it is reported as not found.
+        assert!(
+            matches!(err, TrackerError::ProjectNotFound(ref id) if id == "OPS"),
+            "expected ProjectNotFound(\"OPS\"), got: {err:?}"
         );
     }
 }

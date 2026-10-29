@@ -1008,10 +1008,7 @@ mod tests {
         let result = client.get_issue(42);
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::error::GitLabError::Unauthorized
-        ));
+        assert!(matches!(result.unwrap_err(), TrackerError::Unauthorized));
     }
 
     #[tokio::test]
@@ -1029,7 +1026,7 @@ mod tests {
 
         // Operations that need project_id fail before any request, with a
         // synthetic status-0 Api error rather than InvalidInput.
-        let err = TrackerError::from(client.get_issue(42).unwrap_err());
+        let err = client.get_issue(42).unwrap_err();
         let (status, message) = api_error(err);
         assert_eq!(status, 0);
         assert!(
@@ -1373,7 +1370,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::error::GitLabError::Api { message, .. } => {
+            TrackerError::Api { message, .. } => {
                 assert!(
                     message.contains("GraphQL error"),
                     "Expected GraphQL error, got: {}",
@@ -1407,7 +1404,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::error::GitLabError::Api { message, .. } => {
+            TrackerError::Api { message, .. } => {
                 assert!(
                     message.contains("Failed to set parent"),
                     "Expected mutation error, got: {}",
@@ -1895,9 +1892,8 @@ mod tests {
 
     // ==================== Error and HTTP Plumbing ====================
     //
-    // These pin how failures surface through the IssueTracker trait, so they
-    // hold whether the client returns GitLabError or TrackerError. Client-level
-    // calls convert with `TrackerError::from` for the same reason.
+    // These pin how failures surface, through the IssueTracker trait wherever
+    // it reaches the path.
 
     fn upload_file(path: PathBuf, mime_type: Option<&str>) -> AttachmentUploadFile {
         AttachmentUploadFile {
@@ -2054,7 +2050,7 @@ mod tests {
             ),
             (
                 "GraphQL",
-                TrackerError::from(client.set_work_item_parent(1042, 1010).unwrap_err()),
+                client.set_work_item_parent(1042, 1010).unwrap_err(),
             ),
         ];
         let _ = std::fs::remove_file(upload_path);
@@ -2748,9 +2744,7 @@ mod tests {
                 "test-token",
                 Some("123"),
             );
-            client
-                .set_work_item_parent(1042, 1010)
-                .map_err(TrackerError::from)
+            client.set_work_item_parent(1042, 1010)
         };
 
         // Errors in a 200 body are status 0; entries without a string message

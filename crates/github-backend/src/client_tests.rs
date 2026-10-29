@@ -657,10 +657,15 @@ mod tests {
         let result = client.get_issue(1);
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::error::GitHubError::RateLimited
-        ));
+        let err = result.unwrap_err();
+        assert!(crate::is_rate_limit_error(&err), "{err:?}");
+        match err {
+            TrackerError::Api { status, message } => {
+                assert_eq!(status, 429);
+                assert_eq!(message, "GitHub API rate limit exceeded");
+            }
+            other => panic!("Expected Api error, got: {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -680,10 +685,7 @@ mod tests {
         let result = client.get_issue(1);
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::error::GitHubError::Unauthorized
-        ));
+        assert!(matches!(result.unwrap_err(), TrackerError::Unauthorized));
     }
 
     #[tokio::test]
@@ -708,7 +710,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::error::GitHubError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(status, 403);
                 assert!(message.contains("Resource not accessible"));
             }
@@ -732,7 +734,7 @@ mod tests {
         // A body that is not the expected JSON is a decode failure, not a
         // transport (`Http`) failure.
         match result.unwrap_err() {
-            crate::error::GitHubError::Parse(_) => {}
+            TrackerError::Parse(_) => {}
             other => panic!("Expected Parse error, got: {:?}", other),
         }
     }
@@ -755,7 +757,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::error::GitHubError::Api { status, .. } => {
+            TrackerError::Api { status, .. } => {
                 assert_eq!(status, 404);
             }
             other => panic!("Expected Api error, got: {:?}", other),
@@ -793,6 +795,7 @@ mod tests {
             .unwrap_err();
 
         // Only a 403 with x-ratelimit-remaining: 0 counts as rate limiting.
+        assert!(!crate::is_rate_limit_error(&err), "{err:?}");
         assert_eq!(api_error(err), (429, "secondary rate limit".to_string()));
     }
 
@@ -976,7 +979,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_invalid_success_body_display_is_json_parse_error() {
+    async fn test_invalid_success_body_display_is_parse_error() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -989,7 +992,7 @@ mod tests {
         let err = client.get_issue(1).unwrap_err();
 
         // `track init` prints this Display in its fallback branch.
-        assert!(err.to_string().starts_with("JSON parse error: "), "{err}");
+        assert!(err.to_string().starts_with("Parse error: "), "{err}");
     }
 
     #[tokio::test]
@@ -1033,23 +1036,6 @@ mod tests {
         let err = client.get_issue_history("42").unwrap_err();
 
         assert!(matches!(err, TrackerError::Parse(_)), "{err:?}");
-    }
-
-    #[test]
-    fn test_pagination_stalled_maps_one_to_one() {
-        // get_all_pages only builds this after 10_000 full pages.
-        let err = TrackerError::from(crate::error::GitHubError::PaginationStalled(
-            "'u' did not terminate after 10000 pages".to_string(),
-        ));
-
-        assert!(
-            matches!(
-                err,
-                TrackerError::PaginationStalled(ref message)
-                    if message == "'u' did not terminate after 10000 pages"
-            ),
-            "{err:?}"
-        );
     }
 
     #[test]
@@ -1257,7 +1243,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::error::GitHubError::Api { status, .. } => {
+            TrackerError::Api { status, .. } => {
                 assert_eq!(status, 404);
             }
             other => panic!("Expected Api error, got: {:?}", other),
