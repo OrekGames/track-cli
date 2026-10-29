@@ -928,16 +928,32 @@ mod tests {
 
     /// Serve one canned raw HTTP response, then close the connection. Used for
     /// responses wiremock cannot produce, such as a body cut off mid-stream.
+    ///
+    /// The request, including a `Content-Length` body, is read in full first:
+    /// closing a socket with request bytes still unread makes Windows reset
+    /// the connection, and the client then fails before it reads the response.
     fn serve_raw_response_once(response: &'static str) -> String {
-        use std::io::{Read, Write};
+        use std::io::{BufRead, BufReader, Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
                 let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(3)));
-                let mut buffer = [0; 4096];
-                let _ = stream.read(&mut buffer);
+                {
+                    let mut reader = BufReader::new(&stream);
+                    let mut content_length = 0;
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 0) && line != "\r\n" {
+                        if let Some(value) =
+                            line.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                        line.clear();
+                    }
+                    let _ = reader.read_exact(&mut vec![0; content_length]);
+                }
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.flush();
                 let _ = stream.shutdown(std::net::Shutdown::Both);
