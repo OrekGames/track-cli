@@ -7,7 +7,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
-    use tracker_core::{AttachmentUpload, AttachmentUploadFile};
+    use tracker_core::{AttachmentUpload, AttachmentUploadFile, TrackerError};
 
     fn commit_all(repo: &Repository, message: &str) -> git2::Oid {
         let mut index = repo.index().expect("index");
@@ -290,6 +290,61 @@ mod tests {
         let (wiki, _) = setup_wiki(&temp);
 
         assert!(wiki.delete_page("nonexistent").is_err());
+    }
+
+    /// Unwrap a `TrackerError::Api` into its status and message.
+    fn api_error(err: TrackerError) -> (u16, String) {
+        match err {
+            TrackerError::Api { status, message } => (status, message),
+            other => panic!("Expected Api error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn wiki_errors_map_to_api_500() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, _) = setup_wiki(&temp);
+
+        // The KnowledgeBase methods convert the same way, through `?`.
+        let err = TrackerError::from(wiki.get_page("nonexistent").unwrap_err());
+
+        // A missing page is a 500, not NotFound.
+        let (status, message) = api_error(err);
+        assert_eq!(status, 500);
+        assert!(message.starts_with("Wiki error: "), "{message}");
+        assert!(message.contains("not found"), "{message}");
+    }
+
+    #[test]
+    fn wiki_input_errors_also_map_to_api_500() {
+        let temp = TempDir::new().expect("tempdir");
+        let (wiki, _) = setup_wiki(&temp);
+        let upload = AttachmentUpload {
+            files: Vec::new(),
+            comment: Some("note".to_string()),
+            silent: false,
+            minor_edit: true,
+        };
+
+        // None of these become InvalidInput.
+        let failures = [
+            (wiki.get_page("../escape").map(|_| ()), "Invalid slug"),
+            (
+                wiki.create_page("Home", "Home", "Body", Vec::new())
+                    .map(|_| ()),
+                "already exists",
+            ),
+            (
+                wiki.add_attachments("Home", &upload).map(|_| ()),
+                "does not support --comment",
+            ),
+        ];
+        for (result, expected) in failures {
+            let (status, message) = api_error(TrackerError::from(result.unwrap_err()));
+            assert_eq!(status, 500, "{message}");
+            assert!(message.starts_with("Wiki error: "), "{message}");
+            assert!(message.contains(expected), "{message}");
+        }
     }
 
     // ====================================================================

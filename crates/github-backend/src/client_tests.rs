@@ -3,9 +3,46 @@
 #[cfg(test)]
 mod tests {
     use crate::client::GitHubClient;
-    use tracker_core::IssueTracker;
+    use tracker_core::{
+        AttachmentUpload, CreateIssue, Issue, IssueTracker, TrackerError, UpdateIssue,
+    };
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Serve `response` for issue 1 and fetch it through the `IssueTracker` trait.
+    async fn trait_get_issue_with(response: ResponseTemplate) -> tracker_core::Result<Issue> {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1"))
+            .respond_with(response)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        <GitHubClient as IssueTracker>::get_issue(&client, "1")
+    }
+
+    /// Unwrap a `TrackerError::Api` into its status and message.
+    fn api_error(err: TrackerError) -> (u16, String) {
+        match err {
+            TrackerError::Api { status, message } => (status, message),
+            other => panic!("Expected Api error, got: {:?}", other),
+        }
+    }
+
+    /// A body one byte over ureq's default 10 MB read limit.
+    fn oversized_body() -> String {
+        "x".repeat(10 * 1024 * 1024 + 1)
+    }
+
+    /// A localhost URL nothing listens on.
+    fn closed_localhost_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        format!("http://{addr}")
+    }
 
     /// Helper to create a mock GitHub issue response
     fn mock_github_issue(number: u64, title: &str) -> serde_json::Value {
@@ -723,6 +760,455 @@ mod tests {
             }
             other => panic!("Expected Api error, got: {:?}", other),
         }
+    }
+
+    // ==================== Error Mapping Through the Traits ====================
+
+    #[tokio::test]
+    async fn test_trait_rate_limit_is_api_429() {
+        let err = trait_get_issue_with(
+            ResponseTemplate::new(403)
+                .insert_header("x-ratelimit-remaining", "0")
+                .set_body_json(serde_json::json!({
+                    "message": "API rate limit exceeded"
+                })),
+        )
+        .await
+        .unwrap_err();
+
+        // The real status (403) and GitHub's message are both replaced.
+        assert_eq!(
+            api_error(err),
+            (429, "GitHub API rate limit exceeded".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_real_429_is_api_with_body_message() {
+        let err =
+            trait_get_issue_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "message": "secondary rate limit"
+            })))
+            .await
+            .unwrap_err();
+
+        // Only a 403 with x-ratelimit-remaining: 0 counts as rate limiting.
+        assert_eq!(api_error(err), (429, "secondary rate limit".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_error_json_without_message_uses_raw_body() {
+        let body = r#"{"errors":[]}"#;
+        let err =
+            trait_get_issue_with(ResponseTemplate::new(500).set_body_raw(body, "application/json"))
+                .await
+                .unwrap_err();
+
+        assert_eq!(api_error(err), (500, body.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_error_json_array_or_non_string_message_uses_raw_body() {
+        for body in [r#"["boom"]"#, r#"{"message":42}"#, r#""boom""#] {
+            let err = trait_get_issue_with(
+                ResponseTemplate::new(500).set_body_raw(body, "application/json"),
+            )
+            .await
+            .unwrap_err();
+
+            assert_eq!(api_error(err), (500, body.to_string()), "body {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_non_json_error_body_is_used_verbatim() {
+        let body = "  upstream connect error\n";
+        let err = trait_get_issue_with(ResponseTemplate::new(503).set_body_string(body))
+            .await
+            .unwrap_err();
+
+        // Not trimmed.
+        assert_eq!(api_error(err), (503, body.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_empty_error_body_is_http_status() {
+        let err = trait_get_issue_with(ResponseTemplate::new(502))
+            .await
+            .unwrap_err();
+
+        assert_eq!(api_error(err), (502, "HTTP 502".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_unreadable_error_body_falls_back_to_http_status() {
+        let err =
+            trait_get_issue_with(ResponseTemplate::new(500).set_body_string(oversized_body()))
+                .await
+                .unwrap_err();
+
+        // The read failure is swallowed as an empty body, not reported as Http.
+        let (status, message) = api_error(err);
+        assert_eq!(status, 500);
+        assert!(
+            message == "HTTP 500",
+            "expected \"HTTP 500\", got {} bytes",
+            message.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validation_errors_array_is_dropped() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "message": "Validation Failed",
+                "errors": [{"field": "title", "code": "missing"}],
+                "documentation_url": "u"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let create = CreateIssue {
+            project_id: "owner/repo".to_string(),
+            summary: String::new(),
+            description: None,
+            custom_fields: Vec::new(),
+            tags: Vec::new(),
+            parent: None,
+        };
+        let err = <GitHubClient as IssueTracker>::create_issue(&client, &create).unwrap_err();
+
+        // Only `message` survives; the field-level detail is lost.
+        assert_eq!(api_error(err), (422, "Validation Failed".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_trait_unauthorized_is_unauthorized() {
+        let err =
+            trait_get_issue_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "message": "Bad credentials"
+            })))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, TrackerError::Unauthorized), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_issue_404_is_api_404() {
+        let err =
+            trait_get_issue_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "message": "Not Found",
+                "documentation_url": "https://docs.github.com/rest"
+            })))
+            .await
+            .unwrap_err();
+
+        // Not IssueNotFound or NotFound: only get_project remaps a 404.
+        assert_eq!(api_error(err), (404, "Not Found".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_project_404_is_project_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "message": "Not Found"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let err = <GitHubClient as IssueTracker>::get_project(&client, "owner/repo").unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::ProjectNotFound(ref id) if id == "owner/repo"),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_project_other_errors_pass_through() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "message": "Resource not accessible by integration"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let err = <GitHubClient as IssueTracker>::get_project(&client, "owner/repo").unwrap_err();
+
+        assert_eq!(
+            api_error(err),
+            (403, "Resource not accessible by integration".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_issue_pull_request_is_issue_not_found() {
+        let err = trait_get_issue_with(
+            ResponseTemplate::new(200).set_body_json(mock_github_pr(1, "A pull request")),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, TrackerError::IssueNotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_trait_invalid_success_body_is_parse_error() {
+        let err = trait_get_issue_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, TrackerError::Parse(_)), "{err:?}");
+        assert!(err.to_string().starts_with("Parse error: "), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_invalid_success_body_display_is_json_parse_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let err = client.get_issue(1).unwrap_err();
+
+        // `track init` prints this Display in its fallback branch.
+        assert!(err.to_string().starts_with("JSON parse error: "), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_oversized_success_body_is_http_not_parse() {
+        let err =
+            trait_get_issue_with(ResponseTemplate::new(200).set_body_string(oversized_body()))
+                .await
+                .unwrap_err();
+
+        // Failing to read the body is a transport failure, not bad JSON.
+        assert!(matches!(err, TrackerError::Http(_)), "{err:?}");
+    }
+
+    #[test]
+    fn test_transport_failure_is_http() {
+        let client =
+            GitHubClient::with_base_url(&closed_localhost_url(), "owner", "repo", "test-token");
+        let err = <GitHubClient as IssueTracker>::get_issue(&client, "1").unwrap_err();
+
+        assert!(matches!(err, TrackerError::Http(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_timeline_event_with_wrong_type_is_parse_error() {
+        let mock_server = MockServer::start().await;
+
+        // The page decodes as a JSON array; decoding the event inside it fails.
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/42/timeline"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "event": "closed",
+                    "created_at": "2024-02-01T10:00:00Z",
+                    "actor": "bob"
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let err = client.get_issue_history("42").unwrap_err();
+
+        assert!(matches!(err, TrackerError::Parse(_)), "{err:?}");
+    }
+
+    #[test]
+    fn test_pagination_stalled_maps_one_to_one() {
+        // get_all_pages only builds this after 10_000 full pages.
+        let err = TrackerError::from(crate::error::GitHubError::PaginationStalled(
+            "'u' did not terminate after 10000 pages".to_string(),
+        ));
+
+        assert!(
+            matches!(
+                err,
+                TrackerError::PaginationStalled(ref message)
+                    if message == "'u' did not terminate after 10000 pages"
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn test_issue_attachments_are_invalid_input() {
+        let client = GitHubClient::new("owner", "repo", "test-token");
+        let upload = AttachmentUpload {
+            files: Vec::new(),
+            comment: None,
+            silent: false,
+            minor_edit: false,
+        };
+
+        let results = [
+            client.list_issue_attachments("1").map(|_| ()),
+            client.add_issue_attachment("1", &upload).map(|_| ()),
+            client
+                .add_issue_comment_attachment("1", "text", &upload)
+                .map(|_| ()),
+        ];
+        for result in results {
+            match result {
+                Err(TrackerError::InvalidInput(message)) => {
+                    assert!(
+                        message.contains("does not expose a public REST API"),
+                        "{message}"
+                    );
+                }
+                other => panic!("Expected InvalidInput error, got: {:?}", other),
+            }
+        }
+    }
+
+    // ==================== Request Plumbing ====================
+
+    #[tokio::test]
+    async fn test_write_requests_carry_github_headers() {
+        let mock_server = MockServer::start().await;
+
+        // An unmatched request gets wiremock's 404 and fails the call.
+        for (verb, route, response) in [
+            (
+                "POST",
+                "/repos/owner/repo/issues",
+                ResponseTemplate::new(201).set_body_json(mock_github_issue(50, "New issue")),
+            ),
+            (
+                "PATCH",
+                "/repos/owner/repo/issues/42",
+                ResponseTemplate::new(200).set_body_json(mock_github_issue(42, "Updated title")),
+            ),
+            (
+                "DELETE",
+                "/repos/owner/repo/labels/bug",
+                ResponseTemplate::new(204),
+            ),
+        ] {
+            Mock::given(method(verb))
+                .and(path(route))
+                .and(header("Authorization", "Bearer test-token"))
+                .and(header("Accept", "application/vnd.github+json"))
+                .and(header("X-GitHub-Api-Version", "2022-11-28"))
+                .respond_with(response)
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let create = crate::models::CreateGitHubIssue {
+            title: "New issue".to_string(),
+            body: None,
+            labels: None,
+            assignees: None,
+            milestone: None,
+        };
+        let update = crate::models::UpdateGitHubIssue {
+            title: Some("Updated title".to_string()),
+            body: None,
+            state: None,
+            labels: None,
+            assignees: None,
+            milestone: None,
+        };
+
+        client.create_issue(&create).unwrap();
+        client.update_issue(42, &update).unwrap();
+        client.delete_label("bug").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_discarded_success_bodies_are_not_decoded() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/10/sub_issues"))
+            .respond_with(ResponseTemplate::new(201).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/owner/repo/labels/bug"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+
+        client.add_sub_issue(10, 1042).unwrap();
+        client.delete_label("bug").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_trait_update_issue_returns_patch_body_without_refetch() {
+        let mock_server = MockServer::start().await;
+
+        // GitHub's PATCH response is the updated issue, so no GET follows it.
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/42"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_github_issue(42, "Old title")),
+            )
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/owner/repo/issues/42"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_github_issue(42, "New title")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let update = UpdateIssue {
+            summary: Some("New title".to_string()),
+            ..Default::default()
+        };
+        let issue = <GitHubClient as IssueTracker>::update_issue(&client, "42", &update).unwrap();
+
+        assert_eq!(issue.summary, "New title");
+    }
+
+    #[tokio::test]
+    async fn test_base_url_trailing_slash_is_trimmed() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/42"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_github_issue(42, "Found a bug")),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let base_url = format!("{}/", mock_server.uri());
+        let client = GitHubClient::with_base_url(&base_url, "owner", "repo", "test-token");
+        let issue = client.get_issue(42).unwrap();
+
+        assert_eq!(issue.number, 42);
     }
 
     // ==================== Sub-Issue Operations ====================
