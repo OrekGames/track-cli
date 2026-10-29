@@ -180,12 +180,22 @@ impl IssueTracker for GitLabClient {
                     || name.eq_ignore_ascii_case("state")
                     || name.eq_ignore_ascii_case("stage") =>
             {
-                match value.to_lowercase().as_str() {
-                    "closed" | "resolved" | "done" | "completed" => Some("close".to_string()),
-                    "open" | "opened" | "reopen" | "reopened" | "in progress" | "develop" => {
-                        Some("reopen".to_string())
-                    }
-                    _ => None,
+                if value.eq_ignore_ascii_case("closed")
+                    || value.eq_ignore_ascii_case("resolved")
+                    || value.eq_ignore_ascii_case("done")
+                    || value.eq_ignore_ascii_case("completed")
+                {
+                    Some("close".to_string())
+                } else if value.eq_ignore_ascii_case("open")
+                    || value.eq_ignore_ascii_case("opened")
+                    || value.eq_ignore_ascii_case("reopen")
+                    || value.eq_ignore_ascii_case("reopened")
+                    || value.eq_ignore_ascii_case("in progress")
+                    || value.eq_ignore_ascii_case("develop")
+                {
+                    Some("reopen".to_string())
+                } else {
+                    None
                 }
             }
             _ => None,
