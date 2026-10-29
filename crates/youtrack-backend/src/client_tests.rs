@@ -25,12 +25,16 @@ mod tests {
         })
     }
 
+    /// Write `contents` to a temp file named after `name`. The counter keeps
+    /// paths unique when tests running in parallel read the same clock tick,
+    /// which Windows' coarser clock makes likely.
     fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("track-yt-upload-{nanos}-{name}"));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "track-yt-upload-{}-{unique}-{name}",
+            std::process::id()
+        ));
         std::fs::write(&path, contents).unwrap();
         path
     }
