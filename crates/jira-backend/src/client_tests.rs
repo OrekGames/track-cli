@@ -101,18 +101,20 @@ mod tests {
             .await;
 
         let client = setup_mock_client(&mock_server).await;
+        use tracker_core::TrackerError;
         let err = client
             .resolve_transition_id("TEST-123", "ΚΛΕΙΣΤΌΣ")
             .unwrap_err();
         match err {
-            crate::error::JiraError::InvalidTransition {
-                requested,
-                available,
-            } => {
-                assert_eq!(requested, "ΚΛΕΙΣΤΌΣ");
-                assert_eq!(available, vec!["Κλειστόσ"]);
-            }
-            _ => panic!("Expected InvalidTransition error"),
+            TrackerError::InvalidInput(message) => assert_eq!(
+                message,
+                format!(
+                    "status '{}' is not reachable. available: {:?}",
+                    "ΚΛΕΙΣΤΌΣ",
+                    vec!["Κλειστόσ"]
+                )
+            ),
+            other => panic!("Expected InvalidInput error, got: {other:?}"),
         }
     }
 
@@ -205,21 +207,20 @@ mod tests {
         assert_eq!(client.resolve_transition_id("TEST-123", "İ").unwrap(), "4");
         assert_eq!(client.resolve_transition_id("TEST-123", "K").unwrap(), "5");
 
+        use tracker_core::TrackerError;
         let err = client
             .resolve_transition_id("TEST-123", "UNKNOWN")
             .unwrap_err();
         match err {
-            crate::error::JiraError::InvalidTransition {
-                requested,
-                available,
-            } => {
-                assert_eq!(requested, "UNKNOWN");
-                assert_eq!(
-                    available,
+            TrackerError::InvalidInput(message) => assert_eq!(
+                message,
+                format!(
+                    "status '{}' is not reachable. available: {:?}",
+                    "UNKNOWN",
                     vec!["Geöffnet", "À faire", "Открыто", "i\u{307}", "K"]
-                );
-            }
-            _ => panic!("Expected InvalidTransition error"),
+                )
+            ),
+            other => panic!("Expected InvalidInput error, got: {other:?}"),
         }
     }
 
@@ -982,7 +983,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            crate::error::JiraError::Unauthorized
+            tracker_core::TrackerError::Unauthorized
         ));
     }
 
@@ -1000,9 +1001,17 @@ mod tests {
             .await;
 
         let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
-        let result = client.get_issue("NONEXISTENT-999");
+        let err = client.get_issue("NONEXISTENT-999").unwrap_err();
 
-        assert!(result.is_err());
+        // Unlike Confluence, Jira keeps the server's 404 text. Neither maps
+        // 404 to a not-found variant.
+        assert_eq!(
+            expect_api(err),
+            (
+                404,
+                "Issue does not exist or you do not have permission to see it.".to_string()
+            )
+        );
     }
 
     #[tokio::test]
@@ -2308,8 +2317,7 @@ mod tests {
     //
     // These pin the error classification and request shape that the shared
     // tracker-core HTTP helpers must keep. Errors are checked through the
-    // IssueTracker trait (or converted with TrackerError::from), so the tests
-    // hold whether the client returns JiraError or TrackerError.
+    // IssueTracker trait wherever it reaches the path.
 
     fn upload_of(path: PathBuf, mime_type: Option<&str>) -> AttachmentUpload {
         AttachmentUpload {
@@ -2391,8 +2399,8 @@ mod tests {
         use tracker_core::{IssueTracker, TrackerError};
         let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
 
-        // Agreed change: a body that is not the expected JSON is a Parse error.
-        // Before the shared HTTP helpers it was Http("json: ...").
+        // A 2xx body that is not the expected JSON is Parse; a failed read
+        // stays Http.
         assert!(
             matches!(err, TrackerError::Parse(_)),
             "expected Parse, got: {err:?}"
@@ -2428,8 +2436,7 @@ mod tests {
         let upload_err = IssueTracker::add_issue_attachment(&client, "X-1", &upload).unwrap_err();
         let _ = std::fs::remove_file(upload_path);
 
-        // Agreed change, as for GET: POST and multipart responses decode the
-        // same way.
+        // POST and multipart responses decode the same way as GET.
         for err in [create_err, comment_err, upload_err] {
             assert!(
                 matches!(err, TrackerError::Parse(_)),
@@ -2440,10 +2447,8 @@ mod tests {
 
     #[test]
     fn test_truncated_success_body_is_http_not_parse() {
-        // I/O failures while reading a body stay Http. A chunked body has no
-        // Content-Length, so ureq decodes it from the stream (the cut-off then
-        // arrives inside a serde_json error); with a Content-Length it reads
-        // into a buffer first.
+        // The connection drops mid-body, chunked or with a Content-Length. The
+        // body is read in full before decoding, so the failed read is Http.
         let responses = [
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
              Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
@@ -2596,50 +2601,6 @@ mod tests {
                 "{key}"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn test_jira_404_keeps_server_message() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/rest/api/3/issue/X-1"))
-            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-                "errorMessages": ["Issue does not exist"]
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = setup_mock_client(&mock_server).await;
-        use tracker_core::IssueTracker;
-        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
-
-        // Unlike Confluence, Jira keeps the server's 404 text. Neither maps
-        // 404 to a not-found variant.
-        assert_eq!(expect_api(err), (404, "Issue does not exist".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_trait_unauthorized_drops_body_message() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/rest/api/3/issue/X-1"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-                "errorMessages": ["Token expired"],
-                "errors": {}
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = setup_mock_client(&mock_server).await;
-        use tracker_core::{IssueTracker, TrackerError};
-        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
-
-        assert!(
-            matches!(err, TrackerError::Unauthorized),
-            "expected Unauthorized, got: {err:?}"
-        );
     }
 
     #[tokio::test]
@@ -2844,52 +2805,6 @@ mod tests {
             .unwrap();
         client.delete_link("77").unwrap();
         client.transition_issue("X-1", "31").unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_invalid_transition_maps_to_invalid_input_text() {
-        let mock_server = MockServer::start().await;
-        let names = ["Geöffnet", "À faire", "Открыто", "i\u{307}", "K"];
-        let transitions: Vec<serde_json::Value> = names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                serde_json::json!({
-                    "id": (i + 1).to_string(),
-                    "name": name,
-                    "to": { "id": (i + 1).to_string(), "name": name }
-                })
-            })
-            .collect();
-
-        Mock::given(method("GET"))
-            .and(path("/rest/api/3/issue/TEST-123/transitions"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "transitions": transitions })),
-            )
-            .mount(&mock_server)
-            .await;
-
-        let client = setup_mock_client(&mock_server).await;
-        use tracker_core::TrackerError;
-        let err = TrackerError::from(
-            client
-                .resolve_transition_id("TEST-123", "UNKNOWN")
-                .unwrap_err(),
-        );
-
-        // The CLI wording, not JiraError's own Display text.
-        match err {
-            TrackerError::InvalidInput(message) => assert_eq!(
-                message,
-                format!(
-                    "status '{}' is not reachable. available: {:?}",
-                    "UNKNOWN", names
-                )
-            ),
-            other => panic!("Expected InvalidInput error, got: {other:?}"),
-        }
     }
 
     #[tokio::test]

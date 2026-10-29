@@ -175,7 +175,7 @@ impl WikiManager {
         let mut initialized = self
             .initialized
             .lock()
-            .map_err(|_| wiki_error("Failed to acquire initialization lock".to_string()))?;
+            .map_err(|_| wiki_error("Failed to acquire initialization lock"))?;
 
         if *initialized {
             return Ok(());
@@ -278,8 +278,7 @@ impl WikiManager {
         } else {
             return Err(wiki_error(
                 "Wiki has diverged; non-fast-forward merge required. \
-                 Delete the cache at ~/.cache/track/wikis/ and retry."
-                    .to_string(),
+                 Delete the cache at ~/.cache/track/wikis/ and retry.",
             ));
         }
 
@@ -373,7 +372,7 @@ impl WikiManager {
         // Get slug from filename
         let relative_path = path
             .strip_prefix(&self.cache_dir)
-            .map_err(|_| wiki_error("Invalid path".to_string()))?;
+            .map_err(|_| wiki_error("Invalid path"))?;
 
         let slug = relative_path
             .with_extension("")
@@ -457,7 +456,7 @@ impl WikiManager {
 
         let relative_path = path
             .strip_prefix(&self.cache_dir)
-            .map_err(|_| wiki_error("Invalid path".to_string()))?;
+            .map_err(|_| wiki_error("Invalid path"))?;
 
         let mut revwalk = repo
             .revwalk()
@@ -641,7 +640,7 @@ impl WikiManager {
     ) -> Result<Vec<WikiAttachment>> {
         if upload.comment.is_some() {
             return Err(wiki_error(
-                "GitHub wiki attachment fallback does not support --comment".to_string(),
+                "GitHub wiki attachment fallback does not support --comment",
             ));
         }
 
@@ -727,7 +726,7 @@ impl WikiManager {
         // Extract filename from slug
         let filename = Path::new(slug)
             .file_name()
-            .ok_or_else(|| wiki_error("Invalid slug".to_string()))?
+            .ok_or_else(|| wiki_error("Invalid slug"))?
             .to_string_lossy();
 
         let new_slug = match new_parent {
@@ -806,7 +805,7 @@ impl WikiManager {
         for path in paths {
             let relative_path = path
                 .strip_prefix(&self.cache_dir)
-                .map_err(|_| wiki_error("Invalid path".to_string()))?;
+                .map_err(|_| wiki_error("Invalid path"))?;
 
             if path.exists() {
                 index
@@ -917,7 +916,7 @@ fn attachment_file_name(file: &tracker_core::AttachmentUploadFile) -> Result<Str
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
         })
-        .ok_or_else(|| wiki_error("Attachment file name is required".to_string()))?;
+        .ok_or_else(|| wiki_error("Attachment file name is required"))?;
 
     if name.contains('/')
         || name.contains('\\')

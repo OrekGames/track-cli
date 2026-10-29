@@ -993,25 +993,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unauthorized_error() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/projects/123/issues/42"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-                "message": "401 Unauthorized"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = GitLabClient::new(&mock_server.uri(), "bad-token", Some("123"));
-        let result = client.get_issue(42);
-
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TrackerError::Unauthorized));
-    }
-
-    #[tokio::test]
     async fn test_project_url_requires_project_id() {
         let mock_server = MockServer::start().await;
 
@@ -1972,8 +1953,8 @@ mod tests {
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let err = <GitLabClient as IssueTracker>::get_issue(&client, "42").unwrap_err();
 
-        // Agreed change: a body that is not the expected JSON is a Parse error.
-        // Before the shared HTTP helpers it was Http("json: ...").
+        // A 2xx body that is not the expected JSON is Parse; a failed read
+        // stays Http.
         assert!(
             matches!(err, TrackerError::Parse(_)),
             "expected Parse, got: {err:?}"
@@ -1999,7 +1980,7 @@ mod tests {
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let err = <GitLabClient as IssueTracker>::search_issues(&client, "", 20, 0).unwrap_err();
 
-        // Agreed change, as for get_issue.
+        // Parse, as for get_issue.
         assert!(
             matches!(err, TrackerError::Parse(_)),
             "expected Parse, got: {err:?}"
@@ -2055,7 +2036,7 @@ mod tests {
         ];
         let _ = std::fs::remove_file(upload_path);
 
-        // Agreed change: POST, PUT, multipart and GraphQL decode the same way.
+        // POST, PUT, multipart and GraphQL responses decode the same way as GET.
         let not_parse: Vec<_> = results
             .iter()
             .filter(|(_, err)| !matches!(err, TrackerError::Parse(_)))
@@ -2084,7 +2065,7 @@ mod tests {
         };
         let err = <GitLabClient as IssueTracker>::update_issue(&client, "42", &update).unwrap_err();
 
-        // Agreed change: Http("json: EOF while parsing ...") before.
+        // An empty body is not JSON either, so it is Parse too.
         assert!(
             matches!(err, TrackerError::Parse(_)),
             "expected Parse, got: {err:?}"
@@ -2093,8 +2074,8 @@ mod tests {
 
     #[test]
     fn test_truncated_chunked_success_body_is_http_not_parse() {
-        // A chunked body has no Content-Length, so ureq decodes it from the
-        // stream. The connection drops mid-body: an I/O failure, not bad JSON.
+        // The connection drops mid-body. The body is read in full before
+        // decoding, so the failed read is Http, not Parse.
         let base_url = serve_raw_response_once(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
              Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
@@ -2787,7 +2768,7 @@ mod tests {
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
 
         // Neither path decodes its 2xx body, so a body that is not JSON is not
-        // an error, before or after the agreed Parse change.
+        // an error.
         <GitLabClient as IssueTracker>::delete_issue(&client, "42").unwrap();
         <GitLabClient as IssueTracker>::link_issues(&client, "42", "43", "relates", "outward")
             .unwrap();

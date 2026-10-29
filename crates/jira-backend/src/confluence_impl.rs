@@ -13,8 +13,7 @@ use crate::models::confluence::*;
 
 impl KnowledgeBase for ConfluenceClient {
     fn get_article(&self, id: &str) -> Result<Article> {
-        self.get_page(id)
-            .map(confluence_page_to_article)
+        self.get_page(id).map(confluence_page_to_article)
     }
 
     fn list_articles(
@@ -32,8 +31,7 @@ impl KnowledgeBase for ConfluenceClient {
         let mut cursor: Option<String> = None;
 
         loop {
-            let page = self
-                .list_pages(project_id, limit, cursor.as_deref())?;
+            let page = self.list_pages(project_id, limit, cursor.as_deref())?;
             let page_len = page.results.len();
 
             if remaining_skip >= page_len {
@@ -78,8 +76,7 @@ impl KnowledgeBase for ConfluenceClient {
         loop {
             let remaining = max_results - articles.len();
             let page_limit = remaining.min(100);
-            let page = self
-                .list_pages(project_id, page_limit, cursor.as_deref())?;
+            let page = self.list_pages(project_id, page_limit, cursor.as_deref())?;
             let page_len = page.results.len();
 
             articles.extend(
@@ -103,13 +100,12 @@ impl KnowledgeBase for ConfluenceClient {
     }
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
-        self.search_pages(query, limit, skip)
-            .map(|r| {
-                r.results
-                    .into_iter()
-                    .filter_map(|hit| hit.content.map(search_content_to_article))
-                    .collect()
-            })
+        self.search_pages(query, limit, skip).map(|r| {
+            r.results
+                .into_iter()
+                .filter_map(|hit| hit.content.map(search_content_to_article))
+                .collect()
+        })
     }
 
     fn create_article(&self, article: &CreateArticle) -> Result<Article> {
@@ -128,8 +124,7 @@ impl KnowledgeBase for ConfluenceClient {
             status: Some("current".to_string()),
         };
 
-        self.create_page(&page)
-            .map(confluence_page_to_article)
+        self.create_page(&page).map(confluence_page_to_article)
     }
 
     fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
@@ -170,13 +165,12 @@ impl KnowledgeBase for ConfluenceClient {
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
-        self.get_child_pages(parent_id, 100)
-            .map(|r| {
-                r.results
-                    .into_iter()
-                    .map(confluence_page_to_article)
-                    .collect()
-            })
+        self.get_child_pages(parent_id, 100).map(|r| {
+            r.results
+                .into_iter()
+                .map(confluence_page_to_article)
+                .collect()
+        })
     }
 
     fn move_article(&self, _article_id: &str, _new_parent_id: Option<&str>) -> Result<Article> {
@@ -191,13 +185,12 @@ impl KnowledgeBase for ConfluenceClient {
     }
 
     fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
-        self.get_page_attachments(article_id, 100)
-            .map(|r| {
-                r.results
-                    .into_iter()
-                    .map(confluence_attachment_to_article_attachment)
-                    .collect()
-            })
+        self.get_page_attachments(article_id, 100).map(|r| {
+            r.results
+                .into_iter()
+                .map(confluence_attachment_to_article_attachment)
+                .collect()
+        })
     }
 
     fn add_article_attachment(
@@ -215,13 +208,12 @@ impl KnowledgeBase for ConfluenceClient {
     }
 
     fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
-        self.get_page_comments(article_id, 100)
-            .map(|r| {
-                r.results
-                    .into_iter()
-                    .map(confluence_comment_to_comment)
-                    .collect()
-            })
+        self.get_page_comments(article_id, 100).map(|r| {
+            r.results
+                .into_iter()
+                .map(confluence_comment_to_comment)
+                .collect()
+        })
     }
 
     fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment> {
@@ -235,8 +227,7 @@ impl KnowledgeBase for ConfluenceClient {
         text: &str,
         upload: &AttachmentUpload,
     ) -> Result<Comment> {
-        let comment = self
-            .add_page_comment(article_id, text)?;
+        let comment = self.add_page_comment(article_id, text)?;
         self.add_content_attachments(&comment.id, upload)?;
         Ok(confluence_comment_to_comment(comment))
     }
@@ -599,8 +590,7 @@ mod tests {
     //
     // The Confluence client has its own request helpers, with a different error
     // extractor from Jira's and a 404 rewrite. These pin what the shared
-    // tracker-core HTTP helpers must keep, checked through the KnowledgeBase
-    // trait so they hold whether the client returns JiraError or TrackerError.
+    // tracker-core HTTP helpers must keep, checked through the KnowledgeBase trait.
 
     fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
         let nanos = SystemTime::now()
@@ -751,8 +741,8 @@ mod tests {
         let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
         let err = client.get_article("42").unwrap_err();
 
-        // Agreed change: a body that is not the expected JSON is a Parse error.
-        // Before the shared HTTP helpers it was Http("json: ...").
+        // A 2xx body that is not the expected JSON is Parse; a failed read
+        // stays Http.
         assert!(
             matches!(err, TrackerError::Parse(_)),
             "expected Parse, got: {err:?}"
@@ -781,8 +771,8 @@ mod tests {
         let upload_err = client.add_article_attachment("42", &upload).unwrap_err();
         let _ = std::fs::remove_file(upload_path);
 
-        // Agreed change, as for GET: send_json and the multipart upload both
-        // decode their response.
+        // send_json and the multipart upload decode their response the same
+        // way as GET.
         for err in [create_err, upload_err] {
             assert!(
                 matches!(err, TrackerError::Parse(_)),

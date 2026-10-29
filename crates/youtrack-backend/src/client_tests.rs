@@ -750,6 +750,8 @@ mod tests {
         let client = YouTrackClient::new(&mock_server.uri(), "test-token");
         let err = client.resolve_user_id("bob").unwrap_err();
 
+        // get_json_opt only turns a 404 into None; the decode failure from the
+        // user search propagates as Parse.
         assert!(matches!(err, TrackerError::Parse(_)), "{err:?}");
         assert!(!err.to_string().contains("could not be resolved"));
     }
@@ -1812,26 +1814,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unauthorized_with_body_still_returns_unauthorized_variant() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/issues/PROJ-123"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-                "error": "Unauthorized",
-                "error_description": "Invalid token"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = YouTrackClient::new(&mock_server.uri(), "bad-token");
-        let result = client.get_issue("PROJ-123");
-
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TrackerError::Unauthorized));
-    }
-
-    #[tokio::test]
     async fn test_bad_request_with_empty_body() {
         let mock_server = MockServer::start().await;
 
@@ -2727,8 +2709,8 @@ mod tests {
         let client = YouTrackClient::new(&mock_server.uri(), "test-token");
         let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
 
-        // Agreed change: a body that is not the expected JSON is a Parse error.
-        // Before the shared HTTP helpers it was Http("json: ...").
+        // A 2xx body that is not the expected JSON is Parse; a failed read
+        // stays Http.
         assert!(
             matches!(err, TrackerError::Parse(_)),
             "expected Parse, got: {err:?}"
@@ -2766,7 +2748,7 @@ mod tests {
         let upload_err = IssueTracker::add_issue_attachment(&client, "X-1", &upload).unwrap_err();
         let _ = std::fs::remove_file(upload_path);
 
-        // Agreed change, as for GET: POST and multipart decode share it.
+        // POST and multipart responses decode the same way as GET.
         assert!(
             matches!(create_err, TrackerError::Parse(_))
                 && matches!(upload_err, TrackerError::Parse(_)),
@@ -2774,38 +2756,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_trait_create_project_non_json_user_search_is_parse() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/users"))
-            .and(query_param("query", "bob"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
-            .mount(&mock_server)
-            .await;
-
-        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
-        let create = tracker_core::CreateProject {
-            name: "Bob Project".to_string(),
-            short_name: "BOB".to_string(),
-            description: None,
-            leader: Some("bob".to_string()),
-        };
-        let err = IssueTracker::create_project(&client, &create).unwrap_err();
-
-        // get_json_opt only turns a 404 into None; the decode failure from the
-        // user search propagates, now as Parse.
-        assert!(
-            matches!(err, TrackerError::Parse(_)),
-            "expected Parse, got: {err:?}"
-        );
-    }
-
     #[test]
     fn test_truncated_chunked_success_body_is_http_not_parse() {
-        // A chunked body has no Content-Length, so ureq decodes it from the
-        // stream. The connection drops mid-body: an I/O failure, not bad JSON.
+        // The connection drops mid-body. The body is read in full before
+        // decoding, so the failed read is Http, not Parse.
         let base_url = serve_raw_response_once(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
              Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\

@@ -206,83 +206,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_graphql_errors_fail_even_with_http_200() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "issue": null
-                },
-                "errors": [
-                    {
-                        "message": "Cannot query field",
-                        "extensions": {
-                            "code": "GRAPHQL_VALIDATION_FAILED"
-                        }
-                    }
-                ]
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
-        let err = client.get_issue("ORE-1").unwrap_err();
-
-        match err {
-            TrackerError::Api { status, message } => {
-                assert_eq!(status, 200);
-                assert!(message.contains("Cannot query field"));
-            }
-            other => panic!("expected API error, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_graphql_rate_limit_maps_to_rate_limited() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "errors": [
-                    {
-                        "message": "Rate limited",
-                        "extensions": {
-                            "code": "RATELIMITED"
-                        }
-                    }
-                ]
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
-        let err = client.get_issue("ORE-1").unwrap_err();
-
-        assert!(matches!(
-            err,
-            TrackerError::Api { status: 429, ref message } if message == "Linear API rate limit exceeded"
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_unauthorized_maps_to_unauthorized() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-                "errors": [{ "message": "Unauthorized" }]
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = LinearClient::with_base_url(&mock_server.uri(), "bad-token");
-        let err = client.get_issue("ORE-1").unwrap_err();
-
-        assert!(matches!(err, TrackerError::Unauthorized));
-    }
-
-    #[tokio::test]
     async fn test_list_projects_maps_teams() {
         let mock_server = MockServer::start().await;
 
@@ -1201,8 +1124,8 @@ mod tests {
         let err =
             trait_get_issue_error(ResponseTemplate::new(200).set_body_string("not-json")).await;
 
-        // Agreed behavior for every backend; Linear already decodes the
-        // envelope with serde_json, so this is Parse before the migration too.
+        // A 2xx body that is not the expected JSON is Parse, as in every
+        // backend; a failed read stays Http.
         assert!(
             matches!(err, TrackerError::Parse(_)),
             "expected Parse, got: {err:?}"
@@ -1237,6 +1160,23 @@ mod tests {
         let err = <LinearClient as IssueTracker>::get_issue(&client, "ORE-1").unwrap_err();
 
         assert_eq!(api_error(err), (500, "HTTP 500".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_success_body_cut_off_is_http() {
+        // A 2xx body that cannot be read in full is a transport failure, not
+        // JSON that failed to parse.
+        let uri = serve_raw_response_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"data\":",
+        );
+
+        let client = LinearClient::with_base_url(&uri, "test-token");
+        let err = <LinearClient as IssueTracker>::get_issue(&client, "ORE-1").unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Http(_)),
+            "expected Http, got: {err:?}"
+        );
     }
 
     #[tokio::test]

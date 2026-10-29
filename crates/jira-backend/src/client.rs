@@ -5,9 +5,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tracker_core::http::{self, read_json};
 use tracker_core::{AttachmentUpload, Result, TrackerError};
-use ureq::http::Response;
 use ureq::typestate::{WithBody, WithoutBody};
-use ureq::{Agent, Body, RequestBuilder};
+use ureq::{Agent, RequestBuilder};
 
 use crate::models::*;
 
@@ -72,7 +71,7 @@ impl JiraClient {
     }
 
     /// Send a request without a body (GET, DELETE); error on a non-2xx status.
-    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<Response<Body>> {
+    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<http::Response> {
         self.check_response(self.authorized(request).call()?)
     }
 
@@ -81,7 +80,7 @@ impl JiraClient {
         &self,
         request: RequestBuilder<WithBody>,
         body: &impl Serialize,
-    ) -> Result<Response<Body>> {
+    ) -> Result<http::Response> {
         let response = self
             .authorized(request)
             .header("Content-Type", "application/json")
@@ -95,7 +94,7 @@ impl JiraClient {
     }
 
     /// Check response status and return error if not successful
-    fn check_response(&self, response: Response<Body>) -> Result<Response<Body>> {
+    fn check_response(&self, response: http::Response) -> Result<http::Response> {
         http::check_response(response, error_message)
     }
 

@@ -36,9 +36,11 @@ pub fn agent() -> Agent {
 /// dropped. Any other status is [`TrackerError::Api`] whose message is what
 /// `extract_message` finds in the body parsed as JSON (used as is, even when
 /// empty), else the body text verbatim, else `HTTP <status>` when the body is
-/// empty. The body is read as lossy UTF-8 under ureq's 10 MB limit, and a
-/// failed read counts as an empty body. Status rules of one API (a rate-limit
-/// header, a fixed message) belong in the backend, around this call.
+/// empty. The body is read under ureq's 10 MB limit; only `text/*` bodies are
+/// decoded lossily (invalid bytes become `?`), and any failed read, including
+/// a non-text body that is not valid UTF-8, counts as an empty body. Status
+/// rules of one API (a rate-limit header, a fixed message) belong in the
+/// backend, around this call.
 pub fn check_response(
     mut response: Response,
     extract_message: fn(&Value) -> Option<String>,

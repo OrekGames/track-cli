@@ -5,9 +5,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tracker_core::http::{self, read_json};
 use tracker_core::{AttachmentUpload, Result, TrackerError};
-use ureq::http::Response;
 use ureq::typestate::{WithBody, WithoutBody};
-use ureq::{Agent, Body, RequestBuilder};
+use ureq::{Agent, RequestBuilder};
 
 use crate::client::basic_auth_header;
 use crate::markdown::storage::html_escape;
@@ -62,7 +61,7 @@ impl ConfluenceClient {
     }
 
     /// Send a request without a body (GET, DELETE); error on a non-2xx status.
-    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<Response<Body>> {
+    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<http::Response> {
         self.check_response(self.authorized(request).call()?)
     }
 
@@ -85,9 +84,9 @@ impl ConfluenceClient {
     }
 
     /// Check response status and return error if not successful
-    fn check_response(&self, response: Response<Body>) -> Result<Response<Body>> {
+    fn check_response(&self, response: http::Response) -> Result<http::Response> {
         http::check_response(response, error_message).map_err(|err| match err {
-            // Confluence reports every 404 as a plain "Not found".
+            // Every 404 is reported as "Not found"; Confluence's own message is dropped.
             TrackerError::Api { status: 404, .. } => TrackerError::Api {
                 status: 404,
                 message: "Not found".to_string(),

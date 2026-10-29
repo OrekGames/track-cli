@@ -659,6 +659,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(crate::is_rate_limit_error(&err), "{err:?}");
+        // The real status (403) and GitHub's message are both replaced.
         match err {
             TrackerError::Api { status, message } => {
                 assert_eq!(status, 429);
@@ -692,7 +693,8 @@ mod tests {
     async fn test_forbidden_without_rate_limit_is_api_error() {
         let mock_server = MockServer::start().await;
 
-        // 403 without x-ratelimit-remaining: 0 should be a regular API error, not RateLimited
+        // 403 without x-ratelimit-remaining: 0 should be a regular API error, not the
+        // rate-limit error (is_rate_limit_error)
         Mock::given(method("GET"))
             .and(path("/repos/owner/repo/issues/1"))
             .respond_with(
@@ -733,7 +735,9 @@ mod tests {
 
         // A body that is not the expected JSON is a decode failure, not a
         // transport (`Http`) failure.
-        match result.unwrap_err() {
+        let err = result.unwrap_err();
+        assert!(err.to_string().starts_with("Parse error: "), "{err}");
+        match err {
             TrackerError::Parse(_) => {}
             other => panic!("Expected Parse error, got: {:?}", other),
         }
@@ -767,36 +771,35 @@ mod tests {
     // ==================== Error Mapping Through the Traits ====================
 
     #[tokio::test]
-    async fn test_trait_rate_limit_is_api_429() {
+    async fn test_real_429_is_api_with_body_message() {
         let err = trait_get_issue_with(
-            ResponseTemplate::new(403)
+            ResponseTemplate::new(429)
                 .insert_header("x-ratelimit-remaining", "0")
                 .set_body_json(serde_json::json!({
-                    "message": "API rate limit exceeded"
+                    "message": "secondary rate limit"
                 })),
         )
         .await
         .unwrap_err();
 
-        // The real status (403) and GitHub's message are both replaced.
-        assert_eq!(
-            api_error(err),
-            (429, "GitHub API rate limit exceeded".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_real_429_is_api_with_body_message() {
-        let err =
-            trait_get_issue_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
-                "message": "secondary rate limit"
-            })))
-            .await
-            .unwrap_err();
-
         // Only a 403 with x-ratelimit-remaining: 0 counts as rate limiting.
         assert!(!crate::is_rate_limit_error(&err), "{err:?}");
         assert_eq!(api_error(err), (429, "secondary rate limit".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_success_with_zero_ratelimit_remaining_decodes() {
+        // The last request allowed in a quota window succeeds with
+        // x-ratelimit-remaining: 0. It must not be reported as rate limited.
+        let issue = trait_get_issue_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-ratelimit-remaining", "0")
+                .set_body_json(mock_github_issue(1, "Last request in the window")),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(issue.summary, "Last request in the window");
     }
 
     #[tokio::test]
@@ -890,18 +893,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trait_unauthorized_is_unauthorized() {
-        let err =
-            trait_get_issue_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-                "message": "Bad credentials"
-            })))
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, TrackerError::Unauthorized), "{err:?}");
-    }
-
-    #[tokio::test]
     async fn test_trait_get_issue_404_is_api_404() {
         let err =
             trait_get_issue_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
@@ -975,23 +966,6 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, TrackerError::Parse(_)), "{err:?}");
-        assert!(err.to_string().starts_with("Parse error: "), "{err}");
-    }
-
-    #[tokio::test]
-    async fn test_invalid_success_body_display_is_parse_error() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/repos/owner/repo/issues/1"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
-            .mount(&mock_server)
-            .await;
-
-        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
-        let err = client.get_issue(1).unwrap_err();
-
-        // `track init` prints this Display in its fallback branch.
         assert!(err.to_string().starts_with("Parse error: "), "{err}");
     }
 
