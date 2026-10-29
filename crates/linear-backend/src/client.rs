@@ -1,11 +1,10 @@
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::time::Duration;
-use tracker_core::unicode_eq_ignore_case;
+use tracker_core::http;
+use tracker_core::{Result, TrackerError, unicode_eq_ignore_case};
 use ureq::Agent;
 
-use crate::error::{LinearError, Result};
 use crate::models::*;
 
 const DEFAULT_LINEAR_API_URL: &str = "https://api.linear.app/graphql";
@@ -76,15 +75,8 @@ impl LinearClient {
 
     /// Create a new Linear client with a custom GraphQL endpoint.
     pub fn with_base_url(api_url: &str, token: &str) -> Self {
-        let agent = Agent::config_builder()
-            .tls_config(tracker_core::tls::tls_config())
-            .timeout_global(Some(Duration::from_secs(30)))
-            .http_status_as_error(false)
-            .build()
-            .into();
-
         Self {
-            agent,
+            agent: http::agent(),
             api_url: api_url.to_string(),
             token: token.to_string(),
             default_team: None,
@@ -149,42 +141,22 @@ impl LinearClient {
             .header("Authorization", &self.token)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .send_json(&request)
-            .map_err(LinearError::Http)?;
+            .send_json(&request)?;
 
         self.parse_graphql_response(response)
     }
 
-    fn parse_graphql_response<T>(&self, mut response: ureq::http::Response<ureq::Body>) -> Result<T>
+    fn parse_graphql_response<T>(&self, response: http::Response) -> Result<T>
     where
         T: DeserializeOwned,
     {
-        let status = response.status().as_u16();
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .unwrap_or_else(|_| String::new());
-
-        if !(200..300).contains(&status) {
-            if status == 401 {
-                return Err(LinearError::Unauthorized);
-            }
-            if status == 429 {
-                return Err(LinearError::RateLimited);
-            }
-
-            let message = parse_error_message(&body).unwrap_or_else(|| {
-                if body.is_empty() {
-                    format!("HTTP {}", status)
-                } else {
-                    body
-                }
-            });
-
-            return Err(LinearError::Api { status, message });
+        if response.status().as_u16() == 429 {
+            // Linear signals rate limiting with HTTP 429; the body adds nothing.
+            return Err(rate_limited());
         }
 
-        let envelope: GraphQlResponse<T> = serde_json::from_str(&body)?;
+        let envelope: GraphQlResponse<T> =
+            http::read_json(http::check_response(response, error_message)?)?;
         if let Some(errors) = envelope.errors
             && !errors.is_empty()
         {
@@ -195,7 +167,7 @@ impl LinearClient {
                     .and_then(|e| e.code.as_deref())
                     .is_some_and(|code| code.eq_ignore_ascii_case("RATELIMITED"))
             }) {
-                return Err(LinearError::RateLimited);
+                return Err(rate_limited());
             }
 
             let message = errors
@@ -203,13 +175,13 @@ impl LinearClient {
                 .map(|error| error.message)
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(LinearError::Api {
+            return Err(TrackerError::Api {
                 status: 200,
                 message,
             });
         }
 
-        envelope.data.ok_or_else(|| LinearError::Api {
+        envelope.data.ok_or_else(|| TrackerError::Api {
             status: 200,
             message: "Linear GraphQL response did not contain data".to_string(),
         })
@@ -233,7 +205,7 @@ impl LinearClient {
 
         let data: Data = self.graphql(&query, json!({ "id": id }))?;
         data.issue
-            .ok_or_else(|| LinearError::IssueNotFound(id.to_string()))
+            .ok_or_else(|| TrackerError::IssueNotFound(id.to_string()))
     }
 
     pub fn list_teams(&self) -> Result<Vec<LinearTeam>> {
@@ -279,14 +251,16 @@ impl LinearClient {
                     return Ok(team);
                 }
             }
-            Err(LinearError::Api { .. }) | Err(LinearError::ProjectNotFound(_)) => {}
+            // Rate limiting (the only 429) propagates rather than triggering a second request.
+            Err(TrackerError::Api { status, .. }) if status != 429 => {}
+            Err(TrackerError::ProjectNotFound(_)) => {}
             Err(other) => return Err(other),
         }
 
         self.list_teams()?
             .into_iter()
             .find(|team| team_matches(team, id))
-            .ok_or_else(|| LinearError::ProjectNotFound(id.to_string()))
+            .ok_or_else(|| TrackerError::ProjectNotFound(id.to_string()))
     }
 
     pub fn resolve_team_id(&self, identifier: &str) -> Result<String> {
@@ -328,7 +302,7 @@ impl LinearClient {
         let data: Data = self.graphql(&query, json!({ "id": id }))?;
         let mut team = data
             .team
-            .ok_or_else(|| LinearError::ProjectNotFound(id.to_string()))?;
+            .ok_or_else(|| TrackerError::ProjectNotFound(id.to_string()))?;
 
         // One request covers most teams; larger connections are topped up so
         // the value lists callers validate against are complete.
@@ -398,7 +372,7 @@ impl LinearClient {
             )?;
             data.team
                 .map(|team| team.connection)
-                .ok_or_else(|| LinearError::ProjectNotFound(team_id.to_string()))
+                .ok_or_else(|| TrackerError::ProjectNotFound(team_id.to_string()))
         })
     }
 
@@ -452,7 +426,7 @@ impl LinearClient {
         self.list_team_labels(team_id)?
             .into_iter()
             .find(|label| id_or_name_matches(&label.id, &label.name, name_or_id))
-            .ok_or_else(|| LinearError::Api {
+            .ok_or_else(|| TrackerError::Api {
                 status: 400,
                 message: format!("Linear label '{}' was not found in team", name_or_id),
             })
@@ -469,7 +443,7 @@ impl LinearClient {
                         .is_some_and(|slug| slug.eq_ignore_ascii_case(name_or_id_or_slug))
                     || unicode_eq_ignore_case(&project.name, name_or_id_or_slug)
             })
-            .ok_or_else(|| LinearError::ProjectNotFound(name_or_id_or_slug.to_string()))
+            .ok_or_else(|| TrackerError::ProjectNotFound(name_or_id_or_slug.to_string()))
     }
 
     pub fn find_user(&self, team_id: &str, login_or_name: &str) -> Result<LinearUser> {
@@ -480,7 +454,7 @@ impl LinearClient {
         self.list_team_members(team_id)?
             .into_iter()
             .find(|user| user_matches(user, login_or_name))
-            .ok_or_else(|| LinearError::Api {
+            .ok_or_else(|| TrackerError::Api {
                 status: 400,
                 message: format!("Linear user '{}' was not found in team", login_or_name),
             })
@@ -640,7 +614,7 @@ impl LinearClient {
         if data.issue_delete.success {
             Ok(())
         } else {
-            Err(LinearError::Api {
+            Err(TrackerError::Api {
                 status: 400,
                 message: "Linear issueDelete returned success=false".to_string(),
             })
@@ -674,12 +648,14 @@ impl LinearClient {
         };
         let data: Data = self.graphql(query, json!({ "input": input }))?;
         if data.comment_create.success {
-            data.comment_create.comment.ok_or_else(|| LinearError::Api {
-                status: 400,
-                message: "Linear commentCreate returned no comment".to_string(),
-            })
+            data.comment_create
+                .comment
+                .ok_or_else(|| TrackerError::Api {
+                    status: 400,
+                    message: "Linear commentCreate returned no comment".to_string(),
+                })
         } else {
-            Err(LinearError::Api {
+            Err(TrackerError::Api {
                 status: 400,
                 message: "Linear commentCreate returned success=false".to_string(),
             })
@@ -728,7 +704,7 @@ impl LinearClient {
         )?;
         let issue = data
             .issue
-            .ok_or_else(|| LinearError::IssueNotFound(issue_id.to_string()))?;
+            .ok_or_else(|| TrackerError::IssueNotFound(issue_id.to_string()))?;
         Ok((issue.comments.nodes, issue.comments.page_info))
     }
 
@@ -788,7 +764,7 @@ impl LinearClient {
         )?;
         let issue = data
             .issue
-            .ok_or_else(|| LinearError::IssueNotFound(issue_id.to_string()))?;
+            .ok_or_else(|| TrackerError::IssueNotFound(issue_id.to_string()))?;
         Ok((issue.history.nodes, issue.history.page_info))
     }
 
@@ -853,7 +829,7 @@ impl LinearClient {
         if data.issue_label_delete.success {
             Ok(())
         } else {
-            Err(LinearError::Api {
+            Err(TrackerError::Api {
                 status: 400,
                 message: "Linear issueLabelDelete returned success=false".to_string(),
             })
@@ -910,7 +886,7 @@ impl LinearClient {
         let data: Data = self.graphql(&query, json!({ "id": issue_id }))?;
         let issue = data
             .issue
-            .ok_or_else(|| LinearError::IssueNotFound(issue_id.to_string()))?;
+            .ok_or_else(|| TrackerError::IssueNotFound(issue_id.to_string()))?;
 
         // `relations` only holds the relations this issue is the source of;
         // the ones pointing at it (e.g. "is blocked by") are `inverseRelations`.
@@ -954,12 +930,12 @@ impl LinearClient {
         if data.issue_relation_create.success {
             data.issue_relation_create
                 .issue_relation
-                .ok_or_else(|| LinearError::Api {
+                .ok_or_else(|| TrackerError::Api {
                     status: 400,
                     message: "Linear issueRelationCreate returned no relation".to_string(),
                 })
         } else {
-            Err(LinearError::Api {
+            Err(TrackerError::Api {
                 status: 400,
                 message: "Linear issueRelationCreate returned success=false".to_string(),
             })
@@ -983,7 +959,7 @@ impl LinearClient {
         if data.issue_relation_delete.success {
             Ok(())
         } else {
-            Err(LinearError::Api {
+            Err(TrackerError::Api {
                 status: 400,
                 message: "Linear issueRelationDelete returned success=false".to_string(),
             })
@@ -1023,7 +999,7 @@ pub(crate) fn filter_with_team(team_id: Option<&str>) -> Option<Value> {
 /// Walk a cursor-paginated connection from `after` to its last page,
 /// collecting every node.
 ///
-/// Fails with [`LinearError::PaginationStalled`] instead of looping forever
+/// Fails with [`TrackerError::PaginationStalled`] instead of looping forever
 /// when the server reports another page without a new cursor.
 fn collect_pages<T>(
     what: &str,
@@ -1038,7 +1014,7 @@ fn collect_pages<T>(
             return Ok(nodes);
         }
         if page.page_info.end_cursor.is_none() || page.page_info.end_cursor == after {
-            return Err(LinearError::PaginationStalled(format!(
+            return Err(TrackerError::PaginationStalled(format!(
                 "Linear {what} cursor did not advance"
             )));
         }
@@ -1048,12 +1024,12 @@ fn collect_pages<T>(
 
 fn issue_from_payload(payload: LinearIssuePayload, operation: &str) -> Result<LinearIssue> {
     if payload.success {
-        payload.issue.ok_or_else(|| LinearError::Api {
+        payload.issue.ok_or_else(|| TrackerError::Api {
             status: 400,
             message: format!("Linear {operation} returned no issue"),
         })
     } else {
-        Err(LinearError::Api {
+        Err(TrackerError::Api {
             status: 400,
             message: format!("Linear {operation} returned success=false"),
         })
@@ -1065,21 +1041,31 @@ fn label_from_payload(
     operation: &str,
 ) -> Result<LinearIssueLabel> {
     if payload.success {
-        payload.issue_label.ok_or_else(|| LinearError::Api {
+        payload.issue_label.ok_or_else(|| TrackerError::Api {
             status: 400,
             message: format!("Linear {operation} returned no issue label"),
         })
     } else {
-        Err(LinearError::Api {
+        Err(TrackerError::Api {
             status: 400,
             message: format!("Linear {operation} returned success=false"),
         })
     }
 }
 
-fn parse_error_message(body: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(body).ok()?;
-    if let Some(errors) = value.get("errors").and_then(|v| v.as_array()) {
+/// Linear's rate limit, from HTTP 429 or a `RATELIMITED` GraphQL error. It is
+/// the only error this client reports with status 429.
+fn rate_limited() -> TrackerError {
+    TrackerError::Api {
+        status: 429,
+        message: "Linear API rate limit exceeded".to_string(),
+    }
+}
+
+/// Linear error bodies carry GraphQL `errors[].message`, joined with "; ",
+/// else a top-level `message`.
+fn error_message(json: &Value) -> Option<String> {
+    if let Some(errors) = json.get("errors").and_then(|v| v.as_array()) {
         let messages = errors
             .iter()
             .filter_map(|error| error.get("message").and_then(|v| v.as_str()))
@@ -1088,8 +1074,7 @@ fn parse_error_message(body: &str) -> Option<String> {
             return Some(messages.join("; "));
         }
     }
-    value
-        .get("message")
+    json.get("message")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
 }

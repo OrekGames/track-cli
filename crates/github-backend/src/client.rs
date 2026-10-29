@@ -1,21 +1,38 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::sync::OnceLock;
-use std::time::Duration;
+use tracker_core::http::{self, Response, read_json};
+use tracker_core::{Result, TrackerError};
 use ureq::typestate::{WithBody, WithoutBody};
-use ureq::{Agent, Body, RequestBuilder};
+use ureq::{Agent, RequestBuilder};
 
 use crate::convert::convert_query_to_github;
-use crate::error::{GitHubError, Result};
 use crate::models::*;
 use crate::wiki::WikiManager;
-
-type Response = ureq::http::Response<Body>;
 
 /// Media type GitHub recommends for REST API requests.
 const GITHUB_ACCEPT: &str = "application/vnd.github+json";
 /// REST API version the request and response models are written against.
 const GITHUB_API_VERSION: &str = "2022-11-28";
+
+/// Message of the error returned when GitHub's rate limit is exhausted.
+const RATE_LIMIT_MESSAGE: &str = "GitHub API rate limit exceeded";
+
+/// The error for a 403 with no rate-limit quota left. It reads as an HTTP 429
+/// so doctor and the CLI treat it as rate limiting, not a permissions problem.
+fn rate_limit_error() -> TrackerError {
+    TrackerError::Api {
+        status: 429,
+        message: RATE_LIMIT_MESSAGE.to_string(),
+    }
+}
+
+/// Whether `err` is GitHub's exhausted rate limit (a 403 with
+/// `x-ratelimit-remaining: 0`), as opposed to any other 403 or a plain HTTP 429.
+pub fn is_rate_limit_error(err: &TrackerError) -> bool {
+    matches!(err, TrackerError::Api { status: 429, message } if message == RATE_LIMIT_MESSAGE)
+}
 
 /// Derive the web host (which serves both the UI and git) from the REST API
 /// base URL.
@@ -58,15 +75,8 @@ impl GitHubClient {
 
     /// Create a new GitHub client with a custom base URL (for GitHub Enterprise or testing)
     pub fn with_base_url(base_url: &str, owner: &str, repo: &str, token: &str) -> Self {
-        let agent = Agent::config_builder()
-            .tls_config(tracker_core::tls::tls_config())
-            .timeout_global(Some(Duration::from_secs(30)))
-            .http_status_as_error(false)
-            .build()
-            .into();
-
         Self {
-            agent,
+            agent: http::agent(),
             base_url: base_url.trim_end_matches('/').to_string(),
             owner: owner.to_string(),
             repo: repo.to_string(),
@@ -147,45 +157,16 @@ impl GitHubClient {
     }
 
     /// Check response status and return error if not successful
-    fn check_response(&self, mut response: Response) -> Result<Response> {
-        let status = response.status().as_u16();
-
-        if (200..300).contains(&status) {
-            return Ok(response);
-        }
-
+    fn check_response(&self, response: Response) -> Result<Response> {
         // Detect rate limiting: 403 with x-ratelimit-remaining: 0
-        if status == 403
+        if response.status().as_u16() == 403
             && let Some(remaining) = response.headers().get("x-ratelimit-remaining")
             && remaining.to_str().unwrap_or("") == "0"
         {
-            return Err(GitHubError::RateLimited);
+            return Err(rate_limit_error());
         }
 
-        // Try to read error body
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .unwrap_or_else(|_| String::new());
-
-        // Try to parse as GitHub error response
-        let message = if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&body) {
-            error_response
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or(&body)
-                .to_string()
-        } else if body.is_empty() {
-            format!("HTTP {}", status)
-        } else {
-            body
-        };
-
-        if status == 401 {
-            Err(GitHubError::Unauthorized)
-        } else {
-            Err(GitHubError::Api { status, message })
-        }
+        http::check_response(response, error_message)
     }
 
     // ==================== Issue Operations ====================
@@ -351,7 +332,7 @@ impl GitHubClient {
     /// GitHub honors `per_page`, so a short page is a reliable end-of-data
     /// signal. A `MAX_PAGES` backstop guards against a server that ignores
     /// paging and never shrinks a page — failing loudly via
-    /// [`GitHubError::PaginationStalled`] instead of looping forever.
+    /// [`TrackerError::PaginationStalled`] instead of looping forever.
     fn get_all_pages<T: DeserializeOwned>(&self, url: &str) -> Result<Vec<T>> {
         const PER_PAGE: usize = 100;
         const MAX_PAGES: usize = 10_000;
@@ -366,20 +347,14 @@ impl GitHubClient {
                 return Ok(items);
             }
         }
-        Err(GitHubError::PaginationStalled(format!(
+        Err(TrackerError::PaginationStalled(format!(
             "'{}' did not terminate after {} pages",
             url, MAX_PAGES
         )))
     }
 }
 
-/// Decode a successful response's JSON body.
-///
-/// The body is read through ureq (keeping its size limit; I/O failures stay
-/// [`GitHubError::Http`]) but decoded with serde_json, so a body that is not
-/// the expected JSON is reported as [`GitHubError::Parse`] rather than as a
-/// transport failure.
-fn read_json<T: DeserializeOwned>(mut response: Response) -> Result<T> {
-    let body = response.body_mut().read_to_vec()?;
-    Ok(serde_json::from_slice(&body)?)
+/// GitHub error bodies carry a `message`; `errors[]` and `documentation_url` are not shown.
+fn error_message(json: &Value) -> Option<String> {
+    json.get("message")?.as_str().map(str::to_string)
 }

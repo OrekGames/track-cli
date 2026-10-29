@@ -1,13 +1,12 @@
-use crate::error::{Result, YouTrackError};
 use crate::models::*;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
-use tracker_core::{AttachmentUpload, unicode_eq_ignore_case};
+use tracker_core::http::{self, read_json};
+use tracker_core::{AttachmentUpload, Result, TrackerError, unicode_eq_ignore_case};
 use ureq::Agent;
-use ureq::http::Response;
-use ureq::unversioned::multipart::{Form, Part};
 
 const DEFAULT_ISSUE_FIELDS: &str = "id,idReadable,summary,description,project(id,name,shortName),customFields(name,$type,value(name,login,isResolved,text,minutes,presentation,color(id))),tags(id,name),created,updated,resolved";
 const DEFAULT_PROJECT_FIELDS: &str = "id,name,shortName,description";
@@ -26,22 +25,34 @@ pub struct YouTrackClient {
     link_mappings: HashMap<String, String>,
 }
 
-/// Decode a JSON response body.
-fn read_json<T: DeserializeOwned>(mut response: Response<ureq::Body>) -> Result<T> {
-    Ok(response.body_mut().read_json()?)
+/// YouTrack error bodies carry `error`, `error_description` and `error_message`;
+/// the ones present as strings are joined with ": ".
+fn error_message(json: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+
+    if let Some(error) = json.get("error").and_then(|v| v.as_str()) {
+        parts.push(error.to_string());
+    }
+
+    if let Some(desc) = json.get("error_description").and_then(|v| v.as_str()) {
+        parts.push(desc.to_string());
+    }
+
+    if let Some(msg) = json.get("error_message").and_then(|v| v.as_str()) {
+        parts.push(msg.to_string());
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(": "))
+    }
 }
 
 impl YouTrackClient {
     pub fn new(base_url: &str, token: &str) -> Self {
-        let agent = Agent::config_builder()
-            .tls_config(tracker_core::tls::tls_config())
-            .timeout_global(Some(Duration::from_secs(30)))
-            .http_status_as_error(false)
-            .build()
-            .into();
-
         Self {
-            agent,
+            agent: http::agent(),
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
             link_mappings: HashMap::new(),
@@ -76,48 +87,8 @@ impl YouTrackClient {
     }
 
     /// Check response status and return error with body details if not successful
-    fn check_response(&self, mut response: Response<ureq::Body>) -> Result<Response<ureq::Body>> {
-        let status = response.status().as_u16();
-
-        if (200..300).contains(&status) {
-            return Ok(response);
-        }
-
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .unwrap_or_else(|_| String::new());
-
-        let message = if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body) {
-            let mut parts = Vec::new();
-
-            if let Some(error) = error_json.get("error").and_then(|v| v.as_str()) {
-                parts.push(error.to_string());
-            }
-
-            if let Some(desc) = error_json.get("error_description").and_then(|v| v.as_str()) {
-                parts.push(desc.to_string());
-            }
-
-            if let Some(msg) = error_json.get("error_message").and_then(|v| v.as_str()) {
-                parts.push(msg.to_string());
-            }
-
-            if parts.is_empty() {
-                body
-            } else {
-                parts.join(": ")
-            }
-        } else if body.is_empty() {
-            format!("HTTP {}", status)
-        } else {
-            body
-        };
-
-        match status {
-            401 => Err(YouTrackError::Unauthorized),
-            _ => Err(YouTrackError::Api { status, message }),
-        }
+    fn check_response(&self, response: http::Response) -> Result<http::Response> {
+        http::check_response(response, error_message)
     }
 
     /// GET a JSON endpoint and decode the response.
@@ -136,13 +107,13 @@ impl YouTrackClient {
     fn get_json_opt<T: DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
         match self.get_json(url) {
             Ok(value) => Ok(Some(value)),
-            Err(YouTrackError::Api { status: 404, .. }) => Ok(None),
+            Err(TrackerError::Api { status: 404, .. }) => Ok(None),
             Err(err) => Err(err),
         }
     }
 
     /// POST a JSON body, returning the response once its status is checked.
-    fn post(&self, url: &str, body: &impl Serialize) -> Result<Response<ureq::Body>> {
+    fn post(&self, url: &str, body: &impl Serialize) -> Result<http::Response> {
         let response = self
             .agent
             .post(url)
@@ -183,17 +154,7 @@ impl YouTrackClient {
             url.push_str("&muteUpdateNotifications=true");
         }
 
-        let mut form = Form::new();
-        for file in &upload.files {
-            let mut part = Part::file(&file.path)?;
-            if let Some(name) = &file.name {
-                part = part.file_name(name);
-            }
-            if let Some(mime_type) = &file.mime_type {
-                part = part.mime_str(mime_type)?;
-            }
-            form = form.part("upload", part);
-        }
+        let form = http::file_form("upload", &upload.files)?;
 
         let response = self
             .agent
@@ -343,7 +304,7 @@ impl YouTrackClient {
         upload: &AttachmentUpload,
     ) -> Result<Vec<IssueAttachment>> {
         if upload.comment.is_some() {
-            return Err(YouTrackError::Api {
+            return Err(TrackerError::Api {
                 status: 0,
                 message: "YouTrack issue attachment upload does not support --comment".to_string(),
             });
@@ -364,7 +325,7 @@ impl YouTrackClient {
         upload: &AttachmentUpload,
     ) -> Result<Vec<IssueAttachment>> {
         if upload.comment.is_some() {
-            return Err(YouTrackError::Api {
+            return Err(TrackerError::Api {
                 status: 0,
                 message: "YouTrack issue comment attachment upload does not support --comment"
                     .to_string(),
@@ -454,7 +415,7 @@ impl YouTrackClient {
             )
         };
 
-        Err(YouTrackError::Api {
+        Err(TrackerError::Api {
             status: 404,
             message,
         })
@@ -493,7 +454,7 @@ impl YouTrackClient {
             }
         }
 
-        Err(YouTrackError::ProjectNotFound(identifier.to_string()))
+        Err(TrackerError::ProjectNotFound(identifier.to_string()))
     }
 
     /// Get custom fields defined for a project (with bundle values for enum fields)
@@ -615,7 +576,7 @@ impl YouTrackClient {
             }
         }
 
-        Err(YouTrackError::Api {
+        Err(TrackerError::Api {
             status: 404,
             message: format!(
                 "Link type '{}' with direction '{}' not found for issue '{}'",
@@ -745,7 +706,7 @@ impl YouTrackClient {
             }
             skip += fetched;
         }
-        Err(YouTrackError::PaginationStalled(format!(
+        Err(TrackerError::PaginationStalled(format!(
             "issue '{}' activity timeline did not terminate after {} pages",
             issue_id, MAX_PAGES
         )))
@@ -856,14 +817,14 @@ impl YouTrackClient {
         upload: &AttachmentUpload,
     ) -> Result<Vec<ArticleAttachment>> {
         if upload.comment.is_some() {
-            return Err(YouTrackError::Api {
+            return Err(TrackerError::Api {
                 status: 0,
                 message: "YouTrack article attachment upload does not support --comment"
                     .to_string(),
             });
         }
         if upload.minor_edit {
-            return Err(YouTrackError::Api {
+            return Err(TrackerError::Api {
                 status: 0,
                 message: "YouTrack article attachment upload does not support --minor-edit"
                     .to_string(),
@@ -885,14 +846,14 @@ impl YouTrackClient {
         upload: &AttachmentUpload,
     ) -> Result<Vec<ArticleAttachment>> {
         if upload.comment.is_some() {
-            return Err(YouTrackError::Api {
+            return Err(TrackerError::Api {
                 status: 0,
                 message: "YouTrack article comment attachment upload does not support --comment"
                     .to_string(),
             });
         }
         if upload.minor_edit {
-            return Err(YouTrackError::Api {
+            return Err(TrackerError::Api {
                 status: 0,
                 message: "YouTrack article comment attachment upload does not support --minor-edit"
                     .to_string(),

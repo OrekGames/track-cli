@@ -1,15 +1,13 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
-use tracker_core::AttachmentUpload;
-use ureq::http::Response;
+use tracker_core::http::{self, read_json};
+use tracker_core::{AttachmentUpload, Result, TrackerError};
 use ureq::typestate::{WithBody, WithoutBody};
-use ureq::unversioned::multipart::{Form, Part};
-use ureq::{Agent, Body, RequestBuilder};
+use ureq::{Agent, RequestBuilder};
 
-use crate::error::{JiraError, Result};
 use crate::models::*;
 
 /// Jira REST API client
@@ -29,7 +27,7 @@ impl JiraClient {
     /// For Jira Server, use your username and password.
     pub fn new(base_url: &str, email: &str, api_token: &str) -> Self {
         Self {
-            agent: http_agent(),
+            agent: http::agent(),
             base_url: base_url.trim_end_matches('/').to_string(),
             auth_header: basic_auth_header(email, api_token),
             link_mappings: HashMap::new(),
@@ -73,7 +71,7 @@ impl JiraClient {
     }
 
     /// Send a request without a body (GET, DELETE); error on a non-2xx status.
-    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<Response<Body>> {
+    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<http::Response> {
         self.check_response(self.authorized(request).call()?)
     }
 
@@ -82,7 +80,7 @@ impl JiraClient {
         &self,
         request: RequestBuilder<WithBody>,
         body: &impl Serialize,
-    ) -> Result<Response<Body>> {
+    ) -> Result<http::Response> {
         let response = self
             .authorized(request)
             .header("Content-Type", "application/json")
@@ -96,59 +94,8 @@ impl JiraClient {
     }
 
     /// Check response status and return error if not successful
-    fn check_response(&self, mut response: Response<Body>) -> Result<Response<Body>> {
-        let status = response.status().as_u16();
-
-        if (200..300).contains(&status) {
-            return Ok(response);
-        }
-
-        // Try to read error body for better error messages
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .unwrap_or_else(|_| String::new());
-
-        // Try to parse as Jira error response
-        let message = if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&body) {
-            // Jira error format: {"errorMessages":["..."], "errors":{...}}
-            let mut messages = Vec::new();
-
-            if let Some(errors) = error_response
-                .get("errorMessages")
-                .and_then(|e| e.as_array())
-            {
-                for e in errors {
-                    if let Some(s) = e.as_str() {
-                        messages.push(s.to_string());
-                    }
-                }
-            }
-
-            if let Some(errors) = error_response.get("errors").and_then(|e| e.as_object()) {
-                for (field, msg) in errors {
-                    if let Some(s) = msg.as_str() {
-                        messages.push(format!("{}: {}", field, s));
-                    }
-                }
-            }
-
-            if messages.is_empty() {
-                body
-            } else {
-                messages.join("; ")
-            }
-        } else if body.is_empty() {
-            format!("HTTP {}", status)
-        } else {
-            body
-        };
-
-        if status == 401 {
-            Err(JiraError::Unauthorized)
-        } else {
-            Err(JiraError::Api { status, message })
-        }
+    fn check_response(&self, response: http::Response) -> Result<http::Response> {
+        http::check_response(response, error_message)
     }
 
     // ==================== Issue Operations ====================
@@ -230,7 +177,7 @@ impl JiraClient {
         upload: &AttachmentUpload,
     ) -> Result<Vec<JiraAttachment>> {
         if upload.comment.is_some() {
-            return Err(JiraError::Api {
+            return Err(TrackerError::Api {
                 status: 0,
                 message: "Jira issue attachment upload does not support --comment".to_string(),
             });
@@ -238,17 +185,7 @@ impl JiraClient {
 
         let url = self.api_url(&format!("/issue/{}/attachments", key));
 
-        let mut form = Form::new();
-        for file in &upload.files {
-            let mut part = Part::file(&file.path)?;
-            if let Some(name) = &file.name {
-                part = part.file_name(name);
-            }
-            if let Some(mime_type) = &file.mime_type {
-                part = part.mime_str(mime_type)?;
-            }
-            form = form.part("file", part);
-        }
+        let form = http::file_form("file", &upload.files)?;
 
         let response = self
             .authorized(self.agent.post(&url))
@@ -345,7 +282,7 @@ impl JiraClient {
             }
             start_at += fetched;
         }
-        Err(JiraError::PaginationStalled(format!(
+        Err(TrackerError::PaginationStalled(format!(
             "issue '{}' changelog did not terminate after {} pages",
             key, MAX_PAGES
         )))
@@ -475,10 +412,10 @@ impl JiraClient {
         }
 
         let available: Vec<String> = transitions.iter().map(|t| t.to.name.clone()).collect();
-        Err(JiraError::InvalidTransition {
-            requested: target_status.to_string(),
-            available,
-        })
+        Err(TrackerError::InvalidInput(format!(
+            "status '{}' is not reachable. available: {:?}",
+            target_status, available
+        )))
     }
 
     // ==================== Project Status Operations ====================
@@ -497,26 +434,39 @@ impl JiraClient {
     }
 }
 
-/// HTTP agent shared by the Jira and Confluence clients. Non-2xx responses are
-/// returned rather than raised, so the clients can surface Atlassian's error body.
-pub(crate) fn http_agent() -> Agent {
-    Agent::config_builder()
-        .tls_config(tracker_core::tls::tls_config())
-        .timeout_global(Some(Duration::from_secs(30)))
-        .http_status_as_error(false)
-        .build()
-        .into()
+/// Jira's `errorMessages[]`, then `field: message` for each string in `errors{}`,
+/// joined with "; ".
+fn error_message(json: &Value) -> Option<String> {
+    // Jira error format: {"errorMessages":["..."], "errors":{...}}
+    let mut messages = Vec::new();
+
+    if let Some(errors) = json.get("errorMessages").and_then(|e| e.as_array()) {
+        for e in errors {
+            if let Some(s) = e.as_str() {
+                messages.push(s.to_string());
+            }
+        }
+    }
+
+    if let Some(errors) = json.get("errors").and_then(|e| e.as_object()) {
+        for (field, msg) in errors {
+            if let Some(s) = msg.as_str() {
+                messages.push(format!("{}: {}", field, s));
+            }
+        }
+    }
+
+    if messages.is_empty() {
+        None
+    } else {
+        Some(messages.join("; "))
+    }
 }
 
 /// `Authorization` header value for Atlassian Basic Auth (email + API token).
 pub(crate) fn basic_auth_header(email: &str, api_token: &str) -> String {
     let credentials = format!("{}:{}", email.trim(), api_token.trim());
     format!("Basic {}", base64_encode(&credentials))
-}
-
-/// Deserialize a JSON response body.
-pub(crate) fn read_json<T: DeserializeOwned>(mut response: Response<Body>) -> Result<T> {
-    Ok(response.body_mut().read_json()?)
 }
 
 /// Simple base64 encoding function

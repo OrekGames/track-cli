@@ -13,9 +13,7 @@ use crate::models::confluence::*;
 
 impl KnowledgeBase for ConfluenceClient {
     fn get_article(&self, id: &str) -> Result<Article> {
-        self.get_page(id)
-            .map(confluence_page_to_article)
-            .map_err(TrackerError::from)
+        self.get_page(id).map(confluence_page_to_article)
     }
 
     fn list_articles(
@@ -33,9 +31,7 @@ impl KnowledgeBase for ConfluenceClient {
         let mut cursor: Option<String> = None;
 
         loop {
-            let page = self
-                .list_pages(project_id, limit, cursor.as_deref())
-                .map_err(TrackerError::from)?;
+            let page = self.list_pages(project_id, limit, cursor.as_deref())?;
             let page_len = page.results.len();
 
             if remaining_skip >= page_len {
@@ -80,9 +76,7 @@ impl KnowledgeBase for ConfluenceClient {
         loop {
             let remaining = max_results - articles.len();
             let page_limit = remaining.min(100);
-            let page = self
-                .list_pages(project_id, page_limit, cursor.as_deref())
-                .map_err(TrackerError::from)?;
+            let page = self.list_pages(project_id, page_limit, cursor.as_deref())?;
             let page_len = page.results.len();
 
             articles.extend(
@@ -106,14 +100,12 @@ impl KnowledgeBase for ConfluenceClient {
     }
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
-        self.search_pages(query, limit, skip)
-            .map(|r| {
-                r.results
-                    .into_iter()
-                    .filter_map(|hit| hit.content.map(search_content_to_article))
-                    .collect()
-            })
-            .map_err(TrackerError::from)
+        self.search_pages(query, limit, skip).map(|r| {
+            r.results
+                .into_iter()
+                .filter_map(|hit| hit.content.map(search_content_to_article))
+                .collect()
+        })
     }
 
     fn create_article(&self, article: &CreateArticle) -> Result<Article> {
@@ -132,16 +124,14 @@ impl KnowledgeBase for ConfluenceClient {
             status: Some("current".to_string()),
         };
 
-        self.create_page(&page)
-            .map(confluence_page_to_article)
-            .map_err(TrackerError::from)
+        self.create_page(&page).map(confluence_page_to_article)
     }
 
     fn update_article(&self, id: &str, update: &UpdateArticle) -> Result<Article> {
         // The v2 page update needs the next version number, and requires title,
         // status, and body on every PUT: resend the current values for any the
         // caller leaves unchanged.
-        let current = self.get_page(id).map_err(TrackerError::from)?;
+        let current = self.get_page(id)?;
         let current_version = current.version.as_ref().map(|v| v.number).unwrap_or(1);
         let current_status = current
             .status
@@ -168,22 +158,19 @@ impl KnowledgeBase for ConfluenceClient {
 
         self.update_page(id, &update_request)
             .map(confluence_page_to_article)
-            .map_err(TrackerError::from)
     }
 
     fn delete_article(&self, id: &str) -> Result<()> {
-        self.delete_page(id).map_err(TrackerError::from)
+        self.delete_page(id)
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
-        self.get_child_pages(parent_id, 100)
-            .map(|r| {
-                r.results
-                    .into_iter()
-                    .map(confluence_page_to_article)
-                    .collect()
-            })
-            .map_err(TrackerError::from)
+        self.get_child_pages(parent_id, 100).map(|r| {
+            r.results
+                .into_iter()
+                .map(confluence_page_to_article)
+                .collect()
+        })
     }
 
     fn move_article(&self, _article_id: &str, _new_parent_id: Option<&str>) -> Result<Article> {
@@ -198,14 +185,12 @@ impl KnowledgeBase for ConfluenceClient {
     }
 
     fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
-        self.get_page_attachments(article_id, 100)
-            .map(|r| {
-                r.results
-                    .into_iter()
-                    .map(confluence_attachment_to_article_attachment)
-                    .collect()
-            })
-            .map_err(TrackerError::from)
+        self.get_page_attachments(article_id, 100).map(|r| {
+            r.results
+                .into_iter()
+                .map(confluence_attachment_to_article_attachment)
+                .collect()
+        })
     }
 
     fn add_article_attachment(
@@ -220,24 +205,20 @@ impl KnowledgeBase for ConfluenceClient {
                     .map(confluence_uploaded_attachment_to_article_attachment)
                     .collect()
             })
-            .map_err(TrackerError::from)
     }
 
     fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
-        self.get_page_comments(article_id, 100)
-            .map(|r| {
-                r.results
-                    .into_iter()
-                    .map(confluence_comment_to_comment)
-                    .collect()
-            })
-            .map_err(TrackerError::from)
+        self.get_page_comments(article_id, 100).map(|r| {
+            r.results
+                .into_iter()
+                .map(confluence_comment_to_comment)
+                .collect()
+        })
     }
 
     fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment> {
         self.add_page_comment(article_id, text)
             .map(confluence_comment_to_comment)
-            .map_err(TrackerError::from)
     }
 
     fn add_article_comment_attachment(
@@ -246,11 +227,8 @@ impl KnowledgeBase for ConfluenceClient {
         text: &str,
         upload: &AttachmentUpload,
     ) -> Result<Comment> {
-        let comment = self
-            .add_page_comment(article_id, text)
-            .map_err(TrackerError::from)?;
-        self.add_content_attachments(&comment.id, upload)
-            .map_err(TrackerError::from)?;
+        let comment = self.add_page_comment(article_id, text)?;
+        self.add_content_attachments(&comment.id, upload)?;
         Ok(confluence_comment_to_comment(comment))
     }
 
@@ -420,9 +398,11 @@ fn confluence_comment_to_comment(comment: ConfluenceComment) -> Comment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracker_core::KnowledgeBase;
+    use std::path::PathBuf;
+    use tracker_core::{AttachmentUploadFile, KnowledgeBase};
     use wiremock::matchers::{
-        body_partial_json, method, path, query_param, query_param_is_missing,
+        any, body_partial_json, body_string_contains, header, method, path, query_param,
+        query_param_is_missing,
     };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -603,5 +583,336 @@ mod tests {
         let err = client.move_article("42", None).unwrap_err();
 
         assert!(matches!(err, TrackerError::Unsupported(_)), "got: {err:?}");
+    }
+
+    // ==================== Error and HTTP Plumbing Characterization ====================
+    //
+    // The Confluence client has its own request helpers, with a different error
+    // extractor from Jira's and a 404 rewrite. These pin what the shared
+    // tracker-core HTTP helpers must keep, checked through the KnowledgeBase trait.
+
+    /// Write `contents` to a temp file named after `name`. The counter keeps
+    /// paths unique when tests running in parallel read the same clock tick,
+    /// which Windows' coarser clock makes likely.
+    fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "track-confluence-upload-{}-{unique}-{name}",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn upload_of(path: PathBuf, mime_type: Option<&str>) -> AttachmentUpload {
+        AttachmentUpload {
+            files: vec![AttachmentUploadFile {
+                path,
+                name: None,
+                mime_type: mime_type.map(str::to_string),
+            }],
+            comment: None,
+            silent: false,
+            minor_edit: false,
+        }
+    }
+
+    fn new_article() -> CreateArticle {
+        CreateArticle {
+            project_id: "SPACE".to_string(),
+            summary: "Runbook".to_string(),
+            content: None,
+            parent_article_id: None,
+            tags: vec![],
+        }
+    }
+
+    /// The status and message of an `Api` error; panics on any other variant.
+    fn expect_api(err: TrackerError) -> (u16, String) {
+        match err {
+            TrackerError::Api { status, message } => (status, message),
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_confluence_error_message_and_errors_array_joined() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/wiki/api/v2/pages/42"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "message": "M",
+                "errors": [{ "message": "E1" }, { "message": "E2" }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        let err = client.get_article("42").unwrap_err();
+
+        assert_eq!(expect_api(err), (400, "M; E1; E2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_confluence_error_body_fallbacks() {
+        let mock_server = MockServer::start().await;
+        let jira_style = r#"{"errorMessages":["A"],"errors":{"f":"B"}}"#;
+        let nested_only = r#"{"errors":[{"message":{"translation":"T"}}]}"#;
+        // Jira-style errorMessages/errors{} and v1's nested
+        // errors[].message.translation are not read. Only an empty, non-JSON
+        // body becomes "HTTP <status>"; other bodies pass through raw.
+        let cases = [
+            ("1", 400, jira_style, jira_style),
+            ("2", 400, nested_only, nested_only),
+            (
+                "3",
+                400,
+                r#"{"message":"M","data":{"errors":[{"message":{"translation":"T"}}]}}"#,
+                "M",
+            ),
+            ("4", 500, "", "HTTP 500"),
+            ("5", 502, "Bad Gateway", "Bad Gateway"),
+        ];
+
+        for (id, status, body, _) in cases {
+            Mock::given(method("GET"))
+                .and(path(format!("/wiki/api/v2/pages/{id}")))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        for (id, status, _, message) in cases {
+            let err = client.get_article(id).unwrap_err();
+            assert_eq!(expect_api(err), (status, message.to_string()), "page {id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_confluence_404_is_not_found_message() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/wiki/api/v2/pages/123"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "message": "Page 123 missing"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        let err = client.get_article("123").unwrap_err();
+
+        // The server's message is replaced (Jira keeps its 404 text).
+        assert_eq!(expect_api(err), (404, "Not found".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_confluence_401_is_unauthorized() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/wiki/api/v2/pages/42"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "message": "Token expired"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        let err = client.get_article("42").unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Unauthorized),
+            "expected Unauthorized, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_confluence_non_json_success_body_is_parse() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/wiki/api/v2/pages/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        let err = client.get_article("42").unwrap_err();
+
+        // A 2xx body that is not the expected JSON is Parse; a failed read
+        // stays Http.
+        assert!(
+            matches!(err, TrackerError::Parse(_)),
+            "expected Parse, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_confluence_post_and_upload_non_json_success_body_is_parse() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        Mock::given(method("POST"))
+            .and(path("/wiki/api/v2/pages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/wiki/rest/api/content/42/child/attachment"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        let create_err = client.create_article(&new_article()).unwrap_err();
+        let upload = upload_of(upload_path.clone(), None);
+        let upload_err = client.add_article_attachment("42", &upload).unwrap_err();
+        let _ = std::fs::remove_file(upload_path);
+
+        // send_json and the multipart upload decode their response the same
+        // way as GET.
+        for err in [create_err, upload_err] {
+            assert!(
+                matches!(err, TrackerError::Parse(_)),
+                "expected Parse, got: {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_confluence_delete_accepts_non_json_success_body() {
+        let mock_server = MockServer::start().await;
+
+        // delete_page discards the body, unlike every Confluence POST and PUT.
+        Mock::given(method("DELETE"))
+            .and(path("/wiki/api/v2/pages/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        client.delete_article("42").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_confluence_send_json_headers_and_wiki_base_url() {
+        let mock_server = MockServer::start().await;
+
+        // Trimmed Basic auth, Accept: application/json, and Content-Type
+        // without ureq's "; charset=utf-8".
+        Mock::given(method("POST"))
+            .and(path("/wiki/api/v2/pages"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEBleGFtcGxlLmNvbTp0b2tlbg==",
+            ))
+            .and(header("Accept", "application/json"))
+            .and(header("Content-Type", "application/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page("42", "Runbook")))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // A base URL that already ends in /wiki (here with a trailing slash)
+        // does not get a second /wiki.
+        let base_url = format!("{}/wiki/", mock_server.uri());
+        let client = ConfluenceClient::new(&base_url, " test@example.com\n", "\ttoken ");
+        let article = client.create_article(&new_article()).unwrap();
+
+        assert_eq!(article.id, "42");
+    }
+
+    #[tokio::test]
+    async fn test_confluence_upload_sends_comment_minor_edit_and_nocheck() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        // v1 endpoint, "nocheck" (Jira spells it "no-check"), and text parts
+        // for the comment and minorEdit.
+        Mock::given(method("POST"))
+            .and(path("/wiki/rest/api/content/42/child/attachment"))
+            .and(header("X-Atlassian-Token", "nocheck"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEBleGFtcGxlLmNvbTp0b2tlbg==",
+            ))
+            .and(header("Accept", "application/json"))
+            .and(body_string_contains("name=\"file\""))
+            .and(body_string_contains("name=\"comment\"\r\n\r\nc\r\n"))
+            .and(body_string_contains("name=\"minorEdit\"\r\n\r\ntrue\r\n"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [
+                    {
+                        "id": "att1",
+                        "title": "evidence.txt",
+                        "metadata": {
+                            "mediaType": "text/plain",
+                            "extensions": { "fileSize": 8 }
+                        }
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        let upload = AttachmentUpload {
+            comment: Some("c".to_string()),
+            minor_edit: true,
+            ..upload_of(upload_path.clone(), None)
+        };
+        let attachments = client.add_article_attachment("42", &upload).unwrap();
+        let _ = std::fs::remove_file(upload_path);
+
+        // The {results:[..]} wrapper is unwrapped.
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].id, "att1");
+        assert_eq!(attachments[0].name, "evidence.txt");
+        assert_eq!(attachments[0].mime_type.as_deref(), Some("text/plain"));
+        assert_eq!(attachments[0].size, 8);
+    }
+
+    #[tokio::test]
+    async fn test_confluence_attachment_missing_file_is_io_and_bad_mime_is_http() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+        let missing_path = upload_path.with_extension("missing");
+
+        // Both fail while building the form, before any request.
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": []
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
+        let missing_err = client
+            .add_article_attachment("42", &upload_of(missing_path, None))
+            .unwrap_err();
+        let mime_upload = upload_of(upload_path.clone(), Some("not a mime"));
+        let mime_err = client
+            .add_article_attachment("42", &mime_upload)
+            .unwrap_err();
+        let _ = std::fs::remove_file(upload_path);
+
+        assert!(
+            matches!(missing_err, TrackerError::Io(_)),
+            "expected Io, got: {missing_err:?}"
+        );
+        match mime_err {
+            TrackerError::Http(message) => {
+                assert!(message.starts_with("invalid MIME type"), "{message}");
+            }
+            other => panic!("Expected Http error, got: {other:?}"),
+        }
     }
 }

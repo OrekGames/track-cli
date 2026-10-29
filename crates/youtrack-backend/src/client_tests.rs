@@ -4,8 +4,10 @@ mod tests {
     use crate::models::*;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tracker_core::{AttachmentUpload, AttachmentUploadFile, IssueTracker};
-    use wiremock::matchers::{body_json, body_string_contains, header, method, path, query_param};
+    use tracker_core::{AttachmentUpload, AttachmentUploadFile, IssueTracker, TrackerError};
+    use wiremock::matchers::{
+        any, body_json, body_string_contains, header, method, path, query_param,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn mock_issue(id: &str, id_readable: &str, summary: &str) -> serde_json::Value {
@@ -23,12 +25,16 @@ mod tests {
         })
     }
 
+    /// Write `contents` to a temp file named after `name`. The counter keeps
+    /// paths unique when tests running in parallel read the same clock tick,
+    /// which Windows' coarser clock makes likely.
     fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("track-yt-upload-{nanos}-{name}"));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "track-yt-upload-{}-{unique}-{name}",
+            std::process::id()
+        ));
         std::fs::write(&path, contents).unwrap();
         path
     }
@@ -748,7 +754,9 @@ mod tests {
         let client = YouTrackClient::new(&mock_server.uri(), "test-token");
         let err = client.resolve_user_id("bob").unwrap_err();
 
-        assert!(!matches!(err, crate::error::YouTrackError::Api { .. }));
+        // get_json_opt only turns a 404 into None; the decode failure from the
+        // user search propagates as Parse.
+        assert!(matches!(err, TrackerError::Parse(_)), "{err:?}");
         assert!(!err.to_string().contains("could not be resolved"));
     }
 
@@ -843,10 +851,7 @@ mod tests {
         let result = client.get_issue("PROJ-123");
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::error::YouTrackError::Unauthorized
-        ));
+        assert!(matches!(result.unwrap_err(), TrackerError::Unauthorized));
     }
 
     #[tokio::test]
@@ -1692,7 +1697,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 400);
                 assert!(
                     message.contains("Missing required field: Priority"),
@@ -1731,7 +1736,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 400);
                 assert!(
                     message.contains("Invalid value for field 'Type'"),
@@ -1771,7 +1776,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 400);
                 assert!(
                     message.contains("Something went wrong"),
@@ -1801,7 +1806,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 404);
                 assert!(
                     message.contains("PROJ-99999 not found"),
@@ -1810,29 +1815,6 @@ mod tests {
             }
             other => panic!("Expected Api error, got: {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn test_unauthorized_with_body_still_returns_unauthorized_variant() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/issues/PROJ-123"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-                "error": "Unauthorized",
-                "error_description": "Invalid token"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = YouTrackClient::new(&mock_server.uri(), "bad-token");
-        let result = client.get_issue("PROJ-123");
-
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::error::YouTrackError::Unauthorized
-        ));
     }
 
     #[tokio::test]
@@ -1861,7 +1843,7 @@ mod tests {
 
         let err = result.unwrap_err();
         match &err {
-            crate::error::YouTrackError::Api { status, message } => {
+            TrackerError::Api { status, message } => {
                 assert_eq!(*status, 400);
                 assert_eq!(message, "HTTP 400");
             }
@@ -2678,5 +2660,623 @@ mod tests {
         assert_eq!(events[100].to.as_deref(), Some("In Progress"));
         // Field-name canonicalization applies across the whole timeline.
         assert!(events.iter().all(|e| e.field == "status"));
+    }
+
+    // ========== Error and HTTP Plumbing Characterization Tests ==========
+    //
+    // These pin the error classification and request shape, through the
+    // IssueTracker trait wherever it reaches the path.
+
+    fn upload_of(path: PathBuf, mime_type: Option<&str>) -> AttachmentUpload {
+        AttachmentUpload {
+            files: vec![AttachmentUploadFile {
+                path,
+                name: None,
+                mime_type: mime_type.map(str::to_string),
+            }],
+            comment: None,
+            silent: false,
+            minor_edit: false,
+        }
+    }
+
+    /// Serve one canned raw HTTP response, then close the connection. Used for
+    /// responses wiremock cannot produce, such as a body cut off mid-stream.
+    ///
+    /// The request, including a `Content-Length` body, is read in full first:
+    /// closing a socket with request bytes still unread makes Windows reset
+    /// the connection, and the client then fails before it reads the response.
+    fn serve_raw_response_once(response: &'static str) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+                {
+                    let mut reader = BufReader::new(&stream);
+                    let mut content_length = 0;
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 0) && line != "\r\n" {
+                        if let Some(value) =
+                            line.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                        line.clear();
+                    }
+                    let _ = reader.read_exact(&mut vec![0; content_length]);
+                }
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_issue_non_json_success_body_is_parse() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues/X-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
+
+        // A 2xx body that is not the expected JSON is Parse; a failed read
+        // stays Http.
+        assert!(
+            matches!(err, TrackerError::Parse(_)),
+            "expected Parse, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trait_post_and_upload_non_json_success_body_is_parse() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues/X-1/attachments"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let create = tracker_core::CreateIssue {
+            project_id: "0-1".to_string(),
+            summary: "New issue".to_string(),
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+            parent: None,
+        };
+        let create_err = IssueTracker::create_issue(&client, &create).unwrap_err();
+        let upload = upload_of(upload_path.clone(), None);
+        let upload_err = IssueTracker::add_issue_attachment(&client, "X-1", &upload).unwrap_err();
+        let _ = std::fs::remove_file(upload_path);
+
+        // POST and multipart responses decode the same way as GET.
+        assert!(
+            matches!(create_err, TrackerError::Parse(_))
+                && matches!(upload_err, TrackerError::Parse(_)),
+            "expected Parse from POST and upload, got: {create_err:?} and {upload_err:?}"
+        );
+    }
+
+    #[test]
+    fn test_truncated_chunked_success_body_is_http_not_parse() {
+        // The connection drops mid-body. The body is read in full before
+        // decoding, so the failed read is Http, not Parse.
+        let base_url = serve_raw_response_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+             40\r\n{\"id\":\"2-1\",\"idReadable\":\"X-1\"",
+        );
+
+        let client = YouTrackClient::new(&base_url, "test-token");
+        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Http(_)),
+            "expected Http, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_truncated_success_body_with_content_length_is_http_not_parse() {
+        let base_url = serve_raw_response_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: 100\r\nConnection: close\r\n\r\n\
+             {\"id\":\"2-1\",\"idReadable\":\"X-1\"",
+        );
+
+        let client = YouTrackClient::new(&base_url, "test-token");
+        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Http(_)),
+            "expected Http, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_error_body_read_failure_is_swallowed_as_http_status() {
+        // The error body is cut short of its Content-Length. The read failure
+        // is dropped and the message falls back to "HTTP <status>".
+        let base_url = serve_raw_response_once(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\
+             Content-Length: 100\r\nConnection: close\r\n\r\n\
+             {\"error\":\"Bad Req",
+        );
+
+        let client = YouTrackClient::new(&base_url, "test-token");
+        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
+
+        match err {
+            TrackerError::Api { status, message } => {
+                assert_eq!(status, 400);
+                assert_eq!(message, "HTTP 400");
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_json_without_known_keys_uses_raw_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues/X-1"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"foo":"bar"}"#))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
+
+        match err {
+            TrackerError::Api { status, message } => {
+                assert_eq!(status, 400);
+                assert_eq!(message, r#"{"foo":"bar"}"#);
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_json_non_object_bodies_use_raw_body() {
+        let mock_server = MockServer::start().await;
+        let cases = [
+            ("X-1", r#"["Bad Request"]"#),
+            ("X-2", r#""Bad Request""#),
+            ("X-3", "42"),
+            ("X-4", "null"),
+        ];
+
+        for (id, body) in cases {
+            Mock::given(method("GET"))
+                .and(path(format!("/api/issues/{id}")))
+                .respond_with(ResponseTemplate::new(400).set_body_string(body))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        for (id, body) in cases {
+            match IssueTracker::get_issue(&client, id).unwrap_err() {
+                TrackerError::Api { status, message } => {
+                    assert_eq!(status, 400);
+                    assert_eq!(message, body, "message for body {body}");
+                }
+                other => panic!("Expected Api error for body {body}, got: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_json_known_keys_joined_in_order() {
+        let mock_server = MockServer::start().await;
+
+        // Key order in the body does not matter; the message order is fixed.
+        Mock::given(method("GET"))
+            .and(path("/api/issues/X-1"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(
+                r#"{"error_message":"third","error_description":"second","error":"first"}"#,
+            ))
+            .mount(&mock_server)
+            .await;
+
+        // Non-string values are skipped rather than stringified.
+        Mock::given(method("GET"))
+            .and(path("/api/issues/X-2"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_string(r#"{"error":5,"error_description":"only string values"}"#),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        for (id, expected) in [
+            ("X-1", "first: second: third"),
+            ("X-2", "only string values"),
+        ] {
+            match IssueTracker::get_issue(&client, id).unwrap_err() {
+                TrackerError::Api { status, message } => {
+                    assert_eq!(status, 400);
+                    assert_eq!(message, expected);
+                }
+                other => panic!("Expected Api error, got: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_whitespace_only_error_body_is_kept_verbatim() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues/X-1"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("   "))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
+
+        match err {
+            TrackerError::Api { status, message } => {
+                assert_eq!(status, 400);
+                assert_eq!(message, "   ");
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trait_status_mapping_only_401_is_special() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues/X-401"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": "Unauthorized",
+                "error_description": "Invalid token"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // No NotFound mapping, no rate-limit detection, no retry: each of these
+        // is a plain Api error after exactly one request.
+        let cases: [(u16, &str, &str); 5] = [
+            (403, "X-403", "Forbidden"),
+            (404, "X-404", ""),
+            (429, "X-429", "Too Many Requests"),
+            (500, "X-500", "Internal Server Error"),
+            (503, "X-503", "Service Unavailable"),
+        ];
+        for (status, id, body) in cases {
+            Mock::given(method("GET"))
+                .and(path(format!("/api/issues/{id}")))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Retry-After", "0")
+                        .set_body_string(body),
+                )
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+
+        let err = IssueTracker::get_issue(&client, "X-401").unwrap_err();
+        assert!(
+            matches!(err, TrackerError::Unauthorized),
+            "expected Unauthorized, got: {err:?}"
+        );
+
+        for (expected_status, id, body) in cases {
+            match IssueTracker::get_issue(&client, id).unwrap_err() {
+                TrackerError::Api { status, message } => {
+                    assert_eq!(status, expected_status);
+                    let expected = if body.is_empty() {
+                        format!("HTTP {expected_status}")
+                    } else {
+                        body.to_string()
+                    };
+                    assert_eq!(message, expected);
+                }
+                other => panic!("Expected Api error for {expected_status}, got: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_and_post_send_json_accept_and_content_type() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/issues/X-1"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(header("Accept", "application/json"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_issue("2-1", "X-1", "Issue")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(header("Accept", "application/json"))
+            .and(header("Content-Type", "application/json"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_issue("2-2", "X-2", "Created")),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        IssueTracker::get_issue(&client, "X-1").unwrap();
+        let create = tracker_core::CreateIssue {
+            project_id: "0-1".to_string(),
+            summary: "Created".to_string(),
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+            parent: None,
+        };
+        IssueTracker::create_issue(&client, &create).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delete_issue_sends_ureq_default_accept_header() {
+        let mock_server = MockServer::start().await;
+
+        // DELETE sets no Accept of its own, so ureq fills in its default
+        // instead of the application/json that GET, POST and uploads send.
+        Mock::given(method("DELETE"))
+            .and(path("/api/issues/X-1"))
+            .and(header("Authorization", "Bearer test-token"))
+            .and(header("Accept", "*/*"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        IssueTracker::delete_issue(&client, "X-1").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_upload_silent_appends_mute_update_notifications() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("silent.txt", b"quiet");
+
+        Mock::given(method("POST"))
+            .and(path("/api/issues/X-1/attachments"))
+            .and(query_param("muteUpdateNotifications", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": "att-1",
+                    "name": "silent.txt",
+                    "size": 5,
+                    "mimeType": "text/plain"
+                }
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let mut upload = upload_of(upload_path.clone(), None);
+        upload.silent = true;
+        let result = IssueTracker::add_issue_attachment(&client, "X-1", &upload);
+        let _ = std::fs::remove_file(upload_path);
+
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_issue_upload_comment_rejected_with_status_zero_before_request() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("comment.txt", b"body");
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let mut upload = upload_of(upload_path.clone(), None);
+        upload.comment = Some("see attached".to_string());
+        let result = IssueTracker::add_issue_attachment(&client, "X-1", &upload);
+        let _ = std::fs::remove_file(upload_path);
+
+        match result.unwrap_err() {
+            TrackerError::Api { status, message } => {
+                assert_eq!(status, 0);
+                assert!(
+                    message.contains("does not support --comment"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_other_upload_unsupported_options_rejected_with_status_zero_before_request() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("options.txt", b"body");
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let mut with_comment = upload_of(upload_path.clone(), None);
+        with_comment.comment = Some("see attached".to_string());
+        let mut minor_edit = upload_of(upload_path.clone(), None);
+        minor_edit.minor_edit = true;
+
+        // The trait's comment-attachment methods create the comment first, so
+        // these call the client's upload methods directly.
+        let results: Vec<(&str, TrackerError)> = vec![
+            (
+                "--comment",
+                client
+                    .add_issue_comment_attachments("X-1", "4-1", &with_comment)
+                    .unwrap_err(),
+            ),
+            (
+                "--comment",
+                client
+                    .add_article_attachments("KB-A-1", &with_comment)
+                    .unwrap_err(),
+            ),
+            (
+                "--minor-edit",
+                client
+                    .add_article_attachments("KB-A-1", &minor_edit)
+                    .unwrap_err(),
+            ),
+            (
+                "--comment",
+                client
+                    .add_article_comment_attachments("KB-A-1", "4-2", &with_comment)
+                    .unwrap_err(),
+            ),
+            (
+                "--minor-edit",
+                client
+                    .add_article_comment_attachments("KB-A-1", "4-2", &minor_edit)
+                    .unwrap_err(),
+            ),
+        ];
+        let _ = std::fs::remove_file(upload_path);
+
+        for (option, err) in results {
+            match err {
+                TrackerError::Api { status, message } => {
+                    assert_eq!(status, 0);
+                    assert!(
+                        message.contains(&format!("does not support {option}")),
+                        "unexpected message: {message}"
+                    );
+                }
+                other => panic!("Expected Api error for {option}, got: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upload_missing_file_is_io_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let missing = std::env::temp_dir().join(format!(
+            "track-yt-upload-missing-{}.txt",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let upload = upload_of(missing, None);
+        let err = IssueTracker::add_issue_attachment(&client, "X-1", &upload).unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Io(_)),
+            "expected Io, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upload_invalid_mime_type_is_http_error() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("mime.txt", b"body");
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let upload = upload_of(upload_path.clone(), Some("not a mime"));
+        let result = IssueTracker::add_issue_attachment(&client, "X-1", &upload);
+        let _ = std::fs::remove_file(upload_path);
+
+        match result.unwrap_err() {
+            TrackerError::Http(message) => assert!(
+                message.starts_with("invalid MIME type"),
+                "unexpected message: {message}"
+            ),
+            other => panic!("Expected Http error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trait_resolve_project_id_unknown_is_project_not_found() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/admin/projects"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "id": "0-1", "name": "Project", "shortName": "PROJ" }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        let err = IssueTracker::resolve_project_id(&client, "NOPE").unwrap_err();
+
+        match err {
+            TrackerError::ProjectNotFound(id) => assert_eq!(id, "NOPE"),
+            other => panic!("Expected ProjectNotFound, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trait_resolve_project_id_internal_id_makes_no_request() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = YouTrackClient::new(&mock_server.uri(), "test-token");
+        assert_eq!(
+            IssueTracker::resolve_project_id(&client, "0-2").unwrap(),
+            "0-2"
+        );
     }
 }

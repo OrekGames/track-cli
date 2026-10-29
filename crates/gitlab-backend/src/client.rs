@@ -1,15 +1,14 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::collections::HashMap;
-use std::time::Duration;
-use tracker_core::AttachmentUploadFile;
-use ureq::http::Response;
+use tracker_core::http::{self, read_json};
+use tracker_core::{AttachmentUploadFile, Result, TrackerError};
 use ureq::typestate::WithBody;
-use ureq::unversioned::multipart::{Form, Part};
-use ureq::{Agent, Body, RequestBuilder};
+use ureq::unversioned::multipart::Form;
+use ureq::{Agent, RequestBuilder};
 
 use crate::convert::GitLabQueryParams;
-use crate::error::{GitLabError, Result};
 use crate::models::*;
 
 /// GitLab's maximum `per_page`; also the page size used when walking every page.
@@ -24,6 +23,14 @@ pub struct GitLabClient {
     link_mappings: HashMap<String, String>,
 }
 
+/// The first of `message`, `error` and `error_description` that is a string;
+/// GitLab's validation errors (an object under `message`) fall back to the raw body.
+fn error_message(json: &Value) -> Option<String> {
+    ["message", "error", "error_description"]
+        .into_iter()
+        .find_map(|key| json.get(key)?.as_str().map(str::to_string))
+}
+
 impl GitLabClient {
     /// Create a new GitLab client.
     ///
@@ -31,15 +38,8 @@ impl GitLabClient {
     /// `project_id` can be a numeric ID or a plain path like `group/sub/project`;
     /// it is URL-encoded when request URLs are built, so do not pre-encode it.
     pub fn new(base_url: &str, token: &str, project_id: Option<&str>) -> Self {
-        let agent = Agent::config_builder()
-            .tls_config(tracker_core::tls::tls_config())
-            .timeout_global(Some(Duration::from_secs(30)))
-            .http_status_as_error(false)
-            .build()
-            .into();
-
         Self {
-            agent,
+            agent: http::agent(),
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
             project_id: project_id.map(|s| s.to_string()),
@@ -80,7 +80,7 @@ impl GitLabClient {
 
     /// The configured project ID or path; an error if none is configured.
     fn configured_project_id(&self) -> Result<&str> {
-        self.project_id.as_deref().ok_or_else(|| GitLabError::Api {
+        self.project_id.as_deref().ok_or_else(|| TrackerError::Api {
             status: 0,
             message: "GitLab project_id is not configured. Set via 'track config set gitlab.project_id <ID>' or GITLAB_PROJECT_ID env var".to_string(),
         })
@@ -116,47 +116,15 @@ impl GitLabClient {
         }
         self.get_project(project_id)?
             .web_url
-            .ok_or_else(|| GitLabError::Api {
+            .ok_or_else(|| TrackerError::Api {
                 status: 0,
                 message: format!("GitLab returned no web_url for project {project_id}"),
             })
     }
 
     /// Check response status and return error if not successful
-    fn check_response(&self, mut response: Response<Body>) -> Result<Response<Body>> {
-        let status = response.status().as_u16();
-
-        if (200..300).contains(&status) {
-            return Ok(response);
-        }
-
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .unwrap_or_else(|_| String::new());
-
-        // GitLab reports errors as {"message": ...}, {"error": ...} or (OAuth)
-        // {"error_description": ...}; anything else is surfaced verbatim.
-        let message = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|json| {
-                ["message", "error", "error_description"]
-                    .into_iter()
-                    .find_map(|key| json.get(key)?.as_str().map(str::to_string))
-            })
-            .unwrap_or_else(|| {
-                if body.is_empty() {
-                    format!("HTTP {}", status)
-                } else {
-                    body
-                }
-            });
-
-        if status == 401 {
-            Err(GitLabError::Unauthorized)
-        } else {
-            Err(GitLabError::Api { status, message })
-        }
+    fn check_response(&self, response: http::Response) -> Result<http::Response> {
+        http::check_response(response, error_message)
     }
 
     // ==================== HTTP Helpers ====================
@@ -169,13 +137,13 @@ impl GitLabClient {
     }
 
     /// GET `url`, failing on a non-2xx status.
-    fn get(&self, url: &str) -> Result<Response<Body>> {
+    fn get(&self, url: &str) -> Result<http::Response> {
         self.check_response(self.authorized(self.agent.get(url)).call()?)
     }
 
     /// GET `url` and deserialize the JSON response body.
     fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
-        Ok(self.get(url)?.body_mut().read_json()?)
+        read_json(self.get(url)?)
     }
 
     /// GET every page of the project-scoped collection at `path` (which must
@@ -184,7 +152,7 @@ impl GitLabClient {
     /// GitLab honors `per_page`, so a short page is a reliable end-of-data
     /// signal. A `MAX_PAGES` backstop guards against a server that ignores
     /// paging and never shrinks a page — failing loudly via
-    /// [`GitLabError::PaginationStalled`] instead of looping forever.
+    /// [`TrackerError::PaginationStalled`] instead of looping forever.
     fn get_all_pages<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
         const MAX_PAGES: usize = 10_000;
 
@@ -198,7 +166,7 @@ impl GitLabClient {
                 return Ok(items);
             }
         }
-        Err(GitLabError::PaginationStalled(format!(
+        Err(TrackerError::PaginationStalled(format!(
             "'{path}' did not terminate after {MAX_PAGES} pages"
         )))
     }
@@ -208,7 +176,7 @@ impl GitLabClient {
         &self,
         request: RequestBuilder<WithBody>,
         body: &impl Serialize,
-    ) -> Result<Response<Body>> {
+    ) -> Result<http::Response> {
         let response = self
             .authorized(request)
             .header("Content-Type", "application/json")
@@ -218,18 +186,12 @@ impl GitLabClient {
 
     /// POST `body` as JSON and deserialize the JSON response body.
     fn post_json<T: DeserializeOwned>(&self, url: &str, body: &impl Serialize) -> Result<T> {
-        Ok(self
-            .send_json(self.agent.post(url), body)?
-            .body_mut()
-            .read_json()?)
+        read_json(self.send_json(self.agent.post(url), body)?)
     }
 
     /// PUT `body` as JSON and deserialize the JSON response body.
     fn put_json<T: DeserializeOwned>(&self, url: &str, body: &impl Serialize) -> Result<T> {
-        Ok(self
-            .send_json(self.agent.put(url), body)?
-            .body_mut()
-            .read_json()?)
+        read_json(self.send_json(self.agent.put(url), body)?)
     }
 
     /// DELETE `url`, failing on a non-2xx status. Any response body is ignored.
@@ -240,17 +202,10 @@ impl GitLabClient {
 
     /// POST `file` as the multipart `file` field and deserialize the JSON response body.
     fn post_file<T: DeserializeOwned>(&self, url: &str, file: &AttachmentUploadFile) -> Result<T> {
-        let mut part = Part::file(&file.path)?;
-        if let Some(name) = &file.name {
-            part = part.file_name(name);
-        }
-        if let Some(mime_type) = &file.mime_type {
-            part = part.mime_str(mime_type)?;
-        }
-        let form = Form::new().part("file", part);
+        let form = Form::new().part("file", http::file_part(file)?);
 
         let response = self.authorized(self.agent.post(url)).send(form)?;
-        Ok(self.check_response(response)?.body_mut().read_json()?)
+        read_json(self.check_response(response)?)
     }
 
     // ==================== Issue Operations ====================
@@ -303,13 +258,13 @@ impl GitLabClient {
         }
         Self::append_assignee_filter(&mut url, query.assignee_username.as_deref());
 
-        let mut response = self.get(&url)?;
+        let response = self.get(&url)?;
         let total = response
             .headers()
             .get("x-total")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
-        let issues: Vec<GitLabIssue> = response.body_mut().read_json()?;
+        let issues: Vec<GitLabIssue> = read_json(response)?;
         Ok((issues, total))
     }
 
@@ -472,7 +427,7 @@ impl GitLabClient {
                 .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(GitLabError::Api {
+            return Err(TrackerError::Api {
                 status: 0,
                 message: format!("GraphQL error: {}", msg),
             });
@@ -490,7 +445,7 @@ impl GitLabClient {
                 .filter_map(|e| e.as_str())
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(GitLabError::Api {
+            return Err(TrackerError::Api {
                 status: 0,
                 message: format!("Failed to set parent: {}", msg),
             });
@@ -544,7 +499,7 @@ impl GitLabClient {
             .into_iter()
             .find(|user| tracker_core::unicode_eq_ignore_case(&user.username, username))
             .map(|user| user.id)
-            .ok_or_else(|| GitLabError::Api {
+            .ok_or_else(|| TrackerError::Api {
                 status: 404,
                 message: format!("GitLab user '{username}' not found"),
             })
@@ -555,7 +510,7 @@ impl GitLabClient {
     fn verify_user_id(&self, id: u64) -> Result<u64> {
         let user: GitLabUser = self.get_json(&format!("{}/users/{}", self.base_url, id))?;
         if user.id != id {
-            return Err(GitLabError::Api {
+            return Err(TrackerError::Api {
                 status: 404,
                 message: format!(
                     "GitLab user id '{id}' resolved to a different user (id {})",
