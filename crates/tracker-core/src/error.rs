@@ -18,6 +18,10 @@ pub enum TrackerError {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    /// The backend does not implement this operation.
+    #[error("{0}")]
+    Unsupported(String),
+
     #[error("API error ({status}): {message}")]
     Api { status: u16, message: String },
 

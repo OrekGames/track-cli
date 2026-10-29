@@ -349,7 +349,7 @@ pub fn output_change_summary(
 
     // Check Custom Fields
     for new_cf in &new.custom_fields {
-        let name = custom_field_name(new_cf);
+        let name = new_cf.name();
 
         let old_val = old.and_then(|o| find_field_value(o, name));
         let new_val = find_field_value(new, name);
@@ -419,17 +419,12 @@ fn resolve_requested_field_name<'a>(
     requested: &'a tracker_core::CustomFieldUpdate,
     issue: &'a Issue,
 ) -> &'a str {
-    let name = match requested {
-        tracker_core::CustomFieldUpdate::SingleEnum { name, .. } => name,
-        tracker_core::CustomFieldUpdate::MultiEnum { name, .. } => name,
-        tracker_core::CustomFieldUpdate::State { name, .. } => name,
-        tracker_core::CustomFieldUpdate::SingleUser { name, .. } => name,
-    };
+    let name = requested.name();
 
     let name_exists = issue
         .custom_fields
         .iter()
-        .any(|f| unicode_eq_ignore_case(custom_field_name(f), name));
+        .any(|f| unicode_eq_ignore_case(f.name(), name));
     if !matches!(requested, tracker_core::CustomFieldUpdate::State { .. }) || name_exists {
         return name;
     }
@@ -444,22 +439,11 @@ fn resolve_requested_field_name<'a>(
     }
 }
 
-fn custom_field_name(f: &CustomField) -> &str {
-    match f {
-        CustomField::SingleEnum { name, .. } => name,
-        CustomField::State { name, .. } => name,
-        CustomField::SingleUser { name, .. } => name,
-        CustomField::Text { name, .. } => name,
-        CustomField::MultiEnum { name, .. } => name,
-        CustomField::Unknown { name, .. } => name,
-    }
-}
-
 fn find_field_value(issue: &Issue, name: &str) -> Option<String> {
     issue
         .custom_fields
         .iter()
-        .find(|f| unicode_eq_ignore_case(custom_field_name(f), name))
+        .find(|f| unicode_eq_ignore_case(f.name(), name))
         .and_then(|f| match f {
             CustomField::SingleEnum { value, .. } => value.clone(),
             CustomField::State { value, .. } => value.clone(),
@@ -473,27 +457,8 @@ fn find_field_value(issue: &Issue, name: &str) -> Option<String> {
         })
 }
 
-#[derive(Serialize)]
-pub struct JsonError {
-    pub error: bool,
-    pub code: String,
-    pub message: String,
-}
-
-pub fn output_error(err: &anyhow::Error, format: OutputFormat) {
-    let message = match format {
-        OutputFormat::Json => {
-            let json_err = JsonError {
-                error: true,
-                code: "error".to_string(),
-                message: format!("{:#}", err),
-            };
-            serde_json::to_string_pretty(&json_err)
-                .unwrap_or_else(|_| format!(r#"{{"error": true, "message": "{}"}}"#, err))
-        }
-        OutputFormat::Text => format!("{}: {:#}", "Error".red().bold(), err),
-    };
-    eprintln!("{}", message);
+pub fn output_error(err: &anyhow::Error) {
+    eprintln!("{}: {:#}", "Error".red().bold(), err);
 }
 
 /// Advice for a request that failed because the server's certificate does

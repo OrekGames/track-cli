@@ -195,30 +195,6 @@ impl GitHubClient {
         self.get_json(&self.repo_url(&format!("/issues/{}", number)))
     }
 
-    /// List issues for the repository
-    ///
-    /// Returns only actual issues, filtering out pull requests.
-    pub fn list_issues(
-        &self,
-        state: &str,
-        per_page: usize,
-        page: usize,
-    ) -> Result<Vec<GitHubIssue>> {
-        let url = format!(
-            "{}?state={}&per_page={}&page={}",
-            self.repo_url("/issues"),
-            urlencoding::encode(state),
-            per_page,
-            page
-        );
-
-        let issues: Vec<GitHubIssue> = self.get_json(&url)?;
-        Ok(issues
-            .into_iter()
-            .filter(|i| !i.is_pull_request())
-            .collect())
-    }
-
     /// Search issues using GitHub search syntax
     ///
     /// The query is automatically scoped to this repository.
@@ -357,30 +333,6 @@ impl GitHubClient {
     }
 
     // ==================== Timeline / History Operations ====================
-
-    /// Fetch a single page of an issue's timeline events.
-    ///
-    /// Mirrors [`get_comments_page`](Self::get_comments_page): offset paging via
-    /// `per_page` (capped at 100) and `page` (1-based). GitHub returns the
-    /// timeline oldest-first. Unrecognized event types deserialize to
-    /// [`GitHubTimelineEvent::Other`] rather than failing the whole page.
-    pub fn get_timeline_page(
-        &self,
-        number: u64,
-        per_page: usize,
-        page: usize,
-    ) -> Result<Vec<GitHubTimelineEvent>> {
-        let raw: Vec<serde_json::Value> = self.get_json(&format!(
-            "{}?per_page={}&page={}",
-            self.repo_url(&format!("/issues/{}/timeline", number)),
-            per_page.min(100),
-            page.max(1)
-        ))?;
-        Ok(raw
-            .into_iter()
-            .map(GitHubTimelineEvent::from_value)
-            .collect::<serde_json::Result<_>>()?)
-    }
 
     /// Fetch an issue's complete timeline, paging through every event.
     ///

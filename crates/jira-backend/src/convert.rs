@@ -1013,10 +1013,7 @@ pub fn resolve_extra_fields(
     let mut extra = HashMap::new();
 
     for cf in custom_fields {
-        let (CustomFieldUpdate::SingleEnum { name, .. }
-        | CustomFieldUpdate::MultiEnum { name, .. }
-        | CustomFieldUpdate::State { name, .. }
-        | CustomFieldUpdate::SingleUser { name, .. }) = cf;
+        let name = cf.name();
         if is_reserved_field(name) {
             if let Some(msg) = dropped_reserved_field_warning(name, silently_handled) {
                 eprintln!("Warning: {}", msg);

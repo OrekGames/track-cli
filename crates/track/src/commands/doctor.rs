@@ -135,7 +135,7 @@ pub struct DoctorReport {
 /// - `Unauthorized` / 401 → failed (bad credentials)
 /// - 403 → degraded (valid token, missing scope)
 /// - 404 / not-found variants → degraded (reachable, resource missing)
-/// - `InvalidInput` "not supported" → skipped (backend lacks the capability)
+/// - `Unsupported` → skipped (backend lacks the capability)
 /// - anything else (network, parse, 5xx, ...) → failed
 fn classify_error(err: &TrackerError) -> (CheckStatus, String) {
     match err {
@@ -146,9 +146,7 @@ fn classify_error(err: &TrackerError) -> (CheckStatus, String) {
             format!("{} (token likely lacks the required scope)", err),
         ),
         TrackerError::Api { status: 404, .. } => (CheckStatus::Degraded, err.to_string()),
-        TrackerError::InvalidInput(msg) if msg.to_lowercase().contains("not supported") => {
-            (CheckStatus::Skipped, msg.clone())
-        }
+        TrackerError::Unsupported(msg) => (CheckStatus::Skipped, msg.clone()),
         TrackerError::NotFound(_)
         | TrackerError::IssueNotFound(_)
         | TrackerError::ProjectNotFound(_) => (CheckStatus::Degraded, err.to_string()),
@@ -635,7 +633,7 @@ fn run_remote_checks(
     }
 
     // Check: field_admin (instance-wide custom field definitions; unsupported
-    // backends surface as skipped via the InvalidInput "not supported" default).
+    // backends surface as skipped via the trait's `Unsupported` default).
     match tracker.list_custom_field_definitions() {
         Ok(defs) => checks.push(CheckResult::ok("field_admin").with_count(defs.len())),
         Err(e) => checks.push(CheckResult::from_error("field_admin", &e)),
@@ -806,7 +804,7 @@ mod tests {
 
     #[test]
     fn classify_unsupported_is_skipped() {
-        let (status, _) = classify_error(&TrackerError::InvalidInput(
+        let (status, _) = classify_error(&TrackerError::Unsupported(
             "Custom field management not supported by this backend".into(),
         ));
         assert_eq!(status, CheckStatus::Skipped);

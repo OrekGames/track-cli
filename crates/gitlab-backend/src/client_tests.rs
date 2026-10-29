@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::client::GitLabClient;
+    use crate::convert::GitLabQueryParams;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tracker_core::{
@@ -20,6 +21,15 @@ mod tests {
         let path = std::env::temp_dir().join(format!("track-gitlab-upload-{nanos}-{name}"));
         std::fs::write(&path, contents).unwrap();
         path
+    }
+
+    fn params(search: &str, state: Option<&str>, assignee: Option<&str>) -> GitLabQueryParams {
+        GitLabQueryParams {
+            search: search.to_string(),
+            state: state.map(str::to_string),
+            assignee_username: assignee.map(str::to_string),
+            ..Default::default()
+        }
     }
 
     /// Helper to create a mock GitLab issue response
@@ -121,7 +131,9 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let issues = client.list_issues(None, 20, 1).unwrap();
+        let (issues, _) = client
+            .fetch_project_issues(&GitLabQueryParams::default(), 20, 1)
+            .unwrap();
 
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0].iid, 1);
@@ -145,8 +157,8 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let issues = client
-            .search_issues("login", Some("opened"), None, 20, 1)
+        let (issues, _) = client
+            .fetch_project_issues(&params("login", Some("opened"), None), 20, 1)
             .unwrap();
 
         assert_eq!(issues.len(), 1);
@@ -754,7 +766,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_notes_filters_system_notes() {
+    async fn test_get_comments_filters_system_notes() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -792,14 +804,14 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let notes = client.get_notes(42).unwrap();
+        let notes = client.get_comments("42").unwrap();
 
         // System note (id=502) should be filtered out
         assert_eq!(notes.len(), 2);
-        assert_eq!(notes[0].id, 501);
-        assert_eq!(notes[0].body, "User comment");
-        assert_eq!(notes[1].id, 503);
-        assert_eq!(notes[1].body, "Another user comment");
+        assert_eq!(notes[0].id, "501");
+        assert_eq!(notes[0].text, "User comment");
+        assert_eq!(notes[1].id, "503");
+        assert_eq!(notes[1].text, "Another user comment");
     }
 
     #[tokio::test]
@@ -1015,7 +1027,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_count_issues_by_query_reads_x_total_header() {
+    async fn test_issue_count_reads_x_total_header() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -1032,15 +1044,15 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let result = client
-            .count_issues_by_query("bug", Some("opened"), None)
+        let (_, total) = client
+            .fetch_project_issues(&params("bug", Some("opened"), None), 1, 1)
             .unwrap();
 
-        assert_eq!(result, Some(847));
+        assert_eq!(total, Some(847));
     }
 
     #[tokio::test]
-    async fn test_search_issues_with_total_reads_header() {
+    async fn test_search_issues_reads_x_total_header() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -1060,7 +1072,7 @@ mod tests {
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let (issues, total) = client
-            .search_issues_with_total("bug", None, None, None, 20, 1)
+            .fetch_project_issues(&params("bug", None, None), 20, 1)
             .unwrap();
 
         assert_eq!(issues.len(), 2);
@@ -1068,7 +1080,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_search_issues_with_total_without_header() {
+    async fn test_search_issues_without_x_total_header() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -1084,7 +1096,7 @@ mod tests {
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let (issues, total) = client
-            .search_issues_with_total("bug", None, None, None, 20, 1)
+            .fetch_project_issues(&params("bug", None, None), 20, 1)
             .unwrap();
 
         assert_eq!(issues.len(), 1);
@@ -1092,7 +1104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_issues_with_total_reads_header() {
+    async fn test_list_issues_reads_x_total_header() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -1111,7 +1123,7 @@ mod tests {
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let (issues, total) = client
-            .list_issues_with_total(Some("opened"), 20, 1, None)
+            .fetch_project_issues(&params("", Some("opened"), None), 20, 1)
             .unwrap();
 
         assert_eq!(issues.len(), 2);
@@ -1137,7 +1149,7 @@ mod tests {
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let (issues, total) = client
-            .list_issues_with_total(Some("opened"), 20, 1, Some("@me"))
+            .fetch_project_issues(&params("", Some("opened"), Some("@me")), 20, 1)
             .unwrap();
 
         assert_eq!(issues.len(), 1);
@@ -1164,7 +1176,7 @@ mod tests {
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let (issues, total) = client
-            .search_issues_with_total("bug", Some("opened"), None, Some("me"), 20, 1)
+            .fetch_project_issues(&params("bug", Some("opened"), Some("me")), 20, 1)
             .unwrap();
         assert_eq!(issues.len(), 1);
         assert_eq!(total, Some(3));
@@ -1188,8 +1200,8 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let count = client
-            .count_issues_by_query("bug", Some("opened"), Some("@me"))
+        let (_, count) = client
+            .fetch_project_issues(&params("bug", Some("opened"), Some("@me")), 1, 1)
             .unwrap();
         assert_eq!(count, Some(3));
     }
@@ -1212,7 +1224,7 @@ mod tests {
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let (issues, total) = client
-            .list_issues_with_total(None, 20, 1, Some("@someuser"))
+            .fetch_project_issues(&params("", None, Some("@someuser")), 20, 1)
             .unwrap();
 
         assert_eq!(issues.len(), 1);
@@ -1280,7 +1292,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_count_issues_by_query_returns_none_when_header_absent() {
+    async fn test_issue_count_returns_none_when_header_absent() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -1292,9 +1304,11 @@ mod tests {
             .await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let result = client.count_issues_by_query("", None, None).unwrap();
+        let (_, total) = client
+            .fetch_project_issues(&GitLabQueryParams::default(), 1, 1)
+            .unwrap();
 
-        assert_eq!(result, None);
+        assert_eq!(total, None);
     }
 
     // ==================== Work Item Parent Operations ====================

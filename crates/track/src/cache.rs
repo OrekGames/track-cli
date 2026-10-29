@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -387,53 +388,12 @@ impl TrackerCache {
             return None;
         }
 
-        let content = fs::read_to_string(project_dir.join("meta.json")).ok()?;
-        let meta = serde_json::from_str::<ProjectShardMeta>(&content).ok()?;
+        let meta: ProjectShardMeta = Self::read_json_shard(&project_dir.join("meta.json"))?;
         Some(CachedProject {
             id: meta.id,
             short_name: meta.short_name,
             name: meta.name,
             description: meta.description,
-        })
-    }
-
-    fn load_project_metadata_shards(
-        project_dirs: &[PathBuf],
-        worker_count: usize,
-    ) -> Result<Vec<CachedProject>> {
-        if project_dirs.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let worker_count = worker_count.max(1).min(project_dirs.len());
-        if worker_count == 1 {
-            return Ok(project_dirs
-                .iter()
-                .filter_map(|project_dir| Self::load_project_metadata_shard(project_dir))
-                .collect());
-        }
-
-        thread::scope(|scope| -> Result<Vec<CachedProject>> {
-            let chunk_size = project_dirs.len().div_ceil(worker_count);
-            let mut handles = Vec::with_capacity(worker_count);
-            for chunk in project_dirs.chunks(chunk_size) {
-                handles.push(scope.spawn(move || {
-                    chunk
-                        .iter()
-                        .filter_map(|project_dir| Self::load_project_metadata_shard(project_dir))
-                        .collect::<Vec<_>>()
-                }));
-            }
-
-            let mut projects = Vec::new();
-            for handle in handles {
-                let mut loaded = handle
-                    .join()
-                    .map_err(|_| anyhow!("project metadata worker panicked"))?;
-                projects.append(&mut loaded);
-            }
-
-            Ok(projects)
         })
     }
 
@@ -483,25 +443,18 @@ impl TrackerCache {
                 .ok_or_else(|| anyhow!("Missing backend metadata"))?,
             default_project: self.default_project.clone(),
         };
-        let index_content = serde_json::to_string_pretty(&index)?;
-        Self::atomic_write(&root.join("index.json"), index_content.as_bytes())?;
+        Self::write_json_shard(&root.join("index.json"), &index)?;
 
         // 2. Save backend shards
         let backend_dir = root.join("backend");
         create_dir_all_secure(&backend_dir)?;
 
-        Self::atomic_write(
-            &backend_dir.join("tags.json"),
-            serde_json::to_string_pretty(&self.tags)?.as_bytes(),
-        )?;
-        Self::atomic_write(
+        Self::write_json_shard(&backend_dir.join("tags.json"), &self.tags)?;
+        Self::write_json_shard(
             &backend_dir.join("query_templates.json"),
-            serde_json::to_string_pretty(&self.query_templates)?.as_bytes(),
+            &self.query_templates,
         )?;
-        Self::atomic_write(
-            &backend_dir.join("link_types.json"),
-            serde_json::to_string_pretty(&self.link_types)?.as_bytes(),
-        )?;
+        Self::write_json_shard(&backend_dir.join("link_types.json"), &self.link_types)?;
 
         // 3. Save project shards
         let projects_dir = root.join("projects");
@@ -527,25 +480,16 @@ impl TrackerCache {
                     .clone()
                     .unwrap_or_else(|| Utc::now().to_rfc3339()),
             };
-            Self::atomic_write(
-                &project_dir.join("meta.json"),
-                serde_json::to_string_pretty(&meta)?.as_bytes(),
-            )?;
+            Self::write_json_shard(&project_dir.join("meta.json"), &meta)?;
 
             // Fields for this project
             if let Some(fields) = self.get_project_fields(&project.short_name) {
-                Self::atomic_write(
-                    &project_dir.join("fields.json"),
-                    serde_json::to_string_pretty(&fields)?.as_bytes(),
-                )?;
+                Self::write_json_shard(&project_dir.join("fields.json"), &fields)?;
             }
 
             // Users for this project
             if let Some(users) = self.get_project_users(&project.short_name) {
-                Self::atomic_write(
-                    &project_dir.join("users.json"),
-                    serde_json::to_string_pretty(&users)?.as_bytes(),
-                )?;
+                Self::write_json_shard(&project_dir.join("users.json"), &users)?;
             }
 
             // Workflow hints for this project
@@ -554,10 +498,7 @@ impl TrackerCache {
                 .iter()
                 .find(|h| h.project_short_name == project.short_name)
             {
-                Self::atomic_write(
-                    &project_dir.join("workflow.json"),
-                    serde_json::to_string_pretty(hints)?.as_bytes(),
-                )?;
+                Self::write_json_shard(&project_dir.join("workflow.json"), hints)?;
             }
 
             // Issue counts for this project
@@ -567,9 +508,9 @@ impl TrackerCache {
                 .filter(|ic| ic.project_short_name == project.short_name)
                 .collect();
             if !project_issue_counts.is_empty() {
-                Self::atomic_write(
+                Self::write_json_shard(
                     &project_dir.join("issue_counts.json"),
-                    serde_json::to_string_pretty(&project_issue_counts)?.as_bytes(),
+                    &project_issue_counts,
                 )?;
             }
         }
@@ -577,22 +518,13 @@ impl TrackerCache {
         // 4. Save kb shards
         let kb_dir = root.join("kb");
         create_dir_all_secure(&kb_dir)?;
-        Self::atomic_write(
-            &kb_dir.join("articles.json"),
-            serde_json::to_string_pretty(&self.articles)?.as_bytes(),
-        )?;
-        Self::atomic_write(
-            &kb_dir.join("tree.json"),
-            serde_json::to_string_pretty(&self.article_tree)?.as_bytes(),
-        )?;
+        Self::write_json_shard(&kb_dir.join("articles.json"), &self.articles)?;
+        Self::write_json_shard(&kb_dir.join("tree.json"), &self.article_tree)?;
 
         // 5. Save runtime shards
         let runtime_dir = root.join("runtime");
         create_dir_all_secure(&runtime_dir)?;
-        Self::atomic_write(
-            &runtime_dir.join("recent_issues.json"),
-            serde_json::to_string_pretty(&self.recent_issues)?.as_bytes(),
-        )?;
+        Self::write_json_shard(&runtime_dir.join("recent_issues.json"), &self.recent_issues)?;
 
         Ok(())
     }
@@ -668,7 +600,12 @@ impl TrackerCache {
             }
 
             let worker_count = configured_project_metadata_worker_count(project_dirs.len());
-            self.projects = Self::load_project_metadata_shards(&project_dirs, worker_count)?;
+            self.projects = bounded_parallel_map_indexed(&project_dirs, worker_count, |_, dir| {
+                Self::load_project_metadata_shard(dir)
+            })
+            .into_iter()
+            .map(|(_, project)| project)
+            .collect();
         }
         self.loaded_shards.projects = true;
         Ok(())
@@ -684,19 +621,15 @@ impl TrackerCache {
         let root = Self::cache_dir_path(self.cache_dir.clone())?;
         let backend_dir = root.join("backend");
         if backend_dir.exists() {
-            if let Ok(content) = fs::read_to_string(backend_dir.join("tags.json"))
-                && let Ok(tags) = serde_json::from_str(&content)
-            {
+            if let Some(tags) = Self::read_json_shard(&backend_dir.join("tags.json")) {
                 self.tags = tags;
             }
-            if let Ok(content) = fs::read_to_string(backend_dir.join("query_templates.json"))
-                && let Ok(templates) = serde_json::from_str(&content)
+            if let Some(templates) =
+                Self::read_json_shard(&backend_dir.join("query_templates.json"))
             {
                 self.query_templates = templates;
             }
-            if let Ok(content) = fs::read_to_string(backend_dir.join("link_types.json"))
-                && let Ok(link_types) = serde_json::from_str(&content)
-            {
+            if let Some(link_types) = Self::read_json_shard(&backend_dir.join("link_types.json")) {
                 self.link_types = link_types;
             }
         }
@@ -713,14 +646,10 @@ impl TrackerCache {
         let root = Self::cache_dir_path(self.cache_dir.clone())?;
         let kb_dir = root.join("kb");
         if kb_dir.exists() {
-            if let Ok(content) = fs::read_to_string(kb_dir.join("articles.json"))
-                && let Ok(articles) = serde_json::from_str(&content)
-            {
+            if let Some(articles) = Self::read_json_shard(&kb_dir.join("articles.json")) {
                 self.articles = articles;
             }
-            if let Ok(content) = fs::read_to_string(kb_dir.join("tree.json"))
-                && let Ok(tree) = serde_json::from_str(&content)
-            {
+            if let Some(tree) = Self::read_json_shard(&kb_dir.join("tree.json")) {
                 self.article_tree = tree;
             }
         }
@@ -737,8 +666,7 @@ impl TrackerCache {
         let root = Self::cache_dir_path(self.cache_dir.clone())?;
         let runtime_dir = root.join("runtime");
         if runtime_dir.exists()
-            && let Ok(content) = fs::read_to_string(runtime_dir.join("recent_issues.json"))
-            && let Ok(recent) = serde_json::from_str(&content)
+            && let Some(recent) = Self::read_json_shard(&runtime_dir.join("recent_issues.json"))
         {
             self.recent_issues = recent;
         }
@@ -766,18 +694,12 @@ impl TrackerCache {
             .find(|p| p.short_name == project_key)
             .map(|p| p.id.clone())
             .unwrap_or_else(|| {
-                if let Ok(content) = fs::read_to_string(project_dir.join("meta.json"))
-                    && let Ok(meta) = serde_json::from_str::<ProjectShardMeta>(&content)
-                {
-                    return meta.id;
-                }
-                "unknown".to_string()
+                Self::read_json_shard::<ProjectShardMeta>(&project_dir.join("meta.json"))
+                    .map_or_else(|| "unknown".to_string(), |meta| meta.id)
             });
 
         // Load fields
-        if let Ok(content) = fs::read_to_string(project_dir.join("fields.json"))
-            && let Ok(fields) = serde_json::from_str::<Vec<CachedField>>(&content)
-        {
+        if let Some(fields) = Self::read_json_shard(&project_dir.join("fields.json")) {
             self.project_fields
                 .retain(|pf| pf.project_short_name != project_key);
             self.project_fields.push(ProjectFieldsCache {
@@ -788,9 +710,7 @@ impl TrackerCache {
         }
 
         // Load users
-        if let Ok(content) = fs::read_to_string(project_dir.join("users.json"))
-            && let Ok(users) = serde_json::from_str(&content)
-        {
+        if let Some(users) = Self::read_json_shard(&project_dir.join("users.json")) {
             self.project_users
                 .retain(|pu| pu.project_short_name != project_key);
             self.project_users.push(ProjectUsersCache {
@@ -801,17 +721,15 @@ impl TrackerCache {
         }
 
         // Load workflow
-        if let Ok(content) = fs::read_to_string(project_dir.join("workflow.json"))
-            && let Ok(hints) = serde_json::from_str(&content)
-        {
+        if let Some(hints) = Self::read_json_shard(&project_dir.join("workflow.json")) {
             self.workflow_hints
                 .retain(|wh| wh.project_short_name != project_key);
             self.workflow_hints.push(hints);
         }
 
         // Load issue counts
-        if let Ok(content) = fs::read_to_string(project_dir.join("issue_counts.json"))
-            && let Ok(counts) = serde_json::from_str::<Vec<CachedIssueCount>>(&content)
+        if let Some(counts) =
+            Self::read_json_shard::<Vec<CachedIssueCount>>(&project_dir.join("issue_counts.json"))
         {
             self.issue_counts
                 .retain(|ic| ic.project_short_name != project_key);
@@ -844,6 +762,17 @@ impl TrackerCache {
     /// Get the resolved cache directory path (for external use, e.g. `cache path` command)
     pub fn resolved_cache_dir() -> Result<PathBuf> {
         Self::cache_dir_path(None)
+    }
+
+    /// Write `value` to a shard file as pretty JSON, atomically and durably.
+    fn write_json_shard<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
+        Self::atomic_write(path, serde_json::to_string_pretty(value)?.as_bytes())
+    }
+
+    /// Read a JSON shard file; `None` when it is missing or does not parse.
+    fn read_json_shard<T: DeserializeOwned>(path: &Path) -> Option<T> {
+        let content = fs::read_to_string(path).ok()?;
+        serde_json::from_str(&content).ok()
     }
 
     /// Atomic write helper: write temp -> fsync -> rename

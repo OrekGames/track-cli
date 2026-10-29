@@ -270,7 +270,7 @@ impl IssueTracker for JiraClient {
 
     fn create_project(&self, _project: &CreateProject) -> Result<Project> {
         // Creating projects via API requires admin permissions and additional fields
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "Creating projects via API is not supported. Please use the Jira web interface."
                 .to_string(),
         ))
@@ -425,8 +425,7 @@ impl IssueTracker for JiraClient {
                 ..Default::default()
             },
         };
-        self.update_issue(child, &update)?;
-        Ok(())
+        Ok(self.update_issue(child, &update)?)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {

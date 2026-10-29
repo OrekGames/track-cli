@@ -132,43 +132,6 @@ pub struct UpdateConfluenceVersion {
 }
 
 // ============================================================================
-// Space Models
-// ============================================================================
-
-/// Confluence space (equivalent to project)
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfluenceSpace {
-    pub id: String,
-    pub key: String,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub space_type: Option<String>,
-    pub status: Option<String>,
-    pub description: Option<ConfluenceSpaceDescription>,
-}
-
-/// Space description
-#[derive(Debug, Deserialize)]
-pub struct ConfluenceSpaceDescription {
-    pub plain: Option<ConfluenceDescriptionValue>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ConfluenceDescriptionValue {
-    pub value: Option<String>,
-}
-
-/// Space list response
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfluenceSpaceList {
-    pub results: Vec<ConfluenceSpace>,
-    #[serde(rename = "_links")]
-    pub links: Option<ConfluencePaginationLinks>,
-}
-
-// ============================================================================
 // Comment Models
 // ============================================================================
 

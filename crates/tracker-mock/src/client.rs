@@ -211,10 +211,8 @@ impl MockClient {
 
         if let Ok(mut writer) = self.log_writer.lock()
             && let Some(w) = writer.as_mut()
-            && let Ok(json) = serde_json::to_string(&entry)
         {
-            let _ = writeln!(w, "{}", json);
-            let _ = w.flush();
+            append_log_entry(w, &entry);
         }
     }
 
@@ -230,34 +228,27 @@ impl MockClient {
 
         Ok(entries)
     }
+}
 
-    /// Clear the call log
-    pub fn clear_call_log(&self) -> Result<()> {
-        let log_path = self.scenario_dir.join(CALL_LOG_FILE);
-        std::fs::write(&log_path, "")
-            .map_err(|e| TrackerError::Io(format!("Failed to clear call log: {}", e)))
-    }
-
-    /// Get total number of calls made
-    pub fn call_count(&self) -> usize {
-        self.call_counts.lock().unwrap().values().sum()
-    }
+/// Build a call's argument map from `(name, value)` pairs.
+fn call_args<const N: usize>(pairs: [(&str, &str); N]) -> HashMap<String, String> {
+    pairs
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 impl IssueTracker for MockClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
-        let args = [("id".to_string(), id.to_string())].into_iter().collect();
-        self.get_response("get_issue", args, None)
+        self.get_response("get_issue", call_args([("id", id)]), None)
     }
 
     fn search_issues(&self, query: &str, limit: usize, skip: usize) -> Result<SearchResult<Issue>> {
-        let args = [
-            ("query".to_string(), query.to_string()),
-            ("limit".to_string(), limit.to_string()),
-            ("skip".to_string(), skip.to_string()),
-        ]
-        .into_iter()
-        .collect();
+        let args = call_args([
+            ("query", query),
+            ("limit", &limit.to_string()),
+            ("skip", &skip.to_string()),
+        ]);
         // The query doubles as the request body so manifests can route
         // searches with `when.body_contains`. Fixtures are either a bare issue
         // array (total unknown) or a SearchResult-shaped object
@@ -278,12 +269,7 @@ impl IssueTracker for MockClient {
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
-        let args = [
-            ("project".to_string(), issue.project_id.clone()),
-            ("summary".to_string(), issue.summary.clone()),
-        ]
-        .into_iter()
-        .collect();
+        let args = call_args([("project", &issue.project_id), ("summary", &issue.summary)]);
         // Manifests pick per-issue responses with `when.body_contains`, so
         // expose the issue text as the request body.
         let body = match &issue.description {
@@ -294,8 +280,7 @@ impl IssueTracker for MockClient {
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
-        let mut args: HashMap<String, String> =
-            [("id".to_string(), id.to_string())].into_iter().collect();
+        let mut args = call_args([("id", id)]);
         // Record a "Name=Value" summary of the custom field updates so
         // manifests can match on (and tests can assert) the exact fields sent.
         let custom_fields = update
@@ -325,8 +310,7 @@ impl IssueTracker for MockClient {
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
-        let args = [("id".to_string(), id.to_string())].into_iter().collect();
-        self.get_response("delete_issue", args, None)
+        self.get_response("delete_issue", call_args([("id", id)]), None)
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
@@ -334,17 +318,11 @@ impl IssueTracker for MockClient {
     }
 
     fn get_project(&self, id: &str) -> Result<Project> {
-        let args = [("id".to_string(), id.to_string())].into_iter().collect();
-        self.get_response("get_project", args, None)
+        self.get_response("get_project", call_args([("id", id)]), None)
     }
 
     fn create_project(&self, project: &CreateProject) -> Result<Project> {
-        let mut args: HashMap<String, String> = [
-            ("name".to_string(), project.name.clone()),
-            ("short_name".to_string(), project.short_name.clone()),
-        ]
-        .into_iter()
-        .collect();
+        let mut args = call_args([("name", &project.name), ("short_name", &project.short_name)]);
         if let Some(leader) = &project.leader {
             args.insert("leader".to_string(), leader.clone());
         }
@@ -353,10 +331,7 @@ impl IssueTracker for MockClient {
 
     fn resolve_project_id(&self, identifier: &str) -> Result<String> {
         // Try to load from a specific response, or fall back to listing projects
-        let args = [("identifier".to_string(), identifier.to_string())]
-            .into_iter()
-            .collect();
-
+        let args = call_args([("identifier", identifier)]);
         if let Ok(id) = self.get_response::<String>("resolve_project_id", args, None) {
             return Ok(id);
         }
@@ -375,16 +350,12 @@ impl IssueTracker for MockClient {
     }
 
     fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>> {
-        let args = [("project_id".to_string(), project_id.to_string())]
-            .into_iter()
-            .collect();
+        let args = call_args([("project_id", project_id)]);
         self.get_response("get_project_custom_fields", args, None)
     }
 
     fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
-        let args = [("project_id".to_string(), project_id.to_string())]
-            .into_iter()
-            .collect();
+        let args = call_args([("project_id", project_id)]);
         self.get_response("list_project_users", args, None)
             .or_else(|_| Ok(vec![]))
     }
@@ -399,10 +370,7 @@ impl IssueTracker for MockClient {
     }
 
     fn get_issue_links(&self, issue_id: &str) -> Result<Vec<IssueLink>> {
-        let args = [("issue_id".to_string(), issue_id.to_string())]
-            .into_iter()
-            .collect();
-        self.get_response("get_issue_links", args, None)
+        self.get_response("get_issue_links", call_args([("issue_id", issue_id)]), None)
     }
 
     fn link_issues(
@@ -412,66 +380,46 @@ impl IssueTracker for MockClient {
         link_type: &str,
         direction: &str,
     ) -> Result<()> {
-        let args = [
-            ("source".to_string(), source.to_string()),
-            ("target".to_string(), target.to_string()),
-            ("link_type".to_string(), link_type.to_string()),
-            ("direction".to_string(), direction.to_string()),
-        ]
-        .into_iter()
-        .collect();
+        let args = call_args([
+            ("source", source),
+            ("target", target),
+            ("link_type", link_type),
+            ("direction", direction),
+        ]);
         self.get_response("link_issues", args, None)
     }
 
     fn unlink_issues(&self, source: &str, link_id: &str) -> Result<()> {
-        let args = [
-            ("source".to_string(), source.to_string()),
-            ("link_id".to_string(), link_id.to_string()),
-        ]
-        .into_iter()
-        .collect();
+        let args = call_args([("source", source), ("link_id", link_id)]);
         self.get_response("unlink_issues", args, None)
     }
 
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
-        let args = [
-            ("child".to_string(), child.to_string()),
-            ("parent".to_string(), parent.to_string()),
-        ]
-        .into_iter()
-        .collect();
+        let args = call_args([("child", child), ("parent", parent)]);
         self.get_response("link_subtask", args, None)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
-        let args = [
-            ("issue_id".to_string(), issue_id.to_string()),
-            ("text".to_string(), text.to_string()),
-        ]
-        .into_iter()
-        .collect();
+        let args = call_args([("issue_id", issue_id), ("text", text)]);
         self.get_response("add_comment", args, Some(text))
     }
 
     fn get_comments(&self, issue_id: &str) -> Result<Vec<Comment>> {
-        let args = [("issue_id".to_string(), issue_id.to_string())]
-            .into_iter()
-            .collect();
-        self.get_response("get_comments", args, None)
+        self.get_response("get_comments", call_args([("issue_id", issue_id)]), None)
     }
 
     fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
-        let args = [("issue_id".to_string(), issue_id.to_string())]
-            .into_iter()
-            .collect();
-        self.get_response("get_issue_history", args, None)
+        self.get_response(
+            "get_issue_history",
+            call_args([("issue_id", issue_id)]),
+            None,
+        )
     }
 }
 
 impl KnowledgeBase for MockClient {
     fn get_article(&self, id: &str) -> Result<Article> {
-        let args = [("id".to_string(), id.to_string())].into_iter().collect();
-        self.get_response("get_article", args, None)
+        self.get_response("get_article", call_args([("id", id)]), None)
     }
 
     fn list_articles(
@@ -480,94 +428,65 @@ impl KnowledgeBase for MockClient {
         limit: usize,
         skip: usize,
     ) -> Result<Vec<Article>> {
-        let mut args: HashMap<String, String> = [
-            ("limit".to_string(), limit.to_string()),
-            ("skip".to_string(), skip.to_string()),
-        ]
-        .into_iter()
-        .collect();
-
+        let mut args = call_args([("limit", &limit.to_string()), ("skip", &skip.to_string())]);
         if let Some(pid) = project_id {
             args.insert("project_id".to_string(), pid.to_string());
         }
-
         self.get_response("list_articles", args, None)
     }
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
-        let args = [
-            ("query".to_string(), query.to_string()),
-            ("limit".to_string(), limit.to_string()),
-            ("skip".to_string(), skip.to_string()),
-        ]
-        .into_iter()
-        .collect();
+        let args = call_args([
+            ("query", query),
+            ("limit", &limit.to_string()),
+            ("skip", &skip.to_string()),
+        ]);
         self.get_response("search_articles", args, None)
     }
 
     fn create_article(&self, article: &CreateArticle) -> Result<Article> {
-        let args = [
-            ("project".to_string(), article.project_id.clone()),
-            ("summary".to_string(), article.summary.clone()),
-        ]
-        .into_iter()
-        .collect();
+        let args = call_args([
+            ("project", &article.project_id),
+            ("summary", &article.summary),
+        ]);
         self.get_response("create_article", args, None)
     }
 
     fn update_article(&self, id: &str, _update: &UpdateArticle) -> Result<Article> {
-        let args = [("id".to_string(), id.to_string())].into_iter().collect();
         // Note: UpdateArticle doesn't implement Serialize, so we just pass None for body
-        self.get_response("update_article", args, None)
+        self.get_response("update_article", call_args([("id", id)]), None)
     }
 
     fn delete_article(&self, id: &str) -> Result<()> {
-        let args = [("id".to_string(), id.to_string())].into_iter().collect();
-        self.get_response("delete_article", args, None)
+        self.get_response("delete_article", call_args([("id", id)]), None)
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
-        let args = [("parent_id".to_string(), parent_id.to_string())]
-            .into_iter()
-            .collect();
+        let args = call_args([("parent_id", parent_id)]);
         self.get_response("get_child_articles", args, None)
     }
 
     fn move_article(&self, article_id: &str, new_parent_id: Option<&str>) -> Result<Article> {
-        let mut args: HashMap<String, String> =
-            [("article_id".to_string(), article_id.to_string())]
-                .into_iter()
-                .collect();
-
+        let mut args = call_args([("article_id", article_id)]);
         if let Some(parent) = new_parent_id {
             args.insert("new_parent_id".to_string(), parent.to_string());
         }
-
         self.get_response("move_article", args, None)
     }
 
     fn list_article_attachments(&self, article_id: &str) -> Result<Vec<ArticleAttachment>> {
-        let args = [("article_id".to_string(), article_id.to_string())]
-            .into_iter()
-            .collect();
+        let args = call_args([("article_id", article_id)]);
         self.get_response("list_article_attachments", args, None)
             .or_else(|_| Ok(vec![]))
     }
 
     fn get_article_comments(&self, article_id: &str) -> Result<Vec<Comment>> {
-        let args = [("article_id".to_string(), article_id.to_string())]
-            .into_iter()
-            .collect();
+        let args = call_args([("article_id", article_id)]);
         self.get_response("get_article_comments", args, None)
     }
 
     fn add_article_comment(&self, article_id: &str, text: &str) -> Result<Comment> {
-        let args = [
-            ("article_id".to_string(), article_id.to_string()),
-            ("text".to_string(), text.to_string()),
-        ]
-        .into_iter()
-        .collect();
+        let args = call_args([("article_id", article_id), ("text", text)]);
         self.get_response("add_article_comment", args, Some(text))
     }
 }
@@ -593,11 +512,15 @@ pub fn log_cli_command(scenario_dir: &Path, method: &str, args: &[(&str, &str)])
 
     let log_path = scenario_dir.join(CALL_LOG_FILE);
     if let Ok(file) = OpenOptions::new().create(true).append(true).open(&log_path) {
-        let mut writer = BufWriter::new(file);
-        if let Ok(json) = serde_json::to_string(&entry) {
-            let _ = writeln!(writer, "{}", json);
-            let _ = writer.flush();
-        }
+        append_log_entry(&mut BufWriter::new(file), &entry);
+    }
+}
+
+/// Append `entry` to a call log as one JSON line.
+fn append_log_entry(writer: &mut impl Write, entry: &CallLogEntry) {
+    if let Ok(json) = serde_json::to_string(entry) {
+        let _ = writeln!(writer, "{}", json);
+        let _ = writer.flush();
     }
 }
 

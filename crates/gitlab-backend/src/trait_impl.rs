@@ -305,7 +305,7 @@ impl IssueTracker for GitLabClient {
     }
 
     fn create_project(&self, _project: &CreateProject) -> Result<Project> {
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "Creating projects via API is not supported. Please use the GitLab web interface."
                 .to_string(),
         ))
@@ -611,7 +611,7 @@ impl KnowledgeBase for GitLabClient {
     }
 
     fn move_article(&self, _article_id: &str, _new_parent_id: Option<&str>) -> Result<Article> {
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "Moving GitLab wiki pages is not supported by this backend".to_string(),
         ))
     }
@@ -677,7 +677,7 @@ impl KnowledgeBase for GitLabClient {
     }
 
     fn add_article_comment(&self, _article_id: &str, _text: &str) -> Result<Comment> {
-        Err(TrackerError::InvalidInput(
+        Err(TrackerError::Unsupported(
             "GitLab wiki pages do not support comments".to_string(),
         ))
     }

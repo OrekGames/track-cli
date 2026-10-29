@@ -6,7 +6,6 @@ use crate::client::CallLogEntry;
 use crate::scenario::{ComplexOutcome, ExpectedOutcome, Scenario, ScoringConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::Path;
 
 /// Points deducted per expected outcome that was not achieved.
 const FAILED_OUTCOME_PENALTY: i32 = -25;
@@ -118,12 +117,6 @@ impl Evaluator {
     /// Create an evaluator for a scenario
     pub fn new(scenario: Scenario) -> Self {
         Self { scenario }
-    }
-
-    /// Load an evaluator from a scenario directory
-    pub fn from_dir(dir: &Path) -> Result<Self, crate::scenario::ScenarioError> {
-        let scenario = Scenario::load_from_dir(dir)?;
-        Ok(Self::new(scenario))
     }
 
     /// Evaluate call log entries against the scenario

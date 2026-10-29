@@ -401,8 +401,9 @@ fn show_config(explicit_config: Option<&Path>, format: cli::OutputFormat) -> Res
 /// sends the effective backend's token to a URL of its own. Config errors
 /// are left for the commands that use the config to report.
 fn current_token_redirect(explicit_config: Option<&Path>) -> Option<TokenRedirect> {
-    let backend = config::resolve_backend(explicit_config);
-    let effective = Config::load(explicit_config.map(Path::to_path_buf), backend).ok()?;
+    let raw = Config::load_raw(explicit_config.map(Path::to_path_buf)).ok()?;
+    let backend = raw.get_backend();
+    let effective = raw.for_backend(backend);
     token_guard::find_token_redirect(explicit_config, backend, None, None, &effective)
         .ok()
         .flatten()

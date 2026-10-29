@@ -255,7 +255,12 @@ fn record_issue_access(issue: &Issue) {
     }
 }
 
-fn handle_get(client: &dyn IssueTracker, id: &str, full: bool, format: OutputFormat) -> Result<()> {
+pub(crate) fn handle_get(
+    client: &dyn IssueTracker,
+    id: &str,
+    full: bool,
+    format: OutputFormat,
+) -> Result<()> {
     let issue = client
         .get_issue(id)
         .with_context(|| format!("Failed to fetch issue '{}'", id))?;
@@ -647,15 +652,6 @@ pub(crate) fn shorthand_field_updates(
 }
 
 /// Name of the field a custom field update targets.
-fn update_field_name(update: &CustomFieldUpdate) -> &str {
-    match update {
-        CustomFieldUpdate::SingleEnum { name, .. }
-        | CustomFieldUpdate::MultiEnum { name, .. }
-        | CustomFieldUpdate::State { name, .. }
-        | CustomFieldUpdate::SingleUser { name, .. } => name,
-    }
-}
-
 pub(crate) fn build_custom_field_update(
     name: String,
     values: Vec<String>,
@@ -699,7 +695,7 @@ pub(crate) fn validate_custom_fields(
         .with_context(|| format!("Failed to fetch custom fields for project '{}'", project_id))?;
 
     for field in custom_fields {
-        let field_name = update_field_name(field);
+        let field_name = field.name();
 
         // Find the field definition
         let field_def = project_fields
@@ -1544,7 +1540,7 @@ fn handle_state_transition(
                 "{} {} ({}={})",
                 issue.id_readable.cyan().bold(),
                 action.green(),
-                update_field_name(&update.custom_fields[0]).dimmed(),
+                update.custom_fields[0].name().dimmed(),
                 state.green()
             );
         }
@@ -1882,16 +1878,11 @@ fn verify_field_match(
 ) -> Option<String> {
     use tracker_core::CustomField;
 
-    let req_name = update_field_name(requested);
+    let req_name = requested.name();
 
-    let actual = actual_fields.iter().find(|f| match f {
-        CustomField::SingleEnum { name, .. }
-        | CustomField::State { name, .. }
-        | CustomField::SingleUser { name, .. }
-        | CustomField::Text { name, .. }
-        | CustomField::MultiEnum { name, .. }
-        | CustomField::Unknown { name, .. } => unicode_eq_ignore_case(name, req_name),
-    });
+    let actual = actual_fields
+        .iter()
+        .find(|f| unicode_eq_ignore_case(f.name(), req_name));
 
     // A State update targets the tracker's workflow state field whatever the backend
     // names it (YouTrack "State"/"Stage", Jira "Status"). When the requested name has

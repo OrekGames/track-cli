@@ -41,11 +41,6 @@ pub use scenario::{ExpectedOutcome, Scenario, ScoringConfig};
 /// Environment variable to enable mock mode
 pub const MOCK_DIR_ENV: &str = "TRACK_MOCK_DIR";
 
-/// Check if mock mode is enabled via environment variable
-pub fn is_mock_enabled() -> bool {
-    std::env::var(MOCK_DIR_ENV).is_ok()
-}
-
 /// Get the mock directory from environment, if set
 pub fn get_mock_dir() -> Option<std::path::PathBuf> {
     std::env::var(MOCK_DIR_ENV)

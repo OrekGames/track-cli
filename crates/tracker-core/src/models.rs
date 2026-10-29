@@ -93,6 +93,20 @@ pub enum CustomField {
     },
 }
 
+impl CustomField {
+    /// The field's name, whatever its type.
+    pub fn name(&self) -> &str {
+        match self {
+            CustomField::SingleEnum { name, .. }
+            | CustomField::State { name, .. }
+            | CustomField::SingleUser { name, .. }
+            | CustomField::Text { name, .. }
+            | CustomField::MultiEnum { name, .. }
+            | CustomField::Unknown { name, .. } => name,
+        }
+    }
+}
+
 /// Tag on an issue
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
@@ -336,6 +350,18 @@ pub enum CustomFieldUpdate {
     MultiEnum { name: String, values: Vec<String> },
     State { name: String, value: String },
     SingleUser { name: String, login: String },
+}
+
+impl CustomFieldUpdate {
+    /// The name of the field this update targets, whatever its type.
+    pub fn name(&self) -> &str {
+        match self {
+            CustomFieldUpdate::SingleEnum { name, .. }
+            | CustomFieldUpdate::MultiEnum { name, .. }
+            | CustomFieldUpdate::State { name, .. }
+            | CustomFieldUpdate::SingleUser { name, .. } => name,
+        }
+    }
 }
 
 // ============================================================================
