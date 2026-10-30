@@ -100,6 +100,17 @@ mod tests {
         })
     }
 
+    /// Helper to create a mock GitHub comment response
+    fn mock_github_comment(id: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "body": format!("Comment {id}"),
+            "user": {"login": "commenter", "id": 1},
+            "created_at": "2024-01-15T10:00:00Z",
+            "updated_at": "2024-01-15T10:00:00Z"
+        })
+    }
+
     #[tokio::test]
     async fn test_get_issue() {
         let mock_server = MockServer::start().await;
@@ -189,29 +200,43 @@ mod tests {
     #[tokio::test]
     async fn test_trait_search_issues_preserves_offset() {
         let mock_server = MockServer::start().await;
-        let items: Vec<_> = (1..=50)
-            .map(|number| mock_github_issue(number, &format!("Search result {number}")))
+        let issue = |number| mock_github_issue(number, &format!("Search result {number}"));
+        // Page 2 is a full raw page of 100, one of which (#110) is a pull request.
+        let page2: Vec<_> = (101..=200)
+            .map(|number| match number {
+                110 => mock_github_pr(number, "A pull request"),
+                _ => issue(number),
+            })
             .collect();
+        // Page 3 is short, so the walk ends there before the window is full.
+        let page3: Vec<_> = (201..=220).map(issue).collect();
 
-        Mock::given(method("GET"))
-            .and(path("/search/issues"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "total_count": 50,
-                "incomplete_results": false,
-                "items": items
-            })))
-            .mount(&mock_server)
-            .await;
+        // skip=125 starts on page 2. Only the first page's total_count is kept.
+        for (page, total_count, items) in [("2", 230, page2), ("3", 999, page3)] {
+            Mock::given(method("GET"))
+                .and(path("/search/issues"))
+                .and(query_param("per_page", "100"))
+                .and(query_param("page", page))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "total_count": total_count,
+                    "incomplete_results": false,
+                    "items": items
+                })))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
 
         let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
         let result =
-            <GitHubClient as IssueTracker>::search_issues(&client, "is:open", 20, 25).unwrap();
+            <GitHubClient as IssueTracker>::search_issues(&client, "is:open", 100, 125).unwrap();
 
-        assert_eq!(result.items.len(), 20);
-        assert_eq!(result.items[0].id_readable, "owner/repo#26");
-        assert_eq!(result.items[19].id_readable, "owner/repo#45");
+        // The PR is dropped before the in-page skip of 25, so the window
+        // starts at #127, not #126.
+        assert_eq!(result.items.len(), 94);
+        assert_eq!(result.items[0].id_readable, "owner/repo#127");
+        assert_eq!(result.items[93].id_readable, "owner/repo#220");
+        assert_eq!(result.total, Some(230));
     }
 
     #[tokio::test]
@@ -543,6 +568,34 @@ mod tests {
         assert_eq!(comments[0].body, "First comment");
         assert_eq!(comments[1].id, 101);
         assert_eq!(comments[1].body, "Second comment");
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_comments_page_maps_skip_to_native_pages() {
+        let mock_server = MockServer::start().await;
+
+        // skip=150 starts on page 2 at offset 50. Page 3 is short, so it ends
+        // the walk before the window fills; a page 4 request would get
+        // wiremock's 404.
+        for (page, ids) in [("2", 101..=200), ("3", 201..=230)] {
+            let comments: Vec<_> = ids.map(mock_github_comment).collect();
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/issues/42/comments"))
+                .and(query_param("per_page", "100"))
+                .and(query_param("page", page))
+                .respond_with(ResponseTemplate::new(200).set_body_json(comments))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let comments =
+            <GitHubClient as IssueTracker>::get_comments_page(&client, "42", 100, 150).unwrap();
+
+        let ids: Vec<String> = comments.into_iter().map(|c| c.id).collect();
+        let expected: Vec<String> = (151..=230u64).map(|id| id.to_string()).collect();
+        assert_eq!(ids, expected);
     }
 
     #[tokio::test]

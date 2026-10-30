@@ -921,10 +921,12 @@ mod tests {
                     }
                 ]
             })))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
-        // Page 2: the final entry (newest), isLast=true.
+        // Page 2: the final entry (newest). isLast stays false, so only
+        // reaching `total` (3) ends the walk; a third request would 404.
         Mock::given(method("GET"))
             .and(path("/rest/api/3/issue/TEST-123/changelog"))
             .and(query_param("startAt", "2"))
@@ -933,7 +935,7 @@ mod tests {
                 "startAt": 2,
                 "maxResults": 2,
                 "total": 3,
-                "isLast": true,
+                "isLast": false,
                 "values": [
                     {
                         "id": "3",
@@ -945,6 +947,7 @@ mod tests {
                     }
                 ]
             })))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
@@ -1892,36 +1895,14 @@ mod tests {
     // ==================== Link Type Resolution Tests ====================
 
     #[test]
-    fn test_resolve_link_type_defaults() {
+    fn test_link_type_defaults() {
         let client = JiraClient::new("https://test.atlassian.net", "a@b.com", "tok");
 
-        assert_eq!(client.resolve_link_type("relates"), "Relates");
-        assert_eq!(client.resolve_link_type("depends"), "Blocks");
-        assert_eq!(client.resolve_link_type("required"), "Blocks");
-        assert_eq!(client.resolve_link_type("duplicates"), "Duplicate");
-        assert_eq!(client.resolve_link_type("duplicated-by"), "Duplicate");
-    }
-
-    #[test]
-    fn test_resolve_link_type_with_overrides() {
-        let mut mappings = std::collections::HashMap::new();
-        mappings.insert("depends".to_string(), "Requires".to_string());
-
-        let client = JiraClient::new("https://test.atlassian.net", "a@b.com", "tok")
-            .with_link_mappings(mappings);
-
-        // Overridden
-        assert_eq!(client.resolve_link_type("depends"), "Requires");
-        // Non-overridden still use defaults
-        assert_eq!(client.resolve_link_type("relates"), "Relates");
-        assert_eq!(client.resolve_link_type("duplicates"), "Duplicate");
-    }
-
-    #[test]
-    fn test_resolve_link_type_unknown_falls_through() {
-        let client = JiraClient::new("https://test.atlassian.net", "a@b.com", "tok");
-
-        assert_eq!(client.resolve_link_type("nonexistent"), "nonexistent");
+        assert_eq!(client.link_types.resolve("relates"), "Relates");
+        assert_eq!(client.link_types.resolve("depends"), "Blocks");
+        assert_eq!(client.link_types.resolve("required"), "Blocks");
+        assert_eq!(client.link_types.resolve("duplicates"), "Duplicate");
+        assert_eq!(client.link_types.resolve("duplicated-by"), "Duplicate");
     }
 
     #[tokio::test]

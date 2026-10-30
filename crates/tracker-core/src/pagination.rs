@@ -80,6 +80,82 @@ where
     Ok(all_results)
 }
 
+/// Pages [`fetch_pages_to_end`] requests before giving up on a walk that never
+/// ends: a million items at 100 a page, far beyond any real collection.
+const MAX_PAGES: usize = 10_000;
+
+/// One page of a backend's native paging, as [`fetch_pages_to_end`] and
+/// [`fetch_window`] take it.
+pub struct Page<T> {
+    pub items: Vec<T>,
+    /// No page follows this one, so the walk requests no more.
+    pub last: bool,
+}
+
+/// Fetch pages until one is marked [`Page::last`] and return all their items
+/// in order.
+///
+/// Nothing is capped, deduplicated or dropped: this is for collections that
+/// must come back whole (labels, members, history). The caller owns its page
+/// number, offset or cursor and says which page is the last, since APIs signal
+/// it differently (a short page, `isLast`, a total). A walk still going after
+/// 10,000 pages fails with [`TrackerError::PaginationStalled`] ("{what} did not
+/// terminate after 10000 pages") instead of looping forever on a server that
+/// ignores the paging parameters. An error from `fetch_page` is returned as is
+/// and the pages already fetched are dropped.
+pub fn fetch_pages_to_end<T, F>(what: &str, mut fetch_page: F) -> Result<Vec<T>>
+where
+    F: FnMut() -> Result<Page<T>>,
+{
+    let mut items = Vec::new();
+    for _ in 0..MAX_PAGES {
+        let page = fetch_page()?;
+        items.extend(page.items);
+        if page.last {
+            return Ok(items);
+        }
+    }
+    Err(TrackerError::PaginationStalled(format!(
+        "{what} did not terminate after {MAX_PAGES} pages"
+    )))
+}
+
+/// Collect `limit` items starting `skip` items in, by fetching native pages in
+/// order: an offset window over an API paged by number or cursor.
+///
+/// `fetch_page` fetches the next page; its argument is how many more items the
+/// window wants, counting the ones still to skip, for APIs that size each
+/// request. The first `skip` items are dropped (whole pages at a time where
+/// possible), then items are kept until there are `limit`. The walk stops when
+/// the window is full, without another request (so `limit == 0` fetches
+/// nothing), or after a page marked [`Page::last`]. There is no dedup and no
+/// stall detection, so `last` must end a walk whose pages stop coming.
+pub fn fetch_window<T, F>(limit: usize, skip: usize, mut fetch_page: F) -> Result<Vec<T>>
+where
+    F: FnMut(usize) -> Result<Page<T>>,
+{
+    let mut items = Vec::new();
+    let mut remaining_skip = skip;
+
+    while items.len() < limit {
+        let need = limit - items.len();
+        let page = fetch_page(remaining_skip.saturating_add(need))?;
+
+        if remaining_skip >= page.items.len() {
+            remaining_skip -= page.items.len();
+        } else {
+            items.extend(page.items.into_iter().skip(remaining_skip).take(need));
+            remaining_skip = 0;
+        }
+
+        if page.last {
+            break;
+        }
+    }
+
+    Ok(items)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +289,87 @@ mod tests {
             |item| item.to_string(),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn fetch_pages_to_end_errors_after_max_pages() {
+        // Arrange: a server that ignores the paging parameters never sends a
+        // last page
+        let mut calls = 0;
+        let err = fetch_pages_to_end("'/labels'", || {
+            calls += 1;
+            Ok(Page {
+                items: vec![calls],
+                last: false,
+            })
+        })
+        .unwrap_err();
+        // Assert: the backstop gives up after MAX_PAGES requests, naming the walk
+        assert_eq!(calls, 10_000);
+        assert_eq!(
+            err.to_string(),
+            "Pagination stalled: '/labels' did not terminate after 10000 pages"
+        );
+    }
+
+    #[test]
+    fn fetch_window_skips_across_pages_and_stops_when_full_or_last() {
+        // Arrange: four native pages, only the final one marked last
+        let mut pages = vec![
+            Page {
+                items: vec![1, 2, 3],
+                last: false,
+            },
+            Page {
+                items: vec![4, 5, 6],
+                last: false,
+            },
+            Page {
+                items: vec![7, 8, 9],
+                last: false,
+            },
+            Page {
+                items: vec![10],
+                last: true,
+            },
+        ]
+        .into_iter();
+        let mut wanted = Vec::new();
+        // Act: skip a whole page and one item of the next, then take 3
+        let result = fetch_window(3, 4, |want| {
+            wanted.push(want);
+            Ok(pages.next().expect("asked for a page past the last one"))
+        })
+        .unwrap();
+        // Assert: each request asks for the skip still pending plus the items
+        // still needed, and the walk stops once full, before the 4th page
+        assert_eq!(result, vec![5, 6, 7]);
+        assert_eq!(wanted, vec![7, 4, 1]);
+
+        // A last page ends the walk even when the skip uses it up, as it does
+        // every empty page: a skip past the end returns nothing
+        let mut pages = vec![
+            Page {
+                items: vec![1, 2, 3],
+                last: false,
+            },
+            Page {
+                items: vec![4],
+                last: true,
+            },
+        ]
+        .into_iter();
+        let mut wanted = Vec::new();
+        let past_end = fetch_window(2, 5, |want| {
+            wanted.push(want);
+            Ok(pages.next().expect("asked for a page past the last one"))
+        })
+        .unwrap();
+        assert!(past_end.is_empty());
+        assert_eq!(wanted, vec![7, 4]);
+
+        // An empty window fetches nothing, whatever the skip
+        let empty: Vec<i32> = fetch_window(0, 5, |_| panic!("limit 0 must not fetch")).unwrap();
+        assert!(empty.is_empty());
     }
 }

@@ -375,10 +375,10 @@ mod tests {
         assert!(fields.iter().any(|field| field.name == "Project"));
     }
 
-    #[tokio::test]
-    async fn test_get_all_comments_walks_cursor_pages_once() {
-        let mock_server = MockServer::start().await;
-
+    /// Mounts `ORE-123` with 101 comments over two cursor pages: comments
+    /// 1-100, then comment 101 behind `cursor-1`. The issue and each page are
+    /// expected to be requested exactly once.
+    async fn mount_two_comment_pages(mock_server: &MockServer) {
         Mock::given(method("POST"))
             .and(body_string_contains("query Issue"))
             .and(body_string_contains("ORE-123"))
@@ -386,7 +386,7 @@ mod tests {
                 "data": { "issue": mock_linear_issue("ORE-123", "Comment issue") }
             })))
             .expect(1)
-            .mount(&mock_server)
+            .mount(mock_server)
             .await;
 
         Mock::given(method("POST"))
@@ -403,7 +403,7 @@ mod tests {
                 }
             })))
             .expect(1)
-            .mount(&mock_server)
+            .mount(mock_server)
             .await;
 
         let first_page: Vec<_> = (1..=100).map(mock_comment).collect();
@@ -420,8 +420,14 @@ mod tests {
                 }
             })))
             .expect(1)
-            .mount(&mock_server)
+            .mount(mock_server)
             .await;
+    }
+
+    #[tokio::test]
+    async fn test_get_all_comments_walks_cursor_pages_once() {
+        let mock_server = MockServer::start().await;
+        mount_two_comment_pages(&mock_server).await;
 
         let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
         let comments = <LinearClient as IssueTracker>::get_all_comments(&client, "ORE-123", 101)
@@ -430,6 +436,40 @@ mod tests {
         assert_eq!(comments.len(), 101);
         assert_eq!(comments[0].id, "comment-1");
         assert_eq!(comments[100].id, "comment-101");
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_comments_page_skips_across_cursor_pages() {
+        let mock_server = MockServer::start().await;
+        mount_two_comment_pages(&mock_server).await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let comments = <LinearClient as IssueTracker>::get_comments_page(&client, "ORE-123", 3, 99)
+            .expect("get_comments_page should succeed");
+
+        // The skip drops 99 comments of the first page; the window then
+        // continues onto the second page, which has no next page, so the walk
+        // stops one comment short of the limit.
+        let ids: Vec<_> = comments.iter().map(|comment| comment.id.as_str()).collect();
+        assert_eq!(ids, ["comment-100", "comment-101"]);
+
+        // Every page is requested at full size, whatever the window wants.
+        let requests = mock_server.received_requests().await.unwrap();
+        let page_requests: Vec<_> = requests
+            .iter()
+            .filter(|request| {
+                String::from_utf8_lossy(&request.body).contains("query IssueComments")
+            })
+            .map(request_variables)
+            .collect();
+        assert_eq!(page_requests.len(), 2);
+        assert_eq!(page_requests[0]["after"], serde_json::Value::Null);
+        assert_eq!(page_requests[1]["after"], "cursor-1");
+        assert!(
+            page_requests
+                .iter()
+                .all(|variables| variables["first"] == 100)
+        );
     }
 
     #[tokio::test]
@@ -815,6 +855,26 @@ mod tests {
         assert_eq!(links[0].link_type.id, "blocks");
         assert_eq!(links[0].direction.as_deref(), Some("INWARD"));
         assert_eq!(links[0].issues[0].id_readable.as_deref(), Some("ORE-1"));
+    }
+
+    #[test]
+    fn test_link_type_defaults() {
+        let client = LinearClient::new("test-token");
+
+        for (canonical, native) in [
+            ("relates", "related"),
+            ("depends", "blocks"),
+            ("required", "blocks"),
+            ("duplicates", "duplicate"),
+            ("duplicated-by", "duplicate"),
+            // Linear's own relation types resolve to themselves.
+            ("related", "related"),
+            ("duplicate", "duplicate"),
+            ("similar", "similar"),
+            ("blocks", "blocks"),
+        ] {
+            assert_eq!(client.link_types.resolve(canonical), native, "{canonical}");
+        }
     }
 
     #[tokio::test]
