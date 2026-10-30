@@ -5,7 +5,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 use tracker_core::http::{self, read_json};
-use tracker_core::{AttachmentUpload, Result, TrackerError, unicode_eq_ignore_case};
+use tracker_core::pagination::{Page, fetch_pages_to_end};
+use tracker_core::{AttachmentUpload, LinkTypeMap, Result, TrackerError, unicode_eq_ignore_case};
 use ureq::Agent;
 
 const DEFAULT_ISSUE_FIELDS: &str = "id,idReadable,summary,description,project(id,name,shortName),customFields(name,$type,value(name,login,isResolved,text,minutes,presentation,color(id))),tags(id,name),created,updated,resolved";
@@ -18,11 +19,20 @@ const ISSUE_ATTACHMENT_FIELDS: &str =
     "id,name,size,mimeType,url,created,author(login,name),comment(id)";
 const ARTICLE_ATTACHMENT_FIELDS: &str = "id,name,size,mimeType,url,created,author(login,name)";
 
+/// Built-in YouTrack link type names, by canonical name (see [`LinkTypeMap`]).
+const LINK_TYPE_DEFAULTS: &[(&str, &str)] = &[
+    ("relates", "Relates"),
+    ("depends", "Depend"),
+    ("required", "Depend"),
+    ("duplicates", "Duplicate"),
+    ("duplicated-by", "Duplicate"),
+];
+
 pub struct YouTrackClient {
     agent: Agent,
     base_url: String,
     token: String,
-    link_mappings: HashMap<String, String>,
+    pub(crate) link_types: LinkTypeMap,
 }
 
 /// YouTrack error bodies carry `error`, `error_description` and `error_message`;
@@ -55,31 +65,14 @@ impl YouTrackClient {
             agent: http::agent(),
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
-            link_mappings: HashMap::new(),
+            link_types: LinkTypeMap::new(LINK_TYPE_DEFAULTS, HashMap::new()),
         }
     }
 
     /// Set custom link type mappings (canonical name -> YouTrack link type name)
     pub fn with_link_mappings(mut self, mappings: HashMap<String, String>) -> Self {
-        self.link_mappings = mappings;
+        self.link_types = LinkTypeMap::new(LINK_TYPE_DEFAULTS, mappings);
         self
-    }
-
-    /// Resolve a canonical link type name to the YouTrack-native link type name.
-    /// User overrides take precedence, then built-in defaults, then pass-through.
-    pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
-        if let Some(name) = self.link_mappings.get(canonical) {
-            return name.clone();
-        }
-        match canonical {
-            "relates" => "Relates",
-            "depends" => "Depend",
-            "required" => "Depend",
-            "duplicates" => "Duplicate",
-            "duplicated-by" => "Duplicate",
-            _ => canonical,
-        }
-        .to_string()
     }
 
     fn auth_header(&self) -> String {
@@ -614,7 +607,7 @@ impl YouTrackClient {
 
     /// Link two issues together with the specified link type.
     /// `link_type` is a canonical name (e.g. "relates", "depends") that gets
-    /// resolved to the YouTrack-native name via `resolve_link_type`.
+    /// resolved to the YouTrack-native name via `link_types`.
     /// `direction` should be "OUTWARD", "INWARD", or "BOTH" depending on the link type.
     pub fn link_issues(
         &self,
@@ -623,7 +616,7 @@ impl YouTrackClient {
         link_type: &str,
         direction: &str,
     ) -> Result<()> {
-        let resolved_type = self.resolve_link_type(link_type);
+        let resolved_type = self.link_types.resolve(link_type);
         let link_id = self.find_link_id(source_issue_id, &resolved_type, direction)?;
         self.add_issue_to_link(source_issue_id, &link_id, target_issue_id)
     }
@@ -686,30 +679,19 @@ impl YouTrackClient {
     /// every entry. Activities are returned oldest-first (the caller re-sorts).
     ///
     /// Unlike Jira's changelog endpoint, YouTrack honors `$top`, so a page
-    /// shorter than requested is a reliable end-of-data signal. A generous
-    /// `MAX_PAGES` backstop guards against a server that ignores `$skip` (which
-    /// would otherwise loop forever) without truncating a legitimately large
-    /// history.
+    /// shorter than requested is a reliable end-of-data signal;
+    /// [`fetch_pages_to_end`]'s backstop catches a server that ignores `$skip`.
     pub fn get_issue_activities(&self, issue_id: &str) -> Result<Vec<YouTrackActivity>> {
         const PAGE: usize = 100;
-        const MAX_PAGES: usize = 10_000;
-        let mut activities = Vec::new();
         let mut skip = 0;
-        for _ in 0..MAX_PAGES {
+        fetch_pages_to_end(&format!("issue '{issue_id}' activity timeline"), || {
             let page = self.get_activities_page(issue_id, PAGE, skip)?;
-            let fetched = page.len();
-            activities.extend(page);
+            skip += page.len();
             // YouTrack honors `$top`, so a short (or empty) page means we have
             // reached the end of the timeline.
-            if fetched < PAGE {
-                return Ok(activities);
-            }
-            skip += fetched;
-        }
-        Err(TrackerError::PaginationStalled(format!(
-            "issue '{}' activity timeline did not terminate after {} pages",
-            issue_id, MAX_PAGES
-        )))
+            let last = page.len() < PAGE;
+            Ok(Page { items: page, last })
+        })
     }
 
     // ========================================================================

@@ -2554,36 +2554,14 @@ mod tests {
     // ==================== Link Type Resolution Tests ====================
 
     #[test]
-    fn test_resolve_link_type_defaults() {
+    fn test_link_type_defaults() {
         let client = YouTrackClient::new("https://yt.example.com", "test-token");
 
-        assert_eq!(client.resolve_link_type("relates"), "Relates");
-        assert_eq!(client.resolve_link_type("depends"), "Depend");
-        assert_eq!(client.resolve_link_type("required"), "Depend");
-        assert_eq!(client.resolve_link_type("duplicates"), "Duplicate");
-        assert_eq!(client.resolve_link_type("duplicated-by"), "Duplicate");
-    }
-
-    #[test]
-    fn test_resolve_link_type_with_overrides() {
-        let mut mappings = std::collections::HashMap::new();
-        mappings.insert("depends".to_string(), "Custom Depend".to_string());
-
-        let client = YouTrackClient::new("https://yt.example.com", "test-token")
-            .with_link_mappings(mappings);
-
-        // Overridden
-        assert_eq!(client.resolve_link_type("depends"), "Custom Depend");
-        // Non-overridden still use defaults
-        assert_eq!(client.resolve_link_type("relates"), "Relates");
-        assert_eq!(client.resolve_link_type("duplicates"), "Duplicate");
-    }
-
-    #[test]
-    fn test_resolve_link_type_unknown_falls_through() {
-        let client = YouTrackClient::new("https://yt.example.com", "test-token");
-
-        assert_eq!(client.resolve_link_type("nonexistent"), "nonexistent");
+        assert_eq!(client.link_types.resolve("relates"), "Relates");
+        assert_eq!(client.link_types.resolve("depends"), "Depend");
+        assert_eq!(client.link_types.resolve("required"), "Depend");
+        assert_eq!(client.link_types.resolve("duplicates"), "Duplicate");
+        assert_eq!(client.link_types.resolve("duplicated-by"), "Duplicate");
     }
 
     // ==================== Issue History Tests ====================
