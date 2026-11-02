@@ -8,17 +8,21 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tracker_core::{
         AttachmentUpload, AttachmentUploadFile, CreateIssue, CustomFieldUpdate, IssueTracker,
-        KnowledgeBase, UpdateIssue,
+        KnowledgeBase, TrackerError, UpdateIssue,
     };
-    use wiremock::matchers::{body_string_contains, header, method, path, query_param};
+    use wiremock::matchers::{any, body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// Write `contents` to a temp file named after `name`. The counter keeps
+    /// paths unique when tests running in parallel read the same clock tick,
+    /// which Windows' coarser clock makes likely.
     fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("track-gitlab-upload-{nanos}-{name}"));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "track-gitlab-upload-{}-{unique}-{name}",
+            std::process::id()
+        ));
         std::fs::write(&path, contents).unwrap();
         path
     }
@@ -993,37 +997,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unauthorized_error() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/projects/123/issues/42"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
-                "message": "401 Unauthorized"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let client = GitLabClient::new(&mock_server.uri(), "bad-token", Some("123"));
-        let result = client.get_issue(42);
-
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::error::GitLabError::Unauthorized
-        ));
-    }
-
-    #[tokio::test]
     async fn test_project_url_requires_project_id() {
         let mock_server = MockServer::start().await;
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
 
         // Client created without project_id
         let client = GitLabClient::new(&mock_server.uri(), "test-token", None);
 
-        // Operations that need project_id should fail
-        let result = client.get_issue(42);
-        assert!(result.is_err());
+        // Operations that need project_id fail before any request, with a
+        // synthetic status-0 Api error rather than InvalidInput.
+        let err = client.get_issue(42).unwrap_err();
+        let (status, message) = api_error(err);
+        assert_eq!(status, 0);
+        assert!(
+            message.starts_with("GitLab project_id is not configured"),
+            "unexpected message: {message}"
+        );
     }
 
     #[tokio::test]
@@ -1361,7 +1355,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::error::GitLabError::Api { message, .. } => {
+            TrackerError::Api { message, .. } => {
                 assert!(
                     message.contains("GraphQL error"),
                     "Expected GraphQL error, got: {}",
@@ -1395,7 +1389,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::error::GitLabError::Api { message, .. } => {
+            TrackerError::Api { message, .. } => {
                 assert!(
                     message.contains("Failed to set parent"),
                     "Expected mutation error, got: {}",
@@ -1879,5 +1873,924 @@ mod tests {
             client.web_url(Some("PROJ-7")),
             Err(tracker_core::TrackerError::InvalidInput(_))
         ));
+    }
+
+    // ==================== Error and HTTP Plumbing ====================
+    //
+    // These pin how failures surface, through the IssueTracker trait wherever
+    // it reaches the path.
+
+    fn upload_file(path: PathBuf, mime_type: Option<&str>) -> AttachmentUploadFile {
+        AttachmentUploadFile {
+            path,
+            name: None,
+            mime_type: mime_type.map(str::to_string),
+        }
+    }
+
+    fn upload_of(path: PathBuf, mime_type: Option<&str>) -> AttachmentUpload {
+        AttachmentUpload {
+            files: vec![upload_file(path, mime_type)],
+            comment: None,
+            silent: false,
+            minor_edit: false,
+        }
+    }
+
+    fn create_input(custom_fields: Vec<CustomFieldUpdate>) -> CreateIssue {
+        CreateIssue {
+            project_id: "123".to_string(),
+            summary: "New issue".to_string(),
+            description: None,
+            custom_fields,
+            tags: vec![],
+            parent: None,
+        }
+    }
+
+    fn assignee(login: &str) -> CustomFieldUpdate {
+        CustomFieldUpdate::SingleUser {
+            name: "Assignee".to_string(),
+            login: login.to_string(),
+        }
+    }
+
+    /// Unwrap a `TrackerError::Api` into its status and message.
+    #[track_caller]
+    fn api_error(err: TrackerError) -> (u16, String) {
+        match err {
+            TrackerError::Api { status, message } => (status, message),
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    /// Serve one canned raw HTTP response, then close the connection. Used for
+    /// responses wiremock cannot produce, such as a body cut off mid-stream.
+    ///
+    /// The request, including a `Content-Length` body, is read in full first:
+    /// closing a socket with request bytes still unread makes Windows reset
+    /// the connection, and the client then fails before it reads the response.
+    fn serve_raw_response_once(response: &'static str) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+                {
+                    let mut reader = BufReader::new(&stream);
+                    let mut content_length = 0;
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 0) && line != "\r\n" {
+                        if let Some(value) =
+                            line.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                        line.clear();
+                    }
+                    let _ = reader.read_exact(&mut vec![0; content_length]);
+                }
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_issue_non_json_success_body_is_parse() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::get_issue(&client, "42").unwrap_err();
+
+        // A 2xx body that is not the expected JSON is Parse; a failed read
+        // stays Http.
+        assert!(
+            matches!(err, TrackerError::Parse(_)),
+            "expected Parse, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trait_search_non_json_success_body_is_parse() {
+        let mock_server = MockServer::start().await;
+
+        // The issue list is decoded from the raw response after its X-Total
+        // header is read, a separate decode site from the GET helper.
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-total", "1")
+                    .set_body_string("not-json"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::search_issues(&client, "", 20, 0).unwrap_err();
+
+        // Parse, as for get_issue.
+        assert!(
+            matches!(err, TrackerError::Parse(_)),
+            "expected Parse, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trait_write_non_json_success_bodies_are_parse() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        for (http_method, write_path, status) in [
+            ("POST", "/projects/123/issues", 201),
+            ("PUT", "/projects/123/issues/42", 200),
+            ("POST", "/projects/123/uploads", 201),
+            ("POST", "/graphql", 200),
+        ] {
+            Mock::given(method(http_method))
+                .and(path(write_path))
+                .respond_with(ResponseTemplate::new(status).set_body_string("not-json"))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let update = UpdateIssue {
+            summary: Some("Renamed".to_string()),
+            ..Default::default()
+        };
+        let results = [
+            (
+                "create (POST)",
+                <GitLabClient as IssueTracker>::create_issue(&client, &create_input(vec![]))
+                    .unwrap_err(),
+            ),
+            (
+                "update (PUT)",
+                <GitLabClient as IssueTracker>::update_issue(&client, "42", &update).unwrap_err(),
+            ),
+            (
+                "upload (multipart)",
+                <GitLabClient as IssueTracker>::add_issue_attachment(
+                    &client,
+                    "42",
+                    &upload_of(upload_path.clone(), None),
+                )
+                .unwrap_err(),
+            ),
+            (
+                "GraphQL",
+                client.set_work_item_parent(1042, 1010).unwrap_err(),
+            ),
+        ];
+        let _ = std::fs::remove_file(upload_path);
+
+        // POST, PUT, multipart and GraphQL responses decode the same way as GET.
+        let not_parse: Vec<_> = results
+            .iter()
+            .filter(|(_, err)| !matches!(err, TrackerError::Parse(_)))
+            .collect();
+        assert!(
+            not_parse.is_empty(),
+            "expected Parse from every call, got: {not_parse:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trait_empty_success_body_on_json_path_is_parse() {
+        let mock_server = MockServer::start().await;
+
+        // GitLab's PUT answers with the issue; an empty 2xx body is not JSON.
+        Mock::given(method("PUT"))
+            .and(path("/projects/123/issues/42"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let update = UpdateIssue {
+            summary: Some("Renamed".to_string()),
+            ..Default::default()
+        };
+        let err = <GitLabClient as IssueTracker>::update_issue(&client, "42", &update).unwrap_err();
+
+        // An empty body is not JSON either, so it is Parse too.
+        assert!(
+            matches!(err, TrackerError::Parse(_)),
+            "expected Parse, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_truncated_chunked_success_body_is_http_not_parse() {
+        // The connection drops mid-body. The body is read in full before
+        // decoding, so the failed read is Http, not Parse.
+        let base_url = serve_raw_response_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+             40\r\n{\"id\":1042,\"iid\":42,\"title\":\"Cut",
+        );
+
+        let client = GitLabClient::new(&base_url, "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::get_issue(&client, "42").unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Http(_)),
+            "expected Http, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_truncated_success_body_with_content_length_is_http_not_parse() {
+        let base_url = serve_raw_response_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: 100\r\nConnection: close\r\n\r\n\
+             {\"id\":1042,\"iid\":42,\"title\":\"Cut",
+        );
+
+        let client = GitLabClient::new(&base_url, "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::get_issue(&client, "42").unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Http(_)),
+            "expected Http, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_oversized_success_body_is_http_not_parse() {
+        let mock_server = MockServer::start().await;
+
+        // Both bodies are over ureq's 10 MB read limit. The first is valid
+        // JSON, so only the limit can fail it; the second is not JSON at all,
+        // and still counts as a failed read rather than bad JSON.
+        let mut huge_issue = mock_gitlab_issue(1, "Huge");
+        huge_issue["description"] = serde_json::Value::String("x".repeat(11 * 1024 * 1024));
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(huge_issue))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/2"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("x".repeat(10 * 1024 * 1024 + 1)),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        for id in ["1", "2"] {
+            let err = <GitLabClient as IssueTracker>::get_issue(&client, id).unwrap_err();
+            assert!(
+                matches!(err, TrackerError::Http(_)),
+                "issue {id}: expected Http, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_transport_failure_is_http() {
+        // Bind and drop a listener so nothing accepts on its port.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let client = GitLabClient::new(&format!("http://{addr}"), "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::get_issue(&client, "42").unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Http(_)),
+            "expected Http, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_error_message_key_order() {
+        let mock_server = MockServer::start().await;
+
+        // "message", then "error", then "error_description", whatever their
+        // order in the body; a key counts only when its value is a string.
+        let cases = [
+            (1, r#"{"error":"e","message":"m"}"#, "m"),
+            (2, r#"{"error_description":"d","error":"e"}"#, "e"),
+            (3, r#"{"error_description":"d"}"#, "d"),
+            (4, r#"{"message":["m"],"error":"e"}"#, "e"),
+        ];
+        for (iid, body, _) in cases {
+            Mock::given(method("GET"))
+                .and(path(format!("/projects/123/issues/{iid}")))
+                .respond_with(ResponseTemplate::new(400).set_body_string(body))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        for (iid, body, expected) in cases {
+            let err =
+                <GitLabClient as IssueTracker>::get_issue(&client, &iid.to_string()).unwrap_err();
+            let (status, message) = api_error(err);
+            assert_eq!(status, 400, "status for body {body}");
+            assert_eq!(message, expected, "message for body {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_non_string_message_uses_raw_body() {
+        let mock_server = MockServer::start().await;
+        let body = r#"{"message":{"title":["can't be blank"]}}"#;
+
+        // GitLab's validation errors put an object under "message"; with no
+        // string to extract, the whole body is the message.
+        Mock::given(method("POST"))
+            .and(path("/projects/123/issues"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(body))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::create_issue(&client, &create_input(vec![]))
+            .unwrap_err();
+
+        assert_eq!(api_error(err), (400, body.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_error_body_without_string_message_is_raw_body_or_http_status() {
+        let mock_server = MockServer::start().await;
+        let cases = [
+            (1, 400, "[]", "[]"),
+            (2, 400, r#"{"foo":"bar"}"#, r#"{"foo":"bar"}"#),
+            (3, 400, r#"{"message":null}"#, r#"{"message":null}"#),
+            (4, 400, r#""Bad Request""#, r#""Bad Request""#),
+            (
+                5,
+                502,
+                "<html>Bad Gateway</html>",
+                "<html>Bad Gateway</html>",
+            ),
+            (6, 500, "", "HTTP 500"),
+        ];
+        for (iid, status, body, _) in cases {
+            Mock::given(method("GET"))
+                .and(path(format!("/projects/123/issues/{iid}")))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        for (iid, expected_status, body, expected) in cases {
+            let err =
+                <GitLabClient as IssueTracker>::get_issue(&client, &iid.to_string()).unwrap_err();
+            assert_eq!(
+                api_error(err),
+                (expected_status, expected.to_string()),
+                "for body {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_error_body_read_failure_is_swallowed_as_http_status() {
+        // The error body is cut short of its Content-Length. The read failure
+        // is dropped and the message falls back to "HTTP <status>".
+        let base_url = serve_raw_response_once(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\
+             Content-Length: 100\r\nConnection: close\r\n\r\n\
+             {\"message\":\"Bad Req",
+        );
+
+        let client = GitLabClient::new(&base_url, "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::get_issue(&client, "42").unwrap_err();
+
+        assert_eq!(api_error(err), (400, "HTTP 400".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_issue_404_is_api_404() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(serde_json::json!({"message": "404 Not found"})),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::get_issue(&client, "42").unwrap_err();
+
+        // Not NotFound or IssueNotFound: `track doctor` reads Api 404 itself.
+        assert_eq!(api_error(err), (404, "404 Not found".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_trait_status_mapping_only_401_is_special() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/1"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"message": "401 Unauthorized"})),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // No NotFound mapping, no rate-limit detection, no retry: each of these
+        // is a plain Api error after exactly one request.
+        let cases = [
+            (2, 403, r#"{"message":"403 Forbidden"}"#, "403 Forbidden"),
+            (3, 429, "Retry later", "Retry later"),
+            (
+                4,
+                500,
+                r#"{"message":"500 Internal Server Error"}"#,
+                "500 Internal Server Error",
+            ),
+            (5, 503, "", "HTTP 503"),
+        ];
+        for (iid, status, body, _) in cases {
+            Mock::given(method("GET"))
+                .and(path(format!("/projects/123/issues/{iid}")))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Retry-After", "0")
+                        .insert_header("RateLimit-Remaining", "0")
+                        .set_body_string(body),
+                )
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+        // 401 drops the server's message.
+        let err = <GitLabClient as IssueTracker>::get_issue(&client, "1").unwrap_err();
+        assert!(
+            matches!(err, TrackerError::Unauthorized),
+            "expected Unauthorized, got: {err:?}"
+        );
+
+        for (iid, expected_status, _, expected) in cases {
+            let err =
+                <GitLabClient as IssueTracker>::get_issue(&client, &iid.to_string()).unwrap_err();
+            assert_eq!(api_error(err), (expected_status, expected.to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trait_web_url_without_project_web_url_is_api_0() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"id": 123, "name": "project"})),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::web_url(&client, None).unwrap_err();
+
+        assert_eq!(
+            api_error(err),
+            (0, "GitLab returned no web_url for project 123".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unknown_assignee_is_synthetic_api_404() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/members/all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/users"))
+            .and(query_param("username", "ghost"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::create_issue(
+            &client,
+            &create_input(vec![assignee("ghost")]),
+        )
+        .unwrap_err();
+
+        // Both lookups answered 200; the 404 is made up by the client.
+        assert_eq!(
+            api_error(err),
+            (404, "GitLab user 'ghost' not found".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_numeric_assignee_failures_are_api_404() {
+        let mock_server = MockServer::start().await;
+
+        // GET /users/7 answers with a different user: a synthetic 404.
+        Mock::given(method("GET"))
+            .and(path("/users/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 8,
+                "username": "bob",
+                "name": "Bob"
+            })))
+            .mount(&mock_server)
+            .await;
+        // GET /users/999999 is a real 404, read through the usual error path.
+        Mock::given(method("GET"))
+            .and(path("/users/999999"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(serde_json::json!({"message": "404 User Not Found"})),
+            )
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        for (login, expected) in [
+            (
+                "7",
+                "GitLab user id '7' resolved to a different user (id 8)",
+            ),
+            ("999999", "404 User Not Found"),
+        ] {
+            let update = UpdateIssue {
+                custom_fields: vec![assignee(login)],
+                ..Default::default()
+            };
+            let err =
+                <GitLabClient as IssueTracker>::update_issue(&client, "42", &update).unwrap_err();
+            assert_eq!(
+                api_error(err),
+                (404, expected.to_string()),
+                "assignee {login}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upload_missing_file_is_io_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let missing = std::env::temp_dir().join(format!(
+            "track-gitlab-upload-missing-{}.txt",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let err = <GitLabClient as IssueTracker>::add_issue_attachment(
+            &client,
+            "42",
+            &upload_of(missing, None),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, TrackerError::Io(_)),
+            "expected Io, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upload_invalid_mime_type_is_http_error() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("mime.txt", b"body");
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let result = <GitLabClient as IssueTracker>::add_issue_attachment(
+            &client,
+            "42",
+            &upload_of(upload_path.clone(), Some("not a mime")),
+        );
+        let _ = std::fs::remove_file(upload_path);
+
+        // An input error, but ureq reports it, so it is Http.
+        match result.unwrap_err() {
+            TrackerError::Http(message) => assert!(
+                message.starts_with("invalid MIME type"),
+                "unexpected message: {message}"
+            ),
+            other => panic!("Expected Http error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upload_names_and_types_part_from_path() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("notes.txt", b"notes");
+        let file_name = upload_path.file_name().unwrap().to_str().unwrap();
+
+        Mock::given(method("POST"))
+            .and(path("/projects/123/uploads"))
+            .and(body_string_contains("name=\"file\""))
+            .and(body_string_contains(format!("filename=\"{file_name}\"")))
+            .and(body_string_contains("Content-Type: text/plain"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "alt": "notes.txt",
+                "url": "/uploads/notes.txt",
+                "markdown": "[notes.txt](/uploads/notes.txt)"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let uploaded = client.upload_project_file(&upload_file(upload_path.clone(), None));
+        let _ = std::fs::remove_file(&upload_path);
+
+        assert_eq!(uploaded.unwrap().url, "/uploads/notes.txt");
+    }
+
+    #[tokio::test]
+    async fn test_every_request_sends_private_token_and_accept_json() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("headers.txt", b"headers");
+        let note = serde_json::json!({
+            "id": 501,
+            "body": "hi",
+            "author": {"id": 1, "username": "testuser", "name": "Test User"},
+            "created_at": "2024-01-15T14:00:00.000Z",
+            "updated_at": "2024-01-15T14:00:00.000Z",
+            "system": false
+        });
+        let upload = serde_json::json!({
+            "alt": "headers.txt",
+            "url": "/uploads/headers.txt",
+            "markdown": "[headers.txt](/uploads/headers.txt)"
+        });
+        let graphql = serde_json::json!({"data": {"workItemUpdate": {"errors": []}}});
+
+        let requests = [
+            (
+                "GET",
+                "/projects/123/issues/42",
+                None,
+                200,
+                Some(mock_gitlab_issue(42, "Got")),
+            ),
+            (
+                "POST",
+                "/projects/123/issues/42/notes",
+                Some("application/json"),
+                201,
+                Some(note),
+            ),
+            (
+                "PUT",
+                "/projects/123/issues/42",
+                Some("application/json"),
+                200,
+                Some(mock_gitlab_issue(42, "Put")),
+            ),
+            ("DELETE", "/projects/123/issues/42", None, 204, None),
+            ("POST", "/projects/123/uploads", None, 201, Some(upload)),
+            (
+                "POST",
+                "/graphql",
+                Some("application/json"),
+                200,
+                Some(graphql),
+            ),
+        ];
+        for (http_method, request_path, content_type, status, body) in requests {
+            let mut mock = Mock::given(method(http_method))
+                .and(path(request_path))
+                .and(header("PRIVATE-TOKEN", "test-token"))
+                .and(header("Accept", "application/json"));
+            if let Some(content_type) = content_type {
+                mock = mock.and(header("Content-Type", content_type));
+            }
+            let mut response = ResponseTemplate::new(status);
+            if let Some(body) = body {
+                response = response.set_body_json(body);
+            }
+            mock.respond_with(response)
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let update = crate::models::UpdateGitLabIssue {
+            title: Some("Put".to_string()),
+            ..Default::default()
+        };
+        client.get_issue(42).unwrap();
+        client.add_note(42, "hi").unwrap();
+        client.update_issue(42, &update).unwrap();
+        client.delete_issue(42).unwrap();
+        let uploaded = client.upload_project_file(&upload_file(upload_path.clone(), None));
+        let _ = std::fs::remove_file(&upload_path);
+        uploaded.unwrap();
+        client.set_work_item_parent(1042, 1010).unwrap();
+
+        // GitLab auth is the PRIVATE-TOKEN header alone; no Authorization.
+        let received = mock_server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 6);
+        assert!(
+            received
+                .iter()
+                .all(|request| !request.headers.contains_key("authorization")),
+            "no request may carry an Authorization header"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_redirect_is_followed_with_private_token() {
+        let origin = MockServer::start().await;
+        let target = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("Location", format!("{}/moved/42", target.uri()).as_str()),
+            )
+            .expect(1)
+            .mount(&origin)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/moved/42"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .and(header("Accept", "application/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(mock_gitlab_issue(42, "Moved")))
+            .expect(1)
+            .mount(&target)
+            .await;
+
+        let client = GitLabClient::new(&origin.uri(), "test-token", Some("123"));
+        let issue = <GitLabClient as IssueTracker>::get_issue(&client, "42").unwrap();
+
+        // ureq follows the redirect and strips only Authorization and Cookie,
+        // so the custom PRIVATE-TOKEN header goes on to another origin too.
+        // Pinned so that any change to it is deliberate.
+        assert_eq!(issue.summary, "Moved");
+    }
+
+    #[tokio::test]
+    async fn test_graphql_url_replaces_api_v4_suffix() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/graphql"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {"workItemUpdate": {"errors": []}}
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // The trailing slash is trimmed first, so the `/api/v4` suffix matches.
+        let base_url = format!("{}/api/v4/", mock_server.uri());
+        let client = GitLabClient::new(&base_url, "test-token", Some("123"));
+
+        client.set_work_item_parent(1042, 1010).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_graphql_errors_are_api_status_zero() {
+        let mock_server = MockServer::start().await;
+
+        // Each case has its own base path, so its endpoint is `{base}/graphql`.
+        let responses = [
+            (
+                "/top",
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "errors": [
+                        {"message": "first"},
+                        {"extensions": {"code": "no message"}},
+                        {"message": "second"}
+                    ]
+                })),
+            ),
+            (
+                "/mutation",
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": {
+                        "workItemUpdate": {"workItem": null, "errors": ["first", "second"]}
+                    }
+                })),
+            ),
+            (
+                "/null",
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": null})),
+            ),
+            (
+                "/status",
+                ResponseTemplate::new(500).set_body_string(r#"{"errors":[{"message":"boom"}]}"#),
+            ),
+        ];
+        for (base, response) in responses {
+            Mock::given(method("POST"))
+                .and(path(format!("{base}/graphql")))
+                .respond_with(response)
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        let set_parent = |base: &str| {
+            let client = GitLabClient::new(
+                &format!("{}{base}", mock_server.uri()),
+                "test-token",
+                Some("123"),
+            );
+            client.set_work_item_parent(1042, 1010)
+        };
+
+        // Errors in a 200 body are status 0; entries without a string message
+        // are dropped from the joined text.
+        assert_eq!(
+            api_error(set_parent("/top").unwrap_err()),
+            (0, "GraphQL error: first; second".to_string())
+        );
+        assert_eq!(
+            api_error(set_parent("/mutation").unwrap_err()),
+            (0, "Failed to set parent: first; second".to_string())
+        );
+        // Neither error list present: success, even with no data.
+        set_parent("/null").unwrap();
+        // A non-2xx GraphQL response goes through the REST error path, where
+        // an `errors` body has no message key and is kept verbatim.
+        assert_eq!(
+            api_error(set_parent("/status").unwrap_err()),
+            (500, r#"{"errors":[{"message":"boom"}]}"#.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_and_link_ignore_success_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/projects/123/issues/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/projects/123/issues/42/links"))
+            .respond_with(ResponseTemplate::new(201).set_body_string("not-json"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+        // Neither path decodes its 2xx body, so a body that is not JSON is not
+        // an error.
+        <GitLabClient as IssueTracker>::delete_issue(&client, "42").unwrap();
+        <GitLabClient as IssueTracker>::link_issues(&client, "42", "43", "relates", "outward")
+            .unwrap();
     }
 }

@@ -2,14 +2,13 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracker_core::AttachmentUpload;
-use ureq::http::Response;
+use serde_json::Value;
+use tracker_core::http::{self, read_json};
+use tracker_core::{AttachmentUpload, Result, TrackerError};
 use ureq::typestate::{WithBody, WithoutBody};
-use ureq::unversioned::multipart::{Form, Part};
-use ureq::{Agent, Body, RequestBuilder};
+use ureq::{Agent, RequestBuilder};
 
-use crate::client::{basic_auth_header, http_agent, read_json};
-use crate::error::{JiraError, Result};
+use crate::client::basic_auth_header;
 use crate::markdown::storage::html_escape;
 use crate::models::confluence::*;
 
@@ -38,7 +37,7 @@ impl ConfluenceClient {
         };
 
         Self {
-            agent: http_agent(),
+            agent: http::agent(),
             base_url,
             auth_header: basic_auth_header(email, api_token),
         }
@@ -62,7 +61,7 @@ impl ConfluenceClient {
     }
 
     /// Send a request without a body (GET, DELETE); error on a non-2xx status.
-    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<Response<Body>> {
+    fn call(&self, request: RequestBuilder<WithoutBody>) -> Result<http::Response> {
         self.check_response(self.authorized(request).call()?)
     }
 
@@ -85,58 +84,15 @@ impl ConfluenceClient {
     }
 
     /// Check response status and return error if not successful
-    fn check_response(&self, mut response: Response<Body>) -> Result<Response<Body>> {
-        let status = response.status().as_u16();
-
-        if (200..300).contains(&status) {
-            return Ok(response);
-        }
-
-        // Try to read error body for better error messages
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .unwrap_or_else(|_| String::new());
-
-        // Try to parse as Confluence error response
-        let message = if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&body) {
-            let mut messages = Vec::new();
-
-            // Confluence error format: {"message": "...", "statusCode": 404}
-            if let Some(msg) = error_response.get("message").and_then(|m| m.as_str()) {
-                messages.push(msg.to_string());
-            }
-
-            // Also check for errors array
-            if let Some(errors) = error_response.get("errors").and_then(|e| e.as_array()) {
-                for e in errors {
-                    if let Some(msg) = e.get("message").and_then(|m| m.as_str()) {
-                        messages.push(msg.to_string());
-                    }
-                }
-            }
-
-            if messages.is_empty() {
-                body
-            } else {
-                messages.join("; ")
-            }
-        } else if body.is_empty() {
-            format!("HTTP {}", status)
-        } else {
-            body
-        };
-
-        if status == 401 {
-            Err(JiraError::Unauthorized)
-        } else if status == 404 {
-            Err(JiraError::Api {
-                status,
+    fn check_response(&self, response: http::Response) -> Result<http::Response> {
+        http::check_response(response, error_message).map_err(|err| match err {
+            // Every 404 is reported as "Not found"; Confluence's own message is dropped.
+            TrackerError::Api { status: 404, .. } => TrackerError::Api {
+                status: 404,
                 message: "Not found".to_string(),
-            })
-        } else {
-            Err(JiraError::Api { status, message })
-        }
+            },
+            other => other,
+        })
     }
 
     // ==================== Page Operations ====================
@@ -282,17 +238,7 @@ impl ConfluenceClient {
     ) -> Result<Vec<ConfluenceAttachmentUpload>> {
         let url = self.api_v1_url(&format!("/content/{}/child/attachment", content_id));
 
-        let mut form = Form::new();
-        for file in &upload.files {
-            let mut part = Part::file(&file.path)?;
-            if let Some(name) = &file.name {
-                part = part.file_name(name);
-            }
-            if let Some(mime_type) = &file.mime_type {
-                part = part.mime_str(mime_type)?;
-            }
-            form = form.part("file", part);
-        }
+        let mut form = http::file_form("file", &upload.files)?;
 
         if let Some(comment) = upload.comment.as_deref() {
             form = form.text("comment", comment);
@@ -309,5 +255,30 @@ impl ConfluenceClient {
         let uploaded: ConfluenceAttachmentUploadResponse =
             read_json(self.check_response(response)?)?;
         Ok(uploaded.results)
+    }
+}
+
+/// Confluence's top-level `message`, then each `errors[].message`, joined with "; ".
+fn error_message(json: &Value) -> Option<String> {
+    let mut messages = Vec::new();
+
+    // Confluence error format: {"message": "...", "statusCode": 404}
+    if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
+        messages.push(msg.to_string());
+    }
+
+    // Also check for errors array
+    if let Some(errors) = json.get("errors").and_then(|e| e.as_array()) {
+        for e in errors {
+            if let Some(msg) = e.get("message").and_then(|m| m.as_str()) {
+                messages.push(msg.to_string());
+            }
+        }
+    }
+
+    if messages.is_empty() {
+        None
+    } else {
+        Some(messages.join("; "))
     }
 }

@@ -86,7 +86,7 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn get_issue_count(&self, query: &str) -> Result<Option<u64>> {
-        Ok(self.count_issues(query)?)
+        self.count_issues(query)
     }
 
     fn create_issue(&self, issue: &CreateIssue) -> Result<Issue> {
@@ -108,7 +108,7 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
-        Ok(self.delete_issue(id)?)
+        self.delete_issue(id)
     }
 
     fn list_issue_attachments(&self, issue_id: &str) -> Result<Vec<IssueAttachment>> {
@@ -164,7 +164,7 @@ impl IssueTracker for YouTrackClient {
     }
 
     fn resolve_project_id(&self, identifier: &str) -> Result<String> {
-        Ok(self.resolve_project_id(identifier)?)
+        self.resolve_project_id(identifier)
     }
 
     fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>> {
@@ -197,7 +197,7 @@ impl IssueTracker for YouTrackClient {
             .into_iter()
             .find(|t| t.name == name)
             .ok_or_else(|| TrackerError::NotFound(format!("Tag '{}' not found", name)))?;
-        Ok(self.delete_tag(&tag.id)?)
+        self.delete_tag(&tag.id)
     }
 
     fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
@@ -233,7 +233,7 @@ impl IssueTracker for YouTrackClient {
                 link_id
             ))
         })?;
-        Ok(self.remove_issue_from_link(source, bucket_id, target_id)?)
+        self.remove_issue_from_link(source, bucket_id, target_id)
     }
 
     fn link_issues(
@@ -243,11 +243,11 @@ impl IssueTracker for YouTrackClient {
         link_type: &str,
         direction: &str,
     ) -> Result<()> {
-        Ok(self.link_issues(source, target, link_type, direction)?)
+        self.link_issues(source, target, link_type, direction)
     }
 
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
-        Ok(self.link_subtask(child, parent)?)
+        self.link_subtask(child, parent)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
@@ -435,7 +435,7 @@ impl KnowledgeBase for YouTrackClient {
     }
 
     fn delete_article(&self, id: &str) -> Result<()> {
-        Ok(self.delete_article(id)?)
+        self.delete_article(id)
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {

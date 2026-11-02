@@ -240,7 +240,7 @@ impl IssueTracker for GitLabClient {
 
     fn delete_issue(&self, id: &str) -> Result<()> {
         let iid = parse_issue_iid(id)?;
-        Ok(self.delete_issue(iid)?)
+        self.delete_issue(iid)
     }
 
     fn add_issue_attachment(
@@ -335,7 +335,7 @@ impl IssueTracker for GitLabClient {
 
     fn delete_tag(&self, name: &str) -> Result<()> {
         let label_id = find_label_id(self, name)?;
-        Ok(self.delete_label(label_id)?)
+        self.delete_label(label_id)
     }
 
     fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
@@ -387,7 +387,7 @@ impl IssueTracker for GitLabClient {
             link_type: gitlab_link_type,
         };
 
-        Ok(self.create_issue_link(source_iid, &link)?)
+        self.create_issue_link(source_iid, &link)
     }
 
     fn unlink_issues(&self, source: &str, link_id: &str) -> Result<()> {
@@ -398,13 +398,13 @@ impl IssueTracker for GitLabClient {
                 link_id
             ))
         })?;
-        Ok(self.delete_issue_link(iid, issue_link_id)?)
+        self.delete_issue_link(iid, issue_link_id)
     }
 
     fn link_subtask(&self, child: &str, parent: &str) -> Result<()> {
         let child_id = issue_global_id(self, child)?;
         let parent_id = issue_global_id(self, parent)?;
-        Ok(self.set_work_item_parent(child_id, parent_id)?)
+        self.set_work_item_parent(child_id, parent_id)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
@@ -590,7 +590,7 @@ impl KnowledgeBase for GitLabClient {
     }
 
     fn delete_article(&self, id: &str) -> Result<()> {
-        Ok(self.delete_wiki_page(id)?)
+        self.delete_wiki_page(id)
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {

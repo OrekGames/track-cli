@@ -162,7 +162,7 @@ impl IssueTracker for LinearClient {
     }
 
     fn delete_issue(&self, id: &str) -> Result<()> {
-        Ok(self.delete_issue(id)?)
+        self.delete_issue(id)
     }
 
     fn list_projects(&self) -> Result<Vec<Project>> {
@@ -181,7 +181,7 @@ impl IssueTracker for LinearClient {
     }
 
     fn resolve_project_id(&self, identifier: &str) -> Result<String> {
-        Ok(self.resolve_team_id(identifier)?)
+        self.resolve_team_id(identifier)
     }
 
     fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>> {
@@ -221,7 +221,7 @@ impl IssueTracker for LinearClient {
     fn delete_tag(&self, name: &str) -> Result<()> {
         let team_id = self.default_team_id_for_tag_mutation()?;
         let label = self.find_label(&team_id, name)?;
-        Ok(self.delete_label(&label.id)?)
+        self.delete_label(&label.id)
     }
 
     fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
@@ -302,7 +302,7 @@ impl IssueTracker for LinearClient {
             return Ok(());
         }
 
-        Ok(self.delete_issue_relation(link_id)?)
+        self.delete_issue_relation(link_id)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
@@ -661,7 +661,7 @@ impl LinearClient {
                 "Linear tag create/update/delete requires a configured default team. Set default_project or linear.default_team.".to_string(),
             )
         })?;
-        Ok(self.resolve_team_id(default_team)?)
+        self.resolve_team_id(default_team)
     }
 }
 

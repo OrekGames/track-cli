@@ -193,6 +193,21 @@ fn run_github_init(dir: &Path, url: &str, extra: &[&str]) -> Output {
     cmd.timeout(Duration::from_secs(10)).output().unwrap()
 }
 
+fn run_gitlab_init(dir: &Path, url: &str, extra: &[&str]) -> Output {
+    let mut cmd = track_with_home(dir);
+    cmd.args([
+        "init",
+        "--backend",
+        "gitlab",
+        "--url",
+        url,
+        "--token",
+        DUMMY_CREDENTIAL,
+    ]);
+    cmd.args(extra);
+    cmd.timeout(Duration::from_secs(10)).output().unwrap()
+}
+
 fn run_first_github_command(dir: &Path) -> Output {
     track_with_home(dir)
         .args(["-b", "github", "project", "list"])
@@ -447,14 +462,134 @@ fn github_probe_invalid_success_body_is_parse_not_http() {
     let output = run_github_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
     let stderr = failed_stderr(&output);
     let line = primary_error_line(&stderr);
+    let prefix =
+        format!("Error: Failed to validate GitHub repository '{FIXTURE_PROJECT}': Parse error: ");
     assert!(
-        !line.starts_with("Error: Could not reach the GitHub API")
-            && !stderr.contains("Could not reach the GitHub API"),
-        "decode failure must not use transport copy, got {line:?}\n{stderr}"
+        line.starts_with(&prefix),
+        "expected prefix {prefix:?}, got {line:?}\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Could not reach the GitHub API"),
+        "decode failure must not use transport copy:\n{stderr}"
     );
     assert!(
         !stderr.contains("HTTP error"),
         "decode failure must not be wrapped as Http:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Check your API URL, token, owner, and repo."),
+        "missing next-action copy in stderr:\n{stderr}"
+    );
+    assert_no_config(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn github_probe_plain_429_keeps_generic_copy() {
+    let dir = create_temp_dir();
+    let (port, _server) = start_mock_http(
+        429,
+        "Too Many Requests",
+        &[],
+        r#"{"message":"You have exceeded a secondary rate limit"}"#,
+    );
+    let url = format!("http://127.0.0.1:{port}");
+    let output = run_github_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
+    let stderr = failed_stderr(&output);
+    assert_eq!(
+        primary_error_line(&stderr),
+        format!(
+            "Error: Failed to validate GitHub repository '{FIXTURE_PROJECT}': API error (429): You have exceeded a secondary rate limit"
+        ),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("GitHub rate limiting prevented"),
+        "a plain 429 must not use the exhausted-quota copy:\n{stderr}"
+    );
+    assert_no_config(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gitlab_probe_invalid_success_body_is_parse() {
+    let dir = create_temp_dir();
+    let (port, _server) = start_mock_http(200, "OK", &[], "not-json");
+    let url = format!("http://127.0.0.1:{port}");
+    let output = run_gitlab_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
+    let stderr = failed_stderr(&output);
+    let line = primary_error_line(&stderr);
+    let prefix =
+        format!("Error: Failed to validate GitLab project '{FIXTURE_PROJECT}': Parse error: ");
+    assert!(
+        line.starts_with(&prefix),
+        "expected prefix {prefix:?}, got {line:?}\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("HTTP error"),
+        "decode failure must not be wrapped as Http:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Check your URL, token, and project."),
+        "missing next-action copy in stderr:\n{stderr}"
+    );
+    assert_no_config(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gitlab_probe_status_errors_keep_their_text() {
+    let cases = [
+        (
+            401,
+            "Unauthorized",
+            r#"{"message":"401 Unauthorized"}"#,
+            format!(
+                "Error: Failed to validate GitLab project '{FIXTURE_PROJECT}': Authentication failed"
+            ),
+        ),
+        (
+            404,
+            "Not Found",
+            r#"{"message":"404 Project Not Found"}"#,
+            format!(
+                "Error: Failed to validate GitLab project '{FIXTURE_PROJECT}': API error (404): 404 Project Not Found"
+            ),
+        ),
+    ];
+
+    for (status, reason, body, expected) in cases {
+        let dir = create_temp_dir();
+        let (port, _server) = start_mock_http(status, reason, &[], body);
+        let url = format!("http://127.0.0.1:{port}");
+        let output = run_gitlab_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
+        let stderr = failed_stderr(&output);
+        assert_eq!(
+            primary_error_line(&stderr),
+            expected,
+            "status={status} stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("Check your URL, token, and project."),
+            "status={status} missing next-action copy in stderr:\n{stderr}"
+        );
+        assert_no_config(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn gitlab_probe_transport_failure_is_http() {
+    let dir = create_temp_dir();
+    let url = closed_localhost_url();
+    let output = run_gitlab_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
+    let stderr = failed_stderr(&output);
+    let line = primary_error_line(&stderr);
+    let prefix =
+        format!("Error: Failed to validate GitLab project '{FIXTURE_PROJECT}': HTTP error: ");
+    assert!(
+        line.starts_with(&prefix),
+        "expected prefix {prefix:?}, got {line:?}\n{stderr}"
     );
     assert_no_config(&dir);
     let _ = std::fs::remove_dir_all(&dir);

@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use crate::cli::{self, Backend};
 use crate::config::{self, Config};
 use crate::output::output_json;
-use github_backend::{GitHubClient, GitHubError};
+use github_backend::GitHubClient;
 use gitlab_backend::GitLabClient;
 use jira_backend::JiraClient;
 use linear_backend::LinearClient;
-use tracker_core::IssueTracker;
+use tracker_core::{IssueTracker, TrackerError};
 use ureq::http::Uri;
 use youtrack_backend::YouTrackClient;
 
@@ -158,16 +158,18 @@ fn github_init_probe_error(
     url: &str,
     project: &str,
     token: &str,
-    err: GitHubError,
+    err: TrackerError,
 ) -> anyhow::Error {
     match err {
-        GitHubError::Unauthorized => anyhow::anyhow!(
+        TrackerError::Unauthorized => anyhow::anyhow!(
             "GitHub authentication failed while validating '{project}'. Check that the token is valid and can read this repository. No config was written."
         ),
-        GitHubError::RateLimited => anyhow::anyhow!(
+        // GitHubClient reports a 403 with no quota left this way; a plain HTTP
+        // 429 keeps the generic copy.
+        err if github_backend::is_rate_limit_error(&err) => anyhow::anyhow!(
             "GitHub rate limiting prevented validation of '{project}'. Wait for the limit to reset or use a token with available quota, then retry. No config was written."
         ),
-        GitHubError::Api {
+        TrackerError::Api {
             status: 403,
             message,
         } => {
@@ -181,12 +183,12 @@ fn github_init_probe_error(
             }
             anyhow::anyhow!(text)
         }
-        GitHubError::Api { status: 404, .. } => anyhow::anyhow!(
+        TrackerError::Api { status: 404, .. } => anyhow::anyhow!(
             "GitHub could not access repository '{project}' (404). Verify the owner/repo spelling and that the token can see a private repository. No config was written."
         ),
-        GitHubError::Http(source) => {
+        TrackerError::Http(reason) => {
             let shown_url = displayed_url(url);
-            let reason = sanitize_transport_reason(&source.to_string(), url, token);
+            let reason = sanitize_transport_reason(&reason, url, token);
             anyhow::anyhow!(
                 "Could not reach the GitHub API at '{shown_url}' while validating '{project}': {reason}. Check the API URL, network, proxy, and TLS setup, then retry. No config was written."
             )

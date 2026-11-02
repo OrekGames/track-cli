@@ -5,19 +5,22 @@ mod tests {
     use crate::client::JiraClient;
     use crate::models::*;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use tracker_core::{AttachmentUpload, AttachmentUploadFile};
     use wiremock::matchers::{
-        body_string_contains, header, method, path, query_param, query_param_is_missing,
+        any, body_string_contains, header, method, path, query_param, query_param_is_missing,
     };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// Write `contents` to a temp file named after `name`. The counter keeps
+    /// paths unique when tests running in parallel read the same clock tick,
+    /// which Windows' coarser clock makes likely.
     fn temp_upload_file(name: &str, contents: &[u8]) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("track-jira-upload-{nanos}-{name}"));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "track-jira-upload-{}-{unique}-{name}",
+            std::process::id()
+        ));
         std::fs::write(&path, contents).unwrap();
         path
     }
@@ -101,18 +104,20 @@ mod tests {
             .await;
 
         let client = setup_mock_client(&mock_server).await;
+        use tracker_core::TrackerError;
         let err = client
             .resolve_transition_id("TEST-123", "ΚΛΕΙΣΤΌΣ")
             .unwrap_err();
         match err {
-            crate::error::JiraError::InvalidTransition {
-                requested,
-                available,
-            } => {
-                assert_eq!(requested, "ΚΛΕΙΣΤΌΣ");
-                assert_eq!(available, vec!["Κλειστόσ"]);
-            }
-            _ => panic!("Expected InvalidTransition error"),
+            TrackerError::InvalidInput(message) => assert_eq!(
+                message,
+                format!(
+                    "status '{}' is not reachable. available: {:?}",
+                    "ΚΛΕΙΣΤΌΣ",
+                    vec!["Κλειστόσ"]
+                )
+            ),
+            other => panic!("Expected InvalidInput error, got: {other:?}"),
         }
     }
 
@@ -205,21 +210,20 @@ mod tests {
         assert_eq!(client.resolve_transition_id("TEST-123", "İ").unwrap(), "4");
         assert_eq!(client.resolve_transition_id("TEST-123", "K").unwrap(), "5");
 
+        use tracker_core::TrackerError;
         let err = client
             .resolve_transition_id("TEST-123", "UNKNOWN")
             .unwrap_err();
         match err {
-            crate::error::JiraError::InvalidTransition {
-                requested,
-                available,
-            } => {
-                assert_eq!(requested, "UNKNOWN");
-                assert_eq!(
-                    available,
+            TrackerError::InvalidInput(message) => assert_eq!(
+                message,
+                format!(
+                    "status '{}' is not reachable. available: {:?}",
+                    "UNKNOWN",
                     vec!["Geöffnet", "À faire", "Открыто", "i\u{307}", "K"]
-                );
-            }
-            _ => panic!("Expected InvalidTransition error"),
+                )
+            ),
+            other => panic!("Expected InvalidInput error, got: {other:?}"),
         }
     }
 
@@ -982,7 +986,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            crate::error::JiraError::Unauthorized
+            tracker_core::TrackerError::Unauthorized
         ));
     }
 
@@ -1000,9 +1004,17 @@ mod tests {
             .await;
 
         let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
-        let result = client.get_issue("NONEXISTENT-999");
+        let err = client.get_issue("NONEXISTENT-999").unwrap_err();
 
-        assert!(result.is_err());
+        // Unlike Confluence, Jira keeps the server's 404 text. Neither maps
+        // 404 to a not-found variant.
+        assert_eq!(
+            expect_api(err),
+            (
+                404,
+                "Issue does not exist or you do not have permission to see it.".to_string()
+            )
+        );
     }
 
     #[tokio::test]
@@ -2302,5 +2314,639 @@ mod tests {
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].id, "customfield_20000");
         assert_eq!(fields[0].name, "Seeded field");
+    }
+
+    // ==================== Error and HTTP Plumbing Characterization ====================
+    //
+    // These pin the error classification and request shape that the shared
+    // tracker-core HTTP helpers must keep. Errors are checked through the
+    // IssueTracker trait wherever it reaches the path.
+
+    fn upload_of(path: PathBuf, mime_type: Option<&str>) -> AttachmentUpload {
+        AttachmentUpload {
+            files: vec![AttachmentUploadFile {
+                path,
+                name: None,
+                mime_type: mime_type.map(str::to_string),
+            }],
+            comment: None,
+            silent: false,
+            minor_edit: false,
+        }
+    }
+
+    fn minimal_create_issue() -> tracker_core::CreateIssue {
+        tracker_core::CreateIssue {
+            project_id: "X".to_string(),
+            summary: "New issue".to_string(),
+            description: None,
+            custom_fields: vec![],
+            tags: vec![],
+            parent: None,
+        }
+    }
+
+    fn summary_update(summary: &str) -> UpdateJiraIssue {
+        UpdateJiraIssue {
+            fields: UpdateJiraIssueFields {
+                summary: Some(summary.to_string()),
+                description: None,
+                priority: None,
+                labels: None,
+                parent: None,
+                assignee: None,
+                extra: std::collections::HashMap::new(),
+            },
+        }
+    }
+
+    /// The status and message of an `Api` error; panics on any other variant.
+    fn expect_api(err: tracker_core::TrackerError) -> (u16, String) {
+        match err {
+            tracker_core::TrackerError::Api { status, message } => (status, message),
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    /// Serve one canned raw HTTP response, then close the connection. Used for
+    /// responses wiremock cannot produce, such as a body cut off mid-stream.
+    ///
+    /// The request, including a `Content-Length` body, is read in full first:
+    /// closing a socket with request bytes still unread makes Windows reset
+    /// the connection, and the client then fails before it reads the response.
+    fn serve_raw_response_once(response: &'static str) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+                {
+                    let mut reader = BufReader::new(&stream);
+                    let mut content_length = 0;
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 0) && line != "\r\n" {
+                        if let Some(value) =
+                            line.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                        line.clear();
+                    }
+                    let _ = reader.read_exact(&mut vec![0; content_length]);
+                }
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn test_trait_get_issue_non_json_success_body_is_parse() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/X-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::{IssueTracker, TrackerError};
+        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
+
+        // A 2xx body that is not the expected JSON is Parse; a failed read
+        // stays Http.
+        assert!(
+            matches!(err, TrackerError::Parse(_)),
+            "expected Parse, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trait_create_comment_and_upload_non_json_success_body_is_parse() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue"))
+            .respond_with(ResponseTemplate::new(201).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue/X-1/comment"))
+            .respond_with(ResponseTemplate::new(201).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue/X-1/attachments"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::{IssueTracker, TrackerError};
+        let create_err = IssueTracker::create_issue(&client, &minimal_create_issue()).unwrap_err();
+        let comment_err = IssueTracker::add_comment(&client, "X-1", "hello").unwrap_err();
+        let upload = upload_of(upload_path.clone(), None);
+        let upload_err = IssueTracker::add_issue_attachment(&client, "X-1", &upload).unwrap_err();
+        let _ = std::fs::remove_file(upload_path);
+
+        // POST and multipart responses decode the same way as GET.
+        for err in [create_err, comment_err, upload_err] {
+            assert!(
+                matches!(err, TrackerError::Parse(_)),
+                "expected Parse, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_truncated_success_body_is_http_not_parse() {
+        // The connection drops mid-body, chunked or with a Content-Length. The
+        // body is read in full before decoding, so the failed read is Http.
+        let responses = [
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+             40\r\n{\"id\":\"10001\",\"key\":\"X-1\"",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: 100\r\nConnection: close\r\n\r\n\
+             {\"id\":\"10001\",\"key\":\"X-1\"",
+        ];
+
+        use tracker_core::{IssueTracker, TrackerError};
+        for response in responses {
+            let base_url = serve_raw_response_once(response);
+            let client = JiraClient::new(&base_url, "test@test.com", "test-token");
+            let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
+
+            assert!(
+                matches!(err, TrackerError::Http(_)),
+                "expected Http, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_error_body_read_failure_is_swallowed_as_http_status() {
+        // The error body is cut short of its Content-Length. The read failure
+        // is dropped and the message falls back to "HTTP <status>".
+        let base_url = serve_raw_response_once(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\
+             Content-Length: 100\r\nConnection: close\r\n\r\n\
+             {\"errorMessages\":[\"Bad Req",
+        );
+
+        let client = JiraClient::new(&base_url, "test@test.com", "test-token");
+        use tracker_core::IssueTracker;
+        let err = IssueTracker::get_issue(&client, "X-1").unwrap_err();
+
+        assert_eq!(expect_api(err), (400, "HTTP 400".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_error_messages_and_field_errors_joined() {
+        let mock_server = MockServer::start().await;
+
+        // The errors{} keys are out of alphabetical order on purpose, and one
+        // value is not a string.
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(
+                r#"{"errorMessages":["A"],"errors":{"summary":"S","assignee":"X","n":1}}"#,
+            ))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::IssueTracker;
+        let err = IssueTracker::create_issue(&client, &minimal_create_issue()).unwrap_err();
+
+        // errorMessages first, then "field: msg" for string values only, in
+        // alphabetical field order (serde_json is built without preserve_order).
+        assert_eq!(
+            expect_api(err),
+            (400, "A; assignee: X; summary: S".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_error_body_without_known_fields_uses_raw_body() {
+        let mock_server = MockServer::start().await;
+        let cases = [
+            ("X-1", r#"{"errorMessages":[],"errors":{}}"#),
+            // Jira ignores a top-level "message" (the Confluence client reads it).
+            ("X-2", r#"{"message":"m"}"#),
+        ];
+
+        for (key, body) in cases {
+            Mock::given(method("GET"))
+                .and(path(format!("/rest/api/3/issue/{key}")))
+                .respond_with(ResponseTemplate::new(400).set_body_string(body))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::IssueTracker;
+        for (key, body) in cases {
+            let err = IssueTracker::get_issue(&client, key).unwrap_err();
+            assert_eq!(expect_api(err), (400, body.to_string()), "{key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_non_json_and_bare_json_bodies_fall_back() {
+        let mock_server = MockServer::start().await;
+        // Only an empty, non-JSON body becomes "HTTP <status>". Other text, and
+        // JSON that is not an object, is passed through as the raw body.
+        let cases = [
+            ("X-1", 500, "", "HTTP 500"),
+            ("X-2", 502, "Bad Gateway", "Bad Gateway"),
+            ("X-3", 400, r#""Bad Request""#, r#""Bad Request""#),
+            ("X-4", 400, "42", "42"),
+            ("X-5", 400, "null", "null"),
+        ];
+
+        for (key, status, body, _) in cases {
+            Mock::given(method("GET"))
+                .and(path(format!("/rest/api/3/issue/{key}")))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::IssueTracker;
+        for (key, status, _, message) in cases {
+            let err = IssueTracker::get_issue(&client, key).unwrap_err();
+            assert_eq!(expect_api(err), (status, message.to_string()), "{key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_special_casing_or_retry_for_403_429_or_5xx() {
+        let mock_server = MockServer::start().await;
+        let cases = [("X-1", 403), ("X-2", 429), ("X-3", 503)];
+
+        // Each is requested once: no retry, and Retry-After is not read.
+        for (key, status) in cases {
+            Mock::given(method("GET"))
+                .and(path(format!("/rest/api/3/issue/{key}")))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Retry-After", "1")
+                        .set_body_json(serde_json::json!({
+                            "errorMessages": [format!("failed with {status}")],
+                            "errors": {}
+                        })),
+                )
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::IssueTracker;
+        for (key, status) in cases {
+            let err = IssueTracker::get_issue(&client, key).unwrap_err();
+            assert_eq!(
+                expect_api(err),
+                (status, format!("failed with {status}")),
+                "{key}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_attachment_comment_rejected_with_status_zero() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let upload = AttachmentUpload {
+            comment: Some("see attached".to_string()),
+            ..upload_of(upload_path.clone(), None)
+        };
+        use tracker_core::IssueTracker;
+        let err = IssueTracker::add_issue_attachment(&client, "X-1", &upload).unwrap_err();
+        let _ = std::fs::remove_file(upload_path);
+
+        // A sentinel status 0 Api error, not InvalidInput or Unsupported.
+        assert_eq!(
+            expect_api(err),
+            (
+                0,
+                "Jira issue attachment upload does not support --comment".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_attachment_missing_file_is_io_and_bad_mime_is_http() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+        let missing_path = upload_path.with_extension("missing");
+
+        // Both fail while building the form, before any request.
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::{IssueTracker, TrackerError};
+        let missing_err =
+            IssueTracker::add_issue_attachment(&client, "X-1", &upload_of(missing_path, None))
+                .unwrap_err();
+        let mime_upload = upload_of(upload_path.clone(), Some("not a mime"));
+        let mime_err =
+            IssueTracker::add_issue_attachment(&client, "X-1", &mime_upload).unwrap_err();
+        let _ = std::fs::remove_file(upload_path);
+
+        assert!(
+            matches!(missing_err, TrackerError::Io(_)),
+            "expected Io, got: {missing_err:?}"
+        );
+        match mime_err {
+            TrackerError::Http(message) => {
+                assert!(message.starts_with("invalid MIME type"), "{message}");
+            }
+            other => panic!("Expected Http error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_attachment_ignores_silent_and_minor_edit() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue/X-1/attachments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        let upload = AttachmentUpload {
+            silent: true,
+            minor_edit: true,
+            ..upload_of(upload_path.clone(), None)
+        };
+        use tracker_core::IssueTracker;
+        IssueTracker::add_issue_attachment(&client, "X-1", &upload).unwrap();
+        let _ = std::fs::remove_file(upload_path);
+
+        // Only the file part is sent; the flags have no Jira form field.
+        let requests = mock_server.received_requests().await.unwrap();
+        let body = String::from_utf8_lossy(&requests[0].body);
+        assert_eq!(body.matches("; name=\"").count(), 1, "{body}");
+        assert!(body.contains("; name=\"file\""), "{body}");
+    }
+
+    #[tokio::test]
+    async fn test_send_json_content_type_has_no_charset() {
+        let mock_server = MockServer::start().await;
+
+        // The explicit header stops ureq adding "application/json; charset=utf-8".
+        Mock::given(method("PUT"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            .and(header("Content-Type", "application/json"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        client
+            .update_issue("TEST-123", &summary_update("Updated summary"))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_requests_carry_auth_and_accept_json_headers() {
+        let mock_server = MockServer::start().await;
+        let upload_path = temp_upload_file("evidence.txt", b"evidence");
+        let issue_path = "/rest/api/3/issue/TEST-123";
+
+        // authorized() adds both headers to every request, multipart included.
+        for (verb, route, response) in [
+            (
+                "GET",
+                issue_path.to_string(),
+                ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "Test")),
+            ),
+            ("PUT", issue_path.to_string(), ResponseTemplate::new(204)),
+            ("DELETE", issue_path.to_string(), ResponseTemplate::new(204)),
+            (
+                "POST",
+                format!("{issue_path}/attachments"),
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([])),
+            ),
+        ] {
+            Mock::given(method(verb))
+                .and(path(route))
+                .and(header(
+                    "Authorization",
+                    "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+                ))
+                .and(header("Accept", "application/json"))
+                .respond_with(response)
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        // A trailing slash on the base URL is trimmed.
+        let base_url = format!("{}/", mock_server.uri());
+        let client = JiraClient::new(&base_url, "test@test.com", "test-token");
+        client.get_issue("TEST-123").unwrap();
+        client
+            .update_issue("TEST-123", &summary_update("Updated summary"))
+            .unwrap();
+        client.delete_issue("TEST-123").unwrap();
+        client
+            .add_issue_attachments("TEST-123", &upload_of(upload_path.clone(), None))
+            .unwrap();
+        let _ = std::fs::remove_file(upload_path);
+    }
+
+    #[tokio::test]
+    async fn test_body_discarding_calls_accept_non_json_success_body() {
+        let mock_server = MockServer::start().await;
+
+        // update, delete, link, unlink and transition never read the response
+        // body, so a non-JSON 2xx still succeeds.
+        for (verb, route, status) in [
+            ("PUT", "/rest/api/3/issue/X-1", 200),
+            ("DELETE", "/rest/api/3/issue/X-1", 200),
+            ("POST", "/rest/api/3/issueLink", 201),
+            ("DELETE", "/rest/api/3/issueLink/77", 200),
+            ("POST", "/rest/api/3/issue/X-1/transitions", 200),
+        ] {
+            Mock::given(method(verb))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(status).set_body_string("not-json"))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = setup_mock_client(&mock_server).await;
+        client
+            .update_issue("X-1", &summary_update("Updated summary"))
+            .unwrap();
+        client.delete_issue("X-1").unwrap();
+        client
+            .create_link(&CreateJiraIssueLink {
+                link_type: IssueLinkTypeName {
+                    name: "Blocks".to_string(),
+                },
+                inward_issue: IssueKeyRef {
+                    key: "X-1".to_string(),
+                },
+                outward_issue: IssueKeyRef {
+                    key: "X-2".to_string(),
+                },
+            })
+            .unwrap();
+        client.delete_link("77").unwrap();
+        client.transition_issue("X-1", "31").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_trait_resolve_project_id_masks_unauthorized() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project/PROJ"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "errorMessages": ["Token expired"],
+                "errors": {}
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::{IssueTracker, TrackerError};
+        let err = IssueTracker::resolve_project_id(&client, "PROJ").unwrap_err();
+
+        match err {
+            TrackerError::ProjectNotFound(id) => assert_eq!(id, "PROJ"),
+            other => panic!("Expected ProjectNotFound error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trait_resolve_project_id_masks_server_and_network_errors() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project/PROJ"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // A port nothing listens on: the connection is refused.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_url = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+
+        use tracker_core::{IssueTracker, TrackerError};
+        for base_url in [mock_server.uri(), closed_url] {
+            let client = JiraClient::new(&base_url, "test@test.com", "test-token");
+            let err = IssueTracker::resolve_project_id(&client, "PROJ").unwrap_err();
+            match err {
+                TrackerError::ProjectNotFound(id) => assert_eq!(id, "PROJ"),
+                other => panic!("Expected ProjectNotFound error, got: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trait_project_custom_fields_ignore_status_and_component_errors() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project/PROJ/statuses"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project/PROJ/components"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::IssueTracker;
+        let fields = IssueTracker::get_project_custom_fields(&client, "PROJ").unwrap();
+
+        // Both failures fall back to the hardcoded standard fields.
+        let standard = crate::convert::get_standard_custom_fields();
+        let summary = |fields: &[tracker_core::ProjectCustomField]| -> Vec<(String, Vec<String>)> {
+            fields
+                .iter()
+                .map(|f| (f.id.clone(), f.values.clone()))
+                .collect()
+        };
+        assert_eq!(summary(&fields), summary(&standard));
+    }
+
+    #[tokio::test]
+    async fn test_get_fields_cached_swallows_errors_without_caching() {
+        let mock_server = MockServer::start().await;
+
+        // Mocks match in mount order, each up to its limit: a 500, then a body
+        // of the wrong shape, then a real field list.
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "not": "a list"
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "id": "customfield_10000", "name": "Team", "custom": true }
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+
+        // Failures degrade to an empty list and are not cached.
+        assert!(client.get_fields_cached().is_empty());
+        assert!(client.get_fields_cached().is_empty());
+        assert_eq!(client.get_fields_cached().len(), 1);
+        // A success is cached: no fourth request.
+        assert_eq!(client.get_fields_cached().len(), 1);
     }
 }

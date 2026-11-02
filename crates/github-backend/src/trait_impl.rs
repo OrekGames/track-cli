@@ -173,10 +173,10 @@ impl IssueTracker for GitHubClient {
         self.get_repo(owner, repo)
             .map(Into::into)
             .map_err(|e| match e {
-                crate::error::GitHubError::Api { status: 404, .. } => {
+                TrackerError::Api { status: 404, .. } => {
                     TrackerError::ProjectNotFound(id.to_string())
                 }
-                other => TrackerError::from(other),
+                other => other,
             })
     }
 
@@ -227,7 +227,7 @@ impl IssueTracker for GitHubClient {
     }
 
     fn delete_tag(&self, name: &str) -> Result<()> {
-        Ok(self.delete_label(name)?)
+        self.delete_label(name)
     }
 
     fn update_tag(&self, current_name: &str, tag: &CreateTag) -> Result<IssueTag> {
@@ -276,7 +276,7 @@ impl IssueTracker for GitHubClient {
         // Fetch the child issue to get its global ID (the sub-issues API needs id, not number)
         let child_issue = self.get_issue(child_number)?;
 
-        Ok(self.add_sub_issue(parent_number, child_issue.id)?)
+        self.add_sub_issue(parent_number, child_issue.id)
     }
 
     fn add_comment(&self, issue_id: &str, text: &str) -> Result<Comment> {
@@ -607,7 +607,7 @@ impl KnowledgeBase for GitHubClient {
     fn delete_article(&self, id: &str) -> Result<()> {
         let wiki = self.wiki();
 
-        Ok(wiki.delete_page(id)?)
+        wiki.delete_page(id)
     }
 
     fn get_child_articles(&self, parent_id: &str) -> Result<Vec<Article>> {
