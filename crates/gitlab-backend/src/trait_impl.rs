@@ -1,5 +1,6 @@
 //! Implementation of tracker-core traits for GitLabClient
 
+use tracker_core::pagination::{Page, fetch_window};
 use tracker_core::{
     Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CreateArticle, CreateIssue,
     CreateProject, CreateTag, Issue, IssueAttachment, IssueHistoryEvent, IssueLink, IssueLinkType,
@@ -94,29 +95,20 @@ impl IssueTracker for GitLabClient {
 
         let per_page = 100;
         let mut page = (skip / per_page) + 1;
-        let mut page_offset = skip % per_page;
-        let mut issues = Vec::new();
         let mut total = None;
-
-        while issues.len() < limit {
+        let issues = fetch_window(limit, skip % per_page, |_| {
             // Use combined methods that read X-Total from the search response itself
             let (page_issues, page_total) = self.fetch_project_issues(&params, per_page, page)?;
-
+            page += 1;
             if total.is_none() {
                 total = page_total;
             }
-
-            let page_len = page_issues.len();
-            let remaining = limit - issues.len();
-            issues.extend(page_issues.into_iter().skip(page_offset).take(remaining));
-
-            if page_len < per_page {
-                break;
-            }
-
-            page += 1;
-            page_offset = 0;
-        }
+            let last = page_issues.len() < per_page;
+            Ok(Page {
+                items: page_issues,
+                last,
+            })
+        })?;
 
         let items: Vec<Issue> = issues
             .into_iter()
@@ -378,7 +370,7 @@ impl IssueTracker for GitLabClient {
     ) -> Result<()> {
         let source_iid = parse_issue_iid(source)?;
         let target_iid = parse_issue_iid(target)?;
-        let gitlab_link_type = self.resolve_link_type(link_type);
+        let gitlab_link_type = self.link_types.resolve(link_type);
 
         let project_id = self.project_id_str();
         let link = CreateGitLabIssueLink {
@@ -423,37 +415,21 @@ impl IssueTracker for GitLabClient {
 
         let iid = parse_issue_iid(issue_id)?;
         let per_page = 100;
+        // `skip` counts visible (non-system) notes, which native page offsets
+        // cannot express, so the walk always starts at page 1.
         let mut page = 1;
-        let mut remaining_skip = skip;
-        let mut comments = Vec::new();
-
-        while comments.len() < limit {
+        let notes = fetch_window(limit, skip, |_| {
             let raw_notes = self.get_notes_page_raw(iid, per_page, page)?;
-            let page_len = raw_notes.len();
-            let visible_notes: Vec<_> = raw_notes.into_iter().filter(|n| !n.system).collect();
-
-            if remaining_skip >= visible_notes.len() {
-                remaining_skip -= visible_notes.len();
-            } else {
-                let remaining = limit - comments.len();
-                comments.extend(
-                    visible_notes
-                        .into_iter()
-                        .skip(remaining_skip)
-                        .take(remaining)
-                        .map(Into::into),
-                );
-                remaining_skip = 0;
-            }
-
-            if page_len < per_page {
-                break;
-            }
-
             page += 1;
-        }
-
-        Ok(comments)
+            // The raw count, system notes included, decides the last page.
+            let last = raw_notes.len() < per_page;
+            let visible = raw_notes.into_iter().filter(|n| !n.system).collect();
+            Ok(Page {
+                items: visible,
+                last,
+            })
+        })?;
+        Ok(notes.into_iter().map(Into::into).collect())
     }
 
     fn get_all_comments(&self, issue_id: &str, max_results: usize) -> Result<Vec<Comment>> {

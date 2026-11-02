@@ -3,7 +3,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
 use tracker_core::http::{self, read_json};
-use tracker_core::{AttachmentUploadFile, Result, TrackerError};
+use tracker_core::pagination::{Page, fetch_pages_to_end};
+use tracker_core::{AttachmentUploadFile, LinkTypeMap, Result, TrackerError};
 use ureq::typestate::WithBody;
 use ureq::unversioned::multipart::Form;
 use ureq::{Agent, RequestBuilder};
@@ -14,13 +15,22 @@ use crate::models::*;
 /// GitLab's maximum `per_page`; also the page size used when walking every page.
 const MAX_PER_PAGE: usize = 100;
 
+/// Built-in GitLab link types, by canonical name (see [`LinkTypeMap`]).
+const LINK_TYPE_DEFAULTS: &[(&str, &str)] = &[
+    ("relates", "relates_to"),
+    ("depends", "blocks"),
+    ("required", "is_blocked_by"),
+    ("duplicates", "relates_to"),
+    ("duplicated-by", "relates_to"),
+];
+
 /// GitLab REST API client
 pub struct GitLabClient {
     agent: Agent,
     base_url: String,
     token: String,
     project_id: Option<String>,
-    link_mappings: HashMap<String, String>,
+    pub(crate) link_types: LinkTypeMap,
 }
 
 /// The first of `message`, `error` and `error_description` that is a string;
@@ -43,31 +53,14 @@ impl GitLabClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
             project_id: project_id.map(|s| s.to_string()),
-            link_mappings: HashMap::new(),
+            link_types: LinkTypeMap::new(LINK_TYPE_DEFAULTS, HashMap::new()),
         }
     }
 
     /// Set custom link type mappings (canonical name -> GitLab link type string)
     pub fn with_link_mappings(mut self, mappings: HashMap<String, String>) -> Self {
-        self.link_mappings = mappings;
+        self.link_types = LinkTypeMap::new(LINK_TYPE_DEFAULTS, mappings);
         self
-    }
-
-    /// Resolve a canonical link type name to the GitLab-native link type string.
-    /// User overrides take precedence, then built-in defaults, then pass-through.
-    pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
-        if let Some(name) = self.link_mappings.get(canonical) {
-            return name.clone();
-        }
-        match canonical {
-            "relates" => "relates_to",
-            "depends" => "blocks",
-            "required" => "is_blocked_by",
-            "duplicates" => "relates_to",
-            "duplicated-by" => "relates_to",
-            _ => canonical,
-        }
-        .to_string()
     }
 
     /// Get the project ID string (or "unknown" if not configured).
@@ -150,25 +143,16 @@ impl GitLabClient {
     /// not carry a query string) and concatenate them in API order.
     ///
     /// GitLab honors `per_page`, so a short page is a reliable end-of-data
-    /// signal. A `MAX_PAGES` backstop guards against a server that ignores
-    /// paging and never shrinks a page — failing loudly via
-    /// [`TrackerError::PaginationStalled`] instead of looping forever.
+    /// signal; [`fetch_pages_to_end`]'s backstop catches a server that ignores paging.
     fn get_all_pages<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
-        const MAX_PAGES: usize = 10_000;
-
-        let mut items = Vec::new();
-        for page in 1..=MAX_PAGES {
+        let mut page = 1;
+        fetch_pages_to_end(&format!("'{path}'"), || {
             let url = self.project_url(&format!("{path}?per_page={MAX_PER_PAGE}&page={page}"))?;
             let batch: Vec<T> = self.get_json(&url)?;
-            let fetched = batch.len();
-            items.extend(batch);
-            if fetched < MAX_PER_PAGE {
-                return Ok(items);
-            }
-        }
-        Err(TrackerError::PaginationStalled(format!(
-            "'{path}' did not terminate after {MAX_PAGES} pages"
-        )))
+            page += 1;
+            let last = batch.len() < MAX_PER_PAGE;
+            Ok(Page { items: batch, last })
+        })
     }
 
     /// Send `body` as JSON on a POST or PUT `request`, failing on a non-2xx status.

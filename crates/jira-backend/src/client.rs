@@ -4,18 +4,28 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tracker_core::http::{self, read_json};
-use tracker_core::{AttachmentUpload, Result, TrackerError};
+use tracker_core::pagination::{Page, fetch_pages_to_end};
+use tracker_core::{AttachmentUpload, LinkTypeMap, Result, TrackerError};
 use ureq::typestate::{WithBody, WithoutBody};
 use ureq::{Agent, RequestBuilder};
 
 use crate::models::*;
+
+/// Built-in Jira link type names, by canonical name (see [`LinkTypeMap`]).
+const LINK_TYPE_DEFAULTS: &[(&str, &str)] = &[
+    ("relates", "Relates"),
+    ("depends", "Blocks"),
+    ("required", "Blocks"),
+    ("duplicates", "Duplicate"),
+    ("duplicated-by", "Duplicate"),
+];
 
 /// Jira REST API client
 pub struct JiraClient {
     agent: Agent,
     base_url: String,
     auth_header: String,
-    link_mappings: HashMap<String, String>,
+    pub(crate) link_types: LinkTypeMap,
     /// Cached instance-level field metadata (lazy-loaded)
     pub(crate) field_cache: Mutex<Option<Vec<JiraField>>>,
 }
@@ -30,32 +40,15 @@ impl JiraClient {
             agent: http::agent(),
             base_url: base_url.trim_end_matches('/').to_string(),
             auth_header: basic_auth_header(email, api_token),
-            link_mappings: HashMap::new(),
+            link_types: LinkTypeMap::new(LINK_TYPE_DEFAULTS, HashMap::new()),
             field_cache: Mutex::new(None),
         }
     }
 
     /// Set custom link type mappings (canonical name -> Jira link type name)
     pub fn with_link_mappings(mut self, mappings: HashMap<String, String>) -> Self {
-        self.link_mappings = mappings;
+        self.link_types = LinkTypeMap::new(LINK_TYPE_DEFAULTS, mappings);
         self
-    }
-
-    /// Resolve a canonical link type name to the Jira-native link type name.
-    /// User overrides take precedence, then built-in defaults, then pass-through.
-    pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
-        if let Some(name) = self.link_mappings.get(canonical) {
-            return name.clone();
-        }
-        match canonical {
-            "relates" => "Relates",
-            "depends" => "Blocks",
-            "required" => "Blocks",
-            "duplicates" => "Duplicate",
-            "duplicated-by" => "Duplicate",
-            _ => canonical,
-        }
-        .to_string()
     }
 
     /// Build a Jira REST API v3 URL for `path`.
@@ -264,28 +257,22 @@ impl JiraClient {
     /// here (the caller re-sorts as needed).
     pub fn get_issue_changelog(&self, key: &str) -> Result<Vec<JiraChangelogEntry>> {
         const PAGE: usize = 100;
-        // Generous backstop: real changelogs are orders of magnitude smaller.
-        // It guards against a server that ignores `startAt` or never sets
-        // `isLast` (which would otherwise loop forever) without silently
-        // truncating a legitimately large history. We do NOT stop on a short
-        // page — Jira may cap `maxResults` below what we asked, so a short page
-        // is not a reliable end-of-data signal; `isLast`/`total` are.
-        const MAX_PAGES: usize = 10_000;
-        let mut entries = Vec::new();
+        // We do NOT stop on a short page — Jira may cap `maxResults` below what
+        // we asked, so a short page is not a reliable end-of-data signal;
+        // `isLast`/`total` are. `fetch_pages_to_end`'s backstop guards against a
+        // server that ignores `startAt` or never sets `isLast`.
         let mut start_at = 0;
-        for _ in 0..MAX_PAGES {
+        fetch_pages_to_end(&format!("issue '{key}' changelog"), || {
             let page = self.get_issue_changelog_page(key, start_at, PAGE)?;
             let fetched = page.values.len();
-            entries.extend(page.values);
-            if page.is_last || fetched == 0 || (page.total > 0 && entries.len() >= page.total) {
-                return Ok(entries);
-            }
+            // `start_at` now counts every entry fetched so far.
             start_at += fetched;
-        }
-        Err(TrackerError::PaginationStalled(format!(
-            "issue '{}' changelog did not terminate after {} pages",
-            key, MAX_PAGES
-        )))
+            let last = page.is_last || fetched == 0 || (page.total > 0 && start_at >= page.total);
+            Ok(Page {
+                items: page.values,
+                last,
+            })
+        })
     }
 
     // ==================== Link Operations ====================

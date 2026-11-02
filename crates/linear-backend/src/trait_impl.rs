@@ -1,5 +1,6 @@
 //! Implementation of tracker-core traits for LinearClient.
 
+use tracker_core::pagination::{Page, fetch_window};
 use tracker_core::{
     Article, ArticleAttachment, AttachmentUpload, Comment, CreateArticle, CreateIssue,
     CreateProject, CreateTag, CustomFieldUpdate, Issue, IssueHistoryEvent, IssueLink,
@@ -34,40 +35,21 @@ impl IssueTracker for LinearClient {
         let filter = self.search_filter(&parsed)?;
         let term = parsed.search_term();
 
-        let mut items = Vec::new();
         let mut total = None;
         let mut after = None;
-        let mut remaining_skip = skip;
-
-        while items.len() < limit {
+        let issues = fetch_window(limit, skip, |wanted| {
             // Request no more than the rest of the skip/limit window: every
             // node carries the full issue projection.
-            let page_size = remaining_skip.saturating_add(limit - items.len());
             let (page, page_total, page_info) =
-                self.search_issues_page(filter.clone(), term.as_deref(), page_size, after)?;
+                self.search_issues_page(filter.clone(), term.as_deref(), wanted, after.take())?;
             if total.is_none() {
                 total = page_total;
             }
-
-            let page_len = page.len();
-            if remaining_skip >= page_len {
-                remaining_skip -= page_len;
-            } else {
-                let remaining = limit - items.len();
-                items.extend(
-                    page.into_iter()
-                        .skip(remaining_skip)
-                        .take(remaining)
-                        .map(linear_issue_to_core),
-                );
-                remaining_skip = 0;
-            }
-
-            if !page_info.has_next_page || page_len == 0 {
-                break;
-            }
+            let last = !page_info.has_next_page || page.is_empty();
             after = page_info.end_cursor;
-        }
+            Ok(Page { items: page, last })
+        })?;
+        let items: Vec<Issue> = issues.into_iter().map(linear_issue_to_core).collect();
 
         match total {
             Some(total) => Ok(SearchResult::with_total(items, total)),
@@ -254,7 +236,7 @@ impl IssueTracker for LinearClient {
     ) -> Result<()> {
         let source_issue = self.get_issue(source)?;
         let target_issue = self.get_issue(target)?;
-        let linear_type = self.resolve_link_type(link_type);
+        let linear_type = self.link_types.resolve(link_type);
 
         let (issue_id, related_issue_id) = match (link_type, direction) {
             ("depends", _) => (&target_issue.id, &source_issue.id),
@@ -320,34 +302,14 @@ impl IssueTracker for LinearClient {
         }
 
         let issue = self.get_issue(issue_id)?;
-        let mut comments = Vec::new();
-        let mut remaining_skip = skip;
-        let mut after = None;
-
-        while comments.len() < limit {
+        let mut after: Option<String> = None;
+        let comments = fetch_window(limit, skip, |_| {
             let (page, page_info) = self.get_comments_page(&issue.id, 100, after.as_deref())?;
-            let page_len = page.len();
-
-            if remaining_skip >= page_len {
-                remaining_skip -= page_len;
-            } else {
-                let remaining = limit - comments.len();
-                comments.extend(
-                    page.into_iter()
-                        .skip(remaining_skip)
-                        .take(remaining)
-                        .map(Into::into),
-                );
-                remaining_skip = 0;
-            }
-
-            if !page_info.has_next_page || page_len == 0 {
-                break;
-            }
+            let last = !page_info.has_next_page || page.is_empty();
             after = page_info.end_cursor;
-        }
-
-        Ok(comments)
+            Ok(Page { items: page, last })
+        })?;
+        Ok(comments.into_iter().map(Into::into).collect())
     }
 
     fn get_all_comments(&self, issue_id: &str, max_results: usize) -> Result<Vec<Comment>> {
