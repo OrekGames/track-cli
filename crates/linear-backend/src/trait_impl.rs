@@ -616,16 +616,19 @@ impl LinearClient {
             return Ok(state.id.clone());
         }
 
-        let lower = value.to_lowercase();
-        let target_type = if matches!(
-            lower.as_str(),
-            "develop" | "started" | "start" | "in progress" | "progress"
-        ) {
+        let target_type = if value.eq_ignore_ascii_case("develop")
+            || value.eq_ignore_ascii_case("started")
+            || value.eq_ignore_ascii_case("start")
+            || value.eq_ignore_ascii_case("in progress")
+            || value.eq_ignore_ascii_case("progress")
+        {
             Some("started")
-        } else if matches!(
-            lower.as_str(),
-            "done" | "complete" | "completed" | "resolved" | "closed"
-        ) {
+        } else if value.eq_ignore_ascii_case("done")
+            || value.eq_ignore_ascii_case("complete")
+            || value.eq_ignore_ascii_case("completed")
+            || value.eq_ignore_ascii_case("resolved")
+            || value.eq_ignore_ascii_case("closed")
+        {
             Some("completed")
         } else {
             None
