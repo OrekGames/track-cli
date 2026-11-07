@@ -442,7 +442,7 @@ pub fn parse_linear_query(query: &str) -> ParsedLinearQuery {
             } else if name.eq_ignore_ascii_case("resolved") || name.eq_ignore_ascii_case("closed") {
                 parsed.state_type_in = Some(vec!["completed".to_string(), "canceled".to_string()]);
             } else {
-                parsed.labels.push(name.to_string());
+                parsed.labels.push(name.to_lowercase());
             }
             idx += 1;
             continue;
