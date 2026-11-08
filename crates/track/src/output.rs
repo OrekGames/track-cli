@@ -639,11 +639,23 @@ impl Displayable for CustomField {
 
 fn colorize_priority(field_name: &str, value: &str) -> String {
     if field_name.eq_ignore_ascii_case("priority") {
-        match value.to_lowercase().as_str() {
-            "critical" | "show-stopper" => value.red().bold().to_string(),
-            "major" | "high" => value.red().to_string(),
-            "minor" | "low" => value.dimmed().to_string(),
-            _ => value.to_string(),
+        if ["critical", "show-stopper"]
+            .iter()
+            .any(|s| value.eq_ignore_ascii_case(s))
+        {
+            value.red().bold().to_string()
+        } else if ["major", "high"]
+            .iter()
+            .any(|s| value.eq_ignore_ascii_case(s))
+        {
+            value.red().to_string()
+        } else if ["minor", "low"]
+            .iter()
+            .any(|s| value.eq_ignore_ascii_case(s))
+        {
+            value.dimmed().to_string()
+        } else {
+            value.to_string()
         }
     } else {
         value.to_string()
