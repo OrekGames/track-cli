@@ -354,10 +354,18 @@ pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
                 || name.eq_ignore_ascii_case("state")
                 || name.eq_ignore_ascii_case("stage") =>
         {
-            let mapped_value = match value.to_lowercase().as_str() {
-                "done" | "resolved" | "closed" | "completed" => "closed",
-                "open" | "in progress" | "develop" | "reopened" => "open",
-                _ => value.as_str(), // Fallback
+            let mapped_value = if ["done", "resolved", "closed", "completed"]
+                .iter()
+                .any(|s| value.eq_ignore_ascii_case(s))
+            {
+                "closed"
+            } else if ["open", "in progress", "develop", "reopened"]
+                .iter()
+                .any(|s| value.eq_ignore_ascii_case(s))
+            {
+                "open"
+            } else {
+                value.as_str() // Fallback
             };
             Some(mapped_value.to_string())
         }
