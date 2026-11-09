@@ -235,7 +235,23 @@ fn save_trust_store(store: &TrustStore) -> Result<()> {
          # to a URL they set. Managed by `track config trust` / `track config untrust`.\n\n{}",
         toml::to_string_pretty(store)?
     );
-    fs::write(&path, contents)?;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(&path)?;
+    std::io::Write::write_all(&mut file, contents.as_bytes())?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 
