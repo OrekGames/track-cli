@@ -491,7 +491,7 @@ impl Config {
                     let is_github_url = self
                         .url
                         .as_deref()
-                        .is_some_and(|u| u.to_lowercase().contains("github"));
+                        .is_some_and(|u| tracker_core::strings::contains_ignore_case(u, "github"));
 
                     if !is_github_url {
                         self.url = Some("https://api.github.com".to_string());
@@ -516,7 +516,7 @@ impl Config {
                     let is_linear_url = self
                         .url
                         .as_deref()
-                        .is_some_and(|u| u.to_lowercase().contains("linear"));
+                        .is_some_and(|u| tracker_core::strings::contains_ignore_case(u, "linear"));
                     if !is_linear_url {
                         self.url = None;
                     }
