@@ -437,29 +437,36 @@ pub fn parse_linear_query(query: &str) -> ParsedLinearQuery {
     while idx < tokens.len() {
         let token = &tokens[idx];
         if let Some(name) = token.strip_prefix('#') {
-            match name.to_lowercase().as_str() {
-                "unresolved" | "open" => {
-                    parsed.state_type_nin =
-                        Some(vec!["completed".to_string(), "canceled".to_string()]);
-                }
-                "resolved" | "closed" => {
-                    parsed.state_type_in =
-                        Some(vec!["completed".to_string(), "canceled".to_string()]);
-                }
-                other => parsed.labels.push(other.to_string()),
+            if name.eq_ignore_ascii_case("unresolved") || name.eq_ignore_ascii_case("open") {
+                parsed.state_type_nin = Some(vec!["completed".to_string(), "canceled".to_string()]);
+            } else if name.eq_ignore_ascii_case("resolved") || name.eq_ignore_ascii_case("closed") {
+                parsed.state_type_in = Some(vec!["completed".to_string(), "canceled".to_string()]);
+            } else {
+                parsed.labels.push(name.to_lowercase());
             }
             idx += 1;
             continue;
         }
 
         if let Some((key, value, consumed)) = parse_key_value(&tokens, idx) {
-            match key.to_lowercase().as_str() {
-                "project" | "team" => parsed.team = Some(value),
-                "state" | "status" | "stage" => parsed.state = Some(value),
-                "label" | "labels" | "tag" => parsed.labels.push(value),
-                "assignee" => parsed.assignee = Some(value),
-                "priority" => parsed.priority = parse_priority(&value),
-                _ => parsed.text.push(format!("{key}:{value}")),
+            if key.eq_ignore_ascii_case("project") || key.eq_ignore_ascii_case("team") {
+                parsed.team = Some(value);
+            } else if key.eq_ignore_ascii_case("state")
+                || key.eq_ignore_ascii_case("status")
+                || key.eq_ignore_ascii_case("stage")
+            {
+                parsed.state = Some(value);
+            } else if key.eq_ignore_ascii_case("label")
+                || key.eq_ignore_ascii_case("labels")
+                || key.eq_ignore_ascii_case("tag")
+            {
+                parsed.labels.push(value);
+            } else if key.eq_ignore_ascii_case("assignee") {
+                parsed.assignee = Some(value);
+            } else if key.eq_ignore_ascii_case("priority") {
+                parsed.priority = parse_priority(&value);
+            } else {
+                parsed.text.push(format!("{key}:{value}"));
             }
             idx += consumed;
             continue;
@@ -613,13 +620,25 @@ fn priority_label(priority: i64) -> &'static str {
 }
 
 fn parse_priority(value: &str) -> Option<i64> {
-    match value.trim().to_lowercase().as_str() {
-        "0" | "none" | "no priority" => Some(0),
-        "1" | "urgent" => Some(1),
-        "2" | "high" => Some(2),
-        "3" | "medium" | "normal" => Some(3),
-        "4" | "low" => Some(4),
-        _ => None,
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("0")
+        || trimmed.eq_ignore_ascii_case("none")
+        || trimmed.eq_ignore_ascii_case("no priority")
+    {
+        Some(0)
+    } else if trimmed.eq_ignore_ascii_case("1") || trimmed.eq_ignore_ascii_case("urgent") {
+        Some(1)
+    } else if trimmed.eq_ignore_ascii_case("2") || trimmed.eq_ignore_ascii_case("high") {
+        Some(2)
+    } else if trimmed.eq_ignore_ascii_case("3")
+        || trimmed.eq_ignore_ascii_case("medium")
+        || trimmed.eq_ignore_ascii_case("normal")
+    {
+        Some(3)
+    } else if trimmed.eq_ignore_ascii_case("4") || trimmed.eq_ignore_ascii_case("low") {
+        Some(4)
+    } else {
+        None
     }
 }
 

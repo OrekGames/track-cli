@@ -1,0 +1,1 @@
+- Codebase-specific performance pattern: Avoid using `.to_lowercase()` directly on parsed tags/tokens in query matching loops. Convert these instances to `.eq_ignore_ascii_case()` as most query keys (`priority`, `state`, etc) are ASCII, to prevent O(N) heap allocations per token.
