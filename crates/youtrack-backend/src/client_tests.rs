@@ -4,7 +4,9 @@ mod tests {
     use crate::models::*;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tracker_core::{AttachmentUpload, AttachmentUploadFile, IssueTracker, TrackerError};
+    use tracker_core::{
+        AttachmentUpload, AttachmentUploadFile, IssueTracker, KnowledgeBase, TrackerError,
+    };
     use wiremock::matchers::{
         any, body_json, body_string_contains, header, method, path, query_param,
     };
@@ -3118,8 +3120,6 @@ mod tests {
         let mut minor_edit = upload_of(upload_path.clone(), None);
         minor_edit.minor_edit = true;
 
-        // The trait's comment-attachment methods create the comment first, so
-        // these call the client's upload methods directly.
         let results: Vec<(&str, TrackerError)> = vec![
             (
                 "--comment",
@@ -3150,6 +3150,33 @@ mod tests {
                 client
                     .add_article_comment_attachments("KB-A-1", "4-2", &minor_edit)
                     .unwrap_err(),
+            ),
+            // The trait methods create the comment themselves, and reject the
+            // option before they do: no comment is left without its files.
+            (
+                "--comment",
+                IssueTracker::add_issue_comment_attachment(&client, "X-1", "text", &with_comment)
+                    .unwrap_err(),
+            ),
+            (
+                "--comment",
+                KnowledgeBase::add_article_comment_attachment(
+                    &client,
+                    "KB-A-1",
+                    "text",
+                    &with_comment,
+                )
+                .unwrap_err(),
+            ),
+            (
+                "--minor-edit",
+                KnowledgeBase::add_article_comment_attachment(
+                    &client,
+                    "KB-A-1",
+                    "text",
+                    &minor_edit,
+                )
+                .unwrap_err(),
             ),
         ];
         let _ = std::fs::remove_file(upload_path);
