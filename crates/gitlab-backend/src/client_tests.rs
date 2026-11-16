@@ -10,7 +10,9 @@ mod tests {
         AttachmentUpload, AttachmentUploadFile, CreateIssue, CustomFieldUpdate, IssueTracker,
         KnowledgeBase, TrackerError, UpdateIssue,
     };
-    use wiremock::matchers::{any, body_string_contains, header, method, path, query_param};
+    use wiremock::matchers::{
+        any, body_partial_json, body_string_contains, header, method, path, query_param,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Write `contents` to a temp file named after `name`. The counter keeps
@@ -172,29 +174,35 @@ mod tests {
     #[tokio::test]
     async fn test_trait_search_issues_preserves_offset() {
         let mock_server = MockServer::start().await;
-        let issues: Vec<_> = (1..=50)
-            .map(|iid| mock_gitlab_issue(iid, &format!("Search result {iid}")))
-            .collect();
 
-        Mock::given(method("GET"))
-            .and(path("/projects/123/issues"))
-            .and(header("PRIVATE-TOKEN", "test-token"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("x-total", "50")
-                    .set_body_json(issues),
-            )
-            .mount(&mock_server)
-            .await;
+        // Skip 125 starts on page 2 at offset 25; the window runs into the
+        // short page 3, whose different X-Total must not replace the first.
+        for (page, iids, total) in [("2", 101..=200, "230"), ("3", 201..=230, "999")] {
+            let issues: Vec<_> = iids
+                .map(|iid| mock_gitlab_issue(iid, &format!("Search result {iid}")))
+                .collect();
+            Mock::given(method("GET"))
+                .and(path("/projects/123/issues"))
+                .and(header("PRIVATE-TOKEN", "test-token"))
+                .and(query_param("per_page", "100"))
+                .and(query_param("page", page))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("x-total", total)
+                        .set_body_json(issues),
+                )
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
-        let result = <GitLabClient as IssueTracker>::search_issues(&client, "", 20, 25).unwrap();
+        let result = <GitLabClient as IssueTracker>::search_issues(&client, "", 100, 125).unwrap();
 
-        assert_eq!(result.items.len(), 20);
-        assert_eq!(result.items[0].id_readable, "#26");
-        assert_eq!(result.items[19].id_readable, "#45");
+        assert_eq!(result.items.len(), 100);
+        assert_eq!(result.items[0].id_readable, "#126");
+        assert_eq!(result.items[99].id_readable, "#225");
+        assert_eq!(result.total, Some(230));
     }
 
     #[tokio::test]
@@ -818,59 +826,40 @@ mod tests {
         assert_eq!(notes[1].text, "Another user comment");
     }
 
+    /// Mount issue 42's notes as a full page 1 (ids 1..=100, where 50 is a
+    /// system note) and a short page 2 (ids 101 and 102), each of which
+    /// must be requested exactly once.
+    async fn mount_two_note_pages(mock_server: &MockServer) {
+        let pages = [("1", 1..=100), ("2", 101..=102)];
+        for (page, ids) in pages {
+            let notes: Vec<_> = ids
+                .map(|id| {
+                    serde_json::json!({
+                        "id": id,
+                        "body": format!("Comment {id}"),
+                        "author": {"id": 1, "username": "user", "name": "User"},
+                        "created_at": "2024-01-15T10:00:00.000Z",
+                        "updated_at": "2024-01-15T10:00:00.000Z",
+                        "system": id == 50
+                    })
+                })
+                .collect();
+            Mock::given(method("GET"))
+                .and(path("/projects/123/issues/42/notes"))
+                .and(header("PRIVATE-TOKEN", "test-token"))
+                .and(query_param("per_page", "100"))
+                .and(query_param("page", page))
+                .respond_with(ResponseTemplate::new(200).set_body_json(notes))
+                .expect(1)
+                .mount(mock_server)
+                .await;
+        }
+    }
+
     #[tokio::test]
     async fn test_get_all_comments_walks_native_note_pages_once() {
         let mock_server = MockServer::start().await;
-
-        let first_page: Vec<_> = (1..=100)
-            .map(|id| {
-                serde_json::json!({
-                    "id": id,
-                    "body": format!("Comment {id}"),
-                    "author": {"id": 1, "username": "user", "name": "User"},
-                    "created_at": "2024-01-15T10:00:00.000Z",
-                    "updated_at": "2024-01-15T10:00:00.000Z",
-                    "system": id == 50
-                })
-            })
-            .collect();
-
-        Mock::given(method("GET"))
-            .and(path("/projects/123/issues/42/notes"))
-            .and(header("PRIVATE-TOKEN", "test-token"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(first_page))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/projects/123/issues/42/notes"))
-            .and(header("PRIVATE-TOKEN", "test-token"))
-            .and(query_param("per_page", "100"))
-            .and(query_param("page", "2"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                {
-                    "id": 101,
-                    "body": "Comment 101",
-                    "author": {"id": 1, "username": "user", "name": "User"},
-                    "created_at": "2024-01-15T11:00:00.000Z",
-                    "updated_at": "2024-01-15T11:00:00.000Z",
-                    "system": false
-                },
-                {
-                    "id": 102,
-                    "body": "Comment 102",
-                    "author": {"id": 1, "username": "user", "name": "User"},
-                    "created_at": "2024-01-15T12:00:00.000Z",
-                    "updated_at": "2024-01-15T12:00:00.000Z",
-                    "system": false
-                }
-            ])))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+        mount_two_note_pages(&mock_server).await;
 
         let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
         let comments = <GitLabClient as IssueTracker>::get_all_comments(&client, "#42", 101)
@@ -880,6 +869,22 @@ mod tests {
         assert!(!comments.iter().any(|comment| comment.id == "50"));
         assert_eq!(comments[0].id, "1");
         assert_eq!(comments[100].id, "102");
+    }
+
+    #[tokio::test]
+    async fn test_get_comments_page_skip_counts_visible_notes() {
+        let mock_server = MockServer::start().await;
+        mount_two_note_pages(&mock_server).await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let comments = <GitLabClient as IssueTracker>::get_comments_page(&client, "#42", 2, 98)
+            .expect("get_comments_page should succeed");
+
+        // Page 1 has 99 visible notes, so skipping 98 leaves only note 100
+        // there; counting raw notes (system note 50 included) would return
+        // notes 99 and 100 instead.
+        let ids: Vec<_> = comments.iter().map(|comment| comment.id.as_str()).collect();
+        assert_eq!(ids, ["100", "101"]);
     }
 
     #[tokio::test]
@@ -1437,36 +1442,14 @@ mod tests {
     // ==================== Link Type Resolution Tests ====================
 
     #[test]
-    fn test_resolve_link_type_defaults() {
+    fn test_link_type_defaults() {
         let client = GitLabClient::new("https://gitlab.com/api/v4", "test-token", Some("123"));
 
-        assert_eq!(client.resolve_link_type("relates"), "relates_to");
-        assert_eq!(client.resolve_link_type("depends"), "blocks");
-        assert_eq!(client.resolve_link_type("required"), "is_blocked_by");
-        assert_eq!(client.resolve_link_type("duplicates"), "relates_to");
-        assert_eq!(client.resolve_link_type("duplicated-by"), "relates_to");
-    }
-
-    #[test]
-    fn test_resolve_link_type_with_overrides() {
-        let mut mappings = std::collections::HashMap::new();
-        mappings.insert("duplicates".to_string(), "blocks".to_string());
-
-        let client = GitLabClient::new("https://gitlab.com/api/v4", "test-token", Some("123"))
-            .with_link_mappings(mappings);
-
-        // Overridden
-        assert_eq!(client.resolve_link_type("duplicates"), "blocks");
-        // Non-overridden still use defaults
-        assert_eq!(client.resolve_link_type("relates"), "relates_to");
-        assert_eq!(client.resolve_link_type("depends"), "blocks");
-    }
-
-    #[test]
-    fn test_resolve_link_type_unknown_falls_through() {
-        let client = GitLabClient::new("https://gitlab.com/api/v4", "test-token", Some("123"));
-
-        assert_eq!(client.resolve_link_type("nonexistent"), "nonexistent");
+        assert_eq!(client.link_types.resolve("relates"), "relates_to");
+        assert_eq!(client.link_types.resolve("depends"), "blocks");
+        assert_eq!(client.link_types.resolve("required"), "is_blocked_by");
+        assert_eq!(client.link_types.resolve("duplicates"), "relates_to");
+        assert_eq!(client.link_types.resolve("duplicated-by"), "relates_to");
     }
 
     #[tokio::test]
@@ -2778,8 +2761,12 @@ mod tests {
             .expect(1)
             .mount(&mock_server)
             .await;
+        // The canonical "relates" must reach GitLab as its native link type.
         Mock::given(method("POST"))
             .and(path("/projects/123/issues/42/links"))
+            .and(body_partial_json(
+                serde_json::json!({"link_type": "relates_to"}),
+            ))
             .respond_with(ResponseTemplate::new(201).set_body_string("not-json"))
             .expect(1)
             .mount(&mock_server)

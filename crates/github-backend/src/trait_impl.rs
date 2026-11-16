@@ -1,5 +1,6 @@
 //! Implementation of tracker-core traits for GitHubClient
 
+use tracker_core::pagination::{Page, fetch_window};
 use tracker_core::{
     Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CommentAuthor,
     CreateArticle, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment,
@@ -64,35 +65,36 @@ impl IssueTracker for GitHubClient {
 
         let per_page = 100;
         let mut page = (skip / per_page) + 1;
+        // The in-page offset counts issues left after pull requests are dropped
+        // and applies to the first page only, so it is applied here rather than
+        // passed to `fetch_window` as its skip.
         let mut page_offset = skip % per_page;
-        let mut items = Vec::new();
         let mut total = None;
 
-        while items.len() < limit {
+        let issues = fetch_window(limit, 0, |_| {
             let result = self.search_issues(&github_query, per_page, page)?;
+            page += 1;
             if total.is_none() {
                 total = Some(result.total_count);
             }
-
-            let page_len = result.items.len();
-            let remaining = limit - items.len();
-            items.extend(
-                result
-                    .items
-                    .into_iter()
-                    .filter(|i| !i.is_pull_request())
-                    .skip(page_offset)
-                    .take(remaining)
-                    .map(|i| github_issue_to_core(i, &owner, &repo)),
-            );
-
-            if page_len < per_page {
-                break;
-            }
-
-            page += 1;
+            // The raw page length, pull requests included, decides the last page.
+            let last = result.items.len() < per_page;
+            let issues = result
+                .items
+                .into_iter()
+                .filter(|i| !i.is_pull_request())
+                .skip(page_offset)
+                .collect();
             page_offset = 0;
-        }
+            Ok(Page {
+                items: issues,
+                last,
+            })
+        })?;
+        let items: Vec<Issue> = issues
+            .into_iter()
+            .map(|i| github_issue_to_core(i, &owner, &repo))
+            .collect();
 
         if let Some(total) = total {
             Ok(SearchResult::with_total(items, total))
@@ -312,32 +314,15 @@ impl IssueTracker for GitHubClient {
 
         let number = parse_issue_number(issue_id)?;
         let per_page = 100;
+        // Start on the native page that holds comment `skip`.
         let mut page = (skip / per_page) + 1;
-        let mut page_offset = skip % per_page;
-        let mut comments = Vec::new();
-
-        while comments.len() < limit {
-            let page_comments = self.get_comments_page(number, per_page, page)?;
-            let page_len = page_comments.len();
-            let remaining = limit - comments.len();
-
-            comments.extend(
-                page_comments
-                    .into_iter()
-                    .skip(page_offset)
-                    .take(remaining)
-                    .map(Into::into),
-            );
-
-            if page_len < per_page {
-                break;
-            }
-
+        let comments = fetch_window(limit, skip % per_page, |_| {
+            let batch = self.get_comments_page(number, per_page, page)?;
             page += 1;
-            page_offset = 0;
-        }
-
-        Ok(comments)
+            let last = batch.len() < per_page;
+            Ok(Page { items: batch, last })
+        })?;
+        Ok(comments.into_iter().map(Into::into).collect())
     }
 
     fn get_issue_history(&self, issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {

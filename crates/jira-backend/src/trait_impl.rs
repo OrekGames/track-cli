@@ -382,7 +382,7 @@ impl IssueTracker for JiraClient {
         link_type: &str,
         direction: &str,
     ) -> Result<()> {
-        let jira_link_type = self.resolve_link_type(link_type);
+        let jira_link_type = self.link_types.resolve(link_type);
 
         // Direction controls issue placement:
         // OUTWARD (depends): source depends on target → target blocks source

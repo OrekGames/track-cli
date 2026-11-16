@@ -1,6 +1,7 @@
 //! Implementation of tracker-core KnowledgeBase trait for ConfluenceClient
 
 use chrono::Utc;
+use tracker_core::pagination::{Page, fetch_window};
 use tracker_core::{
     Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CommentAuthor,
     CreateArticle, KnowledgeBase, ProjectRef, Result, TrackerError, UpdateArticle,
@@ -26,39 +27,18 @@ impl KnowledgeBase for ConfluenceClient {
             return Ok(Vec::new());
         }
 
-        let mut articles = Vec::new();
-        let mut remaining_skip = skip;
         let mut cursor: Option<String> = None;
-
-        loop {
+        let pages = fetch_window(limit, skip, |_| {
+            // Every request asks for `limit` pages, however many the window still needs.
             let page = self.list_pages(project_id, limit, cursor.as_deref())?;
-            let page_len = page.results.len();
-
-            if remaining_skip >= page_len {
-                remaining_skip -= page_len;
-            } else {
-                let remaining = limit - articles.len();
-                articles.extend(
-                    page.results
-                        .into_iter()
-                        .skip(remaining_skip)
-                        .take(remaining)
-                        .map(confluence_page_to_article),
-                );
-                remaining_skip = 0;
-            }
-
-            if articles.len() >= limit || page_len == 0 {
-                break;
-            }
-
             cursor = page.links.as_ref().and_then(extract_next_cursor);
-            if cursor.is_none() {
-                break;
-            }
-        }
-
-        Ok(articles)
+            let last = page.results.is_empty() || cursor.is_none();
+            Ok(Page {
+                items: page.results,
+                last,
+            })
+        })?;
+        Ok(pages.into_iter().map(confluence_page_to_article).collect())
     }
 
     fn list_all_articles(
@@ -70,33 +50,17 @@ impl KnowledgeBase for ConfluenceClient {
             return Ok(Vec::new());
         }
 
-        let mut articles = Vec::new();
         let mut cursor: Option<String> = None;
-
-        loop {
-            let remaining = max_results - articles.len();
-            let page_limit = remaining.min(100);
-            let page = self.list_pages(project_id, page_limit, cursor.as_deref())?;
-            let page_len = page.results.len();
-
-            articles.extend(
-                page.results
-                    .into_iter()
-                    .take(remaining)
-                    .map(confluence_page_to_article),
-            );
-
-            if articles.len() >= max_results || page_len == 0 {
-                break;
-            }
-
+        let pages = fetch_window(max_results, 0, |remaining| {
+            let page = self.list_pages(project_id, remaining.min(100), cursor.as_deref())?;
             cursor = page.links.as_ref().and_then(extract_next_cursor);
-            if cursor.is_none() {
-                break;
-            }
-        }
-
-        Ok(articles)
+            let last = page.results.is_empty() || cursor.is_none();
+            Ok(Page {
+                items: page.results,
+                last,
+            })
+        })?;
+        Ok(pages.into_iter().map(confluence_page_to_article).collect())
     }
 
     fn search_articles(&self, query: &str, limit: usize, skip: usize) -> Result<Vec<Article>> {
@@ -431,9 +395,11 @@ mod tests {
                     "next": "/wiki/api/v2/pages?cursor=next-page"
                 }
             })))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
+        // No next link: the walk ends here even though the window is not full.
         Mock::given(method("GET"))
             .and(path("/wiki/api/v2/pages"))
             .and(query_param("limit", "2"))
@@ -444,24 +410,25 @@ mod tests {
                     page("4", "Fourth")
                 ]
             })))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
+        // skip=3 skips all of page 1 and the first entry of page 2.
         let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
-        let articles = client.list_articles(None, 2, 2).unwrap();
+        let articles = client.list_articles(None, 2, 3).unwrap();
 
-        assert_eq!(articles.len(), 2);
-        assert_eq!(articles[0].id, "3");
-        assert_eq!(articles[1].id, "4");
+        let ids: Vec<&str> = articles.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["4"]);
     }
 
     #[tokio::test]
-    async fn list_all_articles_walks_cursor_pages_once_and_truncates() {
+    async fn list_all_articles_walks_cursor_pages_until_no_next_link() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
             .and(path("/wiki/api/v2/pages"))
-            .and(query_param("limit", "3"))
+            .and(query_param("limit", "4"))
             .and(query_param_is_missing("cursor"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "results": [
@@ -476,24 +443,22 @@ mod tests {
             .mount(&mock_server)
             .await;
 
+        // No next link: the walk ends here even though max_results is not reached.
         Mock::given(method("GET"))
             .and(path("/wiki/api/v2/pages"))
-            .and(query_param("limit", "1"))
+            .and(query_param("limit", "2"))
             .and(query_param("cursor", "next-page"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "results": [
                     page("3", "Third")
-                ],
-                "_links": {
-                    "next": "/wiki/api/v2/pages?cursor=unused-page"
-                }
+                ]
             })))
             .expect(1)
             .mount(&mock_server)
             .await;
 
         let client = ConfluenceClient::new(&mock_server.uri(), "test@example.com", "token");
-        let articles = client.list_all_articles(None, 3).unwrap();
+        let articles = client.list_all_articles(None, 4).unwrap();
 
         assert_eq!(articles.len(), 3);
         assert_eq!(articles[0].id, "1");

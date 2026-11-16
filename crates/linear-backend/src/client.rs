@@ -2,7 +2,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use tracker_core::http;
-use tracker_core::{Result, TrackerError, unicode_eq_ignore_case};
+use tracker_core::{LinkTypeMap, Result, TrackerError, unicode_eq_ignore_case};
 use ureq::Agent;
 
 use crate::models::*;
@@ -57,6 +57,17 @@ const PROJECT_FIELDS: &str = "id name slugId description";
 /// Nodes requested per page when walking a connection to its end.
 const PAGE_SIZE: usize = 100;
 
+/// Built-in Linear relation types, by canonical name (see [`LinkTypeMap`]).
+/// Linear's own relation types (`related`, `blocks`, `duplicate`, `similar`)
+/// pass through as they are.
+const LINK_TYPE_DEFAULTS: &[(&str, &str)] = &[
+    ("relates", "related"),
+    ("depends", "blocks"),
+    ("required", "blocks"),
+    ("duplicates", "duplicate"),
+    ("duplicated-by", "duplicate"),
+];
+
 /// Linear GraphQL API client.
 pub struct LinearClient {
     agent: Agent,
@@ -64,7 +75,7 @@ pub struct LinearClient {
     token: String,
     default_team: Option<String>,
     default_linear_project: Option<String>,
-    link_mappings: HashMap<String, String>,
+    pub(crate) link_types: LinkTypeMap,
 }
 
 impl LinearClient {
@@ -81,7 +92,7 @@ impl LinearClient {
             token: token.to_string(),
             default_team: None,
             default_linear_project: None,
-            link_mappings: HashMap::new(),
+            link_types: LinkTypeMap::new(LINK_TYPE_DEFAULTS, HashMap::new()),
         }
     }
 
@@ -98,7 +109,7 @@ impl LinearClient {
 
     /// Set custom relation type mappings (canonical name -> Linear relation type).
     pub fn with_link_mappings(mut self, mappings: HashMap<String, String>) -> Self {
-        self.link_mappings = mappings;
+        self.link_types = LinkTypeMap::new(LINK_TYPE_DEFAULTS, mappings);
         self
     }
 
@@ -112,21 +123,6 @@ impl LinearClient {
 
     pub fn default_linear_project(&self) -> Option<&str> {
         self.default_linear_project.as_deref()
-    }
-
-    pub(crate) fn resolve_link_type(&self, canonical: &str) -> String {
-        if let Some(mapped) = self.link_mappings.get(canonical) {
-            return mapped.clone();
-        }
-
-        match canonical {
-            "relates" | "related" => "related",
-            "duplicates" | "duplicate" | "duplicated-by" => "duplicate",
-            "similar" => "similar",
-            "blocks" | "depends" | "required" => "blocks",
-            _ => canonical,
-        }
-        .to_string()
     }
 
     pub(crate) fn graphql<T, V>(&self, query: &str, variables: V) -> Result<T>

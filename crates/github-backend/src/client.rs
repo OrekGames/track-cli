@@ -3,6 +3,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::sync::OnceLock;
 use tracker_core::http::{self, Response, read_json};
+use tracker_core::pagination::{Page, fetch_pages_to_end};
 use tracker_core::{Result, TrackerError};
 use ureq::typestate::{WithBody, WithoutBody};
 use ureq::{Agent, RequestBuilder};
@@ -330,27 +331,16 @@ impl GitHubClient {
     /// GET every page of a list endpoint (`url` without a query string), in API order.
     ///
     /// GitHub honors `per_page`, so a short page is a reliable end-of-data
-    /// signal. A `MAX_PAGES` backstop guards against a server that ignores
-    /// paging and never shrinks a page — failing loudly via
-    /// [`TrackerError::PaginationStalled`] instead of looping forever.
+    /// signal; [`fetch_pages_to_end`]'s backstop catches a server that ignores paging.
     fn get_all_pages<T: DeserializeOwned>(&self, url: &str) -> Result<Vec<T>> {
         const PER_PAGE: usize = 100;
-        const MAX_PAGES: usize = 10_000;
-
-        let mut items = Vec::new();
-        for page in 1..=MAX_PAGES {
-            let batch: Vec<T> =
-                self.get_json(&format!("{}?per_page={}&page={}", url, PER_PAGE, page))?;
-            let fetched = batch.len();
-            items.extend(batch);
-            if fetched < PER_PAGE {
-                return Ok(items);
-            }
-        }
-        Err(TrackerError::PaginationStalled(format!(
-            "'{}' did not terminate after {} pages",
-            url, MAX_PAGES
-        )))
+        let mut page = 1;
+        fetch_pages_to_end(&format!("'{url}'"), || {
+            let batch: Vec<T> = self.get_json(&format!("{url}?per_page={PER_PAGE}&page={page}"))?;
+            page += 1;
+            let last = batch.len() < PER_PAGE;
+            Ok(Page { items: batch, last })
+        })
     }
 }
 
