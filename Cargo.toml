@@ -43,7 +43,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # Testing
 tokio = { version = "1", features = ["rt", "macros"] }
 wiremock = "0.6"
-rcgen = "0.13"
+rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 assert_cmd = "2.0"
