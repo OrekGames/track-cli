@@ -480,6 +480,23 @@ jobs:
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
+  # PyPI is published by its own workflow, from the release that now exists.
+  # This job only starts it, so a PyPI problem never fails the release and can
+  # be retried there (Actions > Publish to PyPI > Run workflow).
+  publish-pypi:
+    name: Start PyPI Publish
+    runs-on: ubuntu-latest
+    needs: [detect-release, release]
+    if: needs.detect-release.outputs.should_release == 'true'
+    permissions:
+      actions: write
+    steps:
+      - name: Start the Publish to PyPI workflow
+        run: gh workflow run publish-pypi.yml --repo "$GITHUB_REPOSITORY" --ref main -f version="$VERSION" -f index=pypi
+        env:
+          VERSION: ${{ needs.detect-release.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   update-homebrew-recovery:
     name: Recover Homebrew Formula (existing release)
     runs-on: ubuntu-latest

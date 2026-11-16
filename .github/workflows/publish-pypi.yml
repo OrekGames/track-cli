@@ -1,0 +1,214 @@
+name: Publish to PyPI
+
+# Publishes an existing GitHub release to PyPI as `orekgames-track`.
+#
+# The GitHub release is the source of truth: this workflow builds nothing
+# from source. It downloads the release's archives, verifies them against the
+# release's checksums and repackages the binaries as wheels
+# (scripts/build-pypi-wheels.py).
+#
+# release.yml starts it after every release. Run it by hand to publish or
+# re-publish any existing release, or to rehearse against TestPyPI.
+#
+# Publishing uses PyPI trusted publishing, so there is no token to store or
+# rotate. PyPI (and TestPyPI) must list this workflow file and the matching
+# environment name (`pypi` / `testpypi`) as a trusted publisher of the
+# project; renaming this file breaks publishing until that is updated.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release to publish (e.g. 1.19.3). The GitHub release must already exist.'
+        required: true
+        type: string
+      index:
+        description: 'Package index to publish to'
+        required: true
+        type: choice
+        default: pypi
+        options:
+          - pypi
+          - testpypi
+
+run-name: Publish ${{ inputs.version }} to ${{ inputs.index }}
+
+# One publish per index at a time; a second one waits instead of racing.
+concurrency:
+  group: publish-pypi-${{ inputs.index }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PROJECT: orekgames-track
+
+jobs:
+  build:
+    name: Build wheels
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve the release
+        id: resolve
+        # bash (not the default `bash -e`) adds pipefail.
+        shell: bash
+        run: |
+          VERSION="${VERSION_INPUT#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'${VERSION_INPUT}' is not a MAJOR.MINOR.PATCH version"
+            exit 1
+          fi
+          if ! STATE=$(gh release view "v${VERSION}" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"' 2>/dev/null); then
+            echo "::error::Release v${VERSION} does not exist"
+            exit 1
+          fi
+          if [ "$STATE" != "false false" ]; then
+            echo "::error::Release v${VERSION} is a draft or prerelease; only stable releases are published to PyPI"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download checksums from release
+        run: gh release download "v${VERSION}" --pattern "checksums-sha256.txt" --dir dist/
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build wheels from the release archives
+        run: |
+          python3 scripts/build-pypi-wheels.py \
+            --out dist/pypi-wheels \
+            --index-json "${INDEX_URL}/pypi/${PROJECT}/json" \
+            "$VERSION" dist/checksums-sha256.txt
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+          INDEX_URL: ${{ inputs.index == 'testpypi' && 'https://test.pypi.org' || 'https://pypi.org' }}
+
+      - name: Check wheel metadata
+        run: pipx run twine check --strict dist/pypi-wheels/*.whl
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: pypi-wheels
+          path: dist/pypi-wheels/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke:
+    name: Install on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: [build]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest      # manylinux x86_64
+          - ubuntu-24.04-arm   # manylinux aarch64
+          - macos-latest       # macOS arm64
+          - windows-latest     # Windows x64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-wheels
+          path: wheels
+
+      - name: Install with pip and uv, then run track
+        shell: bash
+        run: bash scripts/smoke-test-pypi-wheel.sh wheels "$VERSION"
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+
+  # The same check on the two platforms whose runners are scarcer. It reports
+  # but does not gate the publish: their binaries are the ones the GitHub
+  # release already ships, and a stalled runner should not hold PyPI back.
+  smoke-extra:
+    name: Install on ${{ matrix.os }} (not required)
+    runs-on: ${{ matrix.os }}
+    needs: [build]
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15-intel     # macOS x86_64
+          - windows-11-arm     # Windows arm64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-wheels
+          path: wheels
+
+      - name: Install with pip and uv, then run track
+        shell: bash
+        run: bash scripts/smoke-test-pypi-wheel.sh wheels "$VERSION"
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+
+  publish:
+    name: Publish to ${{ inputs.index }}
+    runs-on: ubuntu-latest
+    needs: [build, smoke]
+    environment:
+      name: ${{ inputs.index }}
+      url: ${{ inputs.index == 'testpypi' && 'https://test.pypi.org' || 'https://pypi.org' }}/project/orekgames-track/${{ needs.build.outputs.version }}/
+    permissions:
+      # Trusted publishing: the run proves its identity to the index with a
+      # short-lived OIDC token.
+      id-token: write
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-wheels
+          path: dist
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          repository-url: ${{ inputs.index == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          # A re-run after a partial upload finishes it instead of failing on
+          # the files that are already there.
+          skip-existing: true
+
+  verify:
+    name: Install from ${{ inputs.index }}
+    runs-on: ubuntu-latest
+    needs: [build, publish]
+    steps:
+      - name: Install the published version and run it
+        run: |
+          python3 -m venv venv
+          # A new version can take a moment to show up on the index.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if venv/bin/pip install --quiet --no-cache-dir --index-url "$INDEX_URL" "${PROJECT}==${VERSION}"; then
+              break
+            fi
+            if [ "$attempt" = 10 ]; then
+              echo "::error::${PROJECT} ${VERSION} is not installable from ${INDEX_URL}"
+              exit 1
+            fi
+            sleep 30
+          done
+          OUTPUT="$(venv/bin/track --version)"
+          echo "$OUTPUT"
+          [ "$OUTPUT" = "track ${VERSION}" ]
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          INDEX_URL: ${{ inputs.index == 'testpypi' && 'https://test.pypi.org/simple/' || 'https://pypi.org/simple/' }}
