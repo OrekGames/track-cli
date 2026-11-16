@@ -649,6 +649,7 @@ dependencies = [
  "tokio",
  "tracker-core",
  "ureq",
+ "url",
  "urlencoding",
  "wiremock",
 ]

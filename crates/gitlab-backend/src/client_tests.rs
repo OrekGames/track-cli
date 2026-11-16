@@ -2627,19 +2627,31 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_redirect_is_followed_with_private_token() {
-        let origin = MockServer::start().await;
-        let target = MockServer::start().await;
+    fn redirect_to(location: &str) -> ResponseTemplate {
+        ResponseTemplate::new(302).insert_header("Location", location)
+    }
 
+    /// Assert `err` is the 302 itself, reported with the place it points to.
+    fn assert_redirect_refused(err: TrackerError, location: &str) {
+        match err {
+            TrackerError::Api { status, message } => {
+                assert_eq!(status, 302);
+                assert!(message.contains(location), "unexpected message: {message}");
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_same_origin_redirect_is_followed_with_private_token() {
+        let mock_server = MockServer::start().await;
+
+        // A relative Location resolves against the URL that was requested.
         Mock::given(method("GET"))
             .and(path("/projects/123/issues/42"))
-            .respond_with(
-                ResponseTemplate::new(302)
-                    .insert_header("Location", format!("{}/moved/42", target.uri()).as_str()),
-            )
+            .respond_with(redirect_to("/moved/42"))
             .expect(1)
-            .mount(&origin)
+            .mount(&mock_server)
             .await;
         Mock::given(method("GET"))
             .and(path("/moved/42"))
@@ -2647,16 +2659,75 @@ mod tests {
             .and(header("Accept", "application/json"))
             .respond_with(ResponseTemplate::new(200).set_body_json(mock_gitlab_issue(42, "Moved")))
             .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+        assert_eq!(client.get_issue(42).unwrap().title, "Moved");
+    }
+
+    #[tokio::test]
+    async fn test_redirect_to_another_origin_is_refused() {
+        let origin = MockServer::start().await;
+        let target = MockServer::start().await;
+        let location = format!("{}/moved/42", target.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42"))
+            .respond_with(redirect_to(&location))
+            .expect(1)
+            .mount(&origin)
+            .await;
+        // The other origin gets no request at all, so it never sees the token.
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(mock_gitlab_issue(42, "Moved")))
+            .expect(0)
             .mount(&target)
             .await;
 
         let client = GitLabClient::new(&origin.uri(), "test-token", Some("123"));
-        let issue = <GitLabClient as IssueTracker>::get_issue(&client, "42").unwrap();
 
-        // ureq follows the redirect and strips only Authorization and Cookie,
-        // so the custom PRIVATE-TOKEN header goes on to another origin too.
-        // Pinned so that any change to it is deliberate.
-        assert_eq!(issue.summary, "Moved");
+        assert_redirect_refused(client.get_issue(42).unwrap_err(), &location);
+    }
+
+    #[tokio::test]
+    async fn test_redirect_of_a_write_is_refused() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/projects/123/issues/42"))
+            .respond_with(redirect_to("/moved/42"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        // ureq would repeat a redirected DELETE as a GET and report its 200 as a
+        // successful delete.
+        Mock::given(path("/moved/42"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+        assert_redirect_refused(client.delete_issue(42).unwrap_err(), "/moved/42");
+    }
+
+    #[tokio::test]
+    async fn test_redirect_loop_stops_after_max_redirects() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/projects/123/issues/42"))
+            .respond_with(redirect_to("/projects/123/issues/42"))
+            .expect(crate::client::MAX_REDIRECTS as u64 + 1)
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+
+        assert_redirect_refused(client.get_issue(42).unwrap_err(), "/projects/123/issues/42");
     }
 
     #[tokio::test]

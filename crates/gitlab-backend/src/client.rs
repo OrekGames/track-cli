@@ -8,12 +8,16 @@ use tracker_core::{AttachmentUploadFile, LinkTypeMap, Result, TrackerError};
 use ureq::typestate::WithBody;
 use ureq::unversioned::multipart::Form;
 use ureq::{Agent, RequestBuilder};
+use url::Url;
 
 use crate::convert::GitLabQueryParams;
 use crate::models::*;
 
 /// GitLab's maximum `per_page`; also the page size used when walking every page.
 const MAX_PER_PAGE: usize = 100;
+
+/// Redirects one GET follows before the redirect itself is reported as the error.
+pub(crate) const MAX_REDIRECTS: usize = 5;
 
 /// Built-in GitLab link types, by canonical name (see [`LinkTypeMap`]).
 const LINK_TYPE_DEFAULTS: &[(&str, &str)] = &[
@@ -31,6 +35,18 @@ pub struct GitLabClient {
     token: String,
     project_id: Option<String>,
     pub(crate) link_types: LinkTypeMap,
+}
+
+/// The URL a redirect `response` to a request for `url` points to, if it has
+/// the same origin (scheme, host and port) as `url`.
+fn same_origin_redirect(url: &str, response: &http::Response) -> Option<String> {
+    if !response.status().is_redirection() {
+        return None;
+    }
+    let location = response.headers().get("location")?.to_str().ok()?;
+    let url = Url::parse(url).ok()?;
+    let target = url.join(location).ok()?;
+    (target.origin() == url.origin()).then(|| target.into())
 }
 
 /// The first of `message`, `error` and `error_description` that is a string;
@@ -115,23 +131,59 @@ impl GitLabClient {
             })
     }
 
-    /// Check response status and return error if not successful
+    /// Check response status and return error if not successful.
+    ///
+    /// A redirect that reaches here is one [`Self::get`] did not follow, or the
+    /// answer to a request that is not a GET; the error names where it points.
     fn check_response(&self, response: http::Response) -> Result<http::Response> {
+        let status = response.status();
+        if status.is_redirection()
+            && let Some(location) = response.headers().get("location")
+        {
+            return Err(TrackerError::Api {
+                status: status.as_u16(),
+                message: format!(
+                    "GitLab redirected this request to {}. Only GET requests follow \
+                     redirects, and only to the configured server, so that the token is not \
+                     sent to another host. Check the GitLab URL.",
+                    String::from_utf8_lossy(location.as_bytes())
+                ),
+            });
+        }
         http::check_response(response, error_message)
     }
 
     // ==================== HTTP Helpers ====================
 
     /// Add the auth and `Accept` headers every GitLab API request carries.
+    ///
+    /// ureq does not follow redirects for these requests: on a redirect it
+    /// drops only `Authorization` and `Cookie`, so it would send
+    /// `PRIVATE-TOKEN` on to whatever host the response names.
     fn authorized<B>(&self, request: RequestBuilder<B>) -> RequestBuilder<B> {
         request
+            .config()
+            .max_redirects(0)
+            .build()
             .header("PRIVATE-TOKEN", &self.token)
             .header("Accept", "application/json")
     }
 
-    /// GET `url`, failing on a non-2xx status.
+    /// GET `url`, failing on a non-2xx status. Up to [`MAX_REDIRECTS`]
+    /// redirects are followed while they stay on the origin of `url`.
     fn get(&self, url: &str) -> Result<http::Response> {
-        self.check_response(self.authorized(self.agent.get(url)).call()?)
+        let mut url = url.to_string();
+        let mut redirects = 0;
+        loop {
+            let response = self.authorized(self.agent.get(&url)).call()?;
+            match same_origin_redirect(&url, &response) {
+                Some(target) if redirects < MAX_REDIRECTS => {
+                    url = target;
+                    redirects += 1;
+                }
+                _ => return self.check_response(response),
+            }
+        }
     }
 
     /// GET `url` and deserialize the JSON response body.
