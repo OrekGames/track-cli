@@ -260,6 +260,7 @@ impl IssueTracker for YouTrackClient {
         text: &str,
         upload: &AttachmentUpload,
     ) -> Result<Comment> {
+        Self::check_issue_comment_upload(upload)?;
         let comment = self.add_comment(issue_id, text)?;
         self.add_issue_comment_attachments(issue_id, &comment.id, upload)?;
         Ok(comment.into())
@@ -488,6 +489,7 @@ impl KnowledgeBase for YouTrackClient {
         text: &str,
         upload: &AttachmentUpload,
     ) -> Result<Comment> {
+        Self::check_article_comment_upload(upload)?;
         let comment = self.add_article_comment(article_id, text)?;
         self.add_article_comment_attachments(article_id, &comment.id, upload)?;
         Ok(comment.into())

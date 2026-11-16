@@ -310,13 +310,10 @@ impl YouTrackClient {
         self.post_attachment_form(&url, upload)
     }
 
-    /// Upload attachments to an issue comment.
-    pub fn add_issue_comment_attachments(
-        &self,
-        issue_id: &str,
-        comment_id: &str,
-        upload: &AttachmentUpload,
-    ) -> Result<Vec<IssueAttachment>> {
+    /// Reject an upload whose options an issue comment attachment cannot carry.
+    /// Callers that create the comment themselves check this first, so a
+    /// rejected upload does not leave a comment behind.
+    pub(crate) fn check_issue_comment_upload(upload: &AttachmentUpload) -> Result<()> {
         if upload.comment.is_some() {
             return Err(TrackerError::Api {
                 status: 0,
@@ -324,6 +321,17 @@ impl YouTrackClient {
                     .to_string(),
             });
         }
+        Ok(())
+    }
+
+    /// Upload attachments to an issue comment.
+    pub fn add_issue_comment_attachments(
+        &self,
+        issue_id: &str,
+        comment_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<IssueAttachment>> {
+        Self::check_issue_comment_upload(upload)?;
 
         let url = format!(
             "{}/api/issues/{}/comments/{}/attachments?fields={}",
@@ -820,13 +828,9 @@ impl YouTrackClient {
         self.post_attachment_form(&url, upload)
     }
 
-    /// Upload attachments to an article comment.
-    pub fn add_article_comment_attachments(
-        &self,
-        article_id: &str,
-        comment_id: &str,
-        upload: &AttachmentUpload,
-    ) -> Result<Vec<ArticleAttachment>> {
+    /// Reject an upload whose options an article comment attachment cannot
+    /// carry. See [`Self::check_issue_comment_upload`].
+    pub(crate) fn check_article_comment_upload(upload: &AttachmentUpload) -> Result<()> {
         if upload.comment.is_some() {
             return Err(TrackerError::Api {
                 status: 0,
@@ -841,6 +845,17 @@ impl YouTrackClient {
                     .to_string(),
             });
         }
+        Ok(())
+    }
+
+    /// Upload attachments to an article comment.
+    pub fn add_article_comment_attachments(
+        &self,
+        article_id: &str,
+        comment_id: &str,
+        upload: &AttachmentUpload,
+    ) -> Result<Vec<ArticleAttachment>> {
+        Self::check_article_comment_upload(upload)?;
 
         let url = format!(
             "{}/api/articles/{}/comments/{}/attachments?fields={}",
