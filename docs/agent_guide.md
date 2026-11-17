@@ -1229,7 +1229,7 @@ Common errors and solutions:
 |-------|-------|----------|
 | `Unauthorized` | Invalid/expired token | Check token, regenerate if needed |
 | `Not found` | Issue/project doesn't exist | Verify ID, check project access |
-| `Project not found` | Invalid project key | Use `track p ls` to list valid projects |
+| `Project not found` | Invalid project key | The error lists available projects; or use `track p ls` |
 | `Connection refused` | Wrong URL or network issue | Verify URL, check network |
 | `Rate limited` | Too many API requests (GitHub) | Wait and retry; check `x-ratelimit-reset` header |
 | `<Backend> URL/token not configured` | No config file, or the setting is missing | Run `track init`, or pass `--url`/`--token` (or set `TRACKER_URL`/`TRACKER_TOKEN`) |

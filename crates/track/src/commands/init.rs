@@ -115,6 +115,21 @@ fn sanitize_transport_reason(reason: &str, url: &str, token: &str) -> String {
     )
 }
 
+fn available_projects_hint(projects: &[tracker_core::Project]) -> String {
+    const MAX_SHOWN: usize = 10;
+    let mut names: Vec<&str> = projects.iter().map(|p| p.short_name.as_str()).collect();
+    names.sort_unstable();
+    if names.is_empty() {
+        return "The server returned no projects.".to_string();
+    }
+    let shown = &names[..names.len().min(MAX_SHOWN)];
+    let mut hint = format!("Available projects: {}", shown.join(", "));
+    if names.len() > MAX_SHOWN {
+        hint.push_str(&format!(" (+{} more)", names.len() - MAX_SHOWN));
+    }
+    hint
+}
+
 fn invalid_init_url(url: &str) -> anyhow::Error {
     if url_has_userinfo(url) {
         anyhow::anyhow!(
@@ -434,7 +449,13 @@ pub fn handle_init(
                         || p.id == proj
                         || tracker_core::unicode_eq_ignore_case(&p.name, proj)
                 })
-                .ok_or_else(|| anyhow::anyhow!("Linear team '{}' not found", proj))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Linear team '{}' not found. {}. No config was written.",
+                        proj,
+                        available_projects_hint(&projects)
+                    )
+                })?;
 
             Some(InitProject::Default {
                 short_name: matched.short_name.clone(),
@@ -488,7 +509,13 @@ pub fn handle_init(
                         || p.id == proj
                         || tracker_core::unicode_eq_ignore_case(&p.name, proj)
                 })
-                .ok_or_else(|| anyhow::anyhow!("Project '{}' not found on server", proj))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Project '{}' not found on server. {}. No config was written.",
+                        proj,
+                        available_projects_hint(&projects)
+                    )
+                })?;
 
             Some(InitProject::Default {
                 short_name: matched.short_name.clone(),
@@ -762,5 +789,26 @@ mod tests {
         assert!(url_has_userinfo("https://user:pass@api.example.com"));
         assert!(url_has_userinfo("https://user@api.example.com"));
         assert!(!url_has_userinfo("https://api.example.com"));
+    }
+
+    #[test]
+    fn available_projects_hint_lists_names_and_caps_at_ten() {
+        let projects: Vec<tracker_core::Project> = (0..12)
+            .map(|i| tracker_core::Project {
+                id: format!("id-{i}"),
+                name: format!("Project {i}"),
+                short_name: format!("P{i:02}"),
+                description: None,
+            })
+            .collect();
+        let hint = available_projects_hint(&projects);
+        assert!(hint.starts_with("Available projects: "), "got: {hint}");
+        assert!(hint.contains("P00"), "got: {hint}");
+        assert!(hint.contains("(+2 more)"), "got: {hint}");
+        assert!(!hint.contains("P10"), "got: {hint}");
+        assert_eq!(
+            available_projects_hint(&[]),
+            "The server returned no projects."
+        );
     }
 }
