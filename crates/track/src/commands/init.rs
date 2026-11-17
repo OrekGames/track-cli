@@ -115,6 +115,21 @@ fn sanitize_transport_reason(reason: &str, url: &str, token: &str) -> String {
     )
 }
 
+fn available_projects_hint(projects: &[tracker_core::Project]) -> String {
+    const MAX_SHOWN: usize = 10;
+    let mut names: Vec<&str> = projects.iter().map(|p| p.short_name.as_str()).collect();
+    names.sort_unstable();
+    if names.is_empty() {
+        return "The server returned no projects.".to_string();
+    }
+    let shown = &names[..names.len().min(MAX_SHOWN)];
+    let mut hint = format!("Available projects: {}", shown.join(", "));
+    if names.len() > MAX_SHOWN {
+        hint.push_str(&format!(" (+{} more)", names.len() - MAX_SHOWN));
+    }
+    hint
+}
+
 fn invalid_init_url(url: &str) -> anyhow::Error {
     if url_has_userinfo(url) {
         anyhow::anyhow!(
@@ -196,7 +211,7 @@ fn github_init_probe_error(
         other => anyhow::anyhow!(
             "Failed to validate GitHub repository '{}': {}\nCheck your API URL, token, owner, and repo.",
             project,
-            super::without_secret(&other.to_string(), token)
+            sanitize_transport_reason(&other.to_string(), url, token)
         ),
     }
 }
@@ -356,7 +371,7 @@ pub fn handle_init(
                     .or_else(|| std::env::var("JIRA_EMAIL").ok())
                     .ok_or_else(|| {
                         anyhow::anyhow!(
-                            "Jira requires email for authentication.\nUse --email flag or set JIRA_EMAIL environment variable."
+                            "Jira requires email for authentication.\nUse --email flag or set JIRA_EMAIL environment variable. No config was written."
                         )
                     })?,
             )
@@ -382,14 +397,16 @@ pub fn handle_init(
         }
         Backend::GitLab => {
             let proj = project.ok_or_else(|| {
-                anyhow::anyhow!("GitLab init requires --project <PROJECT_ID_OR_PATH>")
+                anyhow::anyhow!(
+                    "GitLab init requires --project <PROJECT_ID_OR_PATH>. No config was written."
+                )
             })?;
             let client = GitLabClient::new(url, token, None);
             let gitlab_project = client.get_project(proj).map_err(|e| {
                 anyhow::anyhow!(
-                    "Failed to validate GitLab project '{}': {}\nCheck your URL, token, and project.",
+                    "Failed to validate GitLab project '{}': {}\nCheck your URL, token, and project. No config was written.",
                     proj,
-                    e
+                    sanitize_transport_reason(&e.to_string(), url, token)
                 )
             })?;
             let display_name = gitlab_project
@@ -422,8 +439,8 @@ pub fn handle_init(
             let client = LinearClient::with_base_url(&api_url, token);
             let projects = client.list_projects().map_err(|e| {
                 anyhow::anyhow!(
-                    "Failed to connect to Linear or list teams: {}\nCheck your token and LINEAR_API_URL.",
-                    e
+                    "Failed to connect to Linear or list teams: {}\nCheck your token and LINEAR_API_URL. No config was written.",
+                    sanitize_transport_reason(&e.to_string(), &api_url, token)
                 )
             })?;
 
@@ -434,7 +451,13 @@ pub fn handle_init(
                         || p.id == proj
                         || tracker_core::unicode_eq_ignore_case(&p.name, proj)
                 })
-                .ok_or_else(|| anyhow::anyhow!("Linear team '{}' not found", proj))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Linear team '{}' not found. {}. No config was written.",
+                        proj,
+                        available_projects_hint(&projects)
+                    )
+                })?;
 
             Some(InitProject::Default {
                 short_name: matched.short_name.clone(),
@@ -461,8 +484,8 @@ pub fn handle_init(
                     let tracker: &dyn IssueTracker = &client;
                     tracker.list_projects().map_err(|e| {
                         anyhow::anyhow!(
-                            "Failed to connect to server or list projects: {}\nCheck your URL and token.",
-                            e
+                            "Failed to connect to server or list projects: {}\nCheck your URL and token. No config was written.",
+                            sanitize_transport_reason(&e.to_string(), url, token)
                         )
                     })?
                 }
@@ -471,8 +494,8 @@ pub fn handle_init(
                     let tracker: &dyn IssueTracker = &client;
                     tracker.list_projects().map_err(|e| {
                         anyhow::anyhow!(
-                            "Failed to connect to server or list projects: {}\nCheck your URL, email, and token.",
-                            e
+                            "Failed to connect to server or list projects: {}\nCheck your URL, email, and token. No config was written.",
+                            sanitize_transport_reason(&e.to_string(), url, token)
                         )
                     })?
                 }
@@ -488,7 +511,13 @@ pub fn handle_init(
                         || p.id == proj
                         || tracker_core::unicode_eq_ignore_case(&p.name, proj)
                 })
-                .ok_or_else(|| anyhow::anyhow!("Project '{}' not found on server", proj))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Project '{}' not found on server. {}. No config was written.",
+                        proj,
+                        available_projects_hint(&projects)
+                    )
+                })?;
 
             Some(InitProject::Default {
                 short_name: matched.short_name.clone(),
@@ -762,5 +791,36 @@ mod tests {
         assert!(url_has_userinfo("https://user:pass@api.example.com"));
         assert!(url_has_userinfo("https://user@api.example.com"));
         assert!(!url_has_userinfo("https://api.example.com"));
+    }
+
+    #[test]
+    fn sanitize_transport_reason_strips_query_and_redacts_token() {
+        let reason = "GET https://youtrack.example.com/api/projects?token=secret123: refused; token secret123 invalid";
+        let out = sanitize_transport_reason(reason, "https://youtrack.example.com", "secret123");
+        assert!(!out.contains("secret123"), "got: {out}");
+        assert!(!out.contains("?token="), "got: {out}");
+        assert!(out.contains("https://youtrack.example.com"), "got: {out}");
+        assert!(out.contains("<redacted>"), "got: {out}");
+    }
+
+    #[test]
+    fn available_projects_hint_lists_names_and_caps_at_ten() {
+        let projects: Vec<tracker_core::Project> = (0..12)
+            .map(|i| tracker_core::Project {
+                id: format!("id-{i}"),
+                name: format!("Project {i}"),
+                short_name: format!("P{i:02}"),
+                description: None,
+            })
+            .collect();
+        let hint = available_projects_hint(&projects);
+        assert!(hint.starts_with("Available projects: "), "got: {hint}");
+        assert!(hint.contains("P00"), "got: {hint}");
+        assert!(hint.contains("(+2 more)"), "got: {hint}");
+        assert!(!hint.contains("P10"), "got: {hint}");
+        assert_eq!(
+            available_projects_hint(&[]),
+            "The server returned no projects."
+        );
     }
 }
