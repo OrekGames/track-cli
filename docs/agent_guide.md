@@ -1232,6 +1232,7 @@ Common errors and solutions:
 | `Project not found` | Invalid project key | Use `track p ls` to list valid projects |
 | `Connection refused` | Wrong URL or network issue | Verify URL, check network |
 | `Rate limited` | Too many API requests (GitHub) | Wait and retry; check `x-ratelimit-reset` header |
+| `<Backend> URL/token not configured` | No config file, or the setting is missing | Run `track init`, or pass `--url`/`--token` (or set `TRACKER_URL`/`TRACKER_TOKEN`) |
 | `owner not configured` | GitHub missing owner | `track config set github.owner <OWNER>` |
 | `repo not configured` | GitHub missing repo | `track config set github.repo <REPO>` |
 | `No project ID configured` | GitLab missing project_id | `track config set gitlab.project_id <ID>` |

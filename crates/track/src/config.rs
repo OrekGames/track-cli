@@ -568,25 +568,25 @@ impl Config {
 
         if backend != Backend::Linear && self.url.is_none() {
             return Err(anyhow!(
-                "{} URL not configured. Set via --url, TRACKER_URL env var, or config file",
+                "{} URL not configured. Set via --url, TRACKER_URL env var, or config file. No config file yet? Run 'track init' to create one.",
                 backend_name
             ));
         }
         if self.token.is_none() {
             if backend == Backend::GitHub {
                 return Err(anyhow!(
-                    "GitHub token is not configured. Set it with 'track config set github.token <TOKEN>', set GITHUB_TOKEN, or pass --token."
+                    "GitHub token is not configured. Set it with 'track config set github.token <TOKEN>', set GITHUB_TOKEN, or pass --token. No config file yet? Run 'track init --backend github --project owner/repo' to create one."
                 ));
             }
             return Err(anyhow!(
-                "{} token not configured. Set via --token, TRACKER_TOKEN env var, or config file",
+                "{} token not configured. Set via --token, TRACKER_TOKEN env var, or config file. No config file yet? Run 'track init' to create one.",
                 backend_name
             ));
         }
         // Jira requires email for Basic Auth
         if backend == Backend::Jira && self.email.is_none() {
             return Err(anyhow!(
-                "Jira email not configured. Set via JIRA_EMAIL env var or config file"
+                "Jira email not configured. Set via JIRA_EMAIL env var or config file. No config file yet? Run 'track init --backend jira --email you@example.com' to create one."
             ));
         }
         if backend == Backend::GitHub {
@@ -621,9 +621,9 @@ impl Config {
 
         let mut file = options
             .open(path)
-            .map_err(|e| anyhow!("Failed to open config file: {}", e))?;
+            .map_err(|e| save_io_error("open", path, &e))?;
         file.write_all(toml_string.as_bytes())
-            .map_err(|e| anyhow!("Failed to write config file: {}", e))?;
+            .map_err(|e| save_io_error("write", path, &e))?;
 
         #[cfg(unix)]
         {
@@ -704,6 +704,23 @@ impl Config {
             Backend::Linear => &self.linear.link_mappings,
         }
     }
+}
+
+fn save_io_error(action: &str, path: &Path, error: &std::io::Error) -> anyhow::Error {
+    let cause = match error.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            let parent = path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "the directory".to_string());
+            format!("permission denied (check write access to '{parent}')")
+        }
+        _ => error.to_string(),
+    };
+    anyhow!(
+        "Failed to {action} config file at '{}': {cause}",
+        path.display()
+    )
 }
 
 pub(crate) fn config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
@@ -1031,6 +1048,34 @@ mod tests {
     }
 
     #[test]
+    fn config_save_error_names_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("no-such-dir").join(".track.toml");
+        let err = Config::default().save(&missing).unwrap_err().to_string();
+        assert!(
+            err.contains("Failed to open config file at '"),
+            "got: {err}"
+        );
+        assert!(err.contains(&missing.display().to_string()), "got: {err}");
+    }
+
+    #[test]
+    fn save_io_error_explains_permission_denied() {
+        let err = save_io_error(
+            "write",
+            Path::new("/home/user/.track.toml"),
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("Failed to write config file at '/home/user/.track.toml'"),
+            "got: {text}"
+        );
+        assert!(text.contains("permission denied"), "got: {text}");
+        assert!(text.contains("/home/user"), "got: {text}");
+    }
+
+    #[test]
     fn test_config_with_link_mappings() {
         let toml_str = r#"
 backend = "jira"
@@ -1289,6 +1334,24 @@ repo = "repo"
             err.to_string().contains("GitLab project_id not configured"),
             "expected missing project_id error, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_validate_missing_url_and_token_point_at_track_init() {
+        let err = Config::default()
+            .validate(Backend::YouTrack)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("URL not configured"), "got: {err}");
+        assert!(err.contains("track init"), "got: {err}");
+
+        let config = Config {
+            url: Some("https://youtrack.example.com".to_string()),
+            ..Default::default()
+        };
+        let err = config.validate(Backend::YouTrack).unwrap_err().to_string();
+        assert!(err.contains("token not configured"), "got: {err}");
+        assert!(err.contains("track init"), "got: {err}");
     }
 
     fn sample_pack_toml() -> &'static str {
