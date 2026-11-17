@@ -211,7 +211,7 @@ fn github_init_probe_error(
         other => anyhow::anyhow!(
             "Failed to validate GitHub repository '{}': {}\nCheck your API URL, token, owner, and repo.",
             project,
-            super::without_secret(&other.to_string(), token)
+            sanitize_transport_reason(&other.to_string(), url, token)
         ),
     }
 }
@@ -371,7 +371,7 @@ pub fn handle_init(
                     .or_else(|| std::env::var("JIRA_EMAIL").ok())
                     .ok_or_else(|| {
                         anyhow::anyhow!(
-                            "Jira requires email for authentication.\nUse --email flag or set JIRA_EMAIL environment variable."
+                            "Jira requires email for authentication.\nUse --email flag or set JIRA_EMAIL environment variable. No config was written."
                         )
                     })?,
             )
@@ -397,14 +397,16 @@ pub fn handle_init(
         }
         Backend::GitLab => {
             let proj = project.ok_or_else(|| {
-                anyhow::anyhow!("GitLab init requires --project <PROJECT_ID_OR_PATH>")
+                anyhow::anyhow!(
+                    "GitLab init requires --project <PROJECT_ID_OR_PATH>. No config was written."
+                )
             })?;
             let client = GitLabClient::new(url, token, None);
             let gitlab_project = client.get_project(proj).map_err(|e| {
                 anyhow::anyhow!(
-                    "Failed to validate GitLab project '{}': {}\nCheck your URL, token, and project.",
+                    "Failed to validate GitLab project '{}': {}\nCheck your URL, token, and project. No config was written.",
                     proj,
-                    e
+                    sanitize_transport_reason(&e.to_string(), url, token)
                 )
             })?;
             let display_name = gitlab_project
@@ -437,8 +439,8 @@ pub fn handle_init(
             let client = LinearClient::with_base_url(&api_url, token);
             let projects = client.list_projects().map_err(|e| {
                 anyhow::anyhow!(
-                    "Failed to connect to Linear or list teams: {}\nCheck your token and LINEAR_API_URL.",
-                    e
+                    "Failed to connect to Linear or list teams: {}\nCheck your token and LINEAR_API_URL. No config was written.",
+                    sanitize_transport_reason(&e.to_string(), &api_url, token)
                 )
             })?;
 
@@ -482,8 +484,8 @@ pub fn handle_init(
                     let tracker: &dyn IssueTracker = &client;
                     tracker.list_projects().map_err(|e| {
                         anyhow::anyhow!(
-                            "Failed to connect to server or list projects: {}\nCheck your URL and token.",
-                            e
+                            "Failed to connect to server or list projects: {}\nCheck your URL and token. No config was written.",
+                            sanitize_transport_reason(&e.to_string(), url, token)
                         )
                     })?
                 }
@@ -492,8 +494,8 @@ pub fn handle_init(
                     let tracker: &dyn IssueTracker = &client;
                     tracker.list_projects().map_err(|e| {
                         anyhow::anyhow!(
-                            "Failed to connect to server or list projects: {}\nCheck your URL, email, and token.",
-                            e
+                            "Failed to connect to server or list projects: {}\nCheck your URL, email, and token. No config was written.",
+                            sanitize_transport_reason(&e.to_string(), url, token)
                         )
                     })?
                 }
@@ -789,6 +791,16 @@ mod tests {
         assert!(url_has_userinfo("https://user:pass@api.example.com"));
         assert!(url_has_userinfo("https://user@api.example.com"));
         assert!(!url_has_userinfo("https://api.example.com"));
+    }
+
+    #[test]
+    fn sanitize_transport_reason_strips_query_and_redacts_token() {
+        let reason = "GET https://youtrack.example.com/api/projects?token=secret123: refused; token secret123 invalid";
+        let out = sanitize_transport_reason(reason, "https://youtrack.example.com", "secret123");
+        assert!(!out.contains("secret123"), "got: {out}");
+        assert!(!out.contains("?token="), "got: {out}");
+        assert!(out.contains("https://youtrack.example.com"), "got: {out}");
+        assert!(out.contains("<redacted>"), "got: {out}");
     }
 
     #[test]
