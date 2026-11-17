@@ -575,7 +575,7 @@ impl Config {
         if self.token.is_none() {
             if backend == Backend::GitHub {
                 return Err(anyhow!(
-                    "GitHub token is not configured. Set it with 'track config set github.token <TOKEN>', set GITHUB_TOKEN, or pass --token. No config file yet? Run 'track init --backend github --project owner/repo' to create one."
+                    "GitHub token is not configured. Set it with 'track config set github.token <TOKEN>', set GITHUB_TOKEN, or pass --token."
                 ));
             }
             return Err(anyhow!(
