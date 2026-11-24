@@ -47,10 +47,20 @@ fn is_prime_hook_invocation<I: IntoIterator<Item = String>>(args: I) -> bool {
             .any(|arg| arg == "--hook" || arg.starts_with("--hook="))
 }
 
-/// The output format named by `TRACK_OUTPUT`, ignoring an empty or
-/// unrecognised value.
-fn format_from_env(value: Option<&str>) -> Option<CliFormat> {
-    <CliFormat as clap::ValueEnum>::from_str(value?.trim(), true).ok()
+/// Names the error format when `--error-format` does not.
+const ERROR_FORMAT_ENV: &str = "TRACK_ERROR_FORMAT";
+
+/// The value of the environment variable `var` as one of `T`'s variants.
+/// An empty or unrecognised value counts as unset: a hook may leave a
+/// variable set but empty, and that must not change what a command does.
+fn value_enum_from_env<T: clap::ValueEnum>(var: &str) -> Option<T> {
+    value_enum_from(std::env::var(var).ok().as_deref())
+}
+
+/// `value` as one of `T`'s variants, ignoring case and surrounding space;
+/// `None` when it is absent, empty or names no variant.
+fn value_enum_from<T: clap::ValueEnum>(value: Option<&str>) -> Option<T> {
+    T::from_str(value?.trim(), true).ok()
 }
 
 fn cli_main() -> ExitCode {
@@ -72,16 +82,14 @@ fn cli_main() -> ExitCode {
     // `TRACK_OUTPUT` picks the format when `-o` does not. Read here, not by
     // clap: a hook may leave it set but empty, and that must mean "unset".
     if matches.value_source("format") != Some(clap::parser::ValueSource::CommandLine)
-        && let Some(format) = format_from_env(std::env::var(output::OUTPUT_ENV).ok().as_deref())
+        && let Some(format) = value_enum_from_env::<CliFormat>(output::OUTPUT_ENV)
     {
         cli.format = format;
     }
     // Errors follow the output: JSON output gets JSON errors, unless the
     // flag or `TRACK_ERROR_FORMAT` says otherwise.
     if matches.value_source("error_format") != Some(clap::parser::ValueSource::CommandLine) {
-        let from_env = std::env::var("TRACK_ERROR_FORMAT").ok().and_then(|value| {
-            <errors::ErrorFormat as clap::ValueEnum>::from_str(value.trim(), true).ok()
-        });
+        let from_env = value_enum_from_env::<errors::ErrorFormat>(ERROR_FORMAT_ENV);
         cli.error_format = from_env.unwrap_or(if cli.format.output() == cli::OutputFormat::Json {
             errors::ErrorFormat::Json
         } else {
@@ -706,6 +714,24 @@ mod tests {
         let cli = Cli::try_parse_from(std::iter::once("track").chain(args.iter().copied()))
             .unwrap_or_else(|err| panic!("{args:?}: {err}"));
         is_read_only(&cli.command)
+    }
+
+    #[test]
+    fn env_values_name_a_variant_or_count_as_unset() {
+        assert_eq!(value_enum_from(Some(" JSON ")), Some(CliFormat::Json));
+        assert_eq!(value_enum_from(Some("agent")), Some(CliFormat::Agent));
+        assert_eq!(
+            value_enum_from(Some("Json")),
+            Some(errors::ErrorFormat::Json)
+        );
+        for unset in [None, Some(""), Some("  "), Some("yaml")] {
+            assert_eq!(value_enum_from::<CliFormat>(unset), None, "{unset:?}");
+            assert_eq!(
+                value_enum_from::<errors::ErrorFormat>(unset),
+                None,
+                "{unset:?}"
+            );
+        }
     }
 
     #[test]

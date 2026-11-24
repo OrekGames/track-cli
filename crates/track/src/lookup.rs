@@ -191,6 +191,20 @@ impl<'a> Lookup<'a> {
         request(&renewed)
     }
 
+    /// How to name `project_id` to the user: the key, name or id the
+    /// command gave for it, else the id itself. `None` for the empty id of a
+    /// backend whose schema belongs to no project.
+    fn named_as(&self, project_id: &str) -> Option<String> {
+        let given = self
+            .project_ids
+            .borrow()
+            .values()
+            .filter(|known| known.id == project_id)
+            .map(|known| known.identifier.clone())
+            .min();
+        given.or_else(|| (!project_id.is_empty()).then(|| project_id.to_string()))
+    }
+
     /// The identifier a cached `project_id` was looked up by in this run.
     fn cached_identifier_of(&self, project_id: &str) -> Option<String> {
         self.project_ids
@@ -273,7 +287,10 @@ impl<'a> Lookup<'a> {
         let fields: Schema = self
             .client
             .get_project_custom_fields(project_id)
-            .with_context(|| format!("Failed to fetch custom fields for project '{}'", project_id))?
+            .with_context(|| match self.named_as(project_id) {
+                Some(project) => format!("Failed to fetch custom fields for project '{project}'"),
+                None => "Failed to fetch custom fields".to_string(),
+            })?
             .into();
         self.schemas.borrow_mut().insert(
             self.schema_key(project_id).to_string(),
@@ -422,6 +439,8 @@ mod tests {
         /// What `resolve_project_id` answers.
         project_id: String,
         independent: bool,
+        /// Whether `get_project_custom_fields` fails.
+        schema_fails: bool,
         calls: Mutex<Vec<String>>,
     }
 
@@ -445,6 +464,9 @@ mod tests {
             project_id: &str,
         ) -> tracker_core::Result<Vec<ProjectCustomField>> {
             self.log(format!("schema {project_id}"));
+            if self.schema_fails {
+                return Err(TrackerError::Unauthorized);
+            }
             Ok(Vec::new())
         }
         fn schema_is_project_independent(&self) -> bool {
@@ -610,6 +632,32 @@ mod tests {
         assert!(lookup.schema("owner/repo").is_ok());
         assert!(!lookup.schema_may_be_stale("owner/repo"));
         assert_eq!(tracker.calls(), ["schema "]);
+    }
+
+    #[test]
+    fn a_failed_schema_fetch_names_the_project_as_it_was_given() {
+        let tracker = Tracker {
+            project_id: "0-1".to_string(),
+            schema_fails: true,
+            ..Default::default()
+        };
+        let lookup = Lookup::new(&tracker, false);
+        let project_id = lookup.project_id("DEMO").unwrap();
+
+        let err = lookup.schema_live(&project_id).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.starts_with("Failed to fetch custom fields for project 'DEMO': "),
+            "{message}"
+        );
+        assert!(!message.contains("0-1"), "{message}");
+
+        // An id no identifier of this run maps to is named as it is.
+        let err = lookup.schema_live("0-9").unwrap_err();
+        assert!(
+            format!("{err:#}").starts_with("Failed to fetch custom fields for project '0-9': "),
+            "{err:#}"
+        );
     }
 
     #[test]

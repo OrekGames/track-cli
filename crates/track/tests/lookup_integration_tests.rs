@@ -708,6 +708,27 @@ fn project_fields_uses_the_cached_project_id() {
     assert_eq!(take_calls(&scenario), ["get_project_custom_fields"]);
 }
 
+#[test]
+fn a_failed_project_fields_names_the_project_as_given() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    warm_cache(&dir, &scenario);
+    fail_with(&scenario, "get_project_custom_fields", 403);
+
+    let output = track_mock(&dir, &scenario)
+        .args(["project", "fields", "DEMO"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    // DEMO, as typed, not the internal id the cache resolved it to.
+    assert!(
+        stderr.contains("Failed to fetch custom fields for project 'DEMO'"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("'0-1'"), "{stderr}");
+}
+
 // =============================================================================
 // Second opinions, and when not to ask for one
 // =============================================================================

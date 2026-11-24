@@ -419,9 +419,13 @@ track i s "project: PROJ #Unresolved" -o json --select id_readable,summary  # Pr
 track i s "project: PROJ #Unresolved" -o jsonl  # JSON Lines: one issue per line
 track i s "project: PROJ #Unresolved" -o jsonl --select id_readable,summary  # Projected JSON Lines
 
-`--select` (JSON/JSONL only) takes comma-separated dotted paths (e.g. `id_readable,project.short_name`)
-and emits only those fields per issue; missing paths are omitted. It is rejected in text mode and
-for any command other than `issue search`.
+`--select` (JSON/JSONL only) works with every command that prints JSON. It takes comma-separated
+dotted paths (e.g. `id_readable,project.short_name`, or `fields.Priority` for a custom field by
+name) and keeps only those fields. A field the issue has but with no value gives `null`, and a path
+missing from one record is left out of that record. A read that matches nothing at all exits 5
+(`select_no_match`). After a write the change is already made, so a miss is a warning on stderr and
+the command prints its full JSON output and exits 0. Text output (including `-o agent`) rejects
+the flag.
 
 # Inspect many issues at once (per-issue success/failure, opt-in context)
 track issue inspect PROJ-1,PROJ-2,PROJ-3 -o json

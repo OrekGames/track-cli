@@ -171,7 +171,9 @@ pub enum ColorChoice {
 #[derive(clap::Args, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ValidationArgs {
     /// Strict validation: every field name and listed value must match the
-    /// project schema, and failing to fetch the schema is an error
+    /// project schema, except names and values the backend itself takes
+    /// (aliases such as State for Status, value forms such as GitHub's
+    /// done). Failing to fetch the schema is an error
     #[arg(long, conflicts_with = "no_validate")]
     pub validate: bool,
     /// Skip the default field validation and send the fields as given
