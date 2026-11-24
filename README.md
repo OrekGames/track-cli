@@ -52,9 +52,9 @@ $env:TRACK_VERSION = "1.15.1"; irm https://raw.githubusercontent.com/OrekGames/t
 ```
 
 Agent setup is optional and done explicitly after the CLI is available.
-`track agent install` installs the bundled `track` skill for Claude Code, GitHub
-Copilot, Cursor, and Gemini CLI, and a Claude Code session hook that prints the
-project briefing at the start of every session:
+`track agent install` sets up Orek.ai, Claude Code, Codex, Cursor, Antigravity,
+Gemini CLI and Copilot: the bundled `track` skill, and, where the tool supports
+one, a session-start hook that prints the project briefing:
 
 ```bash
 track agent install
@@ -69,9 +69,9 @@ brew install track
 
 Shell completions for bash, zsh, and fish are installed automatically.
 
-To set up AI coding agents (the skill for Claude Code, Copilot, Cursor, and Gemini CLI,
-plus a Claude Code session hook), run `track agent install` (Homebrew can't write into your
-home directory itself).
+To set up AI coding agents (Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI
+and Copilot), run `track agent install` (Homebrew can't write into your home directory
+itself).
 
 ### From Source
 
@@ -130,7 +130,7 @@ For AI-assisted workflows, set up agents once per user:
 track agent install
 ```
 
-This installs guidance for Claude Code, GitHub Copilot, Cursor, and Gemini CLI.
+This sets up Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI and Copilot.
 
 ### 2. Set Default Project (Optional)
 
@@ -743,7 +743,7 @@ track prime                # Compact briefing: states, required fields, values, 
 track prime -p PROJ        # Brief on another cached project
 track prime --max-values 5 # Tighter cap per field (default 12)
 track -o json prime        # The same facts as JSON
-track prime --hook         # For session hooks: silent unless this directory is a track project
+track prime --hook=claude  # For session hooks (claude, codex, cursor, antigravity, gemini, orek)
 ```
 
 `track prime` prints what an agent needs before it touches this project: the real state names
@@ -1107,28 +1107,51 @@ See existing backend crates (`jira-backend/`, `github-backend/`, `gitlab-backend
 ### Setup
 
 ```bash
-track agent install                  # For you: skills for every tool, plus the Claude Code session hook
+track agent install                  # For you: every supported tool, in your home directory
 track agent install --scope project  # For the team: writes into this repository (commit the result)
-track agent status                   # What is installed, for you and for this directory
-track agent uninstall [--scope project]
+track agent install --tools orek,claude   # Only the tools you name
+track agent status                   # What is installed, per tool, for you and for this directory
+track agent uninstall [--scope project] [--tools ...]
 ```
 
-| What | User scope (default) | Project scope |
-|------|----------------------|---------------|
-| Skill | `~/.claude`, `~/.copilot`, `~/.cursor`, `~/.gemini` under `skills/track/` | `.claude/skills/track/` |
-| Session hook (Claude Code) | `~/.claude/settings.json` | `.claude/settings.json` |
-| Instructions for other tools | not written | a marked block in `AGENTS.md` |
+Each tool gets what its own documentation says it reads, and nothing it does not:
 
-- **The session hook** runs `track prime --hook` at the start of every Claude Code session and
-  after compaction. In a directory with its own `.track.toml` that prints the project briefing
-  into the agent's context; anywhere else it prints nothing. It also sets `TRACK_OUTPUT=agent`.
+| Tool | Skill (user / project) | Session-start hook (user / project) | Instructions |
+|------|------------------------|-------------------------------------|--------------|
+| Orek.ai | Orek's user config `skills/` / `.orek/skills/` | none yet: the hook is ready for when Orek.ai ships session hooks | `AGENTS.md` (project) |
+| Claude Code | `~/.claude/skills/` / `.claude/skills/` | `~/.claude/settings.json` / `.claude/settings.json` | `~/.claude/CLAUDE.md`; `@AGENTS.md` import in an existing `CLAUDE.md` |
+| Codex | `~/.agents/skills/` / `.agents/skills/` | `$CODEX_HOME/hooks.json` / `.codex/hooks.json` | `$CODEX_HOME/AGENTS.md`; `AGENTS.md` |
+| Cursor | `~/.agents/skills/` / `.agents/skills/` | `~/.cursor/hooks.json` / `.cursor/hooks.json` | `AGENTS.md` (project) |
+| Antigravity | `~/.gemini/config/skills/` / `.agents/skills/` | `~/.gemini/config/hooks.json` / `.agents/hooks.json` | `~/.gemini/GEMINI.md`; `AGENTS.md` |
+| Gemini CLI | `~/.agents/skills/` / `.agents/skills/` | `~/.gemini/settings.json` / `.gemini/settings.json` | `~/.gemini/GEMINI.md`; `@./AGENTS.md` import in an existing `GEMINI.md` |
+| Copilot | `~/.copilot/skills/` (user only) | not installed | not installed |
+
+Orek's user config folder is `$OREK_HOME/config/` when that is set, else
+`~/Library/Application Support/orek-ai/` (macOS), `$XDG_CONFIG_HOME/orek-ai/` or
+`~/.config/orek-ai/` (Linux), or `%APPDATA%\orek-ai\config\` (Windows).
+
+- **The session-start hook** runs `track prime --hook=<tool>` when a session starts, and again
+  after it is cleared or compacted where the tool supports that. In a directory with its own
+  `.track.toml` it hands the project briefing to the agent in that tool's hook format; anywhere
+  else it adds nothing. It reads the session's folder from the hook input, so it briefs the
+  project the agent opened.
+- **Agent output.** The Claude Code hook sets `TRACK_OUTPUT=agent` for the session's shell
+  commands, Cursor's hook returns it, and Codex gets it in `config.toml`
+  (`[shell_environment_policy] set`). Antigravity, Gemini CLI and Orek.ai have no setting for
+  it; the instructions tell the agent to add `-o agent`.
+- **Codex** runs a hook only after you trust it: open `/hooks` in Codex once.
+- **Cursor** also runs Claude Code's hooks. When both are installed, the Claude Code one stays
+  quiet inside Cursor so the briefing arrives once.
 - **The skill** is a core of under 6 KB (commands, output modes, error handling, the traps) and
-  one reference per topic that an agent reads only when it needs it. `track guide <topic>`
-  prints the same references from the binary, for tools that do not load skills.
-- **The `AGENTS.md` block** tells tools without session hooks to run `track prime` themselves.
-  It is static, so it never goes stale.
-- The settings file is edited in place: key order and everything already in it are kept, a file
-  that does not parse is left untouched, and `uninstall` removes only what `install` added.
+  one reference per topic that an agent reads only when it needs it. Tools that share a folder
+  share one copy. `track guide <topic>` prints the same references from the binary.
+- **The instructions block** tells the agent to run `track prime` before issue work. It is
+  static, so it never goes stale; the user-level one applies only in projects with a
+  `.track.toml`. A `CLAUDE.md` or `GEMINI.md` that already exists gets an import of `AGENTS.md`
+  rather than a second copy.
+- Files are edited in place: key order and everything already in them are kept, a file that
+  does not parse is left untouched, and `uninstall` removes only what `install` added (and any
+  file or folder it created, once empty).
 - `--skills-only` and `--hooks-only` install one half. `track init --skills` still works and
   installs the skills for you.
 

@@ -6,13 +6,14 @@
 //! otherwise has to discover with extra commands or guess.
 
 use crate::cache::{CachedField, TrackerCache};
-use crate::cli::{Backend, OutputFormat};
+use crate::cli::{Backend, HookAgent, OutputFormat};
 use crate::config::{WorkflowPackState, load_workflow_pack, pack_query_named};
 use crate::output::output_json;
 use anyhow::Result;
 use chrono::Duration;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Enum values listed per field before the rest is summarised.
 pub const DEFAULT_MAX_VALUES: usize = 12;
@@ -36,6 +37,9 @@ pub struct PrimeOptions<'a> {
     pub url: Option<&'a str>,
     pub default_project: Option<&'a str>,
     pub explicit_config: Option<&'a Path>,
+    /// Set when running as a session-start hook: the briefing is wrapped in
+    /// the JSON that agent's hook protocol reads.
+    pub hook: Option<HookAgent>,
 }
 
 /// A list cut to a budget, with the number of entries left out.
@@ -156,6 +160,19 @@ pub fn handle_prime(options: &PrimeOptions<'_>) -> Result<()> {
 
     let context = build_context(&mut cache, options);
 
+    if let Some(agent) = options.hook {
+        if agent == HookAgent::Claude && claude_session_in_cursor() {
+            // Cursor also runs Claude Code's hooks; its own already briefed.
+            print_empty_hook_output();
+            return Ok(());
+        }
+        if agent == HookAgent::Claude {
+            let _ = export_to_claude_env_file();
+        }
+        println!("{}", hook_payload(agent, &render_text(&context)));
+        return Ok(());
+    }
+
     match options.format {
         OutputFormat::Json => output_json(&context)?,
         OutputFormat::Text => print!("{}", render_text(&context)),
@@ -169,6 +186,160 @@ pub(crate) fn briefing(cache: &mut TrackerCache, options: &PrimeOptions<'_>) -> 
     let _ = cache.ensure_projects();
     let _ = cache.ensure_backend_shards();
     render_text(&build_context(cache, options))
+}
+
+// ============================================================================
+// Session-start hooks
+// ============================================================================
+
+/// The JSON a hook prints when it has nothing to add. Every supported agent
+/// reads it as "no context", and those that require JSON on stdout (Gemini
+/// CLI) get valid JSON.
+pub fn print_empty_hook_output() {
+    println!("{{}}");
+}
+
+/// The briefing wrapped in the session-start output each agent documents.
+///
+/// - Claude Code, Codex and Gemini CLI read `hookSpecificOutput.additionalContext`.
+///   Orek.ai's planned hooks follow the same shape.
+/// - Cursor reads `additional_context`, and `env` for the session's later
+///   hooks.
+/// - Antigravity injects `injectSteps`; a system message keeps the briefing
+///   out of the user's turn.
+pub fn hook_payload(agent: HookAgent, text: &str) -> String {
+    let text = text.trim_end();
+    let payload = match agent {
+        HookAgent::Claude | HookAgent::Codex | HookAgent::Gemini | HookAgent::Orek => {
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": text,
+                }
+            })
+        }
+        HookAgent::Cursor => serde_json::json!({
+            "additional_context": text,
+            "env": { "TRACK_OUTPUT": "agent" },
+        }),
+        HookAgent::Antigravity => serde_json::json!({
+            "injectSteps": [{ "systemMessage": { "systemMessage": text } }],
+        }),
+    };
+    payload.to_string()
+}
+
+/// What the agent passed the hook on stdin, as far as `track` needs it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HookInput {
+    /// The session's project folder: `cwd` (Claude Code, Codex, Gemini CLI),
+    /// the first of `workspace_roots` (Cursor) or of `workspacePaths`
+    /// (Antigravity).
+    pub dir: Option<PathBuf>,
+    /// Cursor running a hook from Claude Code's settings sends its version.
+    pub from_cursor: bool,
+}
+
+static HOOK_INPUT: OnceLock<HookInput> = OnceLock::new();
+
+/// Largest hook input read. The fields used are near the start.
+const MAX_HOOK_INPUT_BYTES: u64 = 1024 * 1024;
+
+pub fn parse_hook_input(text: &str) -> HookInput {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return HookInput::default();
+    };
+    let first = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .and_then(|list| list.first())
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let dir = value
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or_else(|| first("workspace_roots"))
+        .or_else(|| first("workspacePaths"))
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| PathBuf::from(dir.strip_prefix("file://").unwrap_or(&dir).to_string()));
+    HookInput {
+        dir,
+        from_cursor: value.get("cursor_version").is_some(),
+    }
+}
+
+/// Read the hook's stdin (when it is not a terminal) and move into the
+/// session's project folder, so config and cache resolve for the project the
+/// agent opened rather than wherever the agent was launched. Waits briefly:
+/// an agent that leaves stdin open must not stall the session.
+pub fn prepare_hook() {
+    use std::io::{IsTerminal, Read};
+    let input = if std::io::stdin().is_terminal() {
+        HookInput::default()
+    } else {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = std::thread::Builder::new().spawn(move || {
+            let mut text = String::new();
+            let _ = std::io::stdin()
+                .take(MAX_HOOK_INPUT_BYTES)
+                .read_to_string(&mut text);
+            let _ = sender.send(text);
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .map(|text| parse_hook_input(&text))
+            .unwrap_or_default()
+    };
+    if let Some(dir) = &input.dir
+        && dir.is_dir()
+    {
+        let _ = std::env::set_current_dir(dir);
+    }
+    let _ = HOOK_INPUT.set(input);
+}
+
+/// Whether this is Cursor running Claude Code's hook while a Cursor hook of
+/// ours is also installed, which would print the briefing twice.
+fn claude_session_in_cursor() -> bool {
+    if !HOOK_INPUT.get().is_some_and(|input| input.from_cursor) {
+        return false;
+    }
+    let cursor_hook = format!("track prime --hook={}", HookAgent::Cursor);
+    let mut files = Vec::new();
+    if let Some(home) = super::agent::home_dir() {
+        files.push(home.join(".cursor/hooks.json"));
+    }
+    if let Ok(dir) = std::env::current_dir() {
+        files.push(dir.join(".cursor/hooks.json"));
+    }
+    files
+        .iter()
+        .any(|file| std::fs::read_to_string(file).is_ok_and(|text| text.contains(&cursor_hook)))
+}
+
+/// Claude Code sources `CLAUDE_ENV_FILE` before each shell command of the
+/// session, so this makes every later `track` call use agent output.
+fn export_to_claude_env_file() -> std::io::Result<()> {
+    let Some(path) = std::env::var_os("CLAUDE_ENV_FILE").filter(|p| !p.is_empty()) else {
+        return Ok(());
+    };
+    let line = "export TRACK_OUTPUT=agent";
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == line) {
+        return Ok(());
+    }
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        writeln!(file)?;
+    }
+    writeln!(file, "{line}")
 }
 
 /// Make a cached string safe to print on one line of an agent's context.

@@ -232,6 +232,7 @@ pub fn handle_context(
                         url: (base_url != "unknown").then_some(base_url),
                         default_project,
                         explicit_config,
+                        hook: None,
                     },
                 )
             );

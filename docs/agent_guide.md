@@ -161,22 +161,27 @@ track init --url https://linear.app/your-workspace --token lin_api_TOKEN --backe
 
 ```bash
 # Install skills only (no config required)
-track agent install    # Skills for every tool, plus the Claude Code session hook
+track agent install    # Skills, session-start hooks and instructions for every supported tool
 track init --skills    # The skills only
 
 # Combine with config init
 track init --url https://youtrack.example.com --token YOUR_TOKEN --skills
 ```
 
-This installs the same `track` skill reference for Claude Code, GitHub Copilot,
-Cursor, and Gemini CLI:
+This installs the same `track` skill for Orek.ai, Claude Code, Codex, Cursor,
+Antigravity, Gemini CLI and GitHub Copilot, one copy per folder they read:
 
 | Agent | Installed path |
 |-------|----------------|
-| Claude Code | `~/.claude/skills/track/` (`SKILL.md` plus `references/`) |
-| GitHub Copilot | `~/.copilot/skills/track/` (`SKILL.md` plus `references/`) |
-| Cursor | `~/.cursor/skills/track/` (`SKILL.md` plus `references/`) |
-| Gemini CLI | `~/.gemini/skills/track/` (`SKILL.md` plus `references/`) |
+| Orek.ai | Orek's user config folder, `skills/track/` |
+| Claude Code | `~/.claude/skills/track/` |
+| Codex, Cursor, Gemini CLI | `~/.agents/skills/track/` |
+| Antigravity | `~/.gemini/config/skills/track/` |
+| GitHub Copilot | `~/.copilot/skills/track/` |
+
+Each holds `SKILL.md` plus `references/`. Orek's user config folder is `$OREK_HOME/config/`,
+else `~/Library/Application Support/orek-ai/` (macOS), `~/.config/orek-ai/` (Linux) or
+`%APPDATA%\orek-ai\config\` (Windows).
 
 The installed skill is guidance only. It does not store tracker credentials;
 tokens remain in `.track.toml`, environment variables, or CLI flags.
@@ -1025,8 +1030,9 @@ commands:
 - Lines starting with `!` are warnings: no cache yet, a cache written for another backend, or a
   cache older than a day.
 - `track -o json prime` gives the same facts as JSON.
-- `track prime --hook` is for session hooks: silent and exit 0 unless the current directory has
-  its own `.track.toml` (or `--config` is given).
+- `track prime --hook=<agent>` is for session-start hooks (`claude`, the default, `codex`,
+  `cursor`, `antigravity`, `gemini`, `orek`). It prints that agent's hook JSON, always exits 0,
+  and prints `{}` unless the session's folder has its own `.track.toml` (or `--config` is given).
 
 ### Context Command
 

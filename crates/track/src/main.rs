@@ -37,11 +37,14 @@ fn main() -> ExitCode {
         .unwrap_or(ExitCode::from(101))
 }
 
-/// Whether the process was started as `track prime --hook`, judged from the
-/// raw arguments so it still holds when they do not parse.
+/// Whether the process was started as `track prime --hook[=AGENT]`, judged
+/// from the raw arguments so it still holds when they do not parse.
 fn is_prime_hook_invocation<I: IntoIterator<Item = String>>(args: I) -> bool {
     let args: Vec<String> = args.into_iter().skip(1).collect();
-    args.iter().any(|arg| arg == "prime") && args.iter().any(|arg| arg == "--hook")
+    args.iter().any(|arg| arg == "prime")
+        && args
+            .iter()
+            .any(|arg| arg == "--hook" || arg.starts_with("--hook="))
 }
 
 /// The output format named by `TRACK_OUTPUT`, ignoring an empty or
@@ -55,9 +58,15 @@ fn cli_main() -> ExitCode {
     // whatever it prints lands in an agent's context. It must stay silent and
     // succeed even when the arguments or environment do not parse.
     let quiet_hook = is_prime_hook_invocation(std::env::args());
+    if quiet_hook {
+        commands::prime::prepare_hook();
+    }
     let (mut cli, matches) = match Cli::try_parse_args() {
         Ok(parsed) => parsed,
-        Err(_) if quiet_hook => return ExitCode::SUCCESS,
+        Err(_) if quiet_hook => {
+            commands::prime::print_empty_hook_output();
+            return ExitCode::SUCCESS;
+        }
         Err(e) => e.exit(),
     };
     // `TRACK_OUTPUT` picks the format when `-o` does not. Read here, not by
@@ -92,6 +101,7 @@ fn cli_main() -> ExitCode {
 
     if let Err(e) = run(cli) {
         if quiet_hook {
+            commands::prime::print_empty_hook_output();
             return ExitCode::SUCCESS;
         }
         let code = output_error(&e, error_format);
@@ -303,7 +313,8 @@ fn run(cli: Cli) -> Result<()> {
         if !mock {
             let configured_here = cli.config.is_some() || config::is_project_context();
             let valid = config.validate(effective_backend);
-            if *hook && !(configured_here && valid.is_ok()) {
+            if hook.is_some() && !(configured_here && valid.is_ok()) {
+                commands::prime::print_empty_hook_output();
                 return Ok(());
             }
             valid.map_err(|err| errors::coded("not_configured", err))?;
@@ -316,6 +327,7 @@ fn run(cli: Cli) -> Result<()> {
             url: config.url.as_deref(),
             default_project: config.default_project.as_deref(),
             explicit_config: cli.config.as_deref(),
+            hook: *hook,
         });
     }
 

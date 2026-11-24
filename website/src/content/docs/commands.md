@@ -339,7 +339,7 @@ track prime                # Compact briefing: states, required fields, values, 
 track prime -p PROJ        # Brief on another cached project
 track prime --max-values 5 # Tighter cap per field (default 12)
 track -o json prime        # The same facts as JSON
-track prime --hook         # For session hooks: silent unless this directory is a track project
+track prime --hook=claude  # For session hooks (claude, codex, cursor, antigravity, gemini, orek)
 ```
 
 Offline: reads the local cache and config only. See [AI agents](../ai-agents/).

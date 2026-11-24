@@ -223,11 +223,11 @@ fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
 
 /// Write the skill file for every supported AI coding tool and return the
 /// (tool name, path) of each file written.
-fn write_agent_skills() -> Result<Vec<(&'static str, PathBuf)>> {
-    super::agent::write_skills(crate::cli::AgentScope::User)
+fn write_agent_skills() -> Result<Vec<(String, PathBuf)>> {
+    super::agent::write_skills(crate::cli::AgentScope::User, &[])
 }
 
-fn installed_skills_json(installed: &[(&str, PathBuf)]) -> serde_json::Value {
+fn installed_skills_json(installed: &[(String, PathBuf)]) -> serde_json::Value {
     installed
         .iter()
         .map(|(tool, path)| {
@@ -239,7 +239,7 @@ fn installed_skills_json(installed: &[(&str, PathBuf)]) -> serde_json::Value {
         .collect()
 }
 
-fn print_installed_skills(installed: &[(&str, PathBuf)]) {
+fn print_installed_skills(installed: &[(String, PathBuf)]) {
     use colored::Colorize;
 
     for (tool, path) in installed {

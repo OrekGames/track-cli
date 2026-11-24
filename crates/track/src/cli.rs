@@ -275,10 +275,19 @@ pub enum Commands {
         #[arg(long, short = 'p')]
         project: Option<String>,
 
-        /// Session-hook mode: print nothing and exit 0 unless this directory is
-        /// configured for track; never fail
-        #[arg(long)]
-        hook: bool,
+        /// Session-hook mode for the named agent: print the briefing in the JSON
+        /// shape that agent's session-start hook expects (`{}` outside a track
+        /// project), read the project folder from the hook's input, and never
+        /// fail. `--hook` alone means `--hook=claude`
+        #[arg(
+            long,
+            value_enum,
+            value_name = "AGENT",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "claude"
+        )]
+        hook: Option<HookAgent>,
 
         /// Values listed per field before the rest is summarised
         #[arg(long, default_value_t = crate::commands::prime::DEFAULT_MAX_VALUES, value_name = "N")]
@@ -424,6 +433,69 @@ impl Cli {
     }
 }
 
+/// An agent whose session-start hook `track prime --hook` can answer.
+#[derive(ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
+pub enum HookAgent {
+    /// Orek.ai (the hook shape it will read once it ships session hooks)
+    Orek,
+    /// Claude Code
+    Claude,
+    /// OpenAI Codex
+    Codex,
+    /// Cursor
+    Cursor,
+    /// Google Antigravity
+    Antigravity,
+    /// Gemini CLI
+    Gemini,
+}
+
+impl std::fmt::Display for HookAgent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::Orek => "orek",
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Cursor => "cursor",
+            Self::Antigravity => "antigravity",
+            Self::Gemini => "gemini",
+        };
+        f.write_str(name)
+    }
+}
+
+/// A coding agent `track agent install` can set up.
+#[derive(ValueEnum, Clone, Debug, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AgentTool {
+    /// Orek.ai
+    Orek,
+    /// Claude Code
+    Claude,
+    /// OpenAI Codex
+    Codex,
+    /// Cursor
+    Cursor,
+    /// Google Antigravity
+    Antigravity,
+    /// Gemini CLI
+    Gemini,
+    /// GitHub Copilot (skill only; its locations are not verified)
+    Copilot,
+}
+
+impl AgentTool {
+    /// Every tool, in the order they are reported.
+    pub const ALL: [AgentTool; 7] = [
+        AgentTool::Orek,
+        AgentTool::Claude,
+        AgentTool::Codex,
+        AgentTool::Cursor,
+        AgentTool::Antigravity,
+        AgentTool::Gemini,
+        AgentTool::Copilot,
+    ];
+}
+
 /// Where agent setup is written.
 #[derive(ValueEnum, Clone, Debug, Copy, Default, PartialEq, Eq)]
 pub enum AgentScope {
@@ -436,22 +508,25 @@ pub enum AgentScope {
 
 #[derive(Subcommand, Debug)]
 pub enum AgentCommands {
-    /// Install the skill files and the session hook
+    /// Set up coding agents: skill, session-start hook, instructions
     ///
-    /// The hook makes Claude Code run `track prime --hook` at the start of
-    /// every session (and after compaction), which prints the project
-    /// briefing in directories that have a .track.toml and nothing elsewhere.
-    /// It also sets TRACK_OUTPUT=agent for compact output. With --scope
-    /// project, a short block in AGENTS.md tells other tools to run
-    /// `track prime` themselves.
+    /// For every selected tool that has one, a session-start hook runs
+    /// `track prime --hook=<agent>`, which puts the project briefing in the
+    /// agent's context in directories that have a .track.toml and adds
+    /// nothing elsewhere. A short instructions block (AGENTS.md and the
+    /// tools' own files) tells the agent to run `track prime` itself where
+    /// no hook fires. The skill goes where each tool reads skills.
     Install {
         /// Where to install
         #[arg(long, value_enum, default_value_t = AgentScope::User)]
         scope: AgentScope,
+        /// Tools to set up, comma-separated (default: all)
+        #[arg(long, value_enum, value_delimiter = ',', value_name = "TOOLS")]
+        tools: Vec<AgentTool>,
         /// Install only the skill files
         #[arg(long, conflicts_with = "hooks_only")]
         skills_only: bool,
-        /// Install only the session hook (and, for a project, AGENTS.md)
+        /// Install only the hooks, instructions and environment settings
         #[arg(long)]
         hooks_only: bool,
     },
@@ -460,6 +535,9 @@ pub enum AgentCommands {
         /// Which installation to remove
         #[arg(long, value_enum, default_value_t = AgentScope::User)]
         scope: AgentScope,
+        /// Tools to remove, comma-separated (default: all)
+        #[arg(long, value_enum, value_delimiter = ',', value_name = "TOOLS")]
+        tools: Vec<AgentTool>,
     },
     /// Show what is installed for you and for the current directory
     Status,

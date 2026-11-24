@@ -27,6 +27,7 @@ figment = { workspace = true }
 directories = { workspace = true }
 chrono = { workspace = true }
 toml = { workspace = true }
+toml_edit = "0.22"
 open = { workspace = true }
 ureq = { workspace = true }
 

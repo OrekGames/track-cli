@@ -7,7 +7,7 @@ This directory contains the Homebrew formula template for Track CLI. The formula
 ```bash
 brew tap OrekGames/tap
 brew install track
-track agent install   # optional: agent skill for Claude Code, Copilot, Cursor and Gemini CLI, plus a Claude Code session hook
+track agent install   # optional: set up Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI and Copilot
 ```
 
 Homebrew runs post-install steps with an isolated `HOME`, so the formula cannot

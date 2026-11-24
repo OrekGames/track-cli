@@ -2014,6 +2014,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "toml 1.2.1+spec-1.1.0",
+ "toml_edit",
  "tracker-core",
  "tracker-mock",
  "ureq",

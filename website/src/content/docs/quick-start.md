@@ -28,7 +28,8 @@ track init --url https://linear.app/your-workspace --token YOUR_LINEAR_API_KEY \
 ## 2. Install editor skills (optional, recommended for AI-assisted workflows)
 
 `track init --skills` installs the bundled `track` skill reference so AI
-coding assistants know the command aliases, JSON output mode, cache/context
+coding assistants (Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI,
+Copilot) know the command aliases, JSON output mode, cache/context
 workflow, backend quirks, and safe batch patterns.
 
 ```bash
@@ -40,10 +41,15 @@ Supported agent destinations:
 
 | Agent | Installed path |
 | --- | --- |
-| Claude Code | `~/.claude/skills/track/` (`SKILL.md` plus `references/`) |
-| GitHub Copilot | `~/.copilot/skills/track/` (`SKILL.md` plus `references/`) |
-| Cursor | `~/.cursor/skills/track/` (`SKILL.md` plus `references/`) |
-| Gemini CLI | `~/.gemini/skills/track/` (`SKILL.md` plus `references/`) |
+| Orek.ai | Orek's user config folder, `skills/track/` |
+| Claude Code | `~/.claude/skills/track/` |
+| Codex, Cursor, Gemini CLI | `~/.agents/skills/track/` |
+| Antigravity | `~/.gemini/config/skills/track/` |
+| GitHub Copilot | `~/.copilot/skills/track/` |
+
+Each holds `SKILL.md` plus `references/`. Orek's user config folder is `$OREK_HOME/config/`,
+else `~/Library/Application Support/orek-ai/` (macOS), `~/.config/orek-ai/` (Linux) or
+`%APPDATA%\orek-ai\config\` (Windows).
 
 The skill files do not store backend credentials. They are documentation for
 assistants; `.track.toml` remains the config file that contains tokens and

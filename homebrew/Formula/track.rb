@@ -59,7 +59,7 @@ class Track < Formula
 
     # Keep a reference copy of the agent skill (SKILL.md and references/).
     # Homebrew runs post-install with an isolated HOME, so the skill and the
-    # session hook are installed per user by `track agent install` (see
+    # session hooks are installed per user by `track agent install` (see
     # caveats) rather than by the formula.
     pkgshare.install "agent-skills" if File.directory?("agent-skills")
   end
@@ -78,11 +78,11 @@ class Track < Formula
 
         track agent install
 
-      It installs the track skill for Claude Code, Copilot, Cursor, and Gemini CLI
-      (~/.claude/skills/track/, ~/.copilot/skills/track/,
-       ~/.cursor/skills/track/, ~/.gemini/skills/track/) and a Claude Code
-      session hook that prints the project briefing (`track prime`) at the
-      start of every session. Add --scope project to set up one repository.
+      It sets up Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI
+      and Copilot: the track skill, and, where the tool supports one, a
+      session-start hook that prints the project briefing (`track prime`).
+      Run `track agent status` to see what went where, and add
+      --scope project to set up one repository.
 
       For more information, see:
         track --help

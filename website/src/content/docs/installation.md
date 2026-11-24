@@ -12,9 +12,9 @@ brew install track
 
 Shell completions for bash, zsh, and fish are installed automatically.
 
-To set up AI coding agents (the skill for Claude Code, Copilot, Cursor, and Gemini CLI,
-plus a Claude Code session hook), run `track agent install` (Homebrew can't write into your
-home directory itself).
+To set up AI coding agents (Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI
+and Copilot), run `track agent install` (Homebrew can't write into your home directory
+itself).
 
 ## Native Install
 
@@ -49,11 +49,11 @@ $env:TRACK_VERSION = "1.15.1"; irm https://raw.githubusercontent.com/OrekGames/t
 
 Optional editor skills install after the CLI is available (useful for
 AI-assisted and scripted workflows). They install the bundled `track` reference
-for Claude Code, GitHub Copilot, Cursor, and Gemini CLI:
+for Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI and Copilot:
 
 ```bash
 track init --skills     # the skills only
-track agent install     # the skills plus the Claude Code session hook
+track agent install     # the skills, session-start hooks and instructions
 ```
 
 ## From Source

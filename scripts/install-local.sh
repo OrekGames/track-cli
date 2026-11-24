@@ -52,7 +52,7 @@ mkdir -p "$COMPLETIONS_DIR"
 "$INSTALL_DIR/$BINARY_NAME" completions zsh  > "$COMPLETIONS_DIR/_track"
 "$INSTALL_DIR/$BINARY_NAME" completions fish > "$COMPLETIONS_DIR/track.fish"
 
-# Install the agent skill and session hook for all supported AI coding tools.
+# Install the agent skill and session hooks for all supported AI coding tools.
 # The binary carries the skill files, so it is the one place they come from.
 echo ""
 echo "Installing agent skills for AI coding tools..."

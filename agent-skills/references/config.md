@@ -77,7 +77,7 @@ Note: `init` does NOT set `default_project` for GitHub/GitLab (scope comes from 
 ### Install Agent Skills
 
 ```bash
-track agent install    # Skills for Claude Code, Copilot, Cursor and Gemini CLI, plus the Claude Code session hook
+track agent install    # Skills, session-start hooks and instructions for every supported tool
 track init --skills    # The skills only
 ```
 
@@ -87,10 +87,15 @@ Installed destinations:
 
 | Agent | Path |
 |-------|------|
-| Claude Code | `~/.claude/skills/track/` (`SKILL.md` plus `references/`) |
-| GitHub Copilot | `~/.copilot/skills/track/` (`SKILL.md` plus `references/`) |
-| Cursor | `~/.cursor/skills/track/` (`SKILL.md` plus `references/`) |
-| Gemini CLI | `~/.gemini/skills/track/` (`SKILL.md` plus `references/`) |
+| Orek.ai | Orek's user config folder, `skills/track/` |
+| Claude Code | `~/.claude/skills/track/` |
+| Codex, Cursor, Gemini CLI | `~/.agents/skills/track/` |
+| Antigravity | `~/.gemini/config/skills/track/` |
+| GitHub Copilot | `~/.copilot/skills/track/` |
+
+Each holds `SKILL.md` plus `references/`. Orek's user config folder is `$OREK_HOME/config/`,
+else `~/Library/Application Support/orek-ai/` (macOS), `~/.config/orek-ai/` (Linux) or
+`%APPDATA%\orek-ai\config\` (Windows).
 
 ### Environment Variables (alternative)
 

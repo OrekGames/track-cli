@@ -344,14 +344,14 @@ fn prime_flattens_hostile_cached_strings() {
 }
 
 #[test]
-fn prime_hook_is_silent_outside_a_track_project() {
+fn prime_hook_adds_nothing_outside_a_track_project() {
     let dir = temp_dir();
 
     track_in(&dir)
         .args(["prime", "--hook"])
         .assert()
         .success()
-        .stdout(predicate::str::is_empty())
+        .stdout("{}\n")
         .stderr(predicate::str::is_empty());
 
     fs::remove_dir_all(&dir).unwrap();
@@ -374,7 +374,7 @@ fn prime_hook_ignores_a_global_only_config() {
         .args(["prime", "--hook"])
         .assert()
         .success()
-        .stdout(predicate::str::is_empty())
+        .stdout("{}\n")
         .stderr(predicate::str::is_empty());
 
     // Asked for directly, the same setup does answer.
@@ -404,6 +404,149 @@ fn prime_hook_briefs_a_configured_project() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The text a hook's JSON output hands the agent, by that agent's protocol.
+fn hook_context(agent: &str, stdout: &str) -> String {
+    let json: Value = serde_json::from_str(stdout.trim()).unwrap();
+    let text = match agent {
+        "cursor" => &json["additional_context"],
+        "antigravity" => &json["injectSteps"][0]["systemMessage"]["systemMessage"],
+        _ => {
+            assert_eq!(json["hookSpecificOutput"]["hookEventName"], "SessionStart");
+            &json["hookSpecificOutput"]["additionalContext"]
+        }
+    };
+    text.as_str().unwrap().to_string()
+}
+
+#[test]
+fn prime_hook_speaks_each_agents_protocol() {
+    let dir = temp_dir();
+    write_project_config(&dir);
+    seed_cache(&dir, "youtrack", &hours_ago(1));
+
+    for agent in ["claude", "codex", "gemini", "orek", "cursor", "antigravity"] {
+        let stdout = stdout_of(track_in(&dir).args(["prime", &format!("--hook={agent}")]));
+        let text = hook_context(agent, &stdout);
+        assert!(text.starts_with("# track · youtrack"), "{agent}: {text}");
+        assert!(text.contains("state field: Stage"), "{agent}");
+        // Exactly one JSON document on stdout.
+        assert_eq!(stdout.trim().lines().count(), 1, "{agent}");
+    }
+    let cursor: Value =
+        serde_json::from_str(&stdout_of(track_in(&dir).args(["prime", "--hook=cursor"]))).unwrap();
+    assert_eq!(cursor["env"]["TRACK_OUTPUT"], "agent");
+
+    // An agent name track does not know is a quiet no-op, not an error.
+    track_in(&dir)
+        .args(["prime", "--hook=nope"])
+        .assert()
+        .success()
+        .stdout("{}\n")
+        .stderr(predicate::str::is_empty());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn prime_hook_briefs_the_folder_the_agent_names_on_stdin() {
+    let dir = temp_dir();
+    let project = dir.join("project");
+    fs::create_dir_all(&project).unwrap();
+    write_project_config(&project);
+    seed_cache(&project, "youtrack", &hours_ago(1));
+    let elsewhere = dir.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+
+    let inputs = [
+        ("claude", serde_json::json!({ "cwd": project })),
+        (
+            "cursor",
+            serde_json::json!({ "workspace_roots": [project], "cursor_version": "2.0" }),
+        ),
+        (
+            "antigravity",
+            serde_json::json!({ "workspacePaths": [project] }),
+        ),
+    ];
+    for (agent, input) in inputs {
+        let stdout = stdout_of(
+            track_in(&elsewhere)
+                .env("HOME", &dir)
+                .env("USERPROFILE", &dir)
+                .args(["prime", &format!("--hook={agent}")])
+                .write_stdin(input.to_string()),
+        );
+        assert!(
+            hook_context(agent, &stdout).contains("state field: Stage"),
+            "{agent}: {stdout}"
+        );
+    }
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_claude_hook_run_by_cursor_defers_to_cursors_own_hook() {
+    // Cursor also runs Claude Code's hooks. With both installed, only the
+    // Cursor one briefs, so the agent does not read the block twice.
+    let dir = temp_dir();
+    write_project_config(&dir);
+    seed_cache(&dir, "youtrack", &hours_ago(1));
+    let from_cursor = serde_json::json!({ "cursor_version": "2.0", "workspace_roots": [dir] });
+
+    let briefed = stdout_of(
+        track_in(&dir)
+            .args(["prime", "--hook=claude"])
+            .write_stdin(from_cursor.to_string()),
+    );
+    assert!(hook_context("claude", &briefed).contains("state field: Stage"));
+
+    fs::create_dir_all(dir.join(".cursor")).unwrap();
+    fs::write(
+        dir.join(".cursor/hooks.json"),
+        r#"{"version": 1, "hooks": {"sessionStart": [{"command": "track prime --hook=cursor"}]}}"#,
+    )
+    .unwrap();
+    track_in(&dir)
+        .args(["prime", "--hook=claude"])
+        .write_stdin(from_cursor.to_string())
+        .assert()
+        .success()
+        .stdout("{}\n");
+    // Claude Code itself still gets the briefing.
+    let in_claude = stdout_of(
+        track_in(&dir)
+            .args(["prime", "--hook=claude"])
+            .write_stdin(serde_json::json!({ "cwd": dir }).to_string()),
+    );
+    assert!(hook_context("claude", &in_claude).contains("state field: Stage"));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_claude_hook_sets_agent_output_for_the_session() {
+    let dir = temp_dir();
+    write_project_config(&dir);
+    seed_cache(&dir, "youtrack", &hours_ago(1));
+    let env_file = dir.join("claude-env.sh");
+
+    for _ in 0..2 {
+        track_in(&dir)
+            .env("CLAUDE_ENV_FILE", &env_file)
+            .args(["prime", "--hook"])
+            .assert()
+            .success();
+    }
+    // Written once, however often the session restarts.
+    assert_eq!(
+        fs::read_to_string(&env_file).unwrap(),
+        "export TRACK_OUTPUT=agent\n"
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn prime_hook_never_fails_or_prints_errors() {
     let dir = temp_dir();
@@ -416,7 +559,7 @@ fn prime_hook_never_fails_or_prints_errors() {
         .args(["prime", "--hook"])
         .assert()
         .success()
-        .stdout(predicate::str::is_empty())
+        .stdout("{}\n")
         .stderr(predicate::str::is_empty());
 
     // A config file that does not parse.
@@ -425,7 +568,7 @@ fn prime_hook_never_fails_or_prints_errors() {
         .args(["prime", "--hook"])
         .assert()
         .success()
-        .stdout(predicate::str::is_empty())
+        .stdout("{}\n")
         .stderr(predicate::str::is_empty());
 
     fs::remove_dir_all(&dir).unwrap();
