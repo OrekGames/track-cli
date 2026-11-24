@@ -243,14 +243,14 @@ pub fn copy_dir_recursive(from: &Path, to: &Path) {
 pub fn copy_scenario(dir: &Path, name: &str) -> PathBuf {
     let scenario = dir.join(name);
     copy_dir_recursive(&fixtures_path().join(name), &scenario);
-    fs::write(scenario.join("call_log.jsonl"), "").unwrap();
+    fs::write(tracker_mock::call_log_path(&scenario), "").unwrap();
     scenario
 }
 
 /// Every call the mock logged for `scenario` (method and arguments), oldest
 /// first.
 pub fn mock_calls(scenario: &Path) -> Vec<Value> {
-    fs::read_to_string(scenario.join("call_log.jsonl"))
+    fs::read_to_string(tracker_mock::call_log_path(scenario))
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())

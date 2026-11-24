@@ -102,7 +102,7 @@ fn doctor_write_check_validates_locally_without_mutations() {
     );
 
     // Assert no mutating methods were called on the mock.
-    let log = fs::read_to_string(scenario.join("call_log.jsonl")).unwrap();
+    let log = fs::read_to_string(tracker_mock::call_log_path(&scenario)).unwrap();
     for mutating in [
         "create_issue",
         "update_issue",

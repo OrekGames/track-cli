@@ -81,7 +81,7 @@ fn test_eval_status_when_disabled() {
 #[serial]
 fn test_eval_clear_creates_empty_log() {
     let path = scenario_path("basic-workflow");
-    let log_path = path.join("call_log.jsonl");
+    let log_path = tracker_mock::call_log_path(&path);
 
     // Write something to the log first
     fs::write(&log_path, "test content").unwrap();
@@ -112,7 +112,7 @@ fn test_eval_clear_rejects_missing_scenario_dir() {
 #[serial]
 fn test_eval_run_fails_on_empty_log() {
     let path = scenario_path("basic-workflow");
-    let log_path = path.join("call_log.jsonl");
+    let log_path = tracker_mock::call_log_path(&path);
 
     // Ensure log is empty
     fs::write(&log_path, "").unwrap();
@@ -128,7 +128,7 @@ fn test_eval_run_fails_on_empty_log() {
 #[serial]
 fn test_mock_mode_get_issue() {
     let path = scenario_path("basic-workflow");
-    let log_path = path.join("call_log.jsonl");
+    let log_path = tracker_mock::call_log_path(&path);
 
     // Clear the log first
     fs::write(&log_path, "").unwrap();
@@ -154,7 +154,7 @@ fn test_mock_mode_get_issue() {
 #[serial]
 fn test_mock_mode_full_workflow() {
     let path = scenario_path("basic-workflow");
-    let log_path = path.join("call_log.jsonl");
+    let log_path = tracker_mock::call_log_path(&path);
 
     // Clear the log
     fs::write(&log_path, "").unwrap();
@@ -198,7 +198,7 @@ fn test_mock_mode_full_workflow() {
 #[serial]
 fn test_eval_run_with_min_score_threshold() {
     let path = scenario_path("basic-workflow");
-    let log_path = path.join("call_log.jsonl");
+    let log_path = tracker_mock::call_log_path(&path);
 
     // Clear and run minimal workflow
     fs::write(&log_path, "").unwrap();
@@ -221,7 +221,7 @@ fn test_eval_run_with_min_score_threshold() {
 #[serial]
 fn test_eval_run_strict_mode_fails_on_incomplete() {
     let path = scenario_path("basic-workflow");
-    let log_path = path.join("call_log.jsonl");
+    let log_path = tracker_mock::call_log_path(&path);
 
     // Clear and run only one command (incomplete workflow)
     fs::write(&log_path, "").unwrap();
@@ -244,7 +244,7 @@ fn test_eval_run_strict_mode_fails_on_incomplete() {
 #[serial]
 fn test_eval_run_json_output() {
     let path = scenario_path("basic-workflow");
-    let log_path = path.join("call_log.jsonl");
+    let log_path = tracker_mock::call_log_path(&path);
 
     // Set up a passing workflow
     fs::write(&log_path, "").unwrap();
@@ -280,7 +280,7 @@ fn test_eval_run_json_output() {
 #[serial]
 fn test_mock_mode_error_handling() {
     let path = scenario_path("error-recovery");
-    let log_path = path.join("call_log.jsonl");
+    let log_path = tracker_mock::call_log_path(&path);
 
     // Clear log
     fs::write(&log_path, "").unwrap();

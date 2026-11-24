@@ -461,7 +461,7 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
                     scenario.display()
                 ));
             }
-            let log_path = scenario.join("call_log.jsonl");
+            let log_path = tracker_mock::call_log_path(scenario);
 
             if log_path.exists() {
                 std::fs::write(&log_path, "")?;
@@ -488,7 +488,7 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
 
             let mut cleared = 0;
             for entry in entries.flatten() {
-                let log_path = entry.path().join("call_log.jsonl");
+                let log_path = tracker_mock::call_log_path(&entry.path());
                 if log_path.exists() {
                     std::fs::write(&log_path, "")?;
                     cleared += 1;

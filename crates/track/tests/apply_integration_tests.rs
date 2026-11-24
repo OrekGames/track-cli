@@ -10,7 +10,7 @@ fn write_scenario(dir: &Path, manifest: &str, responses: &[(&str, Value)]) -> Pa
     let responses_dir = scenario.join("responses");
     fs::create_dir_all(&responses_dir).unwrap();
     fs::write(scenario.join("manifest.toml"), manifest).unwrap();
-    fs::write(scenario.join("call_log.jsonl"), "").unwrap();
+    fs::write(tracker_mock::call_log_path(&scenario), "").unwrap();
     for (name, value) in responses {
         fs::write(
             responses_dir.join(name),
@@ -795,7 +795,7 @@ id = "DEMO-1"
     assert!(
         !creates.is_empty(),
         "create with assignee must be issued; log: {}",
-        fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default()
+        fs::read_to_string(tracker_mock::call_log_path(&scenario)).unwrap_or_default()
     );
 }
 

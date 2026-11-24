@@ -30,7 +30,7 @@ fn cache_root(dir: &Path) -> PathBuf {
 /// Backend methods called since the log was last cleared, then clear it.
 fn take_calls(scenario: &Path) -> Vec<String> {
     let methods = mock_call_methods(scenario);
-    fs::write(scenario.join("call_log.jsonl"), "").unwrap();
+    fs::write(tracker_mock::call_log_path(scenario), "").unwrap();
     methods
         .into_iter()
         .filter(|method| !method.starts_with("cache_"))
@@ -196,7 +196,7 @@ fn a_cache_from_another_instance_is_not_used() {
     // The same fixture under another path stands for another tracker.
     let second = dir.join("other-instance");
     copy_dir_recursive(&first, &second);
-    fs::write(second.join("call_log.jsonl"), "").unwrap();
+    fs::write(tracker_mock::call_log_path(&second), "").unwrap();
 
     track_mock(&dir, &second)
         .args(create_args("Type=Bug"))

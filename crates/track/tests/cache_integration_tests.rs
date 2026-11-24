@@ -48,6 +48,30 @@ fn populate_cache(dir: &Path) {
     track_in(dir).args(["cache", "refresh"]).assert().success();
 }
 
+/// A private copy of the scenario with the cache in `dir` filled from it
+/// and its call log emptied, so a test sees only the calls that follow.
+/// The shared fixture would mix in other tests' calls.
+fn warm_cache(dir: &Path) -> PathBuf {
+    ensure_project_context(dir);
+    let scenario = copy_scenario(dir, "cache-operations");
+    common::track_mock(dir, &scenario)
+        .args(["cache", "refresh"])
+        .assert()
+        .success();
+    tracker_mock::clear_call_log(&scenario).unwrap();
+    scenario
+}
+
+/// Assert that the only entry since [`warm_cache`] is the CLI's own record
+/// of `context`: the command answered from the cache and fetched nothing.
+fn assert_answered_from_cache(scenario: &Path) {
+    assert_eq!(
+        common::mock_call_methods(scenario),
+        ["context"],
+        "context fetched from the backend despite a cache for this instance"
+    );
+}
+
 /// Where `track` keeps the YouTrack cache of the project in `dir`.
 fn cache_root(dir: &Path) -> PathBuf {
     dir.join(".tracker-cache").join("youtrack")
@@ -508,28 +532,30 @@ fn test_cache_refresh_if_stale_refreshes_a_cache_for_another_instance() {
 #[test]
 fn test_context_loads_from_cache() {
     let dir = temp_dir();
-    populate_cache(&dir);
+    let scenario = warm_cache(&dir);
 
     // Context loads the existing cache written for this (mock) instance
-    track_in(&dir)
+    common::track_mock(&dir, &scenario)
         .args(["context"])
         .assert()
         .success()
         .stdout(predicate::str::contains("DEMO"))
         .stdout(predicate::str::contains("Projects"));
+    assert_answered_from_cache(&scenario);
 }
 
 #[test]
 fn test_context_json_output_from_cache() {
     let dir = temp_dir();
-    populate_cache(&dir);
+    let scenario = warm_cache(&dir);
 
-    let output = track_in(&dir)
+    let output = common::track_mock(&dir, &scenario)
         .args(["-o", "json", "context"])
         .output()
         .unwrap();
 
     assert!(output.status.success());
+    assert_answered_from_cache(&scenario);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 
     assert!(json["projects"].as_array().unwrap().len() >= 2);
@@ -542,14 +568,15 @@ fn test_context_json_output_from_cache() {
 #[test]
 fn test_context_project_filter() {
     let dir = temp_dir();
-    populate_cache(&dir);
+    let scenario = warm_cache(&dir);
 
-    let output = track_in(&dir)
+    let output = common::track_mock(&dir, &scenario)
         .args(["-o", "json", "context", "--project", "DEMO"])
         .output()
         .unwrap();
 
     assert!(output.status.success());
+    assert_answered_from_cache(&scenario);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 
     // Only DEMO project should be present
