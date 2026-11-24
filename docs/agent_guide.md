@@ -1268,10 +1268,13 @@ track -o jsonl p ls --select short_name
 ```
 
 - `fields.<Name>` is an issue's custom field by name, as a plain value
-  (`{"fields": {"Priority": "Major"}}`). It exists only under `--select`; the default JSON is
-  unchanged. Quote a name that holds `.` or `,`: `fields."Est. time"`.
+  (`{"fields": {"Priority": "Major"}}`); a field the issue has but with no value is `null`. It
+  exists only under `--select`; the default JSON is unchanged. Quote a name that holds `.` or
+  `,`: `fields."Est. time"`.
 - A path missing from one record is omitted from that record.
-- A selection that matches nothing at all is an error, not `{}`.
+- A selection that matches nothing at all is an error (`select_no_match`, exit 5), not `{}`.
+  After a write (create, update, delete, comment, ...) it is a warning on stderr instead: the
+  write is done, so the command prints its whole JSON output and exits 0.
 - Text output (including `-o agent`) rejects the flag.
 
 ### Agent output (`-o agent`)
@@ -1295,22 +1298,25 @@ DEMO-2	In Progress	High	-	Fix login timeout
 | `issue get --full` | The same, plus every link (with its link id) and the last 20 comments in full; more are named with the command that lists them |
 | `issue create` / `update` | One line: what was done and the field values the issue ended up with |
 | `issue comments`, `project fields`, batch results | One line per item; `project fields` includes the values |
+| `article list` / `search` | One line per article, without its content (`article get` prints it whole), then the same last line as `issue search` |
 | `context` | The `track prime` briefing |
 | everything else | The usual text, uncoloured |
 
 It is typically a third to a fifth of the size of the JSON for the same data.
 
-When a search fills its limit, a one-line hint with the next `--skip` value (and a total when
-one is known) goes to stderr, in JSON and JSONL mode too: a full page of JSON otherwise looks
-exactly like a complete result. `-o agent` puts the same verdict on the last line of stdout.
+When a search or list fills its limit, a one-line hint with the next `--skip` value (and a
+total when one is known) goes to stderr, in JSON and JSONL mode too: a full page of JSON
+otherwise looks exactly like a complete result. `-o agent` puts the verdict on the last line of
+stdout instead, `complete` or how to get the rest, for `issue search`, `article list` and
+`article search` alike.
 
 `issue start` / `issue complete` JSON reports what the tracker did, not only what was asked:
 `state` is the requested state, `actual_state` the one the issue is in afterwards, `verified`
 whether they agree, and `warnings` why not. `id_readable` is the issue id.
 
-Subcommand help lists that command's own options. The global options (`-o`, `-b`, `--select`,
-`--config`, `--no-cache`, `-v`, `--color`, `--url`, `--token`) are documented once, in
-`track --help`, and accepted everywhere.
+Subcommand help lists that command's own options. The global options (`-o`, `--select`, `-v`,
+`--color`, `-b`, `--config`, `--url`, `--token`, `--no-cache`, `--error-format`) are documented
+once, in `track --help`, and accepted everywhere.
 
 ---
 
@@ -1339,7 +1345,7 @@ The exit code says what kind of failure it was:
 | 0 | Success (a write the tracker only partly applied still exits 0, with a warning on stderr) | |
 | 1 | Any other failure | `api`, `parse`, `io`, `pagination_stalled`, `error` |
 | 2 | The command line did not parse | (clap's own message) |
-| 3 | Not found | `issue_not_found`, `project_not_found`, `not_found`, `template_not_found` |
+| 3 | Not found | `issue_not_found`, `project_not_found`, `not_found`, `template_not_found`, `unknown_topic` |
 | 4 | Not allowed or not set up | `auth`, `permission`, `not_configured`, `token_refused` |
 | 5 | Refused as given: fix the command | `unknown_field`, `invalid_value`, `read_only_field`, `invalid_state`, `invalid_input`, `select_no_match`, `unsupported`, `conflict` |
 | 6 | Some items of a batch failed | `partial_failure` |
@@ -1354,7 +1360,8 @@ The exit code says what kind of failure it was:
 | `unknown_field`, `invalid_value`, `read_only_field` | Field validation failed; the message lists what is valid |
 | `invalid_state` | `issue start` / `complete` asked for a state the project does not have |
 | `template_not_found` | No such `-T` template, or it does not apply to this project |
-| `select_no_match` | `--select` paths are not in this command's JSON |
+| `unknown_topic` | `track guide` has no such topic; the message lists the topics |
+| `select_no_match` | `--select` paths are not in this command's JSON (a read; after a write it is a warning) |
 | `not_configured`, `token_refused` | No usable config, or a repository config tried to redirect the token |
 | `invalid_input`, `unsupported`, `conflict`, `api` | The tracker refused the request |
 | `rate_limited`, `server`, `network` | Retryable: the tracker is limiting, failing or unreachable |

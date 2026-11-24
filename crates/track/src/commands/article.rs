@@ -148,9 +148,7 @@ fn handle_list(
     };
 
     output_list(&articles, format)?;
-    if !all {
-        output_page_hint(articles.len(), limit, skip, None, format);
-    }
+    output_page_hint(articles.len(), limit, skip, None, all);
     Ok(())
 }
 
@@ -180,9 +178,7 @@ fn handle_search(
     };
 
     output_list(&articles, format)?;
-    if !all {
-        output_page_hint(articles.len(), limit, skip, None, format);
-    }
+    output_page_hint(articles.len(), limit, skip, None, all);
     Ok(())
 }
 

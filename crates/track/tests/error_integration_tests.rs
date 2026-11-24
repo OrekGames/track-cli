@@ -133,6 +133,12 @@ fn other_cli_failures_have_codes_too() {
     assert_eq!(lines[1], "Code: invalid_state");
 
     let lines = stderr_lines(
+        track_mock(&dir, "error-recovery").args(["guide", "nope"]),
+        3,
+    );
+    assert_eq!(lines[1], "Code: unknown_topic");
+
+    let lines = stderr_lines(
         track_mock(&dir, "issue-get-full")
             .args(["-o", "json", "issue", "get", "DEMO-1", "--select", "nope"]),
         5,

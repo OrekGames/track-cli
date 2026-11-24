@@ -88,8 +88,11 @@ track -o jsonl p ls --select short_name
 ```
 
 - `fields.<Name>` is an issue's custom field by name, as a plain value
-  (`{"fields": {"Priority": "Major"}}`). It exists only under `--select`; the default JSON is
-  unchanged. Quote a name that holds `.` or `,`: `fields."Est. time"`.
+  (`{"fields": {"Priority": "Major"}}`); a field the issue has but with no value is `null`. It
+  exists only under `--select`; the default JSON is unchanged. Quote a name that holds `.` or
+  `,`: `fields."Est. time"`.
 - A path missing from one record is omitted from that record.
-- A selection that matches nothing at all is an error, not `{}`.
+- A selection that matches nothing at all is an error (`select_no_match`, exit 5), not `{}`.
+  After a write (create, update, delete, comment, ...) it is a warning on stderr instead: the
+  write is done, so the command prints its whole JSON output and exits 0.
 - Text output (including `-o agent`) rejects the flag.

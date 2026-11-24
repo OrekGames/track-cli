@@ -1,10 +1,11 @@
 use crate::cache::TrackerCache;
 use crate::cli::{IssueCommands, OutputFormat};
 use crate::config::{pack_query_named, require_valid_workflow_pack};
+use crate::errors::FieldValidationError;
 use crate::lookup::{IssueProject, Lookup};
 use crate::output::{
-    AGENT_ISSUE_HEADER, Displayable, agent_issue_ack, agent_issue_row, agent_page_footer, is_agent,
-    output_json, output_list, output_page_hint, output_progress, output_result,
+    Displayable, PageTotal, agent_issue_ack, is_agent, output_json, output_list, output_page_hint,
+    output_progress, output_result,
 };
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -39,21 +40,6 @@ impl ValidationMode {
         }
     }
 }
-
-/// Field updates that failed validation.
-#[derive(Debug)]
-pub struct FieldValidationError {
-    pub problems: Vec<FieldProblem>,
-}
-
-impl std::fmt::Display for FieldValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let lines: Vec<String> = self.problems.iter().map(|p| p.to_string()).collect();
-        write!(f, "{}", lines.join("\n"))
-    }
-}
-
-impl std::error::Error for FieldValidationError {}
 
 /// Shared fields for create, update, and batch-update commands.
 struct IssueFieldArgs<'a> {
@@ -1297,50 +1283,20 @@ fn handle_search(
     }
 
     // Total, when known — priority cascade: inline total > cached total
-    let total_info = if args.all {
+    let total = if args.all {
         None
     } else {
-        inline_total
-            .map(|t| (t, "live".to_string()))
-            .or_else(|| try_cached_count(&actual_query, args.skip))
+        inline_total.map(PageTotal::Live).or_else(|| {
+            try_cached_count(&actual_query, args.skip)
+                .map(|(count, age)| PageTotal::Cached { count, age })
+        })
     };
 
-    if format == OutputFormat::Text && is_agent() {
-        // One line per issue, and a last line that says whether this is
-        // everything. Descriptions are a `track <ID>` away.
-        if !issues.is_empty() {
-            println!("{AGENT_ISSUE_HEADER}");
-        }
-        for issue in &issues {
-            println!("{}", agent_issue_row(issue));
-        }
-        println!(
-            "{}",
-            agent_page_footer(
-                issues.len(),
-                args.limit,
-                args.skip,
-                total_info.as_ref().map(|(n, s)| (*n, s.as_str())),
-                args.all,
-            )
-        );
-        return Ok(());
-    }
-
     // `--select` projects inside `output_json`; text mode rejects it before
-    // dispatch.
+    // dispatch. `-o agent` prints one line per issue; descriptions are a
+    // `track <ID>` away.
     output_list(&issues, format)?;
-
-    // Pagination hint
-    if !args.all {
-        output_page_hint(
-            issues.len(),
-            args.limit,
-            args.skip,
-            total_info.as_ref().map(|(n, s)| (*n, s.as_str())),
-            format,
-        );
-    }
+    output_page_hint(issues.len(), args.limit, args.skip, total, args.all);
 
     Ok(())
 }
@@ -1432,7 +1388,7 @@ fn resolve_template_query(
             .any(|qt| unicode_eq_ignore_case(&qt.name, tmpl))
     {
         return Err(crate::errors::CliError::new(
-            "template_not_found",
+            crate::errors::CliCode::TemplateNotFound,
             format!(
                 "Template '{}' does not apply to project {}: its fields have no matching values. Available templates: {}",
                 tmpl,
@@ -1444,7 +1400,7 @@ fn resolve_template_query(
         .into());
     }
     Err(crate::errors::CliError::new(
-        "template_not_found",
+        crate::errors::CliCode::TemplateNotFound,
         format!(
             "Template '{}' not found. Available templates: {}",
             tmpl,
@@ -1919,7 +1875,7 @@ fn resolve_transition(
 
 fn invalid_state(problem: FieldProblem) -> anyhow::Error {
     crate::errors::CliError::new(
-        "invalid_state",
+        crate::errors::CliCode::InvalidState,
         format!("{}. Pass --state <NAME> to choose one.", problem),
     )
     .into()
@@ -2288,7 +2244,7 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
 
     if failed > 0 {
         return Err(crate::errors::CliError::new(
-            "partial_failure",
+            crate::errors::CliCode::PartialFailure,
             format!("{} of {} issues were not {}", failed, results.len(), action),
         )
         .with_hint(

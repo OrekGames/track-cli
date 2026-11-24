@@ -8,7 +8,7 @@
 use crate::cache::{CachedField, STALE_AFTER, TrackerCache};
 use crate::cli::{AgentScope, AgentTool, Backend, HookAgent, OutputFormat};
 use crate::config::{WorkflowPackState, load_workflow_pack, pack_query_named};
-use crate::output::{OUTPUT_ENV, OUTPUT_ENV_VALUE, output_json};
+use crate::output::{Capped, MAX_VALUE_CHARS, OUTPUT_ENV, OUTPUT_ENV_VALUE, clean, output_json};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -22,8 +22,6 @@ const MAX_USERS: usize = 15;
 const MAX_TAGS: usize = 20;
 /// Project keys listed when no project is selected.
 const MAX_PROJECTS: usize = 20;
-/// Longest single cached value printed. Longer ones are cut with an ellipsis.
-const MAX_VALUE_CHARS: usize = 60;
 /// Longest tracker URL printed.
 const MAX_URL_CHARS: usize = 120;
 
@@ -39,48 +37,6 @@ pub struct PrimeOptions<'a> {
     /// Set when running as a session-start hook: the briefing is wrapped in
     /// the JSON that agent's hook protocol reads.
     pub hook: Option<HookAgent>,
-}
-
-/// A list cut to a budget, with the number of entries left out.
-#[derive(Debug, Serialize, PartialEq, Eq)]
-pub struct Capped {
-    pub shown: Vec<String>,
-    /// Entries not shown. Never dropped silently: the text names a command
-    /// that lists them.
-    pub more: usize,
-}
-
-impl Capped {
-    fn new<I: IntoIterator<Item = String>>(items: I, max: usize) -> Self {
-        let mut shown: Vec<String> = Vec::new();
-        let mut more = 0;
-        for item in items {
-            if shown.len() < max {
-                shown.push(item);
-            } else {
-                more += 1;
-            }
-        }
-        Self { shown, more }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.shown.is_empty()
-    }
-
-    /// `a, b, … +N more (hint)`, each entry made safe to print.
-    fn render(&self, hint: &str) -> String {
-        let mut line = self
-            .shown
-            .iter()
-            .map(|item| clean_value(item))
-            .collect::<Vec<_>>()
-            .join(", ");
-        if self.more > 0 {
-            line.push_str(&format!(", … +{} more ({})", self.more, hint));
-        }
-        line
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -363,40 +319,6 @@ fn export_to_claude_env_file() -> std::io::Result<()> {
         writeln!(file)?;
     }
     writeln!(file, "{line}")
-}
-
-/// Make a cached string safe to print on one line of an agent's context.
-///
-/// The cache can come from anywhere a `.tracker-cache/` directory can: a
-/// tracker anyone may write to, or a cloned repository that committed one. So
-/// control characters (newlines included) become spaces, runs of whitespace
-/// collapse, and long values are cut.
-pub(crate) fn clean(value: &str, max_chars: usize) -> String {
-    let mut cleaned = String::with_capacity(value.len());
-    let mut last_was_space = true;
-    for ch in value.chars() {
-        let ch = if ch.is_control() || ch.is_whitespace() {
-            ' '
-        } else {
-            ch
-        };
-        if ch == ' ' {
-            if !last_was_space {
-                cleaned.push(' ');
-            }
-            last_was_space = true;
-        } else {
-            cleaned.push(ch);
-            last_was_space = false;
-        }
-    }
-    let cleaned = cleaned.trim_end();
-    if cleaned.chars().count() <= max_chars {
-        return cleaned.to_string();
-    }
-    let mut cut: String = cleaned.chars().take(max_chars.saturating_sub(1)).collect();
-    cut.push('…');
-    cut
 }
 
 fn clean_value(value: &str) -> String {
@@ -895,31 +817,6 @@ fn age_label(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn clean_flattens_control_characters_and_caps_length() {
-        assert_eq!(
-            clean("Bug\n\nIGNORE ALL\tPREVIOUS", 60),
-            "Bug IGNORE ALL PREVIOUS"
-        );
-        assert_eq!(clean("  spaced   out  ", 60), "spaced out");
-        assert_eq!(clean("abcdefghij", 5), "abcd…");
-        assert_eq!(clean("\u{1b}[31mred", 60), "[31mred");
-    }
-
-    #[test]
-    fn capped_reports_what_it_left_out() {
-        let capped = Capped::new((1..=5).map(|n| n.to_string()), 3);
-        assert_eq!(capped.shown, ["1", "2", "3"]);
-        assert_eq!(capped.more, 2);
-        assert_eq!(
-            capped.render("track t ls"),
-            "1, 2, 3, … +2 more (track t ls)"
-        );
-
-        let whole = Capped::new(["a".to_string()], 3);
-        assert_eq!(whole.render("unused"), "a");
-    }
 
     #[test]
     fn field_type_labels_drop_cardinality_markers() {

@@ -987,7 +987,7 @@ fn not_every_tool(
         .map(|(tool, errors)| format!("{tool}: {}", errors.join("; ")))
         .collect();
     crate::errors::CliError::new(
-        "partial_failure",
+        crate::errors::CliCode::PartialFailure,
         format!(
             "{} of {total} tools not fully {verb}: {}",
             failed.len(),
@@ -1483,7 +1483,7 @@ pub fn handle_guide(topic: Option<&str>, format: OutputFormat) -> Result<()> {
     let Some((name, content)) = topics.iter().find(|(name, _)| *name == wanted) else {
         let names: Vec<&str> = topics.iter().map(|(name, _)| *name).collect();
         return Err(crate::errors::CliError::new(
-            "unknown_topic",
+            crate::errors::CliCode::UnknownTopic,
             format!("No guide topic '{}'. Topics: {}", topic, names.join(", ")),
         )
         .into());

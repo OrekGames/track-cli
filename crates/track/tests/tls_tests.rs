@@ -135,7 +135,7 @@ fn assert_untrusted(cmd: &mut assert_cmd::Command) -> assert_cmd::assert::Assert
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("UnknownIssuer"))
-        .stderr(predicate::str::contains("Tip:"))
+        .stderr(predicate::str::contains("\nHint: The server's certificate"))
         .stderr(predicate::str::contains("SSL_CERT_FILE"))
         .stderr(predicate::str::contains(
             "track config set system_certs true",
@@ -146,6 +146,34 @@ fn assert_untrusted(cmd: &mut assert_cmd::Command) -> assert_cmd::assert::Assert
 fn an_unknown_certificate_authority_is_rejected_by_default() {
     let proxy = InspectingProxy::start();
     assert_untrusted(&mut proxy.track());
+}
+
+#[test]
+fn json_errors_carry_the_certificate_advice_in_their_one_object() {
+    let proxy = InspectingProxy::start();
+    let output = proxy
+        .track()
+        .args(["-o", "json"])
+        .env_remove("TRACK_ERROR_FORMAT")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    // One JSON object on one line, and nothing after it.
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    let error: serde_json::Value = serde_json::from_str(&stderr).unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("UnknownIssuer")
+    );
+    let hint = error["error"]["hint"].as_str().unwrap();
+    assert!(hint.contains("SSL_CERT_FILE"), "{hint}");
+    assert!(
+        hint.contains("track config set system_certs true"),
+        "{hint}"
+    );
 }
 
 #[test]
