@@ -13,7 +13,26 @@ use crate::strings::unicode_eq_ignore_case;
 use crate::traits::IssueTracker;
 use std::fmt;
 
+/// Other names for the state field, which the backends' schemas call
+/// `Status`: the CLI's `--state` shorthand sends `State`, and `Stage` is a
+/// common name for it elsewhere. Backends whose write path takes these list
+/// them in [`ValidationRules::name_aliases`].
+pub const STATE_FIELD_ALIASES: &[(&str, &str)] = &[("State", "Status"), ("Stage", "Status")];
+
+/// True for `Status` or one of [`STATE_FIELD_ALIASES`], compared without
+/// regard to case.
+pub fn is_state_field_name(name: &str) -> bool {
+    unicode_eq_ignore_case(name, "Status")
+        || STATE_FIELD_ALIASES
+            .iter()
+            .any(|(alias, _)| unicode_eq_ignore_case(alias, name))
+}
+
 /// How strictly a backend's field names can be checked.
+///
+/// A backend whose write path renames fields should resolve names in that
+/// write path through the same table ([`ValidationRules::alias_target`]), so
+/// validation cannot accept a name the write path would drop.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ValidationRules {
     /// The schema lists every field the write path accepts, so an unknown
@@ -25,6 +44,16 @@ pub struct ValidationRules {
     /// `(schema name, what to do instead)` for fields the write path
     /// ignores. Setting one would be dropped silently, so it is an error.
     pub read_only_fields: &'static [(&'static str, &'static str)],
+}
+
+impl ValidationRules {
+    /// The schema name `name` is an alias of, if it is one.
+    pub fn alias_target(&self, name: &str) -> Option<&'static str> {
+        self.name_aliases
+            .iter()
+            .find(|(alias, _)| unicode_eq_ignore_case(alias, name))
+            .map(|(_, target)| *target)
+    }
 }
 
 /// A backend's verdict on one value for one field.
@@ -75,6 +104,29 @@ pub enum FieldProblem {
         name: String,
         hint: String,
     },
+}
+
+impl FieldProblem {
+    /// `name` is not in `schema`, with the closest name as a suggestion.
+    pub fn unknown_field(name: &str, schema: &[ProjectCustomField]) -> Self {
+        let available: Vec<String> = schema.iter().map(|f| f.name.clone()).collect();
+        FieldProblem::UnknownField {
+            name: name.to_string(),
+            suggestion: nearest(name, &available).map(str::to_string),
+            available,
+        }
+    }
+
+    /// `value` is not one of `valid_values` for `field`, with the closest
+    /// valid value as a suggestion.
+    pub fn invalid_value(field: &str, value: &str, valid_values: Vec<String>) -> Self {
+        FieldProblem::InvalidValue {
+            field: field.to_string(),
+            value: value.to_string(),
+            suggestion: nearest(value, &valid_values).map(str::to_string),
+            valid_values,
+        }
+    }
 }
 
 impl fmt::Display for FieldProblem {
@@ -156,18 +208,30 @@ pub fn validate_fields(
     schema: &[ProjectCustomField],
     updates: &[CustomFieldUpdate],
 ) -> ValidationReport {
-    let rules = tracker.validation_rules();
+    validate_fields_with(
+        &tracker.validation_rules(),
+        schema,
+        updates,
+        |field, value| tracker.check_field_value(field, value),
+    )
+}
+
+/// Check `updates` against `schema` under `rules`, judging each value with
+/// `check`. [`validate_fields`] passes the backend's own rules and
+/// [`IssueTracker::check_field_value`]; a stricter caller can pass
+/// exhaustive rules and [`check_membership`].
+pub fn validate_fields_with(
+    rules: &ValidationRules,
+    schema: &[ProjectCustomField],
+    updates: &[CustomFieldUpdate],
+    check: impl Fn(&ProjectCustomField, &str) -> ValueCheck,
+) -> ValidationReport {
     let mut report = ValidationReport::default();
 
     for update in updates {
         let name = update.name();
-        let Some(field) = resolve_field(&rules, schema, name) else {
-            let available: Vec<String> = schema.iter().map(|f| f.name.clone()).collect();
-            let problem = FieldProblem::UnknownField {
-                name: name.to_string(),
-                suggestion: nearest(name, &available).map(str::to_string),
-                available,
-            };
+        let Some(field) = resolve_field(rules, schema, name) else {
+            let problem = FieldProblem::unknown_field(name, schema);
             if rules.names_exhaustive {
                 report.errors.push(problem);
             } else {
@@ -188,24 +252,13 @@ pub fn validate_fields(
             continue;
         }
 
-        let values: Vec<&str> = match update {
-            CustomFieldUpdate::SingleEnum { value, .. }
-            | CustomFieldUpdate::State { value, .. } => {
-                vec![value.as_str()]
-            }
-            CustomFieldUpdate::MultiEnum { values, .. } => {
-                values.iter().map(String::as_str).collect()
-            }
-            CustomFieldUpdate::SingleUser { login, .. } => vec![login.as_str()],
-        };
-        for value in values {
-            if let ValueCheck::Invalid { valid_values } = tracker.check_field_value(field, value) {
-                report.errors.push(FieldProblem::InvalidValue {
-                    field: field.name.clone(),
-                    value: value.to_string(),
-                    suggestion: nearest(value, &valid_values).map(str::to_string),
+        for value in update.values() {
+            if let ValueCheck::Invalid { valid_values } = check(field, value) {
+                report.errors.push(FieldProblem::invalid_value(
+                    &field.name,
+                    value,
                     valid_values,
-                });
+                ));
             }
         }
     }
@@ -299,6 +352,85 @@ mod tests {
         assert!(resolve_field(&rules, &schema, "STATE").is_some());
         assert!(resolve_field(&rules, &schema, "Stage").is_none());
         assert!(resolve_field(&ValidationRules::default(), &schema, "State").is_none());
+    }
+
+    #[test]
+    fn state_field_names_are_status_and_its_aliases() {
+        for name in ["Status", "status", "State", "STATE", "Stage"] {
+            assert!(is_state_field_name(name), "{name}");
+        }
+        for name in ["Statuses", "Priority", ""] {
+            assert!(!is_state_field_name(name), "{name}");
+        }
+        let rules = ValidationRules {
+            name_aliases: STATE_FIELD_ALIASES,
+            ..Default::default()
+        };
+        assert_eq!(rules.alias_target("state"), Some("Status"));
+        assert_eq!(rules.alias_target("Status"), None);
+    }
+
+    #[test]
+    fn validate_with_uses_the_given_rules_and_checker() {
+        let schema = vec![field("Status", &["Open", "Done"]), field("Notes", &[])];
+        let state = |name: &str, value: &str| CustomFieldUpdate::State {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+        let lenient = ValidationRules {
+            name_aliases: STATE_FIELD_ALIASES,
+            ..Default::default()
+        };
+        let strict = ValidationRules {
+            names_exhaustive: true,
+            ..lenient
+        };
+
+        // An alias resolves; its value is judged against the schema field.
+        let report = validate_fields_with(
+            &strict,
+            &schema,
+            &[state("State", "done")],
+            check_membership,
+        );
+        assert!(report.is_ok() && report.warnings.is_empty(), "{report:?}");
+        let report =
+            validate_fields_with(&strict, &schema, &[state("State", "Dne")], check_membership);
+        assert_eq!(
+            report.errors,
+            [FieldProblem::InvalidValue {
+                field: "Status".to_string(),
+                value: "Dne".to_string(),
+                valid_values: vec!["Open".to_string(), "Done".to_string()],
+                suggestion: Some("Done".to_string()),
+            }]
+        );
+        // Every value of a multi-value update is judged.
+        let multi = CustomFieldUpdate::MultiEnum {
+            name: "Status".to_string(),
+            values: vec!["Open".to_string(), "Nope".to_string()],
+        };
+        assert_eq!(
+            validate_fields_with(&strict, &schema, &[multi], check_membership)
+                .errors
+                .len(),
+            1
+        );
+        // Unknown names: an error when names are exhaustive, else a warning.
+        let unknown = [state("Sprint", "x")];
+        let report = validate_fields_with(&strict, &schema, &unknown, check_membership);
+        assert!(matches!(
+            report.errors.as_slice(),
+            [FieldProblem::UnknownField { .. }]
+        ));
+        let report = validate_fields_with(&lenient, &schema, &unknown, check_membership);
+        assert!(report.is_ok());
+        assert_eq!(report.warnings.len(), 1);
+        // The checker decides: one that never objects lets any value through.
+        let report = validate_fields_with(&strict, &schema, &[state("State", "Dne")], |_, _| {
+            ValueCheck::Unknown
+        });
+        assert!(report.is_ok());
     }
 
     #[test]

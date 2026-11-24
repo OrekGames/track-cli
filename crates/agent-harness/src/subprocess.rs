@@ -10,13 +10,24 @@ use std::thread::JoinHandle;
 /// where the cause usually is.
 const STDERR_TAIL_BYTES: usize = 2000;
 
-/// Route the agent's track commands to the scenario's mock backend, and put the
-/// track binary's directory first on PATH so a bare `track` runs that binary.
-pub(crate) fn route_track_to_mock(cmd: &mut Command, scenario_path: &Path, track_bin: &str) {
-    cmd.env("TRACK_MOCK_DIR", scenario_path);
-    // A cache private to the run: the agent's own cache or an earlier run
-    // must not change how many backend calls this one makes.
-    cmd.envs(crate::runner::track_env());
+/// The environment of a scored `track` command, wherever it is spawned: the
+/// scenario's mock backend plus the run's `env` (see `RunSetup::track_env`).
+/// Set on `track` itself, or on an agent CLI whose children inherit it.
+pub(crate) fn mock_track_env(cmd: &mut Command, scenario_path: &Path, env: &[(&str, String)]) {
+    cmd.env(tracker_mock::MOCK_DIR_ENV, scenario_path);
+    cmd.envs(env.iter().map(|(name, value)| (name, value)));
+}
+
+/// Route the agent's track commands to the scenario's mock backend with the
+/// run's `env`, and put the track binary's directory first on PATH so a bare
+/// `track` runs that binary.
+pub(crate) fn route_track_to_mock(
+    cmd: &mut Command,
+    scenario_path: &Path,
+    track_bin: &str,
+    env: &[(&str, String)],
+) {
+    mock_track_env(cmd, scenario_path, env);
 
     if let Some(bin_dir) = Path::new(track_bin).parent()
         && !bin_dir.as_os_str().is_empty()
@@ -74,7 +85,47 @@ pub(crate) fn ensure_success(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
     use std::process::Stdio;
+
+    fn env_of<'a>(cmd: &'a Command, name: &str) -> Option<&'a OsStr> {
+        cmd.get_envs()
+            .find(|(key, _)| *key == OsStr::new(name))
+            .and_then(|(_, value)| value)
+    }
+
+    #[test]
+    fn track_and_agent_cli_get_the_same_run_environment() {
+        let env = [
+            ("TRACK_CACHE_DIR", "/tmp/run-cache".to_string()),
+            ("TRACK_OUTPUT", "agent".to_string()),
+        ];
+        let mut track = Command::new("track");
+        mock_track_env(&mut track, Path::new("/scenarios/basic"), &env);
+        let mut agent = Command::new("agent-cli");
+        route_track_to_mock(
+            &mut agent,
+            Path::new("/scenarios/basic"),
+            "/build/bin/track",
+            &env,
+        );
+
+        for cmd in [&track, &agent] {
+            assert_eq!(
+                env_of(cmd, tracker_mock::MOCK_DIR_ENV),
+                Some(OsStr::new("/scenarios/basic"))
+            );
+            assert_eq!(
+                env_of(cmd, "TRACK_CACHE_DIR"),
+                Some(OsStr::new("/tmp/run-cache"))
+            );
+            assert_eq!(env_of(cmd, "TRACK_OUTPUT"), Some(OsStr::new("agent")));
+        }
+        // Only the agent CLI needs `track` found on PATH.
+        assert!(env_of(&track, "PATH").is_none());
+        let path = env_of(&agent, "PATH").unwrap().to_str().unwrap();
+        assert!(path.starts_with("/build/bin:"), "{path}");
+    }
 
     fn run_sh(script: &str) -> Result<()> {
         let mut child = Command::new("sh")

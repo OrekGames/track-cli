@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
-use tracker_mock::{ContextUsage, Evaluator, MockClient, Scenario};
+use tracker_mock::{Evaluator, MockClient, Scenario};
 
 /// Model for the Anthropic provider when `--model` is not given
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
@@ -65,13 +65,8 @@ enum Commands {
         #[arg(long, default_value_t = 70)]
         min_score: u8,
 
-        /// Give the agent the scenario's hints and extra context
-        #[arg(long, value_enum, default_value_t = Hints::On)]
-        hints: Hints,
-
-        /// Reference material placed in the agent's system prompt
-        #[arg(long, value_enum, default_value_t = runner::ContextMode::Skill)]
-        context: runner::ContextMode,
+        #[command(flatten)]
+        options: RunOptions,
     },
 
     /// Run all scenarios in a directory
@@ -108,13 +103,8 @@ enum Commands {
         #[arg(long, short = 'o', value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
 
-        /// Give the agent the scenario's hints and extra context
-        #[arg(long, value_enum, default_value_t = Hints::On)]
-        hints: Hints,
-
-        /// Reference material placed in the agent's system prompt
-        #[arg(long, value_enum, default_value_t = runner::ContextMode::Skill)]
-        context: runner::ContextMode,
+        #[command(flatten)]
+        options: RunOptions,
     },
 
     /// List available scenarios
@@ -153,9 +143,14 @@ enum Hints {
 }
 
 /// How a run is set up, apart from which agent runs it
-#[derive(Clone, Copy, Debug)]
+#[derive(clap::Args, Clone, Copy, Debug, PartialEq, Eq)]
 struct RunOptions {
+    /// Give the agent the scenario's hints and extra context
+    #[arg(long, value_enum, default_value_t = Hints::On)]
     hints: Hints,
+
+    /// Reference material placed in the agent's system prompt
+    #[arg(long, value_enum, default_value_t = runner::ContextMode::Skill)]
     context: runner::ContextMode,
 }
 
@@ -178,27 +173,6 @@ fn scenario_for_run(scenario: &Scenario, hints: Hints) -> Scenario {
     scenario
 }
 
-/// A cache directory for one scenario run, removed when dropped.
-struct RunCacheDir(PathBuf);
-
-impl RunCacheDir {
-    fn create() -> Result<Self> {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("track-agent-cache-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("Failed to create {}", dir.display()))?;
-        Ok(Self(dir))
-    }
-}
-
-impl Drop for RunCacheDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 #[derive(ValueEnum, Clone, Debug, Copy, Default)]
 enum OutputFormat {
     #[default]
@@ -219,18 +193,9 @@ fn main() -> Result<()> {
             format,
             api_key,
             min_score,
-            hints,
-            context,
+            options,
         } => run_scenario(
-            &scenario,
-            provider,
-            model,
-            max_turns,
-            verbose,
-            format,
-            api_key,
-            min_score,
-            RunOptions { hints, context },
+            &scenario, provider, model, max_turns, verbose, format, api_key, min_score, options,
         ),
 
         Commands::RunAll {
@@ -242,18 +207,9 @@ fn main() -> Result<()> {
             min_score,
             fail_fast,
             format,
-            hints,
-            context,
+            options,
         } => run_all_scenarios(
-            &path,
-            provider,
-            model,
-            max_turns,
-            api_key,
-            min_score,
-            fail_fast,
-            format,
-            RunOptions { hints, context },
+            &path, provider, model, max_turns, api_key, min_score, fail_fast, format, options,
         ),
 
         Commands::List { path } => list_scenarios(&path),
@@ -277,10 +233,6 @@ fn run_scenario(
     // Load scenario
     let scenario = Scenario::load_from_dir(scenario_path)?;
 
-    // Clear call log
-    let log_path = scenario_path.join("call_log.jsonl");
-    std::fs::write(&log_path, "")?;
-
     let session_result = run_agent_session(
         provider,
         scenario_path,
@@ -296,7 +248,8 @@ fn run_scenario(
     let client = MockClient::new(scenario_path)?;
     let calls = client.read_call_log()?;
     let evaluator = Evaluator::new(scenario);
-    let eval_result = evaluator.evaluate_with_usage(&calls, context_usage(&session_result));
+    let usage = session_result.context_usage();
+    let eval_result = evaluator.evaluate_with_usage(&calls, Some(usage));
     let passed = eval_result.score_percent >= min_score as f64 && eval_result.success;
 
     // Output results
@@ -311,9 +264,9 @@ fn run_scenario(
                 "turns_used": session_result.turns_used,
                 "input_tokens": session_result.total_input_tokens,
                 "output_tokens": session_result.total_output_tokens,
-                "prompt_bytes": eval_result.prompt_bytes,
-                "tool_output_bytes": eval_result.tool_output_bytes,
-                "approx_context_tokens": eval_result.approx_context_tokens,
+                "prompt_bytes": usage.prompt_bytes,
+                "tool_output_bytes": usage.tool_output_bytes,
+                "approx_context_tokens": usage.approx_tokens(),
                 "commands_executed": session_result.commands_executed.iter().map(|c| {
                     serde_json::json!({
                         "args": c.args,
@@ -375,15 +328,13 @@ fn run_scenario(
                 eval_result.efficiency
             );
 
-            if let Some(tokens) = eval_result.approx_context_tokens {
-                println!(
-                    "{}: ~{} tokens ({} prompt bytes, {} tool output bytes)",
-                    "Context".white().bold(),
-                    tokens,
-                    eval_result.prompt_bytes.unwrap_or(0),
-                    eval_result.tool_output_bytes.unwrap_or(0)
-                );
-            }
+            println!(
+                "{}: ~{} tokens ({} prompt bytes, {} tool output bytes)",
+                "Context".white().bold(),
+                usage.approx_tokens(),
+                usage.prompt_bytes,
+                usage.tool_output_bytes
+            );
 
             // Outcomes
             println!("\n{}:", "Expected Outcomes".white().bold());
@@ -420,12 +371,28 @@ fn run_scenario(
     Ok(())
 }
 
-/// What the harness measured of the context the agent consumed
-fn context_usage(session: &runner::SessionResult) -> ContextUsage {
-    ContextUsage {
-        prompt_bytes: session.prompt_bytes,
-        tool_output_bytes: Some(session.tool_output_bytes()),
-    }
+/// Prepare a run of `scenario`: a cache private to it, removed when the
+/// returned directory is dropped, and what every provider is given.
+///
+/// The call log is cleared last, so only the agent's own calls are scored:
+/// not an earlier run's, nor those of the setup.
+fn prepare_run(
+    scenario_path: &Path,
+    scenario: &Scenario,
+    context: runner::ContextMode,
+) -> Result<(tempfile::TempDir, runner::RunSetup)> {
+    let cache_dir = tempfile::Builder::new()
+        .prefix("track-agent-cache-")
+        .tempdir()
+        .context("Failed to create run cache dir")?;
+    let run = runner::RunSetup::prepare(scenario_path, scenario, context, cache_dir.path());
+    tracker_mock::clear_call_log(scenario_path).with_context(|| {
+        format!(
+            "Failed to clear the call log in {}",
+            scenario_path.display()
+        )
+    })?;
+    Ok((cache_dir, run))
 }
 
 /// Run one agent session against `scenario` with the selected provider
@@ -444,14 +411,7 @@ fn run_agent_session(
     let scenario = scenario_for_run(scenario, options.hints);
 
     // Held until the session ends, then removed.
-    let cache_dir = RunCacheDir::create()?;
-    runner::set_run_settings(runner::RunSettings {
-        context: options.context,
-        scenario_path: scenario_path.clone(),
-        backend: scenario.scenario.backend.to_ascii_lowercase(),
-        default_project: scenario.setup.default_project.clone(),
-        cache_dir: Some(cache_dir.0.clone()),
-    });
+    let (_cache_dir, run) = prepare_run(&scenario_path, &scenario, options.context)?;
 
     match provider {
         Provider::Anthropic => {
@@ -460,6 +420,7 @@ fn run_agent_session(
             runner::SessionRunner::new(
                 scenario_path,
                 scenario,
+                run,
                 api_key.to_string(),
                 model.unwrap_or(DEFAULT_ANTHROPIC_MODEL).to_string(),
                 max_turns,
@@ -470,12 +431,14 @@ fn run_agent_session(
         Provider::ClaudeCode => claude_code::run_claude_code(&claude_code::ClaudeCodeConfig {
             scenario_path,
             scenario,
+            run,
             max_turns,
             verbose,
         }),
         Provider::CopilotCli => copilot_cli::run_copilot_cli(&copilot_cli::CopilotCliConfig {
             scenario_path,
             scenario,
+            run,
             max_turns,
             verbose,
             copilot_mode: copilot_cli::CopilotMode::Suggest,
@@ -483,6 +446,7 @@ fn run_agent_session(
         Provider::Gemini => gemini_runner::run_gemini(&gemini_runner::GeminiRunnerConfig {
             scenario_path,
             scenario,
+            run,
             max_turns,
             verbose,
         }),
@@ -536,10 +500,6 @@ fn run_all_scenarios(
             );
         }
 
-        // Clear call log
-        let log_path = scenario_path.join("call_log.jsonl");
-        std::fs::write(&log_path, "")?;
-
         let session_result = match run_agent_session(
             provider,
             scenario_path,
@@ -566,7 +526,8 @@ fn run_all_scenarios(
         let client = MockClient::new(scenario_path)?;
         let calls = client.read_call_log()?;
         let evaluator = Evaluator::new(scenario.clone());
-        let eval_result = evaluator.evaluate_with_usage(&calls, context_usage(&session_result));
+        let usage = session_result.context_usage();
+        let eval_result = evaluator.evaluate_with_usage(&calls, Some(usage));
 
         let passed = eval_result.score_percent >= min_score as f64 && eval_result.success;
         if !passed {
@@ -582,26 +543,22 @@ fn run_all_scenarios(
             "turns_used": session_result.turns_used,
             "input_tokens": session_result.total_input_tokens,
             "output_tokens": session_result.total_output_tokens,
-            "prompt_bytes": eval_result.prompt_bytes,
-            "tool_output_bytes": eval_result.tool_output_bytes,
-            "approx_context_tokens": eval_result.approx_context_tokens,
+            "prompt_bytes": usage.prompt_bytes,
+            "tool_output_bytes": usage.tool_output_bytes,
+            "approx_context_tokens": usage.approx_tokens(),
             "commands_executed_count": session_result.commands_executed.len(),
             "success": eval_result.success,
         }));
 
         if matches!(format, OutputFormat::Text) {
             let status = if passed { "PASS".green() } else { "FAIL".red() };
-            let context = eval_result
-                .approx_context_tokens
-                .map(|tokens| format!(", ~{tokens} context tokens"))
-                .unwrap_or_default();
             println!(
-                "  {} - {:.0}% ({} calls, {} turns{})",
+                "  {} - {:.0}% ({} calls, {} turns, ~{} context tokens)",
                 status,
                 eval_result.score_percent,
                 eval_result.total_calls,
                 session_result.turns_used,
-                context
+                usage.approx_tokens()
             );
         }
 
@@ -735,8 +692,8 @@ mod tests {
     use super::*;
 
     fn scenario_with_hints() -> Scenario {
-        let dir = RunCacheDir::create().unwrap();
-        let path = dir.0.join("scenario.toml");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenario.toml");
         std::fs::write(
             &path,
             r#"
@@ -777,11 +734,68 @@ context = "Valid Priority values: Low, High"
     }
 
     #[test]
-    fn run_cache_dir_is_removed_on_drop() {
-        let dir = RunCacheDir::create().unwrap();
-        let path = dir.0.clone();
-        assert!(path.is_dir());
-        drop(dir);
-        assert!(!path.exists());
+    fn prepare_run_clears_a_stale_call_log_and_owns_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let scenario = scenario_with_hints();
+        let log = tracker_mock::call_log_path(dir.path());
+        // Prime mode is left out: it would run whatever `track` is on PATH.
+        for context in [runner::ContextMode::None, runner::ContextMode::Skill] {
+            // A call left over from an earlier run.
+            tracker_mock::log_cli_command(dir.path(), "get_issue", &[("id", "DEMO-1")]);
+
+            let (cache_dir, run) = prepare_run(dir.path(), &scenario, context).unwrap();
+
+            assert_eq!(std::fs::read_to_string(&log).unwrap(), "", "{context:?}");
+            let cache = cache_dir.path().to_path_buf();
+            assert!(cache.is_dir());
+            assert_eq!(
+                run.track_env[0],
+                ("TRACK_CACHE_DIR", cache.display().to_string())
+            );
+            drop(cache_dir);
+            assert!(!cache.exists());
+        }
+    }
+
+    #[test]
+    fn prepare_run_fails_when_the_call_log_cannot_be_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let err = prepare_run(&missing, &scenario_with_hints(), runner::ContextMode::None)
+            .expect_err("a stale log must not be scored silently");
+        assert!(
+            err.to_string().starts_with("Failed to clear the call log"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cli_definition_is_valid() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn run_and_run_all_share_the_run_options() {
+        let defaults = RunOptions {
+            hints: Hints::On,
+            context: runner::ContextMode::Skill,
+        };
+        let chosen = RunOptions {
+            hints: Hints::Off,
+            context: runner::ContextMode::Prime,
+        };
+        let options_of = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+            Commands::Run { options, .. } | Commands::RunAll { options, .. } => options,
+            other => panic!("unexpected command {other:?}"),
+        };
+
+        assert_eq!(options_of(&["track-agent", "run", "s"]), defaults);
+        assert_eq!(options_of(&["track-agent", "run-all"]), defaults);
+        let flags = ["--hints", "off", "--context", "prime"];
+        let run = [&["track-agent", "run", "s"][..], &flags[..]].concat();
+        let run_all = [&["track-agent", "run-all"][..], &flags[..]].concat();
+        assert_eq!(options_of(&run), chosen);
+        assert_eq!(options_of(&run_all), chosen);
     }
 }

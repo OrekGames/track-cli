@@ -11,8 +11,9 @@ use tracker_core::{
 
 use crate::client::GitHubClient;
 use crate::convert::{
-    convert_query_to_github, create_issue_from_core, get_standard_custom_fields,
-    github_issue_to_core, github_timeline_to_events, update_issue_from_core,
+    FIELD_RULES, WriteTarget, convert_query_to_github, create_issue_from_core,
+    get_standard_custom_fields, github_issue_to_core, github_timeline_to_events,
+    update_issue_from_core, write_target,
 };
 use crate::wiki::{WikiAttachment, WikiPage};
 
@@ -122,7 +123,7 @@ impl IssueTracker for GitHubClient {
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
         let number = parse_issue_number(id)?;
-        let github_update = update_issue_from_core(update);
+        let github_update = update_issue_from_core(update)?;
         let updated = self.update_issue(number, &github_update)?;
 
         // If a parent was requested, add as sub-issue via the sub-issues API
@@ -331,17 +332,9 @@ impl IssueTracker for GitHubClient {
         Ok(github_timeline_to_events(timeline))
     }
 
-    // The write path reads only the state and the assignee from custom
-    // fields; anything else is dropped without a word.
+    // The same rules the write path reads names with.
     fn validation_rules(&self) -> tracker_core::ValidationRules {
-        tracker_core::ValidationRules {
-            names_exhaustive: true,
-            name_aliases: &[("State", "Status"), ("Stage", "Status")],
-            read_only_fields: &[
-                ("Labels", "Use --tag <label> (repeatable) instead."),
-                ("Milestone", "track cannot set milestones yet."),
-            ],
-        }
+        FIELD_RULES
     }
 
     fn check_field_value(
@@ -349,7 +342,7 @@ impl IssueTracker for GitHubClient {
         field: &ProjectCustomField,
         value: &str,
     ) -> tracker_core::ValueCheck {
-        if field.name.eq_ignore_ascii_case("status") {
+        if write_target(&field.name) == Some(WriteTarget::State) {
             return match crate::convert::normalize_state(value) {
                 Some(_) => tracker_core::ValueCheck::Valid,
                 None => tracker_core::ValueCheck::Invalid {

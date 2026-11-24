@@ -7,7 +7,7 @@
 //! your local machine.
 
 use crate::permissions::format_allowed_bash_pattern;
-use crate::runner::{CommandExecution, SessionResult};
+use crate::runner::{CommandExecution, RunSetup, SessionResult};
 use crate::subprocess::{StderrCapture, ensure_success, route_track_to_mock};
 use crate::tools::{find_track_binary, is_track_command, parse_track_args};
 use anyhow::{Context, Result};
@@ -22,6 +22,7 @@ use tracker_mock::Scenario;
 pub struct ClaudeCodeConfig {
     pub scenario_path: PathBuf,
     pub scenario: Scenario,
+    pub run: RunSetup,
     pub max_turns: usize,
     pub verbose: bool,
 }
@@ -118,7 +119,7 @@ pub struct ResultEvent {
 /// Run Claude Code against a scenario
 pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<SessionResult> {
     // Build system prompt
-    let system_prompt = build_system_prompt(&config.scenario);
+    let system_prompt = build_system_prompt(&config.scenario, &config.run.reference);
 
     // Build the task prompt
     let task_prompt = build_task_prompt(&config.scenario);
@@ -152,7 +153,12 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<SessionResult> {
         &task_prompt,
     ]);
 
-    route_track_to_mock(&mut cmd, &config.scenario_path, &track_bin);
+    route_track_to_mock(
+        &mut cmd,
+        &config.scenario_path,
+        &track_bin,
+        &config.run.track_env,
+    );
 
     // Unset CLAUDECODE to allow running inside a Claude Code session
     cmd.env_remove("CLAUDECODE");
@@ -206,12 +212,12 @@ pub(crate) fn run_stream_json_session(
         total_input_tokens: None,  // Not available from CLI
         total_output_tokens: None, // Not available from CLI
         commands_executed,
-        prompt_bytes: Some(prompt_bytes),
+        prompt_bytes,
     })
 }
 
-/// Build system prompt for Claude Code using the track skill file
-pub(crate) fn build_system_prompt(scenario: &Scenario) -> String {
+/// Build system prompt for Claude Code, with the run's `reference` material
+pub(crate) fn build_system_prompt(scenario: &Scenario, reference: &str) -> String {
     let mut prompt = String::new();
 
     prompt.push_str("# Evaluation Mode\n\n");
@@ -225,7 +231,7 @@ pub(crate) fn build_system_prompt(scenario: &Scenario) -> String {
     prompt.push_str("- Minimize the number of commands you execute\n");
     prompt.push_str("- Use `-o json` when you need to parse output programmatically\n\n");
 
-    prompt.push_str(&crate::runner::reference_block());
+    prompt.push_str(reference);
 
     if let Some(context) = &scenario.setup.context {
         prompt.push_str("## Scenario Context\n\n");
@@ -439,6 +445,26 @@ mod tests {
         } else {
             panic!("Expected Assistant event");
         }
+    }
+
+    #[test]
+    fn system_prompt_carries_the_run_reference_it_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenario.toml");
+        std::fs::write(
+            &path,
+            "[scenario]\nname = \"t\"\ndescription = \"t\"\n[setup]\nprompt = \"Do it.\"\n",
+        )
+        .unwrap();
+        let scenario = Scenario::load(&path).unwrap();
+
+        let with = build_system_prompt(&scenario, "## Project briefing\n\nDEMO\n\n");
+        let without = build_system_prompt(&scenario, "");
+        assert!(with.contains("## Project briefing\n\nDEMO\n\n"));
+        assert_eq!(
+            with.len() - without.len(),
+            "## Project briefing\n\nDEMO\n\n".len()
+        );
     }
 
     #[test]

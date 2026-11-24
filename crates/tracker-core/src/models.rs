@@ -105,6 +105,30 @@ impl CustomField {
             | CustomField::Unknown { name, .. } => name,
         }
     }
+
+    /// The field's value as plain text, whatever its type: the enum or
+    /// state name, the user's login, the text, a multi-value field's values
+    /// joined with `", "`, or an untyped value as written (a JSON string
+    /// without quotes, anything else as JSON). `None` when the field has no
+    /// value: unset, `null`, or a multi-value field with no values.
+    ///
+    /// A state's resolved flag and a user's display name are not part of it.
+    pub fn value_text(&self) -> Option<String> {
+        match self {
+            CustomField::SingleEnum { value, .. }
+            | CustomField::State { value, .. }
+            | CustomField::Text { value, .. } => value.clone(),
+            CustomField::SingleUser { login, .. } => login.clone(),
+            CustomField::MultiEnum { values, .. } => {
+                (!values.is_empty()).then(|| values.join(", "))
+            }
+            CustomField::Unknown { value, .. } => match value.as_ref()? {
+                serde_json::Value::Null => None,
+                serde_json::Value::String(text) => Some(text.clone()),
+                other => Some(other.to_string()),
+            },
+        }
+    }
 }
 
 /// Tag on an issue
@@ -365,6 +389,20 @@ impl CustomFieldUpdate {
             | CustomFieldUpdate::MultiEnum { name, .. }
             | CustomFieldUpdate::State { name, .. }
             | CustomFieldUpdate::SingleUser { name, .. } => name,
+        }
+    }
+
+    /// The values this update sets, whatever its type: the one value of a
+    /// single-value or state update, the login of a user update, or every
+    /// value of a multi-value update (none, for a request to clear it).
+    pub fn values(&self) -> Vec<&str> {
+        match self {
+            CustomFieldUpdate::SingleEnum { value, .. }
+            | CustomFieldUpdate::State { value, .. } => vec![value.as_str()],
+            CustomFieldUpdate::SingleUser { login, .. } => vec![login.as_str()],
+            CustomFieldUpdate::MultiEnum { values, .. } => {
+                values.iter().map(String::as_str).collect()
+            }
         }
     }
 }
@@ -743,6 +781,140 @@ mod tests {
         let result = SearchResult::from_items(vec![1, 2, 3]);
         assert_eq!(result.items, vec![1, 2, 3]);
         assert_eq!(result.total, None);
+    }
+
+    #[test]
+    fn custom_field_value_text_covers_every_variant() {
+        let name = || "F".to_string();
+        let cases = [
+            (
+                CustomField::SingleEnum {
+                    name: name(),
+                    value: Some("High".into()),
+                },
+                Some("High"),
+            ),
+            (
+                CustomField::SingleEnum {
+                    name: name(),
+                    value: None,
+                },
+                None,
+            ),
+            (
+                CustomField::State {
+                    name: name(),
+                    value: Some("Done".into()),
+                    is_resolved: true,
+                },
+                Some("Done"),
+            ),
+            (
+                CustomField::SingleUser {
+                    name: name(),
+                    login: Some("jane".into()),
+                    display_name: Some("Jane Doe".into()),
+                },
+                Some("jane"),
+            ),
+            (
+                CustomField::SingleUser {
+                    name: name(),
+                    login: None,
+                    display_name: Some("Jane Doe".into()),
+                },
+                None,
+            ),
+            (
+                CustomField::Text {
+                    name: name(),
+                    value: Some("notes".into()),
+                },
+                Some("notes"),
+            ),
+            (
+                CustomField::MultiEnum {
+                    name: name(),
+                    values: vec!["a".into(), "b".into()],
+                },
+                Some("a, b"),
+            ),
+            (
+                CustomField::MultiEnum {
+                    name: name(),
+                    values: vec![],
+                },
+                None,
+            ),
+            (
+                CustomField::Unknown {
+                    name: name(),
+                    value: Some(serde_json::json!("plain")),
+                },
+                Some("plain"),
+            ),
+            (
+                CustomField::Unknown {
+                    name: name(),
+                    value: Some(serde_json::json!(3.5)),
+                },
+                Some("3.5"),
+            ),
+            (
+                CustomField::Unknown {
+                    name: name(),
+                    value: Some(serde_json::json!({"k": 1})),
+                },
+                Some(r#"{"k":1}"#),
+            ),
+            (
+                CustomField::Unknown {
+                    name: name(),
+                    value: Some(serde_json::Value::Null),
+                },
+                None,
+            ),
+            (
+                CustomField::Unknown {
+                    name: name(),
+                    value: None,
+                },
+                None,
+            ),
+        ];
+        for (field, expected) in cases {
+            assert_eq!(field.value_text().as_deref(), expected, "{field:?}");
+        }
+    }
+
+    #[test]
+    fn custom_field_update_values_cover_every_variant() {
+        let name = || "F".to_string();
+        let single = CustomFieldUpdate::SingleEnum {
+            name: name(),
+            value: "High".into(),
+        };
+        let state = CustomFieldUpdate::State {
+            name: name(),
+            value: "Done".into(),
+        };
+        let user = CustomFieldUpdate::SingleUser {
+            name: name(),
+            login: "jane".into(),
+        };
+        let multi = CustomFieldUpdate::MultiEnum {
+            name: name(),
+            values: vec!["a".into(), "b".into()],
+        };
+        let cleared = CustomFieldUpdate::MultiEnum {
+            name: name(),
+            values: vec![],
+        };
+        assert_eq!(single.values(), ["High"]);
+        assert_eq!(state.values(), ["Done"]);
+        assert_eq!(user.values(), ["jane"]);
+        assert_eq!(multi.values(), ["a", "b"]);
+        assert!(cleared.values().is_empty());
     }
 
     #[test]
