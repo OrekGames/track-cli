@@ -68,8 +68,18 @@ impl TrackerError {
     /// Whether running the same request again later may succeed: the
     /// tracker was unreachable, overloaded or rate limiting.
     pub fn retryable(&self) -> bool {
-        matches!(self.code(), "network" | "rate_limited" | "server")
+        is_retryable_code(self.code())
     }
+}
+
+/// The [`TrackerError::code`]s whose failure may go away on its own.
+pub const RETRYABLE_CODES: &[&str] = &["network", "rate_limited", "server"];
+
+/// Whether an error with this code may succeed if tried again later: the
+/// tracker was unreachable, overloaded or rate limiting. The one definition
+/// behind [`TrackerError::retryable`], for callers that only hold the code.
+pub fn is_retryable_code(code: &str) -> bool {
+    RETRYABLE_CODES.contains(&code)
 }
 
 pub type Result<T> = std::result::Result<T, TrackerError>;
@@ -106,6 +116,41 @@ impl From<std::io::Error> for TrackerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retryable_follows_the_code() {
+        let cases = [
+            (TrackerError::Http("reset".into()), true),
+            (
+                TrackerError::Api {
+                    status: 429,
+                    message: String::new(),
+                },
+                true,
+            ),
+            (
+                TrackerError::Api {
+                    status: 503,
+                    message: String::new(),
+                },
+                true,
+            ),
+            (
+                TrackerError::Api {
+                    status: 404,
+                    message: String::new(),
+                },
+                false,
+            ),
+            (TrackerError::Unauthorized, false),
+            (TrackerError::InvalidInput("x".into()), false),
+        ];
+        for (err, retryable) in cases {
+            assert_eq!(err.retryable(), retryable, "{err:?}");
+            assert_eq!(is_retryable_code(err.code()), retryable, "{err:?}");
+        }
+        assert!(!is_retryable_code("issue_not_found"));
+    }
 
     #[test]
     fn from_ureq_error_keeps_ureq_text() {
