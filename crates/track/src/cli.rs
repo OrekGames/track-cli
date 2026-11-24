@@ -45,6 +45,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_cache: bool,
 
+    /// How errors are written to stderr (json: one object on one line).
+    /// TRACK_ERROR_FORMAT sets the default
+    #[arg(long, value_enum, global = true, default_value_t = crate::errors::ErrorFormat::Text, value_name = "FORMAT")]
+    pub error_format: crate::errors::ErrorFormat,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -347,7 +352,7 @@ pub enum Commands {
 }
 
 /// Shown under every subcommand's help in place of the global options.
-const GLOBAL_OPTIONS_NOTE: &str = "Global options (-o, -b, --select, --config, --no-cache, -v, --color, --url, --token): see 'track --help'";
+const GLOBAL_OPTIONS_NOTE: &str = "Global options (-o, -b, --select, --config, --no-cache, --error-format, -v, --color, --url, --token): see 'track --help'";
 
 /// Give every subcommand a hidden copy of each global option.
 ///

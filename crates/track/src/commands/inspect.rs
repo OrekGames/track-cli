@@ -57,6 +57,9 @@ struct IncludeWarning {
 struct InspectError {
     id: String,
     error: String,
+    /// Stable code of the failure, when the backend reported a typed one
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 /// Result of inspecting one issue: a flattened issue object (success) or an
@@ -151,6 +154,7 @@ pub(crate) fn handle_inspect(
                 Err(e) => InspectOutcome::Failure(InspectError {
                     id,
                     error: e.to_string(),
+                    code: Some(e.code()),
                 }),
             };
             record(outcome)?;
@@ -198,6 +202,7 @@ fn inspect_issue(
             return InspectOutcome::Failure(InspectError {
                 id: id.to_string(),
                 error: "Failed to serialize issue".to_string(),
+                code: None,
             });
         }
     };
@@ -331,6 +336,7 @@ fn include_failure(id: &str, include: &str, error: TrackerError) -> InspectOutco
     InspectOutcome::Failure(InspectError {
         id: id.to_string(),
         error: format!("Failed to fetch {include}: {error}"),
+        code: Some(error.code()),
     })
 }
 
@@ -479,6 +485,7 @@ fn output_jsonl_line(outcome: &InspectOutcome) -> Result<()> {
             "success": false,
             "id": err.id,
             "error": err.error,
+            "code": err.code,
         }))?,
     };
     let mut stdout = std::io::stdout().lock();
@@ -722,6 +729,7 @@ mod tests {
             InspectOutcome::Failure(InspectError {
                 id: "X-1".to_string(),
                 error: "boom".to_string(),
+                code: None,
             }),
             InspectOutcome::Success(Map::new()),
         ];

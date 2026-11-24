@@ -42,7 +42,7 @@ impl ValidationMode {
 
 /// Field updates that failed validation.
 #[derive(Debug)]
-pub(crate) struct FieldValidationError {
+pub struct FieldValidationError {
     pub problems: Vec<FieldProblem>,
 }
 
@@ -1431,22 +1431,33 @@ fn resolve_template_query(
             .iter()
             .any(|qt| unicode_eq_ignore_case(&qt.name, tmpl))
     {
-        return Err(anyhow!(
-            "Template '{}' does not apply to project {}: its fields have no matching values. Available templates: {}",
-            tmpl,
-            target,
-            available.join(", ")
-        ));
+        return Err(crate::errors::CliError::new(
+            "template_not_found",
+            format!(
+                "Template '{}' does not apply to project {}: its fields have no matching values. Available templates: {}",
+                tmpl,
+                target,
+                available.join(", ")
+            ),
+        )
+        .with_hint("Search with an explicit query instead; `track prime` shows this project's values.")
+        .into());
     }
-    Err(anyhow!(
-        "Template '{}' not found. Available templates: {}",
-        tmpl,
-        if available.is_empty() {
-            "(none - run 'track cache refresh' or add a [workflow_pack] to .track.toml)".to_string()
-        } else {
-            available.join(", ")
-        }
-    ))
+    Err(crate::errors::CliError::new(
+        "template_not_found",
+        format!(
+            "Template '{}' not found. Available templates: {}",
+            tmpl,
+            if available.is_empty() {
+                "(none - run 'track cache refresh' or add a [workflow_pack] to .track.toml)"
+                    .to_string()
+            } else {
+                available.join(", ")
+            }
+        ),
+    )
+    .with_hint("`track workflow list` shows every template and the query behind it.")
+    .into())
 }
 
 fn expand_template_query(
@@ -1907,7 +1918,11 @@ fn resolve_transition(
 }
 
 fn invalid_state(problem: FieldProblem) -> anyhow::Error {
-    anyhow!("{}. Pass --state <NAME> to choose one.", problem)
+    crate::errors::CliError::new(
+        "invalid_state",
+        format!("{}. Pass --state <NAME> to choose one.", problem),
+    )
+    .into()
 }
 
 /// The state to send for `request`, or why the backend would refuse it.
@@ -2026,6 +2041,9 @@ struct BatchResult<'a> {
     success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// Stable code of the failure (see `track --help` on error codes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id_readable: Option<Cow<'a, str>>,
 }
@@ -2039,6 +2057,7 @@ impl<'a> BatchResult<'a> {
                 id,
                 success: true,
                 error: None,
+                code: None,
                 id_readable,
             },
             // `{:#}` keeps the cause chain: a context such as "Failed to update
@@ -2047,6 +2066,7 @@ impl<'a> BatchResult<'a> {
                 id,
                 success: false,
                 error: Some(format!("{:#}", e)),
+                code: Some(crate::errors::code_of(&e)),
                 id_readable: None,
             },
         }

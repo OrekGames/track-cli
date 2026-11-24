@@ -3,6 +3,7 @@ mod cli;
 mod color;
 mod commands;
 mod config;
+mod errors;
 mod fsutil;
 mod lookup;
 mod output;
@@ -66,6 +67,14 @@ fn cli_main() -> ExitCode {
     {
         cli.format = format;
     }
+    if matches.value_source("error_format") != Some(clap::parser::ValueSource::CommandLine)
+        && let Some(format) = std::env::var("TRACK_ERROR_FORMAT").ok().and_then(|value| {
+            <errors::ErrorFormat as clap::ValueEnum>::from_str(value.trim(), true).ok()
+        })
+    {
+        cli.error_format = format;
+    }
+    let error_format = cli.error_format;
 
     // Initialize color mode based on CLI flag and environment. Agent output
     // is never coloured: escape codes are noise to a model.
@@ -80,7 +89,7 @@ fn cli_main() -> ExitCode {
         if quiet_hook {
             return ExitCode::SUCCESS;
         }
-        output_error(&e);
+        output_error(&e, error_format);
         if let Some(tip) = output::untrusted_certificate_tip(&format!("{e:#}")) {
             use colored::Colorize;
             eprintln!("{} {}", "Tip:".yellow(), tip);
@@ -284,7 +293,7 @@ fn run(cli: Cli) -> Result<()> {
             if *hook && !(configured_here && valid.is_ok()) {
                 return Ok(());
             }
-            valid?;
+            valid.map_err(|err| errors::coded("not_configured", err))?;
         }
         return commands::prime::handle_prime(&commands::prime::PrimeOptions {
             project: project.as_deref(),
@@ -316,14 +325,17 @@ fn run(cli: Cli) -> Result<()> {
         return run_with_client(&client, &client, &cli, &config, effective_backend);
     }
 
-    config.validate(effective_backend)?;
+    config
+        .validate(effective_backend)
+        .map_err(|err| errors::coded("not_configured", err))?;
     token_guard::ensure_token_destination_allowed(
         cli.config.as_deref(),
         effective_backend,
         cli.url.as_deref(),
         cli.token.as_deref(),
         &config,
-    )?;
+    )
+    .map_err(|err| errors::coded("token_refused", err))?;
 
     // Create the appropriate backend client
     let client = build_client(effective_backend, &config)?;

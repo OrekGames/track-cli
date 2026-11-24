@@ -97,10 +97,15 @@ fn select_from(mut value: Value, paths: &[Vec<String>], must_match: bool) -> any
     };
     if must_match && matched_nothing {
         let shown: Vec<String> = paths.iter().map(|path| path.join(".")).collect();
-        anyhow::bail!(
-            "--select matched nothing: no '{}' in this command's JSON output",
-            shown.join("', '")
-        );
+        return Err(crate::errors::CliError::new(
+            "select_no_match",
+            format!(
+                "--select matched nothing: no '{}' in this command's JSON output",
+                shown.join("', '")
+            ),
+        )
+        .with_hint("Run the command once without --select to see the field names.")
+        .into());
     }
     Ok(projected)
 }
@@ -590,8 +595,22 @@ fn find_field_value(issue: &Issue, name: &str) -> Option<String> {
         })
 }
 
-pub fn output_error(err: &anyhow::Error) {
-    eprintln!("{}: {:#}", "Error".red().bold(), err);
+/// Report a failure on stderr: what went wrong, its stable code, and the
+/// next step when one is known.
+pub fn output_error(err: &anyhow::Error, format: crate::errors::ErrorFormat) {
+    let report = crate::errors::describe(err);
+    match format {
+        crate::errors::ErrorFormat::Json => {
+            eprintln!("{}", crate::errors::render(&report, format));
+        }
+        crate::errors::ErrorFormat::Text => {
+            eprintln!("{}: {}", "Error".red().bold(), report.message);
+            eprintln!("{}: {}", "Code".dimmed(), report.code);
+            if let Some(hint) = &report.hint {
+                eprintln!("{}: {}", "Hint".yellow(), hint);
+            }
+        }
+    }
 }
 
 /// Advice for a request that failed because the server's certificate does

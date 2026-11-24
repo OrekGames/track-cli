@@ -264,6 +264,39 @@ exactly like a complete result. `-o agent` puts the same verdict on the last lin
 whether they agree, and `warnings` why not. `id_readable` is the issue id (`idReadable` is kept
 for older scripts).
 
+## Errors
+
+A failure prints up to three lines on stderr and exits non-zero:
+
+```
+Error: Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State, Priority, Type
+Code: unknown_field
+Hint: `track prime` lists this project's fields and their values; --no-validate sends the fields as given.
+```
+
+`Code:` is a short, stable name to branch on; `Hint:` is the next step, when one is known.
+`--error-format json` (or `TRACK_ERROR_FORMAT=json`) prints one JSON object on one line
+instead: `{"error": {"code", "message", "hint", "retryable"}}`. `retryable` is true when the
+same command may work if run again later.
+
+| Code | Meaning |
+|------|---------|
+| `auth` | The token was rejected |
+| `permission` | The token is valid but may not do this |
+| `issue_not_found`, `project_not_found`, `not_found` | No such issue, project or other resource (or the token cannot see it). `project_not_found` names the closest cached project key |
+| `unknown_field`, `invalid_value`, `read_only_field` | Field validation failed; the message lists what is valid |
+| `invalid_state` | `issue start` / `complete` asked for a state the project does not have |
+| `template_not_found` | No such `-T` template, or it does not apply to this project |
+| `select_no_match` | `--select` paths are not in this command's JSON |
+| `not_configured`, `token_refused` | No usable config, or a repository config tried to redirect the token |
+| `invalid_input`, `unsupported`, `conflict`, `api` | The tracker refused the request |
+| `rate_limited`, `server`, `network` | Retryable: the tracker is limiting, failing or unreachable |
+| `parse`, `pagination_stalled`, `io` | An unexpected response or a local file problem |
+| `error` | Anything else |
+
+Per-issue failures in batch results (`issue update A,B`, `issue inspect`) carry the same
+`code` beside their `error` text.
+
 ## Workflow hints
 
 State transitions differ per backend. `track context` reports valid transitions

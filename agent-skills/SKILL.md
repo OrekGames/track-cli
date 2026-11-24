@@ -24,7 +24,41 @@ disable-model-invocation: false
 
 - **Exit code**: `0` = success, `1` = any failure. A partially-applied update (some fields ignored by the backend) still exits `0` — with a warning on stderr.
 - **stdout** carries only the result: pretty-printed JSON in `-o json` mode, or the same document as compact JSON Lines in `-o jsonl` mode. JSONL is root-aware: an array (list commands such as `i s`, `p ls`, `i comments`) prints one element per line and an empty array prints nothing; anything else (an object such as `i g`, a batch summary, a report) prints on a single line. Nested arrays stay inside their line. Every command that prints JSON accepts `-o jsonl`; `completions` rejects it.
-- **stderr** carries ALL diagnostics as plain text — errors (`Error: ...`), `⚠ Warning:` lines, pagination hints, progress — **even in JSON mode**. Never parse stdout for error objects; check the exit code and read stderr.
+- **stderr** carries ALL diagnostics as plain text — errors, `⚠ Warning:` lines, pagination hints, progress — **even in JSON mode**. Never parse stdout for error objects; check the exit code and read stderr.
+
+### Errors
+
+A failure prints up to three lines on stderr and exits non-zero:
+
+```
+Error: Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State, Priority, Type
+Code: unknown_field
+Hint: `track prime` lists this project's fields and their values; --no-validate sends the fields as given.
+```
+
+`Code:` is a short, stable name to branch on; `Hint:` is the next step, when one is known.
+`--error-format json` (or `TRACK_ERROR_FORMAT=json`) prints one JSON object on one line
+instead: `{"error": {"code", "message", "hint", "retryable"}}`. `retryable` is true when the
+same command may work if run again later.
+
+| Code | Meaning |
+|------|---------|
+| `auth` | The token was rejected |
+| `permission` | The token is valid but may not do this |
+| `issue_not_found`, `project_not_found`, `not_found` | No such issue, project or other resource (or the token cannot see it). `project_not_found` names the closest cached project key |
+| `unknown_field`, `invalid_value`, `read_only_field` | Field validation failed; the message lists what is valid |
+| `invalid_state` | `issue start` / `complete` asked for a state the project does not have |
+| `template_not_found` | No such `-T` template, or it does not apply to this project |
+| `select_no_match` | `--select` paths are not in this command's JSON |
+| `not_configured`, `token_refused` | No usable config, or a repository config tried to redirect the token |
+| `invalid_input`, `unsupported`, `conflict`, `api` | The tracker refused the request |
+| `rate_limited`, `server`, `network` | Retryable: the tracker is limiting, failing or unreachable |
+| `parse`, `pagination_stalled`, `io` | An unexpected response or a local file problem |
+| `error` | Anything else |
+
+Per-issue failures in batch results (`issue update A,B`, `issue inspect`) carry the same
+`code` beside their `error` text.
+
 
 ## Backend Comparison
 
@@ -912,6 +946,6 @@ Setting `TRACK_MOCK_DIR=./fixtures/scenarios/<name>` routes **every** command to
 15. **Link types**: `relates`, `depends`, `required`, `duplicates`, `duplicated-by`, `subtask`, `parent` (unrecognized types pass through as-is); get link IDs for `unlink` from `track -o json <ID> --full`
 16. **Link type mappings**: Override via `[backend.link_mappings]` tables in `.track.toml` (file-only; not settable via `config set`)
 17. **Resolution vs closed**: the JSON `resolved` field is a timestamp that can be null on Done issues — use the State field's `is_resolved` for closedness
-18. **Error handling**: exit code 1 + `Error:` on stderr (text even in JSON mode); check `track config test` first; common issues are expired tokens and wrong URLs
+18. **Error handling**: exit code 1, then `Error:`, `Code:` and (often) `Hint:` on stderr, in JSON mode too. Branch on the code; follow the hint
 19. **Mock mode**: `TRACK_MOCK_DIR` silently redirects all commands to fixtures — verify it is unset when results look canned
 20. **Agent skills**: `track init --skills` installs this skill file globally for Claude Code, GitHub Copilot, Cursor, and Gemini CLI
