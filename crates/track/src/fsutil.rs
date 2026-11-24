@@ -168,17 +168,16 @@ pub(crate) fn atomic_write_user_file(path: &Path, content: &[u8]) -> Result<()> 
     write_and_rename(&target, content, true, Mode::Keep(permissions))
 }
 
-#[cfg(test)]
+// Every test here checks Unix permissions or symlinks.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     fn mode_of(path: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
         fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_user_file_keeps_its_mode_and_its_folder_keeps_its_mode() {
         use std::os::unix::fs::PermissionsExt;
@@ -199,7 +198,6 @@ mod tests {
         assert_eq!(fs::read_dir(&repo).unwrap().count(), 1);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_new_user_file_and_its_folders_get_the_default_mode_not_a_private_one() {
         let dir = tempfile::tempdir().unwrap();
@@ -217,7 +215,6 @@ mod tests {
         assert_eq!(mode_of(file.parent().unwrap()), mode_of(&reference_dir));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_symlinked_user_file_stays_a_link_and_its_target_is_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -237,7 +234,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&link).unwrap(), "{\"a\": 1}\n");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_dangling_link_gets_its_target_created() {
         let dir = tempfile::tempdir().unwrap();
@@ -253,7 +249,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn track_state_stays_private() {
         let dir = tempfile::tempdir().unwrap();
