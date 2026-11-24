@@ -311,6 +311,19 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+    /// Set up AI coding agents: skill files, a session hook, project instructions
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommands,
+    },
+    /// Print a reference topic (backend query syntax, JSON shapes, error codes, ...)
+    ///
+    /// The same references the agent skill points to, from this binary, so
+    /// they match the version in use. Without a topic, lists them.
+    Guide {
+        /// Topic to print, e.g. jira, github, json, output
+        topic: Option<String>,
+    },
     /// Initialize a .track.toml config file
     ///
     /// Creates a configuration file in the current directory (or globally with --global).
@@ -409,6 +422,47 @@ impl Cli {
         let mut cmd = Cli::command();
         clap_complete::generate(shell, &mut cmd, "track", &mut std::io::stdout());
     }
+}
+
+/// Where agent setup is written.
+#[derive(ValueEnum, Clone, Debug, Copy, Default, PartialEq, Eq)]
+pub enum AgentScope {
+    /// Your home directory: applies to every project on this machine
+    #[default]
+    User,
+    /// The current directory: meant to be committed and shared with the team
+    Project,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentCommands {
+    /// Install the skill files and the session hook
+    ///
+    /// The hook makes Claude Code run `track prime --hook` at the start of
+    /// every session (and after compaction), which prints the project
+    /// briefing in directories that have a .track.toml and nothing elsewhere.
+    /// It also sets TRACK_OUTPUT=agent for compact output. With --scope
+    /// project, a short block in AGENTS.md tells other tools to run
+    /// `track prime` themselves.
+    Install {
+        /// Where to install
+        #[arg(long, value_enum, default_value_t = AgentScope::User)]
+        scope: AgentScope,
+        /// Install only the skill files
+        #[arg(long, conflicts_with = "hooks_only")]
+        skills_only: bool,
+        /// Install only the session hook (and, for a project, AGENTS.md)
+        #[arg(long)]
+        hooks_only: bool,
+    },
+    /// Remove what `agent install` wrote, and nothing else
+    Uninstall {
+        /// Which installation to remove
+        #[arg(long, value_enum, default_value_t = AgentScope::User)]
+        scope: AgentScope,
+    },
+    /// Show what is installed for you and for the current directory
+    Status,
 }
 
 #[derive(Subcommand, Debug)]

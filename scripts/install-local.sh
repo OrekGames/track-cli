@@ -52,17 +52,11 @@ mkdir -p "$COMPLETIONS_DIR"
 "$INSTALL_DIR/$BINARY_NAME" completions zsh  > "$COMPLETIONS_DIR/_track"
 "$INSTALL_DIR/$BINARY_NAME" completions fish > "$COMPLETIONS_DIR/track.fish"
 
-# Install agent skill globally for all supported AI coding tools
-SKILL_SRC="$PROJECT_DIR/agent-skills/SKILL.md"
+# Install the agent skill and session hook for all supported AI coding tools.
+# The binary carries the skill files, so it is the one place they come from.
 echo ""
 echo "Installing agent skills for AI coding tools..."
-
-for TOOL_DIR in .claude .copilot .cursor .gemini; do
-    TOOL_SKILL_DIR="$HOME/$TOOL_DIR/skills/track"
-    mkdir -p "$TOOL_SKILL_DIR"
-    cp "$SKILL_SRC" "$TOOL_SKILL_DIR/SKILL.md"
-    echo "  $TOOL_SKILL_DIR/SKILL.md"
-done
+"$INSTALL_DIR/$BINARY_NAME" agent install
 
 # Create global config template if it doesn't exist
 GLOBAL_CONFIG="$INSTALL_DIR/.track.toml"

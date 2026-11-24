@@ -448,6 +448,7 @@ fn run_agent_session(
     runner::set_run_settings(runner::RunSettings {
         context: options.context,
         scenario_path: scenario_path.clone(),
+        backend: scenario.scenario.backend.to_ascii_lowercase(),
         cache_dir: Some(cache_dir.0.clone()),
     });
 

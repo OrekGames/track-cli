@@ -165,27 +165,35 @@ track i new -p PROJ -s "Title" --body-file ./body.md   # "-" reads from stdin
 track i cmt PROJ-123 --body-file ./comment.md
 ```
 
-## Agent skills
-
-`track` ships installable agent skills that teach assistants how to use the CLI:
+## Agent setup
 
 ```bash
-track init --skills           # Install skills only; no backend connection config change
-track init --skills --url ... # Combine with configuration initialization
+track agent install                  # For you: skills for every tool, plus the Claude Code session hook
+track agent install --scope project  # For the team: writes into this repository (commit the result)
+track agent status                   # What is installed, for you and for this directory
+track agent uninstall [--scope project]
 ```
 
-The command installs the same `track` skill reference for these agents:
+| What | User scope (default) | Project scope |
+|------|----------------------|---------------|
+| Skill | `~/.claude`, `~/.copilot`, `~/.cursor`, `~/.gemini` under `skills/track/` | `.claude/skills/track/` |
+| Session hook (Claude Code) | `~/.claude/settings.json` | `.claude/settings.json` |
+| Instructions for other tools | not written | a marked block in `AGENTS.md` |
 
-| Agent | Installed path |
-| --- | --- |
-| Claude Code | `~/.claude/skills/track/SKILL.md` |
-| GitHub Copilot | `~/.copilot/skills/track/SKILL.md` |
-| Cursor | `~/.cursor/skills/track/SKILL.md` |
-| Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
+- **The session hook** runs `track prime --hook` at the start of every Claude Code session and
+  after compaction. In a directory with its own `.track.toml` that prints the project briefing
+  into the agent's context; anywhere else it prints nothing. It also sets `TRACK_OUTPUT=agent`.
+- **The skill** is a core of under 6 KB (commands, output modes, error handling, the traps) and
+  one reference per topic that an agent reads only when it needs it. `track guide <topic>`
+  prints the same references from the binary, for tools that do not load skills.
+- **The `AGENTS.md` block** tells tools without session hooks to run `track prime` themselves.
+  It is static, so it never goes stale.
+- The settings file is edited in place: key order and everything already in it are kept, a file
+  that does not parse is left untouched, and `uninstall` removes only what `install` added.
+- `--skills-only` and `--hooks-only` install one half. `track init --skills` still works and
+  installs the skills for you.
 
-The installed skill is guidance only. It teaches agents the command surface,
-JSON mode, context/cache workflow, backend differences, and batch-operation
-patterns; credentials stay in `.track.toml` or environment variables.
+Credentials stay in `.track.toml` or environment variables; nothing here touches them.
 
 ## Workflow packs
 

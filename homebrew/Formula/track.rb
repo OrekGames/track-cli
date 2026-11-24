@@ -60,7 +60,7 @@ class Track < Formula
     # Keep a reference copy of the agent skill. Homebrew runs post-install
     # with an isolated HOME, so the skill is installed per user by
     # `track init --skills` (see caveats) rather than by the formula.
-    pkgshare.install "agent-skills/SKILL.md" if File.exist?("agent-skills/SKILL.md")
+    pkgshare.install "agent-skills" if File.directory?("agent-skills")
   end
 
   def caveats

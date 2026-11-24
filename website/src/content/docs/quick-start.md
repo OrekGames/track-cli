@@ -40,10 +40,10 @@ Supported agent destinations:
 
 | Agent | Installed path |
 | --- | --- |
-| Claude Code | `~/.claude/skills/track/SKILL.md` |
-| GitHub Copilot | `~/.copilot/skills/track/SKILL.md` |
-| Cursor | `~/.cursor/skills/track/SKILL.md` |
-| Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
+| Claude Code | `~/.claude/skills/track/` (`SKILL.md` plus `references/`) |
+| GitHub Copilot | `~/.copilot/skills/track/` (`SKILL.md` plus `references/`) |
+| Cursor | `~/.cursor/skills/track/` (`SKILL.md` plus `references/`) |
+| Gemini CLI | `~/.gemini/skills/track/` (`SKILL.md` plus `references/`) |
 
 The skill files do not store backend credentials. They are documentation for
 assistants; `.track.toml` remains the config file that contains tokens and

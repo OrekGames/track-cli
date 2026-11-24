@@ -161,7 +161,8 @@ track init --url https://linear.app/your-workspace --token lin_api_TOKEN --backe
 
 ```bash
 # Install skills only (no config required)
-track init --skills
+track agent install    # Skills for every tool, plus the Claude Code session hook
+track init --skills    # The skills only
 
 # Combine with config init
 track init --url https://youtrack.example.com --token YOUR_TOKEN --skills
@@ -172,10 +173,10 @@ Cursor, and Gemini CLI:
 
 | Agent | Installed path |
 |-------|----------------|
-| Claude Code | `~/.claude/skills/track/SKILL.md` |
-| GitHub Copilot | `~/.copilot/skills/track/SKILL.md` |
-| Cursor | `~/.cursor/skills/track/SKILL.md` |
-| Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
+| Claude Code | `~/.claude/skills/track/` (`SKILL.md` plus `references/`) |
+| GitHub Copilot | `~/.copilot/skills/track/` (`SKILL.md` plus `references/`) |
+| Cursor | `~/.cursor/skills/track/` (`SKILL.md` plus `references/`) |
+| Gemini CLI | `~/.gemini/skills/track/` (`SKILL.md` plus `references/`) |
 
 The installed skill is guidance only. It does not store tracker credentials;
 tokens remain in `.track.toml`, environment variables, or CLI flags.

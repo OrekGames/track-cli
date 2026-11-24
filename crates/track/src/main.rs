@@ -172,6 +172,14 @@ fn run(cli: Cli) -> Result<()> {
         return commands::eval::handle_eval(action, cli.format.output());
     }
 
+    // Agent setup and the embedded guide need no config or API either.
+    if let Commands::Agent { action } = &cli.command {
+        return commands::agent::handle_agent(action, cli.format.output());
+    }
+    if let Commands::Guide { topic } = &cli.command {
+        return commands::agent::handle_guide(topic.as_deref(), cli.format.output());
+    }
+
     // Handle init command - creates config, no existing auth needed
     if let Commands::Init {
         url,
@@ -584,6 +592,9 @@ fn run_with_client(
         }
         Commands::Init { .. } => {
             unreachable!("Init command should be handled before API validation")
+        }
+        Commands::Agent { .. } | Commands::Guide { .. } => {
+            unreachable!("Agent and guide commands should be handled before API validation")
         }
         Commands::Open { id } => commands::open::handle_open(
             issue_client,

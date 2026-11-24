@@ -12,7 +12,7 @@ track init --skills   # optional: install the agent skill for Claude Code, Copil
 
 Homebrew runs post-install steps with an isolated `HOME`, so the formula cannot
 write the agent skill into your home directory; `track init --skills` does that
-per user. A reference copy is installed at `$(brew --prefix)/share/track/SKILL.md`.
+per user. A reference copy is installed at `$(brew --prefix)/share/track/agent-skills/`.
 
 ## Updating
 

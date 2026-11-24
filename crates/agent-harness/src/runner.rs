@@ -50,6 +50,8 @@ pub struct RunSettings {
     pub context: ContextMode,
     /// Scenario directory, used as the mock backend for `track prime`
     pub scenario_path: PathBuf,
+    /// Backend the scenario runs against (`youtrack`, `jira`, ...)
+    pub backend: String,
     /// Cache directory private to this run
     pub cache_dir: Option<PathBuf>,
 }
@@ -114,8 +116,8 @@ pub struct CommandExecution {
     pub is_error: Option<bool>,
 }
 
-/// Path to the skill file relative to the project root
-const SKILL_FILE_PATH: &str = "agent-skills/SKILL.md";
+/// The skill directory relative to the project root
+const SKILL_DIR: &str = "agent-skills";
 
 /// Strip YAML frontmatter (--- ... ---) from skill file content
 fn strip_frontmatter(content: &str) -> &str {
@@ -127,35 +129,39 @@ fn strip_frontmatter(content: &str) -> &str {
     content
 }
 
-/// Load the skill file content, stripping frontmatter
-fn load_skill_file() -> Option<String> {
-    let paths_to_try = [
-        SKILL_FILE_PATH.to_string(),
-        format!("./{}", SKILL_FILE_PATH),
-        format!("../{}", SKILL_FILE_PATH),
-        format!("../../{}", SKILL_FILE_PATH),
-    ];
-
-    for path in &paths_to_try {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            return Some(strip_frontmatter(&content).to_string());
-        }
-    }
-
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let path = std::path::Path::new(&manifest_dir)
+/// Read a file of the skill, looking for the skill directory from the
+/// working directory upwards and beside the crate.
+fn read_skill_file(relative: &str) -> Option<String> {
+    let mut candidates: Vec<PathBuf> = ["", "./", "../", "../../"]
+        .iter()
+        .map(|prefix| PathBuf::from(format!("{prefix}{SKILL_DIR}/{relative}")))
+        .collect();
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR")
+        && let Some(root) = std::path::Path::new(&manifest_dir)
             .parent() // crates/
-            .and_then(|p| p.parent()) // project root
-            .map(|p| p.join(SKILL_FILE_PATH));
-
-        if let Some(path) = path
-            && let Ok(content) = std::fs::read_to_string(&path)
-        {
-            return Some(strip_frontmatter(&content).to_string());
-        }
+            .and_then(|p| p.parent())
+    {
+        candidates.push(root.join(SKILL_DIR).join(relative));
     }
+    candidates
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+}
 
-    None
+/// What an agent with the skill installed starts with: the core skill, plus
+/// the reference for the scenario's backend, which is the first thing the
+/// core tells it to read.
+fn load_skill_file() -> Option<String> {
+    let core = read_skill_file("SKILL.md")?;
+    let mut skill = strip_frontmatter(&core).to_string();
+    let backend = run_settings().backend;
+    if !backend.is_empty()
+        && let Some(reference) = read_skill_file(&format!("references/{backend}.md"))
+    {
+        skill.push_str("\n\n---\n\n");
+        skill.push_str(&reference);
+    }
+    Some(skill)
 }
 
 /// Runs an agent session against a scenario

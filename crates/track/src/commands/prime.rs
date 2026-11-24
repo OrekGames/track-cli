@@ -644,7 +644,10 @@ pub(crate) fn render_text(context: &PrimeContext) -> String {
     for command in &context.commands {
         out.push_str(&format!("  {command}\n"));
     }
-    out.push_str("more: track context -o json · track <command> -h\n");
+    out.push_str(&format!(
+        "more: track guide {} · track context -o json · track <command> -h\n",
+        context.backend
+    ));
     out
 }
 
