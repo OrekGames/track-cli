@@ -33,7 +33,7 @@ Read before parsing `-o json` output or narrowing it with `--select`.
 - `resolved` is the **resolution timestamp**, not a closed flag: it can be `null` even for Done issues (e.g. a Jira workflow that never sets Resolution). Test closedness via the State field's `is_resolved`.
 - **`--full`** wraps the issue in an envelope: `{"issue": {...}, "links": [{"id", "direction", "link_type", "issues": [...]}], "comments": [{"id", "text", "author", "created"}]}`. Attachments are NOT included — use `track i attachments`.
 - **`i s -o json`** returns a bare array; when the page is full, a hint with the next `--skip` goes to stderr.
-- **`i start` / `i done -o json`**: `issue start` / `issue complete` JSON reports what the tracker did, not only what was asked: `state` is the requested state, `actual_state` the one the issue is in afterwards, `verified` whether they agree, and `warnings` why not. `id_readable` is the issue id (`idReadable` is kept for older scripts).
+- **`i start` / `i done -o json`**: `issue start` / `issue complete` JSON reports what the tracker did, not only what was asked: `state` is the requested state, `actual_state` the one the issue is in afterwards, `verified` whether they agree, and `warnings` why not. `id_readable` is the issue id.
 - **`i del -o json`** returns `{"success": true, "message": "..."}`.
 
 **History** (`i history`, all backends):

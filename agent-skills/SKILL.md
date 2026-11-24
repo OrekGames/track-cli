@@ -39,7 +39,7 @@ Query syntax differs per backend and is passed through as written; `track prime`
 - `-o agent` (or `TRACK_OUTPUT=agent`): compact text. One line per search hit, whole descriptions and comments, and a last line that says whether a list is complete. Prefer it for reading.
 - `-o json` / `-o jsonl`: for parsing. Add `--select id_readable,summary,fields.Priority` to keep only what you need; `fields.<Name>` is a custom field by name.
 - stdout is only the result. Warnings, pagination hints and errors go to stderr, in JSON mode too.
-- Exit code 0 is success. A failure prints `Error:`, a stable `Code:` and often a `Hint:` with the next step. Branch on the code and follow the hint.
+- Exit code 0 is success; 3 not found, 4 not allowed, 5 fix the command, 6 part of a batch failed, 7 retry later, 1 anything else. A failure prints `Error:`, a stable `Code:` and often a `Hint:` with the next step (one JSON object in JSON mode). Follow the hint.
 
 ## Rules that prevent mistakes
 

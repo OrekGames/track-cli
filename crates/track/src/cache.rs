@@ -606,8 +606,6 @@ pub struct StateFieldWorkflow {
     pub field_name: String,
     /// Available states in workflow order (sorted by ordinal)
     pub states: Vec<WorkflowState>,
-    /// Valid transitions from each state
-    pub transitions: Vec<StateTransition>,
 }
 
 /// A state in the workflow with metadata
@@ -619,17 +617,6 @@ pub struct WorkflowState {
     pub is_resolved: bool,
     /// Position in workflow (lower = earlier)
     pub ordinal: i32,
-}
-
-/// Valid transition between states
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StateTransition {
-    /// Source state name
-    pub from: String,
-    /// Target state name
-    pub to: String,
-    /// Transition type: "forward", "backward", "to_resolved", "reopen"
-    pub transition_type: String,
 }
 
 impl TrackerCache {
@@ -1538,13 +1525,9 @@ impl TrackerCache {
                     .collect();
                 states.sort_by_key(|s| s.ordinal);
 
-                // Build transitions based on workflow order
-                let transitions = Self::build_transitions(&states);
-
                 state_fields.push(StateFieldWorkflow {
                     field_name: field.name.clone(),
                     states,
-                    transitions,
                 });
             }
         }
@@ -1554,47 +1537,6 @@ impl TrackerCache {
             project_id: project_id.to_string(),
             state_fields,
         }
-    }
-
-    /// Build state transitions based on workflow order
-    /// Heuristics:
-    /// - Forward transitions: state can typically go to adjacent or nearby forward states
-    /// - Resolved states: typically reachable from later workflow stages
-    /// - Reopen: resolved states can go back to unresolved states
-    fn build_transitions(states: &[WorkflowState]) -> Vec<StateTransition> {
-        let mut transitions = Vec::new();
-
-        for (i, from_state) in states.iter().enumerate() {
-            for (j, to_state) in states.iter().enumerate() {
-                if i == j {
-                    continue; // Skip self-transitions
-                }
-
-                let transition_type = if from_state.is_resolved && !to_state.is_resolved {
-                    // Going from resolved back to unresolved
-                    "reopen"
-                } else if !from_state.is_resolved && to_state.is_resolved {
-                    // Going to a resolved state
-                    "to_resolved"
-                } else if to_state.ordinal > from_state.ordinal {
-                    // Moving forward in workflow
-                    "forward"
-                } else {
-                    // Moving backward in workflow
-                    "backward"
-                };
-
-                // Include all transitions but mark their type
-                // AI can use this to understand which transitions are typical vs atypical
-                transitions.push(StateTransition {
-                    from: from_state.name.clone(),
-                    to: to_state.name.clone(),
-                    transition_type: transition_type.to_string(),
-                });
-            }
-        }
-
-        transitions
     }
 
     /// Get fields for a project (from cache)

@@ -597,7 +597,9 @@ fn find_field_value(issue: &Issue, name: &str) -> Option<String> {
 
 /// Report a failure on stderr: what went wrong, its stable code, and the
 /// next step when one is known.
-pub fn output_error(err: &anyhow::Error, format: crate::errors::ErrorFormat) {
+///
+/// Returns the code, which decides the exit status.
+pub fn output_error(err: &anyhow::Error, format: crate::errors::ErrorFormat) -> &'static str {
     let report = crate::errors::describe(err);
     match format {
         crate::errors::ErrorFormat::Json => {
@@ -611,6 +613,7 @@ pub fn output_error(err: &anyhow::Error, format: crate::errors::ErrorFormat) {
             }
         }
     }
+    report.code
 }
 
 /// Advice for a request that failed because the server's certificate does

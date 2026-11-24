@@ -67,12 +67,17 @@ fn cli_main() -> ExitCode {
     {
         cli.format = format;
     }
-    if matches.value_source("error_format") != Some(clap::parser::ValueSource::CommandLine)
-        && let Some(format) = std::env::var("TRACK_ERROR_FORMAT").ok().and_then(|value| {
+    // Errors follow the output: JSON output gets JSON errors, unless the
+    // flag or `TRACK_ERROR_FORMAT` says otherwise.
+    if matches.value_source("error_format") != Some(clap::parser::ValueSource::CommandLine) {
+        let from_env = std::env::var("TRACK_ERROR_FORMAT").ok().and_then(|value| {
             <errors::ErrorFormat as clap::ValueEnum>::from_str(value.trim(), true).ok()
-        })
-    {
-        cli.error_format = format;
+        });
+        cli.error_format = from_env.unwrap_or(if cli.format.output() == cli::OutputFormat::Json {
+            errors::ErrorFormat::Json
+        } else {
+            errors::ErrorFormat::Text
+        });
     }
     let error_format = cli.error_format;
 
@@ -89,12 +94,12 @@ fn cli_main() -> ExitCode {
         if quiet_hook {
             return ExitCode::SUCCESS;
         }
-        output_error(&e, error_format);
+        let code = output_error(&e, error_format);
         if let Some(tip) = output::untrusted_certificate_tip(&format!("{e:#}")) {
             use colored::Colorize;
             eprintln!("{} {}", "Tip:".yellow(), tip);
         }
-        return ExitCode::from(1);
+        return ExitCode::from(errors::exit_code(code));
     }
 
     ExitCode::SUCCESS

@@ -177,6 +177,30 @@ fn project_hint(wanted: &str) -> String {
     }
 }
 
+/// The process exit code for a failure with `code`.
+///
+/// | Exit | Meaning |
+/// |------|---------|
+/// | 1 | Any other failure |
+/// | 2 | Usage: the command line did not parse (set by clap) |
+/// | 3 | Not found |
+/// | 4 | Not allowed: authentication, permission, configuration |
+/// | 5 | Invalid: the request was refused as given |
+/// | 6 | Partial: some items of a batch failed |
+/// | 7 | Retryable: the tracker is unreachable, limiting or failing |
+pub fn exit_code(code: &str) -> u8 {
+    match code {
+        "issue_not_found" | "project_not_found" | "not_found" | "template_not_found"
+        | "unknown_topic" => 3,
+        "auth" | "permission" | "not_configured" | "token_refused" => 4,
+        "unknown_field" | "invalid_value" | "read_only_field" | "invalid_state"
+        | "invalid_input" | "select_no_match" | "unsupported" | "conflict" => 5,
+        "partial_failure" => 6,
+        "network" | "rate_limited" | "server" => 7,
+        _ => 1,
+    }
+}
+
 /// How errors are written to stderr.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum ErrorFormat {
@@ -261,6 +285,17 @@ mod tests {
             assert_eq!(report.retryable, retryable, "{status}");
         }
         assert!(describe(&TrackerError::Http("timeout".to_string()).into()).retryable);
+    }
+
+    #[test]
+    fn exit_codes_group_failures_by_what_to_do_next() {
+        assert_eq!(exit_code("issue_not_found"), 3);
+        assert_eq!(exit_code("auth"), 4);
+        assert_eq!(exit_code("unknown_field"), 5);
+        assert_eq!(exit_code("partial_failure"), 6);
+        assert_eq!(exit_code("rate_limited"), 7);
+        assert_eq!(exit_code(GENERIC_CODE), 1);
+        assert_eq!(exit_code("parse"), 1);
     }
 
     #[test]

@@ -301,7 +301,11 @@ fn transition_json_reports_what_the_tracker_did() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 
-    assert_eq!(json["id_readable"], json["idReadable"]);
+    assert_eq!(json["id_readable"], "DEMO-3");
+    assert!(
+        json.get("idReadable").is_none(),
+        "the camelCase key is gone in 2.0"
+    );
     assert_eq!(json["state"], "Done");
     assert_eq!(json["verified"], json["actual_state"] == "Done");
     assert!(json["warnings"].is_array());

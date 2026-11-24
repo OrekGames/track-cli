@@ -1134,17 +1134,11 @@ track i u PROJ-123 --state "Done" --verbose
 
 ### Workflow Hints
 
-The cache includes workflow hints showing valid state transitions for each project. This helps prevent state transition failures due to workflow constraints.
+The cache holds each project's state fields and their states, in workflow order, with the resolved ones marked. `track prime` prints them on one line; `track context` has them as JSON.
 
 ```bash
-# View workflow hints in context
-track context -p PROJ
-
-# Output includes:
-# Workflow Hints:
-#   PROJ (Stage):
-#     States: Backlog -> Develop -> Review -> Test -> Done*
-#     Transitions: 10 forward, 4 backward (* = resolved)
+track prime -p PROJ
+# state field: Stage = Backlog → Develop → Review → Test → Done*   (* = resolved)
 ```
 
 **JSON structure** (from `track -o json context`):
@@ -1158,28 +1152,13 @@ track context -p PROJ
         {"name": "Backlog", "is_resolved": false, "ordinal": 1},
         {"name": "Develop", "is_resolved": false, "ordinal": 2},
         {"name": "Done", "is_resolved": true, "ordinal": 6}
-      ],
-      "transitions": [
-        {"from": "Backlog", "to": "Develop", "transition_type": "forward"},
-        {"from": "Backlog", "to": "Done", "transition_type": "to_resolved"},
-        {"from": "Done", "to": "Backlog", "transition_type": "reopen"}
       ]
     }]
   }]
 }
 ```
 
-**Transition types**:
-- `forward`: Moving later in workflow (typical progression)
-- `backward`: Moving earlier in workflow (rework/rejection)
-- `to_resolved`: Moving to a resolved/completed state
-- `reopen`: Moving from resolved back to unresolved
-
-**Use cases**:
-- Before state transitions, check if the transition is valid
-- Prefer `forward` transitions for normal workflow
-- Use `to_resolved` transitions for completion
-- Warn user about `backward` transitions (may indicate rework)
+Use the names exactly as listed. No tracker exposes its permitted transitions through this CLI: a transition the workflow refuses comes back as an error. (Before 2.0 the JSON also carried a `transitions` list. It was every pair of states, computed from the list above, and is gone.)
 
 ---
 
@@ -1321,8 +1300,7 @@ exactly like a complete result. `-o agent` puts the same verdict on the last lin
 
 `issue start` / `issue complete` JSON reports what the tracker did, not only what was asked:
 `state` is the requested state, `actual_state` the one the issue is in afterwards, `verified`
-whether they agree, and `warnings` why not. `id_readable` is the issue id (`idReadable` is kept
-for older scripts).
+whether they agree, and `warnings` why not. `id_readable` is the issue id.
 
 Subcommand help lists that command's own options. The global options (`-o`, `-b`, `--select`,
 `--config`, `--no-cache`, `-v`, `--color`, `--url`, `--token`) are documented once, in
@@ -1332,7 +1310,9 @@ Subcommand help lists that command's own options. The global options (`-o`, `-b`
 
 ## Error Handling
 
-A failure prints up to three lines on stderr and exits non-zero:
+> 2.0 changed exit codes and JSON-mode errors; see "Upgrading to 2.0" in the README.
+
+A failure prints up to three lines on stderr and exits with a code that names its kind:
 
 ```
 Error: Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State, Priority, Type
@@ -1341,9 +1321,24 @@ Hint: `track prime` lists this project's fields and their values; --no-validate 
 ```
 
 `Code:` is a short, stable name to branch on; `Hint:` is the next step, when one is known.
-`--error-format json` (or `TRACK_ERROR_FORMAT=json`) prints one JSON object on one line
-instead: `{"error": {"code", "message", "hint", "retryable"}}`. `retryable` is true when the
-same command may work if run again later.
+With `-o json` or `-o jsonl` the error is one JSON object on one line of stderr instead:
+`{"error": {"code", "message", "hint", "retryable"}}`. `--error-format text|json` (or
+`TRACK_ERROR_FORMAT`) chooses explicitly. `retryable` is true when the same command may work
+if run again later.
+
+The exit code says what kind of failure it was:
+
+| Exit | Meaning | Codes |
+|------|---------|-------|
+| 0 | Success (a write the tracker only partly applied still exits 0, with a warning on stderr) | |
+| 1 | Any other failure | `api`, `parse`, `io`, `pagination_stalled`, `error` |
+| 2 | The command line did not parse | (clap's own message) |
+| 3 | Not found | `issue_not_found`, `project_not_found`, `not_found`, `template_not_found` |
+| 4 | Not allowed or not set up | `auth`, `permission`, `not_configured`, `token_refused` |
+| 5 | Refused as given: fix the command | `unknown_field`, `invalid_value`, `read_only_field`, `invalid_state`, `invalid_input`, `select_no_match`, `unsupported`, `conflict` |
+| 6 | Some items of a batch failed | `partial_failure` |
+| 7 | Retryable: run it again later | `network`, `rate_limited`, `server` |
+
 
 | Code | Meaning |
 |------|---------|

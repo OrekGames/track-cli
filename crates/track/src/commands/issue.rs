@@ -2007,7 +2007,6 @@ fn handle_state_transition(
             output_json(&serde_json::json!({
                 "success": true,
                 "id": issue.id,
-                "idReadable": issue.id_readable,
                 "id_readable": issue.id_readable,
                 "action": action,
                 "state": state,
@@ -2288,12 +2287,14 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
     }
 
     if failed > 0 {
-        return Err(anyhow!(
-            "{} of {} issues were not {}",
-            failed,
-            results.len(),
-            action
-        ));
+        return Err(crate::errors::CliError::new(
+            "partial_failure",
+            format!("{} of {} issues were not {}", failed, results.len(), action),
+        )
+        .with_hint(
+            "The per-issue results above say which failed and why; rerun with only those ids.",
+        )
+        .into());
     }
     Ok(())
 }

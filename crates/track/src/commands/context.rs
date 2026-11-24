@@ -46,7 +46,7 @@ pub struct AggregatedContext {
     pub query_templates: Vec<CachedQueryTemplate>,
     /// Assignable users per project
     pub assignable_users: Vec<ProjectUsersCache>,
-    /// Workflow hints: valid state transitions per project
+    /// Workflow hints: the states of each state field, in workflow order
     pub workflow_hints: Vec<ProjectWorkflowHints>,
     /// Recently accessed issues (from cache LRU)
     pub recent_issues: Vec<CachedRecentIssue>,
@@ -438,23 +438,9 @@ pub fn handle_context(
                                 }
                             })
                             .collect();
-                        println!("    States: {}", states_str.join(" → ").dimmed());
-
-                        // Show forward transitions summary
-                        let forward_count = sf
-                            .transitions
-                            .iter()
-                            .filter(|t| t.transition_type == "forward")
-                            .count();
-                        let backward_count = sf
-                            .transitions
-                            .iter()
-                            .filter(|t| t.transition_type == "backward")
-                            .count();
                         println!(
-                            "    Transitions: {} forward, {} backward (* = resolved)",
-                            forward_count.to_string().green(),
-                            backward_count.to_string().yellow()
+                            "    States: {} (* = resolved)",
+                            states_str.join(" → ").dimmed()
                         );
                     }
                 }

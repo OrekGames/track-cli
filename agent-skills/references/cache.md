@@ -67,10 +67,9 @@ track -o json context                # JSON for parsing
 track context -p PROJ
 # Shows valid state transitions:
 #   PROJ (Stage): Backlog -> Develop -> Review -> Test -> Done*
-#   Transitions: 10 forward, 4 backward (* = resolved)
 ```
 
-**Transition types**: `forward` (normal), `backward` (rework), `to_resolved` (completion), `reopen` (back to unresolved)
+The hints list each state field's states in workflow order, with resolved ones marked. No tracker exposes its permitted transitions through this CLI; a refused transition comes back as an error.
 
 ## Mock Mode & Eval
 

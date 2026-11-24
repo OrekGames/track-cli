@@ -472,3 +472,24 @@ fn context_reports_how_old_its_data_is() {
 
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn context_lists_states_without_a_computed_transition_list() {
+    let dir = temp_dir();
+    write_project_config(&dir);
+    seed_cache(&dir, "youtrack", &hours_ago(1));
+
+    let stdout = stdout_of(track_in(&dir).args(["-o", "json", "context"]));
+    let json: Value = serde_json::from_str(&stdout).unwrap();
+
+    let state_field = &json["workflow_hints"][0]["state_fields"][0];
+    assert_eq!(state_field["field_name"], "Stage");
+    assert_eq!(state_field["states"].as_array().unwrap().len(), 3);
+    // An older cache may still hold the list; it is read past, not shown.
+    assert!(state_field.get("transitions").is_none(), "{state_field}");
+
+    let text = stdout_of(track_in(&dir).arg("context"));
+    assert!(!text.contains("Transitions:"), "{text}");
+
+    fs::remove_dir_all(&dir).unwrap();
+}
