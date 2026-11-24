@@ -239,7 +239,9 @@ fn guide_lists_topics_and_prints_one() {
         .args(["guide", "GitHub"])
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("# GitHub\n"))
+        // The text is embedded from files that a Windows checkout gives CRLF
+        // line endings, so only the title is asserted, not its line ending.
+        .stdout(predicate::str::starts_with("# GitHub"))
         .stdout(predicate::str::contains("is:open"));
 
     track(&dir)
