@@ -1083,7 +1083,7 @@ Field updates are checked before they are sent, on every `issue create`, `issue 
 | Mode | Flag | What is rejected |
 |------|------|------------------|
 | Default | (none) | Only what the backend would reject or silently drop (see below) |
-| Strict | `--validate` | Any field name not in the project schema, and any value not in a listed value set. Failing to fetch the schema is an error |
+| Strict | `--validate` | What the default rejects, plus any field name not in the project schema and any value outside a listed value set. Names and values the backend itself takes (`State` for `Status`, `done` on GitHub) still pass. Failing to fetch the schema is an error |
 | Off | `--no-validate` | Nothing; fields are sent as given |
 
 What the default mode can reject depends on how much a backend's schema says:
@@ -1101,7 +1101,9 @@ Priority, Type`, or the list of valid values with the nearest one.
 The default check never costs an extra request. It uses the schema the command already needs
 (any `--field` needs it for typing) or a cached one. With only `--state`, `--priority` or
 `--assignee` and no cache, nothing is checked. `--dry-run` no longer needs `--validate`: it
-checks, reports, and writes nothing.
+checks, reports, and writes nothing. A dry run always reads the schema, and asks the tracker for
+the issue it would update, so when either cannot be had it fails instead of reporting fields it
+did not check.
 
 ```bash
 track i new -p PROJ -s "Title" --field "Priority=Major"              # Checked, then created

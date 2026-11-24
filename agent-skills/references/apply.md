@@ -15,7 +15,7 @@ track apply delete-plan.json --allow-delete
 
 Key rules:
 - The plan file lives wherever you pass it. Use `-` to read JSON from stdin.
-- `--dry-run` may read/search/validate, but must not create, update, comment, link, or delete.
+- `--dry-run` may read/search/validate, but must not create, update, comment, link, or delete. Unless validation is off, it reads the schema and the issues it updates, and fails when it cannot rather than pass unchecked fields.
 - Fields are validated in the default mode (see Field Validation). `--validate` or `defaults.validate: true` makes it strict; `--no-validate` or `defaults.validate: false` turns it off. The command line wins over the plan.
 - `--resume <path>` is the only place apply state is stored. There is no implicit `.tracker-cache/` write. The state file includes a checksum of the raw plan bytes, completed operation indexes, refs, and operation results.
 - Local refs are written as `$name`; create operations populate refs with the created or dedupe-reused readable issue ID, falling back to the backend ID.

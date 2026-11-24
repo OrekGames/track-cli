@@ -1750,3 +1750,60 @@ fn test_github_no_hint_on_partial_page() {
         stderr
     );
 }
+
+// ============================================================================
+// Field validation (with mock server)
+// ============================================================================
+
+/// `track` against GitHub at `port`, with the cache in the config's directory.
+fn track_github_at(port: u16) -> assert_cmd::Command {
+    let cfg = write_github_mock_config(port);
+    let home = cfg.parent().unwrap().to_path_buf();
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.args(["-b", "github", "--config"])
+        .arg(&cfg)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env_remove("TRACKER_URL")
+        .env_remove("TRACKER_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GITHUB_API_URL")
+        .env_remove("TRACK_CACHE_DIR")
+        .timeout(Duration::from_secs(5));
+    cmd
+}
+
+#[test]
+fn test_github_strict_validation_refuses_what_github_would_drop() {
+    // Nothing listens on port 1: the check has to decide before any request.
+    track_github_at(1)
+        .args([
+            "issue",
+            "update",
+            "42",
+            "--field",
+            "Labels=bug",
+            "--validate",
+        ])
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains(
+            "Field 'Labels' cannot be set with --field on this backend",
+        ));
+}
+
+#[test]
+fn test_github_strict_validation_takes_the_state_shorthand() {
+    let mut closed = mock_github_issue_json(42, "Issue 42");
+    closed["state"] = "closed".into();
+    let (_server, port) = start_github_mock_server(closed.to_string());
+    thread::sleep(Duration::from_millis(50));
+
+    // State is GitHub's Status, and `done` is how it spells closed.
+    track_github_at(port)
+        .args(["issue", "update", "42", "--state", "done", "--validate"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Unknown field").not())
+        .stderr(predicate::str::contains("Invalid value").not());
+}

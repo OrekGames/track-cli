@@ -577,9 +577,7 @@ fn run_with_client(
         Commands::Issue { action } => commands::issue::handle_issue(
             &lookup,
             action,
-            commands::issue::IssueOutput {
-                format: cli.format.output(),
-            },
+            cli.format.output(),
             config.default_project.as_deref(),
             cli.verbose,
             config.link_mappings_for(backend),
@@ -650,8 +648,7 @@ fn run_with_client(
         Commands::Apply {
             plan,
             dry_run,
-            validate,
-            no_validate,
+            validation,
             resume,
             allow_delete,
         } => commands::apply::handle_apply(
@@ -659,8 +656,7 @@ fn run_with_client(
             commands::apply::ApplyOptions {
                 plan_path: plan,
                 dry_run: *dry_run,
-                validate: *validate,
-                no_validate: *no_validate,
+                validation: validation.requested(),
                 resume_path: resume.as_deref(),
                 allow_delete: *allow_delete,
                 format: cli.format.output(),

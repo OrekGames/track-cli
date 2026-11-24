@@ -812,3 +812,176 @@ fn project_fields_uses_the_cached_project_id() {
 
     fs::remove_dir_all(&dir).unwrap();
 }
+
+// =============================================================================
+// Second opinions, and when not to ask for one
+// =============================================================================
+
+/// Put `mapping` (manifest TOML) ahead of the scenario's own responses.
+fn answer_first(scenario: &Path, mapping: &str) {
+    let manifest = scenario.join("manifest.toml");
+    let original = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, format!("{mapping}\n\n{original}")).unwrap();
+}
+
+/// Answer `method` with an error of `status`.
+fn fail_with(scenario: &Path, method: &str, status: u16) {
+    let file = format!("{method}_{status}.json");
+    fs::write(
+        scenario.join("responses").join(&file),
+        format!(r#"{{"message": "HTTP {status} from {method}"}}"#),
+    )
+    .unwrap();
+    answer_first(
+        scenario,
+        &format!("[[responses]]\nmethod = \"{method}\"\nfile = \"{file}\"\nstatus = {status}\n"),
+    );
+}
+
+const UPDATE: [&str; 5] = ["issue", "update", "DEMO-10", "--field", "Priority=High"];
+
+#[test]
+fn a_dry_run_that_cannot_read_the_schema_fails_instead_of_passing() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    fail_with(&scenario, "get_project_custom_fields", 403);
+
+    // Nothing could be checked, so a dry run cannot say the check passed.
+    let output = track_mock(&dir, &scenario)
+        .args(create_args("Priorty=High"))
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(4), "{stdout}{stderr}");
+    assert!(!stdout.contains("Validation passed"), "{stdout}");
+    assert!(
+        stderr.contains("Cannot check the custom fields without the project schema"),
+        "{stderr}"
+    );
+    assert!(!take_calls(&scenario).contains(&"create_issue".to_string()));
+
+    // The write itself is not stopped for want of a schema: the tracker
+    // decides, as the default mode promises.
+    track_mock(&dir, &scenario)
+        .args(create_args("Type=Bug"))
+        .assert()
+        .success();
+    assert!(take_calls(&scenario).contains(&"create_issue".to_string()));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_dry_run_plan_reports_an_update_of_an_issue_that_does_not_exist() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    // DEMO is cached, so the project of DEMO-9999 can be read off its id.
+    warm_cache(&dir, &scenario);
+    let plan = dir.join("plan.json");
+    fs::write(
+        &plan,
+        serde_json::json!({
+            "version": 1,
+            "operations": [
+                {"op": "update_issue", "issue": "DEMO-9999", "fields": {"Priority": "High"}}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // In the default mode and the strict one alike.
+    for validation in [&[][..], &["--validate"][..]] {
+        let output = track_mock(&dir, &scenario)
+            .args(["-o", "json", "apply"])
+            .arg(&plan)
+            .arg("--dry-run")
+            .args(validation)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{validation:?}");
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["results"][0]["status"], "failed");
+        let error = report["results"][0]["error"].as_str().unwrap();
+        assert!(
+            error.contains("Failed to fetch issue 'DEMO-9999'"),
+            "{error}"
+        );
+    }
+    assert!(!take_calls(&scenario).contains(&"update_issue".to_string()));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_failed_update_is_rechecked_only_when_the_tracker_could_answer() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    warm_cache(&dir, &scenario);
+    answer_first(
+        &scenario,
+        "[[responses]]\nmethod = \"get_issue\"\nfile = \"create_issue_1.json\"\n",
+    );
+
+    // Unreachable or rate limited: asking where the issue is would fail the
+    // same way, so the failure is reported after one request.
+    fail_with(&scenario, "update_issue", 503);
+    track_mock(&dir, &scenario).args(UPDATE).assert().code(7);
+    assert_eq!(take_calls(&scenario), ["update_issue"]);
+
+    // Refused as put: the issue may have moved, so the tracker is asked. It
+    // is still in DEMO, so the refusal stands and nothing is sent again.
+    fail_with(&scenario, "update_issue", 400);
+    track_mock(&dir, &scenario).args(UPDATE).assert().failure();
+    assert_eq!(take_calls(&scenario), ["update_issue", "get_issue"]);
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fields_refused_for_a_moved_issue_are_checked_against_its_new_project() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    warm_cache(&dir, &scenario);
+    // DEMO-10 has moved to project 0-2, whose schema has a Severity field.
+    let responses = scenario.join("responses");
+    let moved = fs::read_to_string(responses.join("create_issue_1.json"))
+        .unwrap()
+        .replace("\"0-1\"", "\"0-2\"");
+    fs::write(responses.join("moved_issue.json"), moved).unwrap();
+    fs::write(
+        responses.join("ops_fields.json"),
+        r#"[{"id": "f-9", "name": "Severity", "field_type": "enum", "required": false,
+            "values": ["Low", "High"]}]"#,
+    )
+    .unwrap();
+    answer_first(
+        &scenario,
+        "[[responses]]\nmethod = \"get_issue\"\nfile = \"moved_issue.json\"\n\n\
+         [[responses]]\nmethod = \"update_issue\"\nfile = \"moved_issue.json\"\n\n\
+         [[responses]]\nmethod = \"get_project_custom_fields\"\nfile = \"ops_fields.json\"\n\
+         [responses.args]\nproject_id = \"0-2\"\n",
+    );
+
+    track_mock(&dir, &scenario)
+        .args(["issue", "update", "DEMO-10", "--field", "Severity=High"])
+        .assert()
+        .success();
+
+    // DEMO's cached schema has no Severity, and neither has its live one.
+    // Then the tracker says where the issue is, and that project's schema
+    // takes the update.
+    assert_eq!(
+        take_calls(&scenario),
+        [
+            "get_project_custom_fields",
+            "get_issue",
+            "get_project_custom_fields",
+            "update_issue"
+        ]
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
+}

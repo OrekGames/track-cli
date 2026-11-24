@@ -165,6 +165,34 @@ pub enum ColorChoice {
     Never,
 }
 
+/// How strictly `issue create`, `issue update` and `apply` check custom
+/// fields before they write. The arg ids stay `validate` and `no_validate`,
+/// so `conflicts_with` lists elsewhere can name them.
+#[derive(clap::Args, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ValidationArgs {
+    /// Strict validation: every field name and listed value must match the
+    /// project schema, and failing to fetch the schema is an error
+    #[arg(long, conflicts_with = "no_validate")]
+    pub validate: bool,
+    /// Skip the default field validation and send the fields as given
+    #[arg(long)]
+    pub no_validate: bool,
+}
+
+impl ValidationArgs {
+    /// The mode these flags ask for, or `None` when neither was given.
+    pub fn requested(self) -> Option<crate::commands::issue::ValidationMode> {
+        use crate::commands::issue::ValidationMode;
+        if self.no_validate {
+            Some(ValidationMode::Off)
+        } else if self.validate {
+            Some(ValidationMode::Strict)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Issue operations
@@ -305,13 +333,8 @@ pub enum Commands {
         /// Parse, resolve, validate, and dedupe-check without mutating
         #[arg(long)]
         dry_run: bool,
-        /// Strict validation of custom fields before create/update writes: every
-        /// name and listed value must match the project schema
-        #[arg(long, conflicts_with = "no_validate")]
-        validate: bool,
-        /// Skip the default field validation and send the fields as given
-        #[arg(long)]
-        no_validate: bool,
+        #[command(flatten)]
+        validation: ValidationArgs,
         /// Explicit JSON resume state path
         #[arg(long, value_name = "PATH")]
         resume: Option<PathBuf>,
@@ -745,13 +768,8 @@ pub enum IssueCommands {
         /// Parent issue ID to create this as a subtask (e.g., PROJ-123)
         #[arg(long, conflicts_with = "json")]
         parent: Option<String>,
-        /// Strict validation: every field name and listed value must match the
-        /// project schema, and failing to fetch the schema is an error
-        #[arg(long, conflicts_with = "no_validate")]
-        validate: bool,
-        /// Skip the default field validation and send the fields as given
-        #[arg(long)]
-        no_validate: bool,
+        #[command(flatten)]
+        validation: ValidationArgs,
         /// Validate only, do not create the issue
         #[arg(long, conflicts_with = "no_validate")]
         dry_run: bool,
@@ -802,13 +820,8 @@ pub enum IssueCommands {
         /// Parent issue ID to set on this issue (e.g., PROJ-123)
         #[arg(long, conflicts_with = "json")]
         parent: Option<String>,
-        /// Strict validation: every field name and listed value must match the
-        /// project schema, and failing to fetch the schema is an error
-        #[arg(long, conflicts_with = "no_validate")]
-        validate: bool,
-        /// Skip the default field validation and send the fields as given
-        #[arg(long)]
-        no_validate: bool,
+        #[command(flatten)]
+        validation: ValidationArgs,
         /// Validate only, do not update the issue
         #[arg(long, conflicts_with = "no_validate")]
         dry_run: bool,
@@ -2552,9 +2565,11 @@ mod tests {
         match cli.command {
             Commands::Issue { action } => match action {
                 IssueCommands::Create {
-                    validate, dry_run, ..
+                    validation,
+                    dry_run,
+                    ..
                 } => {
-                    assert!(validate);
+                    assert!(validation.validate);
                     assert!(!dry_run);
                 }
                 _ => panic!("expected issue create"),
@@ -2580,9 +2595,11 @@ mod tests {
         match cli.command {
             Commands::Issue { action } => match action {
                 IssueCommands::Create {
-                    validate, dry_run, ..
+                    validation,
+                    dry_run,
+                    ..
                 } => {
-                    assert!(validate);
+                    assert!(validation.validate);
                     assert!(dry_run);
                 }
                 _ => panic!("expected issue create"),
@@ -2608,15 +2625,14 @@ mod tests {
             Commands::Issue {
                 action:
                     IssueCommands::Create {
-                        validate,
-                        no_validate,
+                        validation,
                         dry_run,
                         ..
                     },
             } => {
                 assert!(dry_run);
-                assert!(!validate);
-                assert!(!no_validate);
+                assert_eq!(validation, ValidationArgs::default());
+                assert_eq!(validation.requested(), None);
             }
             _ => panic!("expected issue create"),
         }
@@ -2640,6 +2656,32 @@ mod tests {
     }
 
     #[test]
+    fn shared_validation_flags_keep_their_conflicts() {
+        // `--json` names the flattened args by id.
+        for flag in ["--validate", "--no-validate"] {
+            for command in [
+                &["issue", "create", "--json", "{}"][..],
+                &["issue", "update", "PROJ-1", "--json", "{}"][..],
+            ] {
+                let result = Cli::try_parse_from(["track"].iter().chain(command).chain([&flag]));
+                assert!(result.is_err(), "--json must conflict with {flag}");
+            }
+        }
+        let result =
+            Cli::try_parse_from(["track", "apply", "p.json", "--validate", "--no-validate"]);
+        assert!(result.is_err());
+        // A plan-level dry run may still turn validation off.
+        let cli = Cli::parse_from(["track", "apply", "p.json", "--dry-run", "--no-validate"]);
+        let Commands::Apply { validation, .. } = cli.command else {
+            panic!("expected apply command");
+        };
+        assert_eq!(
+            validation.requested(),
+            Some(crate::commands::issue::ValidationMode::Off)
+        );
+    }
+
+    #[test]
     fn parses_update_with_validate_flag() {
         let cli = Cli::parse_from([
             "track",
@@ -2654,9 +2696,11 @@ mod tests {
         match cli.command {
             Commands::Issue { action } => match action {
                 IssueCommands::Update {
-                    validate, dry_run, ..
+                    validation,
+                    dry_run,
+                    ..
                 } => {
-                    assert!(validate);
+                    assert!(validation.validate);
                     assert!(!dry_run);
                 }
                 _ => panic!("expected issue update"),
@@ -2681,9 +2725,11 @@ mod tests {
         match cli.command {
             Commands::Issue { action } => match action {
                 IssueCommands::Update {
-                    validate, dry_run, ..
+                    validation,
+                    dry_run,
+                    ..
                 } => {
-                    assert!(validate);
+                    assert!(validation.validate);
                     assert!(dry_run);
                 }
                 _ => panic!("expected issue update"),
@@ -3361,14 +3407,14 @@ mod tests {
             Commands::Apply {
                 plan,
                 dry_run,
-                validate,
+                validation,
                 resume,
                 allow_delete,
                 ..
             } => {
                 assert_eq!(plan, PathBuf::from("plan.json"));
                 assert!(!dry_run);
-                assert!(!validate);
+                assert_eq!(validation.requested(), None);
                 assert!(resume.is_none());
                 assert!(!allow_delete);
             }
@@ -3421,14 +3467,17 @@ mod tests {
             Commands::Apply {
                 plan,
                 dry_run,
-                validate,
+                validation,
                 resume,
                 allow_delete,
                 ..
             } => {
                 assert_eq!(plan, PathBuf::from("-"));
                 assert!(dry_run);
-                assert!(validate);
+                assert_eq!(
+                    validation.requested(),
+                    Some(crate::commands::issue::ValidationMode::Strict)
+                );
                 assert_eq!(resume, Some(PathBuf::from("state.json")));
                 assert!(allow_delete);
             }
