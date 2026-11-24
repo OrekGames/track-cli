@@ -215,6 +215,40 @@ pub fn handle_context(
         OutputFormat::Json => {
             output_json(&context)?;
         }
+        // For an agent the briefing is the context: same cache, a fraction
+        // of the bytes, and nothing cut without a pointer to the rest.
+        OutputFormat::Text if crate::output::is_agent() => {
+            let backend = <crate::cli::Backend as clap::ValueEnum>::from_str(backend_type, true)
+                .unwrap_or_default();
+            print!(
+                "{}",
+                super::prime::briefing(
+                    &mut cache,
+                    &super::prime::PrimeOptions {
+                        project,
+                        max_values: super::prime::DEFAULT_MAX_VALUES,
+                        format,
+                        backend,
+                        url: (base_url != "unknown").then_some(base_url),
+                        default_project,
+                        explicit_config,
+                    },
+                )
+            );
+            if let Some(issues) = &context.issues {
+                println!("unresolved issues ({}):", issues.len());
+                for issue in issues {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        issue.id_readable,
+                        issue.state.as_deref().unwrap_or("-"),
+                        issue.priority.as_deref().unwrap_or("-"),
+                        issue.assignee.as_deref().unwrap_or("-"),
+                        issue.summary
+                    );
+                }
+            }
+        }
         OutputFormat::Text => {
             println!("{}:", "AI Context".white().bold());
             println!("  {}: {}", "Generated".dimmed(), context.generated_at);

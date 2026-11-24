@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::io::{BufWriter, IsTerminal, Write};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracker_core::{
     Article, ArticleAttachment, BundleDefinition, Comment, CustomField, CustomFieldDefinition,
@@ -16,6 +17,30 @@ use tracker_core::{
 /// on Text/Json and only [`output_json`] needs to know.
 static JSONL_MODE: AtomicBool = AtomicBool::new(false);
 
+/// Process-wide text render mode, set once from `-o agent`. Like JSONL for
+/// JSON, it is a rendering of the text handlers already print: compact,
+/// uncoloured, and never cut short without saying so.
+static AGENT_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Render text output for an AI agent instead of a person at a terminal.
+pub fn set_agent_mode(enabled: bool) {
+    AGENT_MODE.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether text output is being rendered for an AI agent.
+pub fn is_agent() -> bool {
+    AGENT_MODE.load(Ordering::Relaxed)
+}
+
+/// `--select` paths, set once before dispatch. Every JSON document a command
+/// prints goes through [`output_json`], so projecting there covers them all.
+static SELECT_PATHS: OnceLock<Vec<Vec<String>>> = OnceLock::new();
+
+/// Project every JSON document onto these paths.
+pub fn set_select_paths(paths: Vec<Vec<String>>) {
+    let _ = SELECT_PATHS.set(paths);
+}
+
 /// Render every JSON document as compact JSON Lines instead of pretty JSON.
 pub fn set_jsonl_mode(enabled: bool) {
     JSONL_MODE.store(enabled, Ordering::Relaxed);
@@ -23,7 +48,100 @@ pub fn set_jsonl_mode(enabled: bool) {
 
 /// Print `value` as pretty JSON, or as JSONL under `-o jsonl`.
 pub fn output_json<T: Serialize + ?Sized>(value: &T) -> anyhow::Result<()> {
-    print_json(value, JSONL_MODE.load(Ordering::Relaxed))
+    let jsonl = JSONL_MODE.load(Ordering::Relaxed);
+    match SELECT_PATHS.get() {
+        // Without `--select` the value is written as is, so key order and
+        // formatting stay exactly what they have always been.
+        None => print_json(value, jsonl),
+        Some(paths) => print_json(
+            &select_from(serde_json::to_value(value)?, paths, true)?,
+            jsonl,
+        ),
+    }
+}
+
+/// One line of a JSON Lines stream that a command writes itself, projected
+/// like everything else when `--select` is set.
+pub fn jsonl_line<T: Serialize + ?Sized>(value: &T) -> anyhow::Result<String> {
+    match SELECT_PATHS.get() {
+        None => Ok(serde_json::to_string(value)?),
+        // One line of many: a line the paths do not reach (a failure
+        // record, say) is not a reason to stop the stream.
+        Some(paths) => Ok(serde_json::to_string(&select_from(
+            serde_json::to_value(value)?,
+            paths,
+            false,
+        )?)?),
+    }
+}
+
+/// Project `value` onto `--select` paths.
+///
+/// A path segment named `fields` reaches a flat view of an issue's custom
+/// fields (`fields.Priority`), computed here so the default output does not
+/// carry it. A selection that matches nothing is an error: an empty object
+/// would read as "this issue has no such data".
+fn select_from(mut value: Value, paths: &[Vec<String>], must_match: bool) -> anyhow::Result<Value> {
+    if paths
+        .iter()
+        .any(|path| path.iter().any(|segment| segment == FLAT_FIELDS_KEY))
+    {
+        add_flat_fields(&mut value);
+    }
+    let projected = project_value(&value, paths);
+    let matched_nothing = match (&value, &projected) {
+        (Value::Array(source), Value::Array(items)) => {
+            !source.is_empty() && items.iter().all(is_empty_object)
+        }
+        (_, projected) => is_empty_object(projected),
+    };
+    if must_match && matched_nothing {
+        let shown: Vec<String> = paths.iter().map(|path| path.join(".")).collect();
+        anyhow::bail!(
+            "--select matched nothing: no '{}' in this command's JSON output",
+            shown.join("', '")
+        );
+    }
+    Ok(projected)
+}
+
+fn is_empty_object(value: &Value) -> bool {
+    value.as_object().is_some_and(Map::is_empty)
+}
+
+/// Key of the flat custom-field view `--select` can address.
+const FLAT_FIELDS_KEY: &str = "fields";
+
+/// Give every object that has `custom_fields` a `fields` map of name to
+/// plain value, wherever it sits in the document.
+fn add_flat_fields(value: &mut Value) {
+    match value {
+        Value::Array(items) => items.iter_mut().for_each(add_flat_fields),
+        Value::Object(map) => {
+            map.values_mut().for_each(add_flat_fields);
+            if let Some(Value::Array(custom_fields)) = map.get("custom_fields")
+                && !map.contains_key(FLAT_FIELDS_KEY)
+            {
+                let flat: Map<String, Value> =
+                    custom_fields.iter().filter_map(flat_field).collect();
+                map.insert(FLAT_FIELDS_KEY.to_string(), Value::Object(flat));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `{"SingleEnum": {"name": "Priority", "value": "Major"}}` as
+/// `("Priority", "Major")`. Fields without a value are left out.
+fn flat_field(field: &Value) -> Option<(String, Value)> {
+    let (variant, body) = field.as_object()?.iter().next()?;
+    let name = body.get("name")?.as_str()?.to_string();
+    let value = match variant.as_str() {
+        "MultiEnum" => body.get("values"),
+        "SingleUser" => body.get("login").filter(|login| !login.is_null()),
+        _ => body.get("value"),
+    }?;
+    (!value.is_null()).then(|| (name, value.clone()))
 }
 
 fn print_json<T: Serialize + ?Sized>(value: &T, jsonl: bool) -> anyhow::Result<()> {
@@ -117,6 +235,9 @@ pub fn output_result<T: Serialize + Displayable>(
         OutputFormat::Json => {
             output_json(result)?;
         }
+        OutputFormat::Text if is_agent() => {
+            println!("{}", result.display_agent());
+        }
         OutputFormat::Text => {
             println!("{}", result.display());
         }
@@ -132,6 +253,11 @@ pub fn output_list<T: Serialize + Displayable>(
         OutputFormat::Json => {
             output_json(items)?;
         }
+        OutputFormat::Text if is_agent() => {
+            for item in items {
+                println!("{}", item.display_agent());
+            }
+        }
         OutputFormat::Text => {
             for item in items {
                 println!("{}", item.display());
@@ -143,20 +269,48 @@ pub fn output_list<T: Serialize + Displayable>(
 }
 
 /// Parse `--select` as comma-separated dotted paths. Trim and skip empties.
+///
+/// Double quotes keep `.` and `,` inside a name: `fields."Est. time"`.
 pub(crate) fn parse_select_paths(select: &str) -> Vec<Vec<String>> {
-    select
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|path| {
-            path.split('.')
-                .map(str::trim)
-                .filter(|seg| !seg.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .filter(|path| !path.is_empty())
-        .collect()
+    fn end_segment(segment: &mut String, was_quoted: &mut bool, path: &mut Vec<String>) {
+        let text = if *was_quoted {
+            segment.clone()
+        } else {
+            segment.trim().to_string()
+        };
+        if !text.is_empty() {
+            path.push(text);
+        }
+        segment.clear();
+        *was_quoted = false;
+    }
+
+    let mut paths: Vec<Vec<String>> = Vec::new();
+    let mut path: Vec<String> = Vec::new();
+    let mut segment = String::new();
+    let mut quoted = false;
+    let mut was_quoted = false;
+    for ch in select.chars() {
+        match ch {
+            '"' => {
+                quoted = !quoted;
+                was_quoted = true;
+            }
+            '.' if !quoted => end_segment(&mut segment, &mut was_quoted, &mut path),
+            ',' if !quoted => {
+                end_segment(&mut segment, &mut was_quoted, &mut path);
+                if !path.is_empty() {
+                    paths.push(std::mem::take(&mut path));
+                }
+            }
+            _ => segment.push(ch),
+        }
+    }
+    end_segment(&mut segment, &mut was_quoted, &mut path);
+    if !path.is_empty() {
+        paths.push(path);
+    }
+    paths
 }
 
 /// Project a single dotted path from `value`.
@@ -248,27 +402,6 @@ pub(crate) fn project_value(value: &Value, paths: &[Vec<String>]) -> Value {
         }
     }
     out
-}
-
-/// Serialize `root`, optionally project `--select` paths, then render as
-/// pretty JSON or compact JSONL (see [`write_json`]).
-pub fn output_projected<T: Serialize>(
-    root: &T,
-    select: Option<&str>,
-    jsonl: bool,
-) -> anyhow::Result<()> {
-    let mut value = serde_json::to_value(root)?;
-    if let Some(select) = select {
-        let paths = parse_select_paths(select);
-        if !paths.is_empty() {
-            value = project_value(&value, &paths);
-        }
-    }
-    if jsonl {
-        print_json(&value, true)
-    } else {
-        output_json(&value)
-    }
 }
 
 /// Output a summary of changes made to an issue.
@@ -495,7 +628,11 @@ pub fn output_page_hint(
     cached_total: Option<(u64, &str)>,
     format: OutputFormat,
 ) {
-    if format != OutputFormat::Text {
+    // JSON gets the hint too: a full page of JSON looks exactly like a
+    // complete result. Agent mode states completeness on stdout instead
+    // (see [`agent_page_footer`]).
+    let _ = format;
+    if is_agent() {
         return;
     }
     if result_count == 0 || result_count < limit {
@@ -534,6 +671,103 @@ pub fn output_page_hint(
 
 pub trait Displayable {
     fn display(&self) -> String;
+
+    /// The `-o agent` rendering: as few bytes as carry the whole record.
+    /// Defaults to the terminal rendering, which is uncoloured in that mode.
+    fn display_agent(&self) -> String {
+        self.display()
+    }
+}
+
+/// `Name: value` for a custom field that has a value.
+fn agent_field(field: &CustomField) -> Option<String> {
+    let (name, value) = match field {
+        CustomField::SingleEnum { name, value } | CustomField::Text { name, value } => {
+            (name, value.clone()?)
+        }
+        CustomField::State {
+            name,
+            value,
+            is_resolved,
+        } => {
+            let value = value.clone()?;
+            (
+                name,
+                if *is_resolved {
+                    format!("{value} (resolved)")
+                } else {
+                    value
+                },
+            )
+        }
+        CustomField::SingleUser { name, login, .. } => (name, login.clone()?),
+        CustomField::MultiEnum { name, values } => {
+            if values.is_empty() {
+                return None;
+            }
+            (name, values.join(", "))
+        }
+        CustomField::Unknown { name, value } => (
+            name,
+            match value.as_ref()? {
+                Value::String(text) => text.clone(),
+                Value::Null => return None,
+                other => other.to_string(),
+            },
+        ),
+    };
+    (!value.is_empty()).then(|| format!("{name}: {value}"))
+}
+
+/// Header of the rows [`agent_issue_row`] prints.
+pub const AGENT_ISSUE_HEADER: &str = "# id\tstate\tpriority\tassignee\tsummary";
+
+/// One issue on one line, for lists: id, state, priority, assignee, summary,
+/// tab-separated, with `-` for a value the issue does not have.
+pub fn agent_issue_row(issue: &Issue) -> String {
+    let fields = issue.common_fields();
+    let or_dash = |value: Option<&String>| value.map_or("-", String::as_str).to_string();
+    [
+        issue.id_readable.clone(),
+        or_dash(fields.state),
+        or_dash(fields.priority),
+        or_dash(fields.assignee),
+        // A summary is one line by nature; make sure a stray tab or newline
+        // cannot break the row.
+        issue.summary.replace(['\t', '\n', '\r'], " "),
+    ]
+    .join("\t")
+}
+
+/// The acknowledgement of a write: what was done to which issue, and the
+/// field values it ended up with. The description is not echoed back.
+pub fn agent_issue_ack(verb: &str, issue: &Issue) -> String {
+    let mut parts = vec![format!("{verb} {}  {}", issue.id_readable, issue.summary)];
+    parts.extend(issue.custom_fields.iter().filter_map(agent_field));
+    parts.join(" | ")
+}
+
+/// The last line of an agent-mode list: whether it is the whole result and,
+/// if not, how to get the rest. Printed to stdout so it cannot be missed.
+pub fn agent_page_footer(
+    result_count: usize,
+    limit: usize,
+    skip: usize,
+    total: Option<(u64, &str)>,
+    fetched_all: bool,
+) -> String {
+    if fetched_all || result_count < limit {
+        return format!("# {} shown, complete", result_count);
+    }
+    let next_skip = skip + result_count;
+    let of_total = match total {
+        Some((total, "live")) => format!(" of {total}"),
+        Some((total, age)) => format!(" of ~{total} (counted {age})"),
+        None => String::new(),
+    };
+    format!(
+        "# {result_count} shown{of_total}; more may exist: --skip {next_skip}, or --all for everything"
+    )
 }
 
 impl Displayable for Issue {
@@ -589,6 +823,44 @@ impl Displayable for Issue {
             for field in &self.custom_fields {
                 output.push_str(&format!("\n    {}", field.display()));
             }
+        }
+
+        output
+    }
+
+    fn display_agent(&self) -> String {
+        let mut output = format!("{}  {}", self.id_readable, self.summary);
+
+        let fields: Vec<String> = self.custom_fields.iter().filter_map(agent_field).collect();
+        if !fields.is_empty() {
+            output.push('\n');
+            output.push_str(&fields.join(" | "));
+        }
+
+        let mut meta = vec![format!(
+            "project: {}",
+            self.project
+                .short_name
+                .as_deref()
+                .unwrap_or(&self.project.id)
+        )];
+        if !self.tags.is_empty() {
+            let names: Vec<&str> = self.tags.iter().map(|t| t.name.as_str()).collect();
+            meta.push(format!("tags: {}", names.join(", ")));
+        }
+        meta.push(format!("created: {}", self.created.format("%Y-%m-%d")));
+        meta.push(format!("updated: {}", self.updated.format("%Y-%m-%d")));
+        if let Some(resolved) = &self.resolved {
+            meta.push(format!("resolved: {}", resolved.format("%Y-%m-%d")));
+        }
+        output.push('\n');
+        output.push_str(&meta.join(" | "));
+
+        if let Some(description) = self.description.as_deref().map(str::trim_end)
+            && !description.trim().is_empty()
+        {
+            output.push_str("\ndescription:\n");
+            output.push_str(description);
         }
 
         output
@@ -679,6 +951,33 @@ impl Displayable for ProjectCustomField {
             required
         )
     }
+
+    fn display_agent(&self) -> String {
+        let mut kind = self.field_type.clone();
+        if self.required {
+            kind.push_str(", required");
+        }
+        if self.values.is_empty() {
+            return format!("{} ({})", self.name, kind);
+        }
+        // Resolved states are marked, as in `track prime`.
+        let values: Vec<String> = self
+            .values
+            .iter()
+            .map(|value| {
+                let resolved = self
+                    .state_values
+                    .iter()
+                    .any(|state| state.is_resolved && &state.name == value);
+                if resolved {
+                    format!("{value}*")
+                } else {
+                    value.clone()
+                }
+            })
+            .collect();
+        format!("{} ({}): {}", self.name, kind, values.join(", "))
+    }
 }
 
 impl Displayable for IssueTag {
@@ -754,6 +1053,43 @@ impl Displayable for Article {
 
         output
     }
+
+    fn display_agent(&self) -> String {
+        let mut output = format!("{}  {}", self.id_readable, self.summary);
+        let mut meta = vec![format!(
+            "project: {}",
+            self.project
+                .short_name
+                .as_deref()
+                .unwrap_or(&self.project.id)
+        )];
+        if let Some(parent) = &self.parent_article {
+            meta.push(format!(
+                "parent: {}",
+                parent.id_readable.as_deref().unwrap_or(&parent.id)
+            ));
+        }
+        if self.has_children {
+            meta.push("has children".to_string());
+        }
+        if !self.tags.is_empty() {
+            let names: Vec<&str> = self.tags.iter().map(|t| t.name.as_str()).collect();
+            meta.push(format!("tags: {}", names.join(", ")));
+        }
+        meta.push(format!("created: {}", self.created.format("%Y-%m-%d")));
+        meta.push(format!("updated: {}", self.updated.format("%Y-%m-%d")));
+        output.push('\n');
+        output.push_str(&meta.join(" | "));
+        // The whole content: the terminal view's 200-character preview would
+        // make an agent fetch the article a second time as JSON.
+        if let Some(content) = self.content.as_deref().map(str::trim_end)
+            && !content.trim().is_empty()
+        {
+            output.push_str("\ncontent:\n");
+            output.push_str(content);
+        }
+        output
+    }
 }
 
 /// Maximum number of article content characters shown in text output.
@@ -822,6 +1158,19 @@ impl Displayable for Comment {
             .unwrap_or_else(|| "Unknown date".to_string());
 
         format!("[{}] {} - {}", date.dimmed(), author.cyan(), self.text)
+    }
+
+    fn display_agent(&self) -> String {
+        let author = self
+            .author
+            .as_ref()
+            .map(|a| a.login.as_str())
+            .unwrap_or("unknown");
+        let date = self
+            .created
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "unknown date".to_string());
+        format!("[{}] {}: {}", date, author, self.text.trim_end())
     }
 }
 
@@ -1304,6 +1653,82 @@ mod tests {
         assert_eq!(
             render(&records[..], true),
             "{\"zeta\":1,\"alpha\":2}\n{\"zeta\":3,\"alpha\":4}\n"
+        );
+    }
+
+    #[test]
+    fn select_paths_split_on_dots_and_commas_outside_quotes() {
+        assert_eq!(
+            parse_select_paths(" id_readable , project.short_name ,, "),
+            [vec!["id_readable"], vec!["project", "short_name"]]
+        );
+        assert_eq!(
+            parse_select_paths(r#"fields."Est. time",fields."A, B".x"#),
+            [vec!["fields", "Est. time"], vec!["fields", "A, B", "x"]]
+        );
+        assert!(parse_select_paths(" , . ").is_empty());
+    }
+
+    #[test]
+    fn flat_fields_are_added_wherever_custom_fields_are() {
+        let mut doc = serde_json::json!({
+            "issue": {"custom_fields": [
+                {"State": {"name": "Stage", "value": "Done", "is_resolved": true}},
+                {"SingleEnum": {"name": "Priority", "value": null}},
+                {"SingleUser": {"name": "Assignee", "login": "jdoe", "display_name": "J"}},
+                {"MultiEnum": {"name": "Components", "values": ["A", "B"]}},
+                {"Unknown": {"name": "Sprint", "value": [{"id": 12}]}}
+            ]},
+            "issues": [{"custom_fields": []}]
+        });
+        add_flat_fields(&mut doc);
+        assert_eq!(
+            doc["issue"]["fields"],
+            serde_json::json!({
+                "Stage": "Done", "Assignee": "jdoe", "Components": ["A", "B"],
+                "Sprint": [{"id": 12}]
+            })
+        );
+        assert_eq!(doc["issues"][0]["fields"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn select_must_match_only_when_asked() {
+        let paths = parse_select_paths("nope");
+        let value = serde_json::json!({"id": 1});
+        assert!(select_from(value.clone(), &paths, true).is_err());
+        assert_eq!(
+            select_from(value, &paths, false).unwrap(),
+            serde_json::json!({})
+        );
+        // An empty list selects to an empty list: nothing was missed.
+        assert_eq!(
+            select_from(serde_json::json!([]), &paths, true).unwrap(),
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn agent_footer_says_complete_or_how_to_continue() {
+        assert_eq!(
+            agent_page_footer(7, 20, 0, None, false),
+            "# 7 shown, complete"
+        );
+        assert_eq!(
+            agent_page_footer(0, 20, 0, None, false),
+            "# 0 shown, complete"
+        );
+        assert_eq!(
+            agent_page_footer(500, 20, 0, None, true),
+            "# 500 shown, complete"
+        );
+        assert_eq!(
+            agent_page_footer(20, 20, 40, Some((57, "live")), false),
+            "# 20 shown of 57; more may exist: --skip 60, or --all for everything"
+        );
+        assert_eq!(
+            agent_page_footer(20, 20, 0, Some((847, "2h ago")), false),
+            "# 20 shown of ~847 (counted 2h ago); more may exist: --skip 20, or --all for everything"
         );
     }
 }

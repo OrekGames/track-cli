@@ -856,6 +856,7 @@ track PROJ-123              # Text (default)
 track -o json PROJ-123      # JSON
 track --format json p ls    # JSON
 track -o jsonl p ls         # JSON Lines: one project per line
+track -o agent PROJ-123     # Compact text for AI agents
 ```
 
 `-o jsonl` prints the same document as `-o json`, compacted for line-based tools: when the
@@ -864,6 +865,66 @@ empty list prints nothing; anything else (an object such as `track PROJ-123` or 
 is a single line. Nested arrays stay inside their line. Every command that prints JSON accepts
 it; `completions` rejects it. In both modes stdout holds only JSON; warnings, progress and
 errors go to stderr.
+
+### Agent output
+
+`-o agent` is text written for an AI agent to read: no colour, no decoration, and nothing cut
+without saying so. Set `TRACK_OUTPUT=agent` to make it the default (an explicit `-o` still
+wins; an empty or unknown value is ignored).
+
+```
+$ track -o agent i s "project: DEMO #Unresolved" --limit 2
+# id	state	priority	assignee	summary
+DEMO-1	Open	Normal	jdoe	Implement user authentication
+DEMO-2	In Progress	High	-	Fix login timeout
+# 2 shown of 57; more may exist: --skip 2, or --all for everything
+```
+
+| Command | Agent output |
+|---------|--------------|
+| `issue search` | One tab-separated line per issue, then a last line that says `complete` or how to get the rest |
+| `issue get` | Summary, every set field on one line, then the full description |
+| `issue get --full` | The same, plus every link (with its link id) and the last 20 comments in full; more are named with the command that lists them |
+| `issue create` / `update` | One line: what was done and the field values the issue ended up with |
+| `issue comments`, `project fields`, batch results | One line per item; `project fields` includes the values |
+| `context` | The `track prime` briefing |
+| everything else | The usual text, uncoloured |
+
+It is typically a third to a fifth of the size of the JSON for the same data.
+
+### Selecting fields
+
+`--select` keeps only the listed fields of whatever JSON a command prints: comma-separated
+dotted paths, on any command, with `-o json` or `-o jsonl`. Paths walk into nested arrays, so
+they work on the `--full` and `inspect` envelopes too.
+
+```bash
+track -o json i s "project: PROJ #Unresolved" --select id_readable,summary,fields.Priority
+track -o json PROJ-1 --full --select issue.id_readable,issue.fields.Stage,comments.text
+track -o jsonl p ls --select short_name
+```
+
+- `fields.<Name>` is an issue's custom field by name, as a plain value
+  (`{"fields": {"Priority": "Major"}}`). It exists only under `--select`; the default JSON is
+  unchanged. Quote a name that holds `.` or `,`: `fields."Est. time"`.
+- A path missing from one record is omitted from that record.
+- A selection that matches nothing at all is an error, not `{}`.
+- Text output (including `-o agent`) rejects the flag.
+
+### Pagination and write results
+
+When a search fills its limit, a one-line hint with the next `--skip` value (and a total when
+one is known) goes to stderr, in JSON and JSONL mode too: a full page of JSON otherwise looks
+exactly like a complete result. `-o agent` puts the same verdict on the last line of stdout.
+
+`issue start` / `issue complete` JSON reports what the tracker did, not only what was asked:
+`state` is the requested state, `actual_state` the one the issue is in afterwards, `verified`
+whether they agree, and `warnings` why not. `id_readable` is the issue id (`idReadable` is kept
+for older scripts).
+
+Subcommand help lists that command's own options. The global options (`-o`, `-b`, `--select`,
+`--config`, `--no-cache`, `-v`, `--color`, `--url`, `--token`) are documented once, in
+`track --help`, and accepted everywhere.
 
 ## Backend-Specific Notes
 

@@ -6,11 +6,14 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "track", version, about = "CLI for issue tracking systems")]
 pub struct Cli {
-    /// Output format (jsonl: the json document as compact JSON Lines)
+    /// Output format (jsonl: the json document as compact JSON Lines; agent:
+    /// compact text for AI agents). TRACK_OUTPUT sets the default
     #[arg(long, short = 'o', value_enum, global = true, default_value_t = CliFormat::Text)]
     pub format: CliFormat,
 
-    /// Comma-separated dotted field paths to project from JSON/JSONL output (issue search only)
+    /// Comma-separated dotted field paths to keep in JSON/JSONL output, e.g.
+    /// id_readable,summary,fields.Priority (fields.<Name> is an issue's custom
+    /// field by name; quote names holding '.' or ',')
     #[arg(long, global = true, value_name = "PATHS")]
     pub select: Option<String>,
 
@@ -108,18 +111,25 @@ pub enum CliFormat {
     /// The json document compacted: a top-level array prints one element per
     /// line, anything else prints on a single line
     Jsonl,
+    /// Compact text for AI agents: one line per list item, nothing cut
+    /// without saying how to get the rest (also: TRACK_OUTPUT=agent)
+    Agent,
 }
 
 impl CliFormat {
     pub fn output(self) -> OutputFormat {
         match self {
-            Self::Text => OutputFormat::Text,
+            Self::Text | Self::Agent => OutputFormat::Text,
             Self::Json | Self::Jsonl => OutputFormat::Json,
         }
     }
 
     pub fn is_jsonl(self) -> bool {
         matches!(self, Self::Jsonl)
+    }
+
+    pub fn is_agent(self) -> bool {
+        matches!(self, Self::Agent)
     }
 }
 
@@ -129,6 +139,7 @@ impl std::fmt::Display for CliFormat {
             Self::Text => write!(f, "text"),
             Self::Json => write!(f, "json"),
             Self::Jsonl => write!(f, "jsonl"),
+            Self::Agent => write!(f, "agent"),
         }
     }
 }
@@ -335,7 +346,59 @@ pub enum Commands {
     External(Vec<String>),
 }
 
+/// Shown under every subcommand's help in place of the global options.
+const GLOBAL_OPTIONS_NOTE: &str = "Global options (-o, -b, --select, --config, --no-cache, -v, --color, --url, --token): see 'track --help'";
+
+/// Give every subcommand a hidden copy of each global option.
+///
+/// clap repeats global options in the help of every subcommand, which is
+/// most of what an agent reads when it asks how one command works. An
+/// argument a subcommand already defines is not propagated again, so the
+/// hidden copy is the one its help uses. The options keep working there.
+fn hide_globals_in_subcommands(command: clap::Command, globals: &[clap::Arg]) -> clap::Command {
+    let names: Vec<String> = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+    names.into_iter().fold(command, |command, name| {
+        command.mut_subcommand(name, |sub| {
+            // A subcommand may define an option of its own under a global's
+            // name (`init --url`); that one stays as it is.
+            let own: Vec<clap::Id> = sub
+                .get_arguments()
+                .map(|arg| arg.get_id().clone())
+                .collect();
+            let hidden = globals
+                .iter()
+                .filter(|arg| !own.contains(arg.get_id()))
+                .cloned()
+                .map(|arg| arg.hide(true));
+            let sub = sub.args(hidden).after_help(GLOBAL_OPTIONS_NOTE);
+            hide_globals_in_subcommands(sub, globals)
+        })
+    })
+}
+
 impl Cli {
+    /// The command as it is parsed: global options are listed once, in the
+    /// top-level help, instead of under every subcommand.
+    pub fn parsing_command() -> clap::Command {
+        let command = Cli::command();
+        let globals: Vec<clap::Arg> = command
+            .get_arguments()
+            .filter(|arg| arg.is_global_set())
+            .cloned()
+            .collect();
+        hide_globals_in_subcommands(command, &globals)
+    }
+
+    /// Parse the process arguments.
+    pub fn try_parse_args() -> Result<(Self, clap::ArgMatches), clap::Error> {
+        let matches = Self::parsing_command().try_get_matches()?;
+        let cli = <Self as clap::FromArgMatches>::from_arg_matches(&matches)?;
+        Ok((cli, matches))
+    }
+
     /// Generate shell completions and write to stdout
     pub fn generate_completions(shell: Shell) {
         let mut cmd = Cli::command();

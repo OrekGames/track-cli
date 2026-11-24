@@ -9,8 +9,7 @@ mod output;
 mod token_guard;
 
 use anyhow::{Result, anyhow};
-use clap::Parser;
-use cli::{Backend, Cli, CliFormat, Commands, IssueCommands};
+use cli::{Backend, Cli, CliFormat, Commands};
 use config::Config;
 use github_backend::GitHubClient;
 use gitlab_backend::GitLabClient;
@@ -44,19 +43,38 @@ fn is_prime_hook_invocation<I: IntoIterator<Item = String>>(args: I) -> bool {
     args.iter().any(|arg| arg == "prime") && args.iter().any(|arg| arg == "--hook")
 }
 
+/// The output format named by `TRACK_OUTPUT`, ignoring an empty or
+/// unrecognised value.
+fn format_from_env(value: Option<&str>) -> Option<CliFormat> {
+    <CliFormat as clap::ValueEnum>::from_str(value?.trim(), true).ok()
+}
+
 fn cli_main() -> ExitCode {
     // A session hook runs in every project, configured for track or not, and
     // whatever it prints lands in an agent's context. It must stay silent and
     // succeed even when the arguments or environment do not parse.
     let quiet_hook = is_prime_hook_invocation(std::env::args());
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    let (mut cli, matches) = match Cli::try_parse_args() {
+        Ok(parsed) => parsed,
         Err(_) if quiet_hook => return ExitCode::SUCCESS,
         Err(e) => e.exit(),
     };
+    // `TRACK_OUTPUT` picks the format when `-o` does not. Read here, not by
+    // clap: a hook may leave it set but empty, and that must mean "unset".
+    if matches.value_source("format") != Some(clap::parser::ValueSource::CommandLine)
+        && let Some(format) = format_from_env(std::env::var("TRACK_OUTPUT").ok().as_deref())
+    {
+        cli.format = format;
+    }
 
-    // Initialize color mode based on CLI flag and environment
-    color::init(cli.color);
+    // Initialize color mode based on CLI flag and environment. Agent output
+    // is never coloured: escape codes are noise to a model.
+    if cli.format.is_agent() {
+        color::init(cli::ColorChoice::Never);
+    } else {
+        color::init(cli.color);
+    }
+    output::set_agent_mode(cli.format.is_agent());
 
     if let Err(e) = run(cli) {
         if quiet_hook {
@@ -100,16 +118,6 @@ fn command_supports_cli_jsonl(command: &Commands) -> bool {
     !matches!(command, Commands::Completions { .. })
 }
 
-/// `--select` is wired for `issue search` only.
-fn command_supports_select(command: &Commands) -> bool {
-    matches!(
-        command,
-        Commands::Issue {
-            action: IssueCommands::Search { .. }
-        }
-    )
-}
-
 fn run(cli: Cli) -> Result<()> {
     if cli.format.is_jsonl() && !command_supports_cli_jsonl(&cli.command) {
         return Err(anyhow!(
@@ -128,19 +136,20 @@ fn run(cli: Cli) -> Result<()> {
             .is_ok_and(|config| config.system_certs == Some(true)),
     );
 
-    // `--select` is wired for `issue search` JSON/JSONL only. Other commands
-    // and text mode must not silently print the full document, and a present
-    // flag with no usable paths is not a successful no-op projection.
+    // `--select` projects whatever JSON a command prints. Text has no
+    // fields to select, and a flag with no usable paths is not a successful
+    // no-op projection.
     if let Some(select) = cli.select.as_deref() {
-        if !command_supports_select(&cli.command) {
-            return Err(anyhow!("select is unsupported for this command"));
+        if cli.format.output() == cli::OutputFormat::Text {
+            return Err(anyhow!(
+                "--select needs JSON output: add -o json or -o jsonl"
+            ));
         }
-        if cli.format == CliFormat::Text {
-            return Err(anyhow!("--select is unsupported in text mode"));
-        }
-        if parse_select_paths(select).is_empty() {
+        let paths = parse_select_paths(select);
+        if paths.is_empty() {
             return Err(anyhow!("--select requires at least one field path"));
         }
+        output::set_select_paths(paths);
     }
 
     // Handle completions command - no API needed
@@ -282,7 +291,8 @@ fn run(cli: Cli) -> Result<()> {
             max_values: *max_values,
             format: cli.format.output(),
             backend: effective_backend,
-            config: &config,
+            url: config.url.as_deref(),
+            default_project: config.default_project.as_deref(),
             explicit_config: cli.config.as_deref(),
         });
     }
@@ -468,8 +478,6 @@ fn run_with_client(
             action,
             commands::issue::IssueOutput {
                 format: cli.format.output(),
-                select: cli.select.as_deref(),
-                jsonl: cli.format.is_jsonl(),
             },
             config.default_project.as_deref(),
             cli.verbose,

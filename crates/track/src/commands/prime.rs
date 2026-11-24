@@ -7,7 +7,7 @@
 
 use crate::cache::{CachedField, TrackerCache};
 use crate::cli::{Backend, OutputFormat};
-use crate::config::{Config, WorkflowPackState, load_workflow_pack, pack_query_named};
+use crate::config::{WorkflowPackState, load_workflow_pack, pack_query_named};
 use crate::output::output_json;
 use anyhow::Result;
 use chrono::Duration;
@@ -32,7 +32,9 @@ pub struct PrimeOptions<'a> {
     pub max_values: usize,
     pub format: OutputFormat,
     pub backend: Backend,
-    pub config: &'a Config,
+    /// Tracker URL from the config, if it has one
+    pub url: Option<&'a str>,
+    pub default_project: Option<&'a str>,
     pub explicit_config: Option<&'a Path>,
 }
 
@@ -161,6 +163,14 @@ pub fn handle_prime(options: &PrimeOptions<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The briefing as text, from a cache the caller already loaded. This is
+/// what `track context` prints under `-o agent`.
+pub(crate) fn briefing(cache: &mut TrackerCache, options: &PrimeOptions<'_>) -> String {
+    let _ = cache.ensure_projects();
+    let _ = cache.ensure_backend_shards();
+    render_text(&build_context(cache, options))
+}
+
 /// Make a cached string safe to print on one line of an agent's context.
 ///
 /// The cache can come from anywhere a `.tracker-cache/` directory can: a
@@ -252,9 +262,8 @@ fn build_context(cache: &mut TrackerCache, options: &PrimeOptions<'_>) -> PrimeC
     }
 
     let url = options
-        .config
         .url
-        .clone()
+        .map(str::to_string)
         .or_else(|| {
             cache
                 .backend_metadata
@@ -294,7 +303,7 @@ fn build_context(cache: &mut TrackerCache, options: &PrimeOptions<'_>) -> PrimeC
         .map(|user| clean_value(user.login.as_deref().unwrap_or(&user.display_name)));
 
     // Which project: the flag, then the configured default, then the only one.
-    let default_project = options.config.default_project.as_deref();
+    let default_project = options.default_project;
     let wanted = options.project.or(default_project);
     let project = match wanted {
         Some(wanted) => cache

@@ -471,11 +471,11 @@ fn output_report_json(
 /// immediately so `--jsonl` streams results as they are processed.
 fn output_jsonl_line(outcome: &InspectOutcome) -> Result<()> {
     let line = match outcome {
-        InspectOutcome::Success(obj) => serde_json::to_string(&JsonlSuccess {
+        InspectOutcome::Success(obj) => crate::output::jsonl_line(&JsonlSuccess {
             success: true,
             issue: obj,
         })?,
-        InspectOutcome::Failure(err) => serde_json::to_string(&serde_json::json!({
+        InspectOutcome::Failure(err) => crate::output::jsonl_line(&serde_json::json!({
             "success": false,
             "id": err.id,
             "error": err.error,

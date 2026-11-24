@@ -3,8 +3,8 @@ use crate::cli::{IssueCommands, OutputFormat};
 use crate::config::{pack_query_named, require_valid_workflow_pack};
 use crate::lookup::{IssueProject, Lookup};
 use crate::output::{
-    Displayable, output_json, output_list, output_page_hint, output_progress, output_projected,
-    output_result,
+    AGENT_ISSUE_HEADER, Displayable, agent_issue_ack, agent_issue_row, agent_page_footer, is_agent,
+    output_json, output_list, output_page_hint, output_progress, output_result,
 };
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -97,16 +97,14 @@ struct SearchArgs<'a> {
 
 /// CLI output options shared by issue commands. Bundled so `handle_issue`
 /// stays under clippy's argument limit.
-pub struct IssueOutput<'a> {
+pub struct IssueOutput {
     pub format: OutputFormat,
-    pub select: Option<&'a str>,
-    pub jsonl: bool,
 }
 
 pub fn handle_issue(
     lookup: &Lookup,
     action: &IssueCommands,
-    output: IssueOutput<'_>,
+    output: IssueOutput,
     default_project: Option<&str>,
     verbose: bool,
     link_mappings: &std::collections::HashMap<String, String>,
@@ -321,6 +319,10 @@ pub fn handle_issue(
     }
 }
 
+/// Comments `issue get --full` prints in agent mode before pointing at
+/// `issue comments --all` for the rest.
+const AGENT_FULL_COMMENTS: usize = 20;
+
 /// Record issue access in the cache for LRU tracking
 fn record_issue_access(issue: &Issue) {
     // Load only the runtime shard, update, and save just that shard
@@ -367,6 +369,53 @@ pub(crate) fn handle_get(
                 "comments": comments
             });
             output_json(&full_issue)?;
+        }
+        OutputFormat::Text if is_agent() => {
+            println!("{}", issue.display_agent());
+            let linked: usize = links.iter().map(|link| link.issues.len()).sum();
+            if linked > 0 {
+                println!("links ({linked}):");
+                for link in &links {
+                    let relation = match link.direction.as_deref().unwrap_or("BOTH") {
+                        "INWARD" => link
+                            .link_type
+                            .target_to_source
+                            .as_deref()
+                            .unwrap_or(&link.link_type.name),
+                        "OUTWARD" => link
+                            .link_type
+                            .source_to_target
+                            .as_deref()
+                            .unwrap_or(&link.link_type.name),
+                        _ => &link.link_type.name,
+                    };
+                    for other in &link.issues {
+                        println!(
+                            "{} {}  {}  (link id {})",
+                            relation,
+                            other.id_readable.as_deref().unwrap_or(&other.id),
+                            other.summary.as_deref().unwrap_or(""),
+                            link.id
+                        );
+                    }
+                }
+            }
+            if !comments.is_empty() {
+                // Whole comments, newest last. Past a point the rest is
+                // named, not dropped.
+                let shown = comments.len().min(AGENT_FULL_COMMENTS);
+                if shown < comments.len() {
+                    println!(
+                        "comments (last {shown} of {}; all: track i comments {id} --all):",
+                        comments.len()
+                    );
+                } else {
+                    println!("comments ({shown}):");
+                }
+                for comment in &comments[comments.len() - shown..] {
+                    println!("{}", comment.display_agent());
+                }
+            }
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -528,7 +577,11 @@ fn handle_create(
         println!();
     }
 
-    output_result(&issue, format)?;
+    if format == OutputFormat::Text && is_agent() {
+        println!("{}", agent_issue_ack("created", &issue));
+    } else {
+        output_result(&issue, format)?;
+    }
 
     Ok(())
 }
@@ -571,7 +624,11 @@ fn handle_update(
         println!();
     }
 
-    output_result(&issue, format)?;
+    if format == OutputFormat::Text && is_agent() {
+        println!("{}", agent_issue_ack("updated", &issue));
+    } else {
+        output_result(&issue, format)?;
+    }
     Ok(())
 }
 
@@ -1205,15 +1262,11 @@ pub(crate) fn parse_custom_fields_json(
 fn handle_search(
     client: &dyn IssueTracker,
     args: &SearchArgs,
-    output: IssueOutput<'_>,
+    output: IssueOutput,
     default_project: Option<&str>,
     explicit_config: Option<&Path>,
 ) -> Result<()> {
-    let IssueOutput {
-        format,
-        select,
-        jsonl,
-    } = output;
+    let format = output.format;
     // Resolve query from template if needed
     let actual_query = resolve_search_query(
         args.query,
@@ -1243,20 +1296,43 @@ fn handle_search(
         record_issue_access(first);
     }
 
-    // JSON/JSONL `--select` uses projection. Without it, `-o jsonl` renders
-    // through `output_list` like every other command, keeping `-o json`'s
-    // key order. Text mode rejects `--select` before dispatch.
-    if select.is_some() && format != OutputFormat::Text {
-        output_projected(&issues, select, jsonl)?;
+    // Total, when known — priority cascade: inline total > cached total
+    let total_info = if args.all {
+        None
     } else {
-        output_list(&issues, format)?;
+        inline_total
+            .map(|t| (t, "live".to_string()))
+            .or_else(|| try_cached_count(&actual_query, args.skip))
+    };
+
+    if format == OutputFormat::Text && is_agent() {
+        // One line per issue, and a last line that says whether this is
+        // everything. Descriptions are a `track <ID>` away.
+        if !issues.is_empty() {
+            println!("{AGENT_ISSUE_HEADER}");
+        }
+        for issue in &issues {
+            println!("{}", agent_issue_row(issue));
+        }
+        println!(
+            "{}",
+            agent_page_footer(
+                issues.len(),
+                args.limit,
+                args.skip,
+                total_info.as_ref().map(|(n, s)| (*n, s.as_str())),
+                args.all,
+            )
+        );
+        return Ok(());
     }
 
-    // Pagination hint — priority cascade: inline total > cached total > heuristic
+    // `--select` projects inside `output_json`; text mode rejects it before
+    // dispatch.
+    output_list(&issues, format)?;
+
+    // Pagination hint
     if !args.all {
-        let total_info = inline_total
-            .map(|t| (t, "live".to_string()))
-            .or_else(|| try_cached_count(&actual_query, args.skip));
         output_page_hint(
             issues.len(),
             args.limit,
@@ -1480,6 +1556,10 @@ fn handle_comment(
         OutputFormat::Json => {
             output_json(&comment)?;
         }
+        // The agent wrote the text; it does not need it read back.
+        OutputFormat::Text if is_agent() => {
+            println!("comment added to {id}");
+        }
         OutputFormat::Text => {
             use colored::Colorize;
             println!("Comment added to {}:", id.cyan().bold());
@@ -1509,6 +1589,18 @@ fn handle_comments(
     match format {
         OutputFormat::Json => {
             output_json(&comments)?;
+        }
+        OutputFormat::Text if is_agent() => {
+            // A full page may not be the whole thread.
+            let more = if !all && limit > 0 && comments.len() >= limit {
+                format!("; more may exist: track i comments {id} --all")
+            } else {
+                String::new()
+            };
+            println!("comments on {id} ({}{more}):", comments.len());
+            for comment in &comments {
+                println!("{}", comment.display_agent());
+            }
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -1893,12 +1985,20 @@ fn handle_state_transition(
 
     match format {
         OutputFormat::Json => {
+            // `state` is what was asked for. `actual_state` is what the
+            // tracker reports afterwards, and `verified` says whether the
+            // two agree, so success here cannot hide a transition the
+            // tracker ignored.
             output_json(&serde_json::json!({
                 "success": true,
                 "id": issue.id,
                 "idReadable": issue.id_readable,
+                "id_readable": issue.id_readable,
                 "action": action,
                 "state": state,
+                "actual_state": issue.common_fields().state,
+                "verified": warnings.is_empty(),
+                "warnings": warnings,
             }))?;
         }
         OutputFormat::Text => {
@@ -2117,6 +2217,16 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
     match format {
         OutputFormat::Json => {
             output_json(&summary)?;
+        }
+        OutputFormat::Text if is_agent() => {
+            println!("{succeeded} of {} {action}", results.len());
+            for result in results {
+                let id = result.id_readable.as_deref().unwrap_or(result.id);
+                match &result.error {
+                    None => println!("ok {id}"),
+                    Some(error) => println!("failed {id}: {error}"),
+                }
+            }
         }
         OutputFormat::Text => {
             use colored::Colorize;

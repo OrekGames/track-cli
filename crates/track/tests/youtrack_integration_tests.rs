@@ -838,7 +838,7 @@ fn test_no_pagination_hint_on_partial_page() {
 }
 
 #[test]
-fn test_no_pagination_hint_in_json_mode() {
+fn test_json_mode_says_when_a_page_is_full() {
     let count_response = serde_json::json!({ "count": 10 }).to_string();
     let search_response = serde_json::json!([
         {
@@ -879,12 +879,16 @@ fn test_no_pagination_hint_in_json_mode() {
         .get_output()
         .clone();
 
+    // A full page of JSON looks exactly like a complete result, so the hint
+    // goes to stderr in JSON mode too. stdout stays the bare array.
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        !stderr.contains("results shown"),
-        "Should NOT show pagination hint in JSON mode, got stderr: {}",
+        stderr.contains("2 results shown") && stderr.contains("--skip 2"),
+        "JSON mode must say when a page is full, got stderr: {}",
         stderr
     );
+    let stdout: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout.as_array().map(Vec::len), Some(2));
 }
 
 #[test]

@@ -2243,10 +2243,10 @@ fn test_non_json_command_rejects_jsonl_format() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// #292 / #351: `--select` is global but only `issue search` honors it.
-/// Other commands must reject it (today they print the full document).
+/// `--select` projects the JSON of every command, not only `issue search`.
+/// What it must never do is print the full, unprojected document.
 #[test]
-fn test_unwired_command_rejects_select() {
+fn test_select_projects_any_json_command() {
     let dir = temp_dir();
     let scenario = copy_scenario(&dir, "basic-workflow");
 
@@ -2255,45 +2255,82 @@ fn test_unwired_command_rejects_select() {
         .output()
         .unwrap();
 
-    assert!(
-        !output.status.success(),
-        "unwired --select must fail, not print the full project list: {output:?}"
-    );
+    assert!(output.status.success(), "{output:?}");
+    let projects = parse_json_stdout(&output);
+    let projects = projects.as_array().expect("project list is an array");
+    assert!(!projects.is_empty());
+    for project in projects {
+        let keys: Vec<&String> = project.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["id"], "only the selected field: {project}");
+    }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let err = format!("{stdout}{stderr}").to_ascii_lowercase();
-    assert!(
-        err.contains("select"),
-        "rejection must name select: stdout={stdout:?} stderr={stderr:?}"
-    );
-    assert!(
-        err.contains("unsupported"),
-        "rejection must name unsupported: stdout={stdout:?} stderr={stderr:?}"
-    );
+    let _ = fs::remove_dir_all(&dir);
+}
 
-    let trimmed = stdout.trim();
-    let parsed = serde_json::from_str::<serde_json::Value>(trimmed).ok();
-    let is_pretty_json_document = parsed.is_some()
-        && (trimmed.starts_with('{') || trimmed.starts_with('['))
-        && trimmed.contains('\n');
-    assert!(
-        !is_pretty_json_document,
-        "stdout must not be a pretty JSON document: {stdout}"
-    );
-    let is_project_list_payload = parsed
-        .as_ref()
-        .and_then(|value| value.as_array())
-        .is_some_and(|items| {
-            items.iter().any(|item| {
-                item.get("short_name").and_then(|v| v.as_str()) == Some("DEMO")
-                    || item.get("name").and_then(|v| v.as_str()) == Some("Demo Project")
-            })
-        });
-    assert!(
-        !is_project_list_payload,
-        "stdout must not be a full project list success payload: {stdout}"
-    );
+/// A selection that reaches nothing fails loudly: `{}` would read as an
+/// issue that has no such data.
+#[test]
+fn test_select_matching_nothing_is_an_error() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "basic-workflow");
+
+    track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "get",
+            "DEMO-1",
+            "--select",
+            "no_such_field",
+            "-o",
+            "json",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "--select matched nothing: no 'no_such_field'",
+        ));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `fields.<Name>` reaches a custom field by name, including inside the
+/// `--full` envelope.
+#[test]
+fn test_select_reaches_custom_fields_by_name() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "issue-get-full");
+
+    let output = track_mock(&dir, &scenario)
+        .args([
+            "issue",
+            "get",
+            "DEMO-1",
+            "--full",
+            "--select",
+            "issue.id_readable,issue.fields.Priority,comments.text",
+            "-o",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let json = parse_json_stdout(&output);
+    assert_eq!(json["issue"]["id_readable"], "DEMO-1");
+    assert_eq!(json["issue"]["fields"]["Priority"], "Normal");
+    assert!(json["issue"].get("custom_fields").is_none());
+    assert!(json["issue"].get("summary").is_none());
+    assert_eq!(json["comments"][0]["text"], "First comment");
+    assert!(json["comments"][0].get("author").is_none());
+    assert!(json.get("links").is_none());
+
+    // Without the virtual path the document is exactly as before.
+    let plain = track_mock(&dir, &scenario)
+        .args(["issue", "get", "DEMO-1", "-o", "json"])
+        .output()
+        .unwrap();
+    assert!(parse_json_stdout(&plain).get("fields").is_none());
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -3289,15 +3326,22 @@ fn test_jsonl_works_for_offline_commands() {
 }
 
 #[test]
-fn test_jsonl_does_not_widen_select() {
+fn test_select_applies_to_jsonl_of_any_command() {
     let dir = temp_dir();
     let scenario = copy_scenario(&dir, "basic-workflow");
 
-    track_mock(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["project", "list", "--select", "id", "-o", "jsonl"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("select is unsupported"));
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let lines = parse_jsonl_stdout(&output);
+    assert!(!lines.is_empty());
+    for line in &lines {
+        let keys: Vec<&String> = line.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["id"]);
+    }
 
     let _ = fs::remove_dir_all(&dir);
 }
