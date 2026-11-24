@@ -45,6 +45,39 @@ pub struct EvaluationResult {
 
     /// Warnings or suggestions for improvement
     pub suggestions: Vec<String>,
+
+    /// Size of the prompt the agent started with (system prompt plus task),
+    /// when the harness reported it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_bytes: Option<usize>,
+
+    /// Bytes of `track` output the agent read, when the harness reported it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_output_bytes: Option<usize>,
+
+    /// Rough token cost of the context above (bytes / 4)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approx_context_tokens: Option<usize>,
+}
+
+/// Context the agent consumed during a run, as measured by the harness.
+///
+/// The call log only records backend calls, so byte counts have to come from
+/// whoever ran the agent. `None` means the provider could not report it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ContextUsage {
+    pub prompt_bytes: Option<usize>,
+    pub tool_output_bytes: Option<usize>,
+}
+
+impl ContextUsage {
+    /// Rough token count for everything that was measured.
+    pub fn approx_tokens(&self) -> Option<usize> {
+        match (self.prompt_bytes, self.tool_output_bytes) {
+            (None, None) => None,
+            (prompt, output) => Some((prompt.unwrap_or(0) + output.unwrap_or(0)) / 4),
+        }
+    }
 }
 
 /// Efficiency rating based on command count
@@ -121,6 +154,15 @@ impl Evaluator {
 
     /// Evaluate call log entries against the scenario
     pub fn evaluate(&self, calls: &[CallLogEntry]) -> EvaluationResult {
+        self.evaluate_with_usage(calls, ContextUsage::default())
+    }
+
+    /// Evaluate call log entries, also scoring the context the agent consumed
+    pub fn evaluate_with_usage(
+        &self,
+        calls: &[CallLogEntry],
+        usage: ContextUsage,
+    ) -> EvaluationResult {
         let scoring = &self.scenario.scoring;
         let base_score = scoring.base_score;
 
@@ -133,7 +175,23 @@ impl Evaluator {
         let efficiency = self.calculate_efficiency(total_calls, scoring);
 
         // Calculate score breakdown
-        let score_breakdown = self.calculate_score_breakdown(calls, &outcomes, scoring);
+        let mut score_breakdown = self.calculate_score_breakdown(calls, &outcomes, scoring);
+
+        // Penalty: tool output over the scenario's byte budget
+        if let (Some(budget), Some(used)) = (scoring.output_byte_budget, usage.tool_output_bytes)
+            && used > budget
+            && scoring.penalties.over_budget != 0
+        {
+            score_breakdown.penalties.push(ScoreAdjustment {
+                reason: format!(
+                    "Tool output over budget ({} bytes, budget {})",
+                    used, budget
+                ),
+                points: scoring.penalties.over_budget,
+                count: 1,
+            });
+            score_breakdown.total_penalties += scoring.penalties.over_budget;
+        }
 
         // Calculate final score
         let final_score =
@@ -155,6 +213,9 @@ impl Evaluator {
             outcomes,
             score_breakdown,
             suggestions,
+            prompt_bytes: usage.prompt_bytes,
+            tool_output_bytes: usage.tool_output_bytes,
+            approx_context_tokens: usage.approx_tokens(),
         }
     }
 
@@ -435,7 +496,9 @@ impl Evaluator {
         // Bonus: Cache usage (cache_refresh, cache_show, cache_status, or context commands)
         let cache_commands: Vec<&str> = calls
             .iter()
-            .filter(|c| c.method.starts_with("cache_") || c.method == "context")
+            .filter(|c| {
+                c.method.starts_with("cache_") || c.method == "context" || c.method == "prime"
+            })
             .map(|c| c.method.as_str())
             .collect();
         if !cache_commands.is_empty() && scoring.bonuses.cache_use > 0 {
@@ -566,6 +629,7 @@ mod tests {
                 prompt: "test".to_string(),
                 default_project: None,
                 context: None,
+                hints: None,
                 cache_available: false,
             },
             expected_outcomes: [(
@@ -882,6 +946,52 @@ mod tests {
                 EfficiencyRating::Acceptable,
                 EfficiencyRating::Inefficient,
             ]
+        );
+    }
+
+    #[test]
+    fn output_over_budget_is_penalized_once() {
+        let mut scenario = make_test_scenario();
+        scenario.scoring.output_byte_budget = Some(1_000);
+        let evaluator = Evaluator::new(scenario);
+        let calls = vec![make_call("get_issue", vec![("id", "DEMO-1")])];
+
+        let within = evaluator.evaluate_with_usage(
+            &calls,
+            ContextUsage {
+                prompt_bytes: Some(4_000),
+                tool_output_bytes: Some(1_000),
+            },
+        );
+        let over = evaluator.evaluate_with_usage(
+            &calls,
+            ContextUsage {
+                prompt_bytes: Some(4_000),
+                tool_output_bytes: Some(1_001),
+            },
+        );
+
+        assert_eq!(over.score, within.score - 10);
+        assert_eq!(within.approx_context_tokens, Some(1_250));
+        assert_eq!(over.tool_output_bytes, Some(1_001));
+    }
+
+    #[test]
+    fn unreported_usage_is_not_scored() {
+        let mut scenario = make_test_scenario();
+        scenario.scoring.output_byte_budget = Some(1);
+        let evaluator = Evaluator::new(scenario);
+        let calls = vec![make_call("get_issue", vec![("id", "DEMO-1")])];
+
+        let plain = evaluator.evaluate(&calls);
+
+        assert_eq!(plain.approx_context_tokens, None);
+        assert!(
+            plain
+                .score_breakdown
+                .penalties
+                .iter()
+                .all(|p| !p.reason.contains("budget"))
         );
     }
 }

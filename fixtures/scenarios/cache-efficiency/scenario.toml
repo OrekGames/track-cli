@@ -19,8 +19,8 @@ Create 3 issues in the DEMO project with these summaries:
 3. "Update password validation"
 
 All issues should have Priority=Normal and Type=Bug.
-
-Hints:
+"""
+hints = """
 - Use 'track cache show' to see available project fields
 - Use JSON output mode (-o json) for parsing
 - Avoid redundant API calls by reusing information

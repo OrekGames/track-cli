@@ -68,6 +68,12 @@ pub struct SetupConfig {
     #[serde(default)]
     pub context: Option<String>,
 
+    /// Advice on how to solve the task (which command to use, what to
+    /// avoid). Kept apart from `prompt` so a run can withhold it and measure
+    /// what the agent does unprompted.
+    #[serde(default)]
+    pub hints: Option<String>,
+
     /// Whether cache should be pre-populated
     #[serde(default)]
     pub cache_available: bool,
@@ -135,6 +141,10 @@ pub struct ScoringConfig {
     /// Optimal number of commands (good agent behavior)
     pub optimal_commands: Option<usize>,
 
+    /// Bytes of tool output a good run stays within. Only scored when the
+    /// harness reports output sizes.
+    pub output_byte_budget: Option<usize>,
+
     /// Point penalties
     pub penalties: PenaltyConfig,
 
@@ -151,6 +161,7 @@ impl Default for ScoringConfig {
             min_commands: None,
             max_commands: None,
             optimal_commands: None,
+            output_byte_budget: None,
             penalties: PenaltyConfig::default(),
             bonuses: BonusConfig::default(),
             base_score: 100,
@@ -173,6 +184,10 @@ pub struct PenaltyConfig {
 
     /// Points deducted for failed commands (default: -15)
     pub command_error: i32,
+
+    /// Points deducted once when tool output exceeds `output_byte_budget`
+    /// (default: -10)
+    pub over_budget: i32,
 }
 
 impl Default for PenaltyConfig {
@@ -182,6 +197,7 @@ impl Default for PenaltyConfig {
             redundant_fetch: -10,
             unnecessary_list: 0,
             command_error: -15,
+            over_budget: -10,
         }
     }
 }

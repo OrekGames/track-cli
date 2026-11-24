@@ -61,6 +61,8 @@ fn atomic_write_temp_path(path: &Path) -> PathBuf {
 }
 
 const CACHE_DIR_NAME: &str = ".tracker-cache";
+/// Environment variable naming a directory to use as the cache.
+const CACHE_DIR_ENV: &str = "TRACK_CACHE_DIR";
 const CACHE_VERSION: u32 = 2;
 const MAX_RECENT_ISSUES: usize = 50;
 const DEFAULT_CACHE_REFRESH_CONCURRENCY: usize = 4;
@@ -742,11 +744,18 @@ impl TrackerCache {
 
     /// Get cache directory path.
     /// - If explicit cache_dir is provided, use it.
+    /// - If `TRACK_CACHE_DIR` is set, use that directory as the cache itself.
     /// - If in project context (.track.toml exists), use ./.tracker-cache/
     /// - Otherwise (global context), use ~/.tracker-cli/cache/
     fn cache_dir_path(cache_dir: Option<PathBuf>) -> Result<PathBuf> {
         if let Some(dir) = cache_dir {
             return Ok(dir.join(CACHE_DIR_NAME));
+        }
+
+        // An explicit override keeps runs that must not share state (the eval
+        // harness, CI) away from the project and global caches.
+        if let Some(dir) = std::env::var_os(CACHE_DIR_ENV).filter(|dir| !dir.is_empty()) {
+            return Ok(PathBuf::from(dir));
         }
 
         if crate::config::is_project_context() {

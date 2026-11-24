@@ -450,6 +450,37 @@ fn test_cache_path_reports_directory() {
 }
 
 #[test]
+fn test_cache_dir_env_overrides_project_and_global_cache() {
+    let dir = temp_dir();
+    ensure_project_context(&dir);
+    let cache_dir = dir.join("elsewhere");
+
+    track_in(&dir)
+        .env("TRACK_CACHE_DIR", &cache_dir)
+        .args(["cache", "refresh"])
+        .assert()
+        .success();
+
+    assert!(cache_dir.join("index.json").is_file());
+    assert!(
+        !dir.join(".tracker-cache").exists(),
+        "the project cache must stay untouched when TRACK_CACHE_DIR is set"
+    );
+
+    let output = track_in_no_mock(&dir)
+        .env("TRACK_CACHE_DIR", &cache_dir)
+        .args(["cache", "path"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        cache_dir.to_string_lossy()
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn test_cache_path_json_output() {
     // Used to print the bare path whatever the output format.
     let dir = temp_dir();

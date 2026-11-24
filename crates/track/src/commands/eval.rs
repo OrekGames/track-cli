@@ -403,6 +403,13 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
                         println!("  {}", line);
                     }
 
+                    if let Some(hints) = &scenario_data.setup.hints {
+                        println!("\n{}:", "Hints".white().bold());
+                        for line in hints.trim().lines() {
+                            println!("  {}", line.dimmed());
+                        }
+                    }
+
                     if let Some(context) = &scenario_data.setup.context {
                         println!("\n{}:", "Additional Context".white().bold());
                         for line in context.lines() {

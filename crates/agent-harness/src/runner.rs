@@ -19,7 +19,92 @@ pub struct SessionResult {
     /// `None` when the provider does not report token usage (CLI runners)
     pub total_output_tokens: Option<u32>,
     pub commands_executed: Vec<CommandExecution>,
+    /// Bytes of prompt the agent started with (system prompt plus task)
+    pub prompt_bytes: Option<usize>,
 }
+
+impl SessionResult {
+    /// Bytes of `track` output the agent read across the session
+    pub fn tool_output_bytes(&self) -> usize {
+        self.commands_executed.iter().map(|c| c.output.len()).sum()
+    }
+}
+
+/// What reference material the agent gets in its system prompt
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContextMode {
+    /// The full skill file, as `track init --skills` installs it
+    #[default]
+    Skill,
+    /// The output of `track prime`, as a session hook would inject it
+    Prime,
+    /// Nothing: the agent has only `track --help`
+    None,
+}
+
+/// Settings for the scenario run in progress. The prompt builders and the
+/// code that spawns `track` are spread over several modules; a shared slot
+/// keeps their signatures stable.
+#[derive(Clone, Default)]
+pub struct RunSettings {
+    pub context: ContextMode,
+    /// Scenario directory, used as the mock backend for `track prime`
+    pub scenario_path: PathBuf,
+    /// Cache directory private to this run
+    pub cache_dir: Option<PathBuf>,
+}
+
+static RUN_SETTINGS: std::sync::Mutex<Option<RunSettings>> = std::sync::Mutex::new(None);
+
+pub fn set_run_settings(settings: RunSettings) {
+    *RUN_SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(settings);
+}
+
+pub(crate) fn run_settings() -> RunSettings {
+    RUN_SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_default()
+}
+
+/// The reference section of the system prompt for the current context mode
+pub(crate) fn reference_block() -> String {
+    let settings = run_settings();
+    match settings.context {
+        ContextMode::None => String::new(),
+        ContextMode::Prime => {
+            let (output, is_error) =
+                tools::execute_track(&["prime".to_string()], &settings.scenario_path);
+            if is_error || output.trim().is_empty() {
+                String::new()
+            } else {
+                format!("---\n\n{}\n---\n\n", output.trim_end())
+            }
+        }
+        ContextMode::Skill => match load_skill_file() {
+            Some(skill) => format!("---\n\n{}\n---\n\n", skill),
+            None => MINIMAL_REFERENCE.to_string(),
+        },
+    }
+}
+
+/// Used when the skill file cannot be found
+const MINIMAL_REFERENCE: &str = "## Track CLI Quick Reference\n\n\
+Note: Skill file not found. Using minimal reference.\n\n\
+```bash\n\
+track PROJ-123                     # Get issue\n\
+track i s \"project: PROJ #Unresolved\"  # Search issues\n\
+track i new -p PROJ -s \"Summary\"   # Create issue\n\
+track i u PROJ-123 --field \"Field=Value\"  # Update issue\n\
+track i del PROJ-123               # Delete issue\n\
+track i cmt PROJ-123 -m \"Comment\"  # Add comment\n\
+track i link PROJ-1 PROJ-2         # Link issues\n\
+track p ls                         # List projects\n\
+track p f PROJ                     # List custom fields\n\
+track a ls --project PROJ          # List articles\n\
+track t ls                         # List tags\n\
+```\n\n";
 
 /// Record of a command execution
 pub struct CommandExecution {
@@ -43,7 +128,7 @@ fn strip_frontmatter(content: &str) -> &str {
 }
 
 /// Load the skill file content, stripping frontmatter
-pub(crate) fn load_skill_file() -> Option<String> {
+fn load_skill_file() -> Option<String> {
     let paths_to_try = [
         SKILL_FILE_PATH.to_string(),
         format!("./{}", SKILL_FILE_PATH),
@@ -114,6 +199,7 @@ impl SessionRunner {
 
         // Initial user message with the task
         let task_message = self.build_task_message();
+        let prompt_bytes = system.len() + task_message.len();
         self.messages.push(Message {
             role: Role::User,
             content: MessageContent::text(task_message),
@@ -278,6 +364,7 @@ impl SessionRunner {
             total_input_tokens: Some(total_input_tokens),
             total_output_tokens: Some(total_output_tokens),
             commands_executed,
+            prompt_bytes: Some(prompt_bytes),
         })
     }
 
@@ -295,26 +382,7 @@ impl SessionRunner {
         prompt.push_str("4. When you've completed the task, simply respond with a summary (no more tool calls)\n");
         prompt.push_str("5. Use -o json for output you need to parse programmatically\n\n");
 
-        // Load and include the skill file (same context a real user would have installed)
-        if let Some(skill_content) = load_skill_file() {
-            prompt.push_str("---\n\n");
-            prompt.push_str(&skill_content);
-            prompt.push_str("\n---\n\n");
-        } else {
-            // Fallback to minimal reference if skill file not found
-            prompt.push_str("## Track CLI Quick Reference\n\n");
-            prompt.push_str("Note: Skill file not found. Using minimal reference.\n\n");
-            prompt.push_str("```\n");
-            prompt.push_str("track issue get <ID>              # Get issue details\n");
-            prompt.push_str("track issue search <query>        # Search issues\n");
-            prompt.push_str("track issue create -p <proj> -s <summary>\n");
-            prompt.push_str("track issue update <ID> [--state <state>] [--summary <summary>]\n");
-            prompt.push_str("track issue comment <ID> -m <message>\n");
-            prompt.push_str("track issue comments <ID>         # List comments\n");
-            prompt.push_str("track project list                # List projects\n");
-            prompt.push_str("track project fields <ID>         # List custom fields\n");
-            prompt.push_str("```\n\n");
-        }
+        prompt.push_str(&reference_block());
 
         if let Some(context) = &self.scenario.setup.context {
             prompt.push_str("## Context\n\n");

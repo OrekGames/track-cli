@@ -68,10 +68,12 @@ pub fn execute_track(args: &[String], scenario_dir: &std::path::Path) -> (String
     // Find the track binary
     let track_bin = find_track_binary();
 
-    let result = Command::new(&track_bin)
-        .args(args)
-        .env("TRACK_MOCK_DIR", scenario_dir)
-        .output();
+    let mut command = Command::new(&track_bin);
+    command.args(args).env("TRACK_MOCK_DIR", scenario_dir);
+    if let Some(cache_dir) = crate::runner::run_settings().cache_dir {
+        command.env("TRACK_CACHE_DIR", cache_dir);
+    }
+    let result = command.output();
 
     match result {
         Ok(output) => {

@@ -7,7 +7,7 @@
 //! your local machine.
 
 use crate::permissions::format_allowed_bash_pattern;
-use crate::runner::{CommandExecution, SessionResult, load_skill_file};
+use crate::runner::{CommandExecution, SessionResult};
 use crate::subprocess::{StderrCapture, ensure_success, route_track_to_mock};
 use crate::tools::{find_track_binary, is_track_command, parse_track_args};
 use anyhow::{Context, Result};
@@ -157,7 +157,8 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<SessionResult> {
     // Unset CLAUDECODE to allow running inside a Claude Code session
     cmd.env_remove("CLAUDECODE");
 
-    run_stream_json_session(cmd, "Claude Code CLI", config.verbose)
+    let prompt_bytes = system_prompt.len() + task_prompt.len();
+    run_stream_json_session(cmd, "Claude Code CLI", config.verbose, prompt_bytes)
 }
 
 /// Run an agent CLI that prints Claude Code stream-json events on stdout, and
@@ -166,6 +167,7 @@ pub(crate) fn run_stream_json_session(
     mut cmd: Command,
     cli_name: &str,
     verbose: bool,
+    prompt_bytes: usize,
 ) -> Result<SessionResult> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd
@@ -204,6 +206,7 @@ pub(crate) fn run_stream_json_session(
         total_input_tokens: None,  // Not available from CLI
         total_output_tokens: None, // Not available from CLI
         commands_executed,
+        prompt_bytes: Some(prompt_bytes),
     })
 }
 
@@ -222,29 +225,7 @@ pub(crate) fn build_system_prompt(scenario: &Scenario) -> String {
     prompt.push_str("- Minimize the number of commands you execute\n");
     prompt.push_str("- Use `-o json` when you need to parse output programmatically\n\n");
 
-    // Load and include the skill file (same context a real user would have installed)
-    if let Some(skill_content) = load_skill_file() {
-        prompt.push_str("---\n\n");
-        prompt.push_str(&skill_content);
-        prompt.push_str("\n---\n\n");
-    } else {
-        // Fallback to minimal reference if skill file not found
-        prompt.push_str("## Track CLI Quick Reference\n\n");
-        prompt.push_str("Note: Skill file not found. Using minimal reference.\n\n");
-        prompt.push_str("```bash\n");
-        prompt.push_str("track PROJ-123                     # Get issue\n");
-        prompt.push_str("track i s \"project: PROJ #Unresolved\"  # Search issues\n");
-        prompt.push_str("track i new -p PROJ -s \"Summary\"   # Create issue\n");
-        prompt.push_str("track i u PROJ-123 --field \"Field=Value\"  # Update issue\n");
-        prompt.push_str("track i del PROJ-123               # Delete issue\n");
-        prompt.push_str("track i cmt PROJ-123 -m \"Comment\"  # Add comment\n");
-        prompt.push_str("track i link PROJ-1 PROJ-2         # Link issues\n");
-        prompt.push_str("track p ls                         # List projects\n");
-        prompt.push_str("track p f PROJ                     # List custom fields\n");
-        prompt.push_str("track a ls --project PROJ          # List articles\n");
-        prompt.push_str("track t ls                         # List tags\n");
-        prompt.push_str("```\n\n");
-    }
+    prompt.push_str(&crate::runner::reference_block());
 
     if let Some(context) = &scenario.setup.context {
         prompt.push_str("## Scenario Context\n\n");
@@ -478,7 +459,7 @@ mod tests {
     fn run_fake_cli(script: &str) -> Result<SessionResult> {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", script]);
-        run_stream_json_session(cmd, "Fake CLI", false)
+        run_stream_json_session(cmd, "Fake CLI", false, 0)
     }
 
     #[cfg(unix)]

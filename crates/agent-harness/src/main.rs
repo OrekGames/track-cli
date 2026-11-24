@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
-use tracker_mock::{Evaluator, MockClient, Scenario};
+use tracker_mock::{ContextUsage, Evaluator, MockClient, Scenario};
 
 /// Model for the Anthropic provider when `--model` is not given
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
@@ -64,6 +64,14 @@ enum Commands {
         /// Minimum score to consider a pass
         #[arg(long, default_value_t = 70)]
         min_score: u8,
+
+        /// Give the agent the scenario's hints and extra context
+        #[arg(long, value_enum, default_value_t = Hints::On)]
+        hints: Hints,
+
+        /// Reference material placed in the agent's system prompt
+        #[arg(long, value_enum, default_value_t = runner::ContextMode::Skill)]
+        context: runner::ContextMode,
     },
 
     /// Run all scenarios in a directory
@@ -99,6 +107,14 @@ enum Commands {
         /// Output format
         #[arg(long, short = 'o', value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+
+        /// Give the agent the scenario's hints and extra context
+        #[arg(long, value_enum, default_value_t = Hints::On)]
+        hints: Hints,
+
+        /// Reference material placed in the agent's system prompt
+        #[arg(long, value_enum, default_value_t = runner::ContextMode::Skill)]
+        context: runner::ContextMode,
     },
 
     /// List available scenarios
@@ -128,6 +144,61 @@ enum Provider {
     Gemini,
 }
 
+/// Whether the agent is told how to solve the task
+#[derive(ValueEnum, Clone, Debug, Copy, Default, PartialEq, Eq)]
+enum Hints {
+    #[default]
+    On,
+    Off,
+}
+
+/// How a run is set up, apart from which agent runs it
+#[derive(Clone, Copy, Debug)]
+struct RunOptions {
+    hints: Hints,
+    context: runner::ContextMode,
+}
+
+/// The scenario as the agent will see it. With hints on they are appended to
+/// the task; with hints off both the hints and the extra context are withheld.
+fn scenario_for_run(scenario: &Scenario, hints: Hints) -> Scenario {
+    let mut scenario = scenario.clone();
+    match hints {
+        Hints::On => {
+            if let Some(hints) = scenario.setup.hints.take() {
+                let prompt = scenario.setup.prompt.trim_end();
+                scenario.setup.prompt = format!("{prompt}\n\nHints:\n{}\n", hints.trim());
+            }
+        }
+        Hints::Off => {
+            scenario.setup.hints = None;
+            scenario.setup.context = None;
+        }
+    }
+    scenario
+}
+
+/// A cache directory for one scenario run, removed when dropped.
+struct RunCacheDir(PathBuf);
+
+impl RunCacheDir {
+    fn create() -> Result<Self> {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("track-agent-cache-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create {}", dir.display()))?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for RunCacheDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[derive(ValueEnum, Clone, Debug, Copy, Default)]
 enum OutputFormat {
     #[default]
@@ -148,8 +219,18 @@ fn main() -> Result<()> {
             format,
             api_key,
             min_score,
+            hints,
+            context,
         } => run_scenario(
-            &scenario, provider, model, max_turns, verbose, format, api_key, min_score,
+            &scenario,
+            provider,
+            model,
+            max_turns,
+            verbose,
+            format,
+            api_key,
+            min_score,
+            RunOptions { hints, context },
         ),
 
         Commands::RunAll {
@@ -161,8 +242,18 @@ fn main() -> Result<()> {
             min_score,
             fail_fast,
             format,
+            hints,
+            context,
         } => run_all_scenarios(
-            &path, provider, model, max_turns, api_key, min_score, fail_fast, format,
+            &path,
+            provider,
+            model,
+            max_turns,
+            api_key,
+            min_score,
+            fail_fast,
+            format,
+            RunOptions { hints, context },
         ),
 
         Commands::List { path } => list_scenarios(&path),
@@ -181,6 +272,7 @@ fn run_scenario(
     format: OutputFormat,
     api_key: Option<String>,
     min_score: u8,
+    options: RunOptions,
 ) -> Result<()> {
     // Load scenario
     let scenario = Scenario::load_from_dir(scenario_path)?;
@@ -197,13 +289,14 @@ fn run_scenario(
         max_turns,
         verbose,
         api_key.as_deref(),
+        options,
     )?;
 
     // Evaluate results
     let client = MockClient::new(scenario_path)?;
     let calls = client.read_call_log()?;
     let evaluator = Evaluator::new(scenario);
-    let eval_result = evaluator.evaluate(&calls);
+    let eval_result = evaluator.evaluate_with_usage(&calls, context_usage(&session_result));
     let passed = eval_result.score_percent >= min_score as f64 && eval_result.success;
 
     // Output results
@@ -218,6 +311,9 @@ fn run_scenario(
                 "turns_used": session_result.turns_used,
                 "input_tokens": session_result.total_input_tokens,
                 "output_tokens": session_result.total_output_tokens,
+                "prompt_bytes": eval_result.prompt_bytes,
+                "tool_output_bytes": eval_result.tool_output_bytes,
+                "approx_context_tokens": eval_result.approx_context_tokens,
                 "commands_executed": session_result.commands_executed.iter().map(|c| {
                     serde_json::json!({
                         "args": c.args,
@@ -279,6 +375,16 @@ fn run_scenario(
                 eval_result.efficiency
             );
 
+            if let Some(tokens) = eval_result.approx_context_tokens {
+                println!(
+                    "{}: ~{} tokens ({} prompt bytes, {} tool output bytes)",
+                    "Context".white().bold(),
+                    tokens,
+                    eval_result.prompt_bytes.unwrap_or(0),
+                    eval_result.tool_output_bytes.unwrap_or(0)
+                );
+            }
+
             // Outcomes
             println!("\n{}:", "Expected Outcomes".white().bold());
             for outcome in &eval_result.outcomes {
@@ -314,7 +420,16 @@ fn run_scenario(
     Ok(())
 }
 
+/// What the harness measured of the context the agent consumed
+fn context_usage(session: &runner::SessionResult) -> ContextUsage {
+    ContextUsage {
+        prompt_bytes: session.prompt_bytes,
+        tool_output_bytes: Some(session.tool_output_bytes()),
+    }
+}
+
 /// Run one agent session against `scenario` with the selected provider
+#[allow(clippy::too_many_arguments)]
 fn run_agent_session(
     provider: Provider,
     scenario_path: &Path,
@@ -323,9 +438,18 @@ fn run_agent_session(
     max_turns: usize,
     verbose: bool,
     api_key: Option<&str>,
+    options: RunOptions,
 ) -> Result<runner::SessionResult> {
     let scenario_path = scenario_path.to_path_buf();
-    let scenario = scenario.clone();
+    let scenario = scenario_for_run(scenario, options.hints);
+
+    // Held until the session ends, then removed.
+    let cache_dir = RunCacheDir::create()?;
+    runner::set_run_settings(runner::RunSettings {
+        context: options.context,
+        scenario_path: scenario_path.clone(),
+        cache_dir: Some(cache_dir.0.clone()),
+    });
 
     match provider {
         Provider::Anthropic => {
@@ -373,6 +497,7 @@ fn run_all_scenarios(
     min_score: u8,
     fail_fast: bool,
     format: OutputFormat,
+    options: RunOptions,
 ) -> Result<()> {
     // Validate API key for Anthropic provider
     if matches!(provider, Provider::Anthropic) && api_key.is_none() {
@@ -421,6 +546,7 @@ fn run_all_scenarios(
             max_turns,
             false, // not verbose in batch mode
             api_key.as_deref(),
+            options,
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -438,7 +564,7 @@ fn run_all_scenarios(
         let client = MockClient::new(scenario_path)?;
         let calls = client.read_call_log()?;
         let evaluator = Evaluator::new(scenario.clone());
-        let eval_result = evaluator.evaluate(&calls);
+        let eval_result = evaluator.evaluate_with_usage(&calls, context_usage(&session_result));
 
         let passed = eval_result.score_percent >= min_score as f64 && eval_result.success;
         if !passed {
@@ -454,18 +580,26 @@ fn run_all_scenarios(
             "turns_used": session_result.turns_used,
             "input_tokens": session_result.total_input_tokens,
             "output_tokens": session_result.total_output_tokens,
+            "prompt_bytes": eval_result.prompt_bytes,
+            "tool_output_bytes": eval_result.tool_output_bytes,
+            "approx_context_tokens": eval_result.approx_context_tokens,
             "commands_executed_count": session_result.commands_executed.len(),
             "success": eval_result.success,
         }));
 
         if matches!(format, OutputFormat::Text) {
             let status = if passed { "PASS".green() } else { "FAIL".red() };
+            let context = eval_result
+                .approx_context_tokens
+                .map(|tokens| format!(", ~{tokens} context tokens"))
+                .unwrap_or_default();
             println!(
-                "  {} - {:.0}% ({} calls, {} turns)",
+                "  {} - {:.0}% ({} calls, {} turns{})",
                 status,
                 eval_result.score_percent,
                 eval_result.total_calls,
-                session_result.turns_used
+                session_result.turns_used,
+                context
             );
         }
 
@@ -563,6 +697,13 @@ fn show_scenario(scenario_path: &Path) -> Result<()> {
     }
     println!("{}", "─".repeat(60));
 
+    if let Some(hints) = &scenario.setup.hints {
+        println!("\n{}:", "Hints (--hints on)".white().bold());
+        for line in hints.trim().lines() {
+            println!("  {}", line.dimmed());
+        }
+    }
+
     if let Some(context) = &scenario.setup.context {
         println!("\n{}:", "Additional Context".white().bold());
         for line in context.lines() {
@@ -585,4 +726,60 @@ fn show_scenario(scenario_path: &Path) -> Result<()> {
     println!();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scenario_with_hints() -> Scenario {
+        let dir = RunCacheDir::create().unwrap();
+        let path = dir.0.join("scenario.toml");
+        std::fs::write(
+            &path,
+            r#"
+[scenario]
+name = "t"
+description = "t"
+
+[setup]
+prompt = """
+Create an issue.
+"""
+hints = """
+- Use the cache
+"""
+context = "Valid Priority values: Low, High"
+"#,
+        )
+        .unwrap();
+        Scenario::load(&path).expect("scenario parses")
+    }
+
+    #[test]
+    fn hints_on_appends_them_to_the_task() {
+        let scenario = scenario_for_run(&scenario_with_hints(), Hints::On);
+        assert_eq!(
+            scenario.setup.prompt,
+            "Create an issue.\n\nHints:\n- Use the cache\n"
+        );
+        assert!(scenario.setup.context.is_some());
+    }
+
+    #[test]
+    fn hints_off_withholds_hints_and_context() {
+        let scenario = scenario_for_run(&scenario_with_hints(), Hints::Off);
+        assert_eq!(scenario.setup.prompt, "Create an issue.\n");
+        assert!(scenario.setup.hints.is_none());
+        assert!(scenario.setup.context.is_none());
+    }
+
+    #[test]
+    fn run_cache_dir_is_removed_on_drop() {
+        let dir = RunCacheDir::create().unwrap();
+        let path = dir.0.clone();
+        assert!(path.is_dir());
+        drop(dir);
+        assert!(!path.exists());
+    }
 }

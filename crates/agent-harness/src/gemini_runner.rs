@@ -58,5 +58,5 @@ pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<SessionResult> {
 
     route_track_to_mock(&mut cmd, &config.scenario_path, &track_bin);
 
-    run_stream_json_session(cmd, "Gemini CLI", config.verbose)
+    run_stream_json_session(cmd, "Gemini CLI", config.verbose, full_prompt.len())
 }
