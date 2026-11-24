@@ -165,12 +165,22 @@ pub struct CommandExecution {
     pub is_error: Option<bool>,
 }
 
-/// Strip YAML frontmatter (--- ... ---) from skill file content
+/// Strip YAML frontmatter (--- ... ---) from skill file content.
+///
+/// The fences are matched as whole lines with either line ending: the skill
+/// is embedded from the checkout, which on Windows has CRLF line endings.
 fn strip_frontmatter(content: &str) -> &str {
-    if let Some(stripped) = content.strip_prefix("---\n")
-        && let Some(close) = stripped.find("\n---\n")
-    {
-        return stripped[close + 5..].trim_start();
+    let is_fence = |line: &str| line.trim_end_matches(['\n', '\r']) == "---";
+    let mut lines = content.split_inclusive('\n');
+    let mut offset = match lines.next() {
+        Some(first) if is_fence(first) => first.len(),
+        _ => return content,
+    };
+    for line in lines {
+        offset += line.len();
+        if is_fence(line) {
+            return content[offset..].trim_start();
+        }
     }
     content
 }
@@ -480,7 +490,7 @@ default_project = "{default_project}"
     #[test]
     fn skill_reference_is_the_shipped_core_plus_the_backend_reference() {
         let core = strip_frontmatter(SKILL_CORE);
-        assert!(SKILL_CORE.starts_with("---\n"), "the skill has frontmatter");
+        assert!(SKILL_CORE.starts_with("---"), "the skill has frontmatter");
         assert!(!core.starts_with("---"), "frontmatter was kept");
         assert!(SKILL_CORE.ends_with(core));
 
@@ -491,6 +501,27 @@ default_project = "{default_project}"
 
         // A scenario for any backend gets the core only.
         assert_eq!(skill_reference("any"), format!("---\n\n{core}\n---\n\n"));
+    }
+
+    #[test]
+    fn frontmatter_is_stripped_with_either_line_ending() {
+        let body = "# Track\n\nUse it.\n";
+        assert_eq!(
+            strip_frontmatter("---\nname: track\ndescription: x\n---\n\n# Track\n\nUse it.\n"),
+            body
+        );
+        assert_eq!(
+            strip_frontmatter("---\r\nname: track\r\n---\r\n\r\n# Track\r\n"),
+            "# Track\r\n"
+        );
+        // No frontmatter, or an unclosed one, leaves the text as it is.
+        assert_eq!(strip_frontmatter(body), body);
+        assert_eq!(
+            strip_frontmatter("---\nname: track\n"),
+            "---\nname: track\n"
+        );
+        // A fence must be the whole line.
+        assert_eq!(strip_frontmatter("--- x\nbody\n"), "--- x\nbody\n");
     }
 
     #[test]

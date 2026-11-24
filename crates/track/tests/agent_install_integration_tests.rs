@@ -189,10 +189,13 @@ fn uninstalling_one_tool_keeps_what_the_others_still_read() {
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(home.join(".agents/skills/track/SKILL.md").is_file());
     let kept = report["kept"].as_array().unwrap();
+    // Built per component: the report prints the platform's own separators.
+    let shared_skill = home.join(".agents").join("skills").join("track");
     assert!(
         kept.iter().any(|item| {
             let item = item.as_str().unwrap();
-            item.contains(".agents/skills/track") && item.contains("Cursor and Gemini CLI")
+            item.contains(&shared_skill.display().to_string())
+                && item.contains("Cursor and Gemini CLI")
         }),
         "{report}"
     );
