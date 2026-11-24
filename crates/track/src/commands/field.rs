@@ -1,6 +1,7 @@
 //! Custom field admin command handlers
 
 use crate::cli::{FieldCommands, OutputFormat};
+use crate::lookup::Lookup;
 use crate::output::{output_json, output_result};
 use anyhow::{Context, Result, anyhow};
 use tracker_core::{
@@ -8,11 +9,8 @@ use tracker_core::{
     CustomFieldType, IssueTracker,
 };
 
-pub fn handle_field(
-    client: &dyn IssueTracker,
-    action: &FieldCommands,
-    format: OutputFormat,
-) -> Result<()> {
+pub fn handle_field(lookup: &Lookup, action: &FieldCommands, format: OutputFormat) -> Result<()> {
+    let client = lookup.client();
     match action {
         FieldCommands::List => handle_list(client, format),
         FieldCommands::Create { name, field_type } => {
@@ -26,7 +24,7 @@ pub fn handle_field(
             resolved,
             required,
         } => handle_new(
-            client, name, field_type, project, values, resolved, *required, format,
+            lookup, name, field_type, project, values, resolved, *required, format,
         ),
     }
 }
@@ -80,7 +78,7 @@ fn handle_create(
 
 #[allow(clippy::too_many_arguments)]
 fn handle_new(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     name: &str,
     field_type_str: &str,
     project: &str,
@@ -111,7 +109,9 @@ fn handle_new(
 
     let bundle_values = super::bundle::build_bundle_values(values, resolved, bundle_type)?;
 
-    // Resolve project ID
+    // Resolve the project before anything is created: a cached id that
+    // turned out stale would leave the bundle and field behind.
+    let client = lookup.client();
     let project_id = client
         .resolve_project_id(project)
         .with_context(|| format!("Failed to resolve project '{}'", project))?;
@@ -150,7 +150,7 @@ fn handle_new(
     let attached = client
         .attach_field_to_project(&project_id, &attachment)
         .context("Failed to attach field to project")?;
-    crate::cache::with_active_cache(|cache| cache.invalidate_project_schema(&project_id));
+    lookup.forget_schema(&project_id);
 
     // Output result
     #[derive(serde::Serialize)]

@@ -1,13 +1,15 @@
 use crate::cli::{OutputFormat, ProjectCommands};
+use crate::lookup::Lookup;
 use crate::output::{output_list, output_result};
 use anyhow::{Context, Result};
 use tracker_core::{AttachFieldToProject, CreateProject, IssueTracker};
 
 pub fn handle_project(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     action: &ProjectCommands,
     format: OutputFormat,
 ) -> Result<()> {
+    let client = lookup.client();
     match action {
         ProjectCommands::List => handle_list(client, format),
         ProjectCommands::Get { id } => handle_get(client, id, format),
@@ -20,7 +22,7 @@ pub fn handle_project(
         } => {
             let resolved_desc = super::resolve_body(description.as_deref(), body_file.as_deref())?;
             handle_create(
-                client,
+                lookup,
                 name,
                 short_name,
                 resolved_desc,
@@ -28,7 +30,7 @@ pub fn handle_project(
                 format,
             )
         }
-        ProjectCommands::Fields { id } => handle_fields(client, id, format),
+        ProjectCommands::Fields { id } => handle_fields(lookup, id, format),
         ProjectCommands::AttachField {
             project,
             field,
@@ -36,7 +38,7 @@ pub fn handle_project(
             required,
             empty_text,
         } => handle_attach_field(
-            client,
+            lookup,
             project,
             field,
             bundle.as_deref(),
@@ -55,7 +57,7 @@ fn handle_list(client: &dyn IssueTracker, format: OutputFormat) -> Result<()> {
 }
 
 fn handle_create(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     name: &str,
     short_name: &str,
     description: Option<String>,
@@ -78,12 +80,11 @@ fn handle_create(
         leader: leader.map(String::from),
     };
 
-    let project = client
+    let project = lookup
+        .client()
         .create_project(&create)
         .context("Failed to create project")?;
-    crate::cache::with_active_cache(|cache| {
-        let _ = cache.upsert_project_meta(&project);
-    });
+    lookup.record_project(&project);
 
     output_result(&project, format)?;
     Ok(())
@@ -103,26 +104,18 @@ fn handle_get(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> Resu
     Ok(())
 }
 
-fn handle_fields(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> Result<()> {
-    // Resolve shortName to internal ID if needed
-    let project_id = client
-        .resolve_project_id(id)
-        .with_context(|| format!("Failed to resolve project '{}'", id))?;
-
-    let fields = client
-        .get_project_custom_fields(&project_id)
-        .with_context(|| format!("Failed to fetch custom fields for project '{}'", id))?;
-    // A fresh schema is exactly what later commands look up.
-    crate::cache::with_active_cache(|cache| {
-        let _ = cache.store_project_schema(&project_id, &fields);
-    });
+fn handle_fields(lookup: &Lookup, id: &str, format: OutputFormat) -> Result<()> {
+    // The schema always comes from the tracker; the cache learns it.
+    let project_id = lookup.project_id(id)?;
+    let fields =
+        lookup.with_project_id(&project_id, |project_id| lookup.schema_live(project_id))?;
 
     output_list(&fields, format)?;
     Ok(())
 }
 
 fn handle_attach_field(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     project: &str,
     field_id: &str,
     bundle_id: Option<&str>,
@@ -130,11 +123,6 @@ fn handle_attach_field(
     empty_text: Option<String>,
     format: OutputFormat,
 ) -> Result<()> {
-    // Resolve project shortName to internal ID if needed
-    let project_id = client
-        .resolve_project_id(project)
-        .with_context(|| format!("Failed to resolve project '{}'", project))?;
-
     let attachment = AttachFieldToProject {
         field_id: field_id.to_string(),
         bundle_id: bundle_id.map(String::from),
@@ -144,15 +132,20 @@ fn handle_attach_field(
         bundle_type: None, // Will default to EnumBundle
     };
 
-    let attached = client
-        .attach_field_to_project(&project_id, &attachment)
-        .with_context(|| {
-            format!(
-                "Failed to attach field '{}' to project '{}'",
-                field_id, project
-            )
-        })?;
-    crate::cache::with_active_cache(|cache| cache.invalidate_project_schema(&project_id));
+    let project_id = lookup.project_id(project)?;
+    let attached = lookup.with_project_id(&project_id, |project_id| {
+        let attached = lookup
+            .client()
+            .attach_field_to_project(project_id, &attachment)
+            .with_context(|| {
+                format!(
+                    "Failed to attach field '{}' to project '{}'",
+                    field_id, project
+                )
+            })?;
+        lookup.forget_schema(project_id);
+        Ok(attached)
+    })?;
 
     output_result(&attached, format)?;
     Ok(())

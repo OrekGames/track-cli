@@ -1,16 +1,12 @@
 use crate::cli::{OutputFormat, TagCommands};
+use crate::lookup::Lookup;
 use crate::output::{output_list, output_result};
 use anyhow::{Context, Result};
-use tracker_core::unicode_eq_ignore_case;
-use tracker_core::{CreateTag, IssueTracker};
+use tracker_core::CreateTag;
 
-pub fn handle_tags(
-    client: &dyn IssueTracker,
-    action: &TagCommands,
-    format: OutputFormat,
-) -> Result<()> {
+pub fn handle_tags(lookup: &Lookup, action: &TagCommands, format: OutputFormat) -> Result<()> {
     match action {
-        TagCommands::List => handle_list(client, format),
+        TagCommands::List => handle_list(lookup, format),
         TagCommands::Create {
             name,
             tag_color,
@@ -19,14 +15,14 @@ pub fn handle_tags(
         } => {
             let resolved_desc = super::resolve_body(description.as_deref(), body_file.as_deref())?;
             handle_create(
-                client,
+                lookup,
                 name,
                 tag_color.as_deref(),
                 resolved_desc.as_deref(),
                 format,
             )
         }
-        TagCommands::Delete { name } => handle_delete(client, name),
+        TagCommands::Delete { name } => handle_delete(lookup, name),
         TagCommands::Update {
             name,
             new_name,
@@ -36,7 +32,7 @@ pub fn handle_tags(
         } => {
             let resolved_desc = super::resolve_body(description.as_deref(), body_file.as_deref())?;
             handle_update(
-                client,
+                lookup,
                 name,
                 new_name.as_deref(),
                 tag_color.as_deref(),
@@ -47,18 +43,16 @@ pub fn handle_tags(
     }
 }
 
-fn handle_list(client: &dyn IssueTracker, format: OutputFormat) -> Result<()> {
-    let tags = client.list_tags().context("Failed to list tags")?;
-    crate::cache::with_active_cache(|cache| {
-        let _ = cache.store_tags(&tags);
-    });
+fn handle_list(lookup: &Lookup, format: OutputFormat) -> Result<()> {
+    let tags = lookup.client().list_tags().context("Failed to list tags")?;
+    lookup.store_tags(&tags);
 
     output_list(&tags, format)?;
     Ok(())
 }
 
 fn handle_create(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     name: &str,
     color: Option<&str>,
     description: Option<&str>,
@@ -70,25 +64,22 @@ fn handle_create(
         description: description.map(|d| d.to_string()),
     };
 
-    let created = client.create_tag(&tag).context("Failed to create tag")?;
-    crate::cache::with_active_cache(|cache| {
-        let _ = cache.update_tags(|tags| {
-            tags.retain(|cached| !unicode_eq_ignore_case(&cached.name, &created.name));
-            tags.push(crate::cache::cached_tag_from(&created));
-        });
-    });
+    let created = lookup
+        .client()
+        .create_tag(&tag)
+        .context("Failed to create tag")?;
+    lookup.record_tag(&created, None);
 
     output_result(&created, format)?;
     Ok(())
 }
 
-fn handle_delete(client: &dyn IssueTracker, name: &str) -> Result<()> {
-    client.delete_tag(name).context("Failed to delete tag")?;
-    crate::cache::with_active_cache(|cache| {
-        let _ = cache.update_tags(|tags| {
-            tags.retain(|cached| !unicode_eq_ignore_case(&cached.name, name));
-        });
-    });
+fn handle_delete(lookup: &Lookup, name: &str) -> Result<()> {
+    lookup
+        .client()
+        .delete_tag(name)
+        .context("Failed to delete tag")?;
+    lookup.record_tag_deleted(name);
 
     eprintln!("Deleted tag: {}", name);
     Ok(())
@@ -104,7 +95,7 @@ fn with_hash_prefix(color: &str) -> String {
 }
 
 fn handle_update(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     current_name: &str,
     new_name: Option<&str>,
     color: Option<&str>,
@@ -117,18 +108,11 @@ fn handle_update(
         description: description.map(|d| d.to_string()),
     };
 
-    let updated = client
+    let updated = lookup
+        .client()
         .update_tag(current_name, &tag)
         .context("Failed to update tag")?;
-    crate::cache::with_active_cache(|cache| {
-        let _ = cache.update_tags(|tags| {
-            tags.retain(|cached| {
-                !unicode_eq_ignore_case(&cached.name, current_name)
-                    && !unicode_eq_ignore_case(&cached.name, &updated.name)
-            });
-            tags.push(crate::cache::cached_tag_from(&updated));
-        });
-    });
+    lookup.record_tag(&updated, Some(current_name));
 
     output_result(&updated, format)?;
     Ok(())

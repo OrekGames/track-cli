@@ -3,12 +3,13 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::{
+    Once, OnceLock,
     atomic::{AtomicUsize, Ordering},
     mpsc,
 };
@@ -68,6 +69,24 @@ fn active_backend() -> Option<&'static ActiveBackend> {
 /// Shard entries a version 2 cache kept directly in the cache directory.
 const LEGACY_ROOT_ENTRIES: [&str; 5] = ["backend", "projects", "kb", "runtime", "index.json"];
 
+/// Move a version 2 cache into its backend's directory, the first time this
+/// process reads or writes the cache. Working out where the cache is never
+/// moves anything; this runs from [`TrackerCache::load`] and
+/// [`TrackerCache::save`] only.
+fn migrate_legacy_layout_once() {
+    static MIGRATED: Once = Once::new();
+    // Without an active backend the cache sits directly in the root, where
+    // a version 2 cache already is.
+    if active_backend().is_none() {
+        return;
+    }
+    MIGRATED.call_once(|| {
+        if let Ok(root) = TrackerCache::shared_root() {
+            migrate_legacy_layout(&root);
+        }
+    });
+}
+
 /// Move a version 2 cache, which sat directly in `root`, into the directory
 /// of the backend that wrote it. Best effort: a cache is only a copy of
 /// tracker data, so a failed move must never fail the command.
@@ -126,6 +145,13 @@ fn project_metadata_worker_count(project_count: usize, configured: Option<usize>
 
 fn configured_project_metadata_worker_count(project_count: usize) -> usize {
     project_metadata_worker_count(project_count, Some(cache_refresh_concurrency()))
+}
+
+/// What a fetch run on its own thread returned; a panic there goes on here.
+fn join_fetch<T>(handle: thread::ScopedJoinHandle<'_, T>) -> T {
+    handle
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 fn bounded_parallel_map_indexed<T, R, F>(items: &[T], concurrency: usize, job: F) -> Vec<(usize, R)>
@@ -234,9 +260,12 @@ pub struct TrackerCache {
     /// short name. A project without an entry uses `query_templates`.
     #[serde(skip)]
     pub project_templates: HashMap<String, Vec<CachedQueryTemplate>>,
-    /// Cache directory path (for lazy loading)
+    /// The directory passed to `load`, if any (for lazy loading)
     #[serde(skip)]
-    pub cache_dir: Option<PathBuf>,
+    cache_dir: Option<PathBuf>,
+    /// Where the shards are, worked out from `cache_dir` on first use
+    #[serde(skip)]
+    dir: OnceLock<PathBuf>,
     /// Set of project keys that have been fully loaded
     #[serde(skip)]
     pub loaded_projects: std::collections::HashSet<String>,
@@ -276,14 +305,51 @@ pub struct ProjectShardMeta {
 /// A project's schema exactly as the backend returned it, with the time it
 /// was fetched. One file, so the data and its age cannot disagree.
 #[derive(Debug, Serialize, Deserialize)]
-struct ProjectSchemaShard {
-    fetched_at: String,
-    fields: Vec<tracker_core::ProjectCustomField>,
+struct ProjectSchemaShard<'a> {
+    fetched_at: Cow<'a, str>,
+    fields: Cow<'a, [tracker_core::ProjectCustomField]>,
 }
 
 const SCHEMA_SHARD: &str = "schema.json";
+const FIELDS_SHARD: &str = "fields.json";
+const WORKFLOW_SHARD: &str = "workflow.json";
 const TEMPLATES_SHARD: &str = "templates.json";
+const TAGS_SHARD: &str = "tags.json";
 const RESOLVED_PROJECTS_SHARD: &str = "resolved_projects.json";
+
+/// How hard a shard write works to survive a crash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Durability {
+    /// fsync before the rename: a refresh, which rewrites the whole cache.
+    Durable,
+    /// No fsync: what commands write back in passing.
+    Relaxed,
+}
+
+/// What the cache keeps beside a project's schema, all derived from it.
+struct SchemaViews {
+    /// The trimmed field list, for display.
+    fields: Vec<CachedField>,
+    /// The project's state fields and their states, when it has any.
+    workflow: Option<ProjectWorkflowHints>,
+    /// The built-in templates fitted to the schema, on backends that fit them.
+    templates: Option<Vec<CachedQueryTemplate>>,
+}
+
+impl SchemaViews {
+    fn of(
+        backend_type: &str,
+        project: &CachedProject,
+        schema: &[tracker_core::ProjectCustomField],
+    ) -> Self {
+        let workflow = TrackerCache::build_workflow_hints(&project.short_name, &project.id, schema);
+        Self {
+            fields: cached_fields_from(schema),
+            workflow: (!workflow.state_fields.is_empty()).then_some(workflow),
+            templates: derive_templates(backend_type, schema),
+        }
+    }
+}
 
 /// What a project identifier resolved to, and when.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -328,13 +394,93 @@ const IN_PROGRESS_NAMES: [&str; 7] = [
     "wip",
 ];
 
+/// The query languages whose built-in templates name schema values.
+#[derive(Debug, Clone, Copy)]
+enum QuerySyntax {
+    YouTrack,
+    Jql,
+}
+
+impl QuerySyntax {
+    fn of(backend: &str) -> Option<Self> {
+        match backend {
+            "youtrack" => Some(Self::YouTrack),
+            "jira" => Some(Self::Jql),
+            _ => None,
+        }
+    }
+
+    /// One value, quoted as the language needs.
+    fn value(self, value: &str) -> String {
+        match self {
+            // Braces when it holds a space.
+            Self::YouTrack if value.chars().any(char::is_whitespace) => format!("{{{value}}}"),
+            Self::YouTrack => value.to_string(),
+            // A bare word stays bare, anything else is quoted.
+            Self::Jql if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric()) => {
+                value.to_string()
+            }
+            Self::Jql => format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")),
+        }
+    }
+
+    /// A list of values, each quoted.
+    fn list(self, values: &[impl AsRef<str>]) -> String {
+        let separator = match self {
+            Self::YouTrack => ",",
+            Self::Jql => ", ",
+        };
+        values
+            .iter()
+            .map(|value| self.value(value.as_ref()))
+            .collect::<Vec<_>>()
+            .join(separator)
+    }
+
+    /// `high_priority`: unresolved issues with one of `priorities`.
+    fn high_priority(self, priorities: &[impl AsRef<str>]) -> String {
+        match self {
+            Self::YouTrack => format!(
+                "project: {{PROJECT}} Priority: {} #Unresolved",
+                self.list(priorities)
+            ),
+            Self::Jql => format!(
+                "project = {{PROJECT}} AND priority IN ({}) AND resolution IS EMPTY",
+                self.list(priorities)
+            ),
+        }
+    }
+
+    /// `in_progress`: issues in one of `states`, kept in `state_field`
+    /// (JQL always calls it `status`).
+    fn in_progress(self, state_field: &str, states: &[impl AsRef<str>]) -> String {
+        match (self, states) {
+            (Self::YouTrack, _) => format!(
+                "project: {{PROJECT}} {}: {}",
+                self.value(state_field),
+                self.list(states)
+            ),
+            (Self::Jql, [state]) => format!(
+                "project = {{PROJECT}} AND status = {}",
+                self.value(state.as_ref())
+            ),
+            (Self::Jql, _) => format!(
+                "project = {{PROJECT}} AND status IN ({})",
+                self.list(states)
+            ),
+        }
+    }
+}
+
 /// The backend's built-in templates fitted to one project's schema.
 ///
 /// A built-in names values (`Priority: Critical,Major`, `State: {In Progress}`,
 /// `Type: Bug`) that a project may not have, or keeps its states in a field
 /// under another name. Here each such template is rebuilt from the values the
 /// project does have, and left out when it has none that fit: a template
-/// that is missing is better than one that silently matches nothing.
+/// that is missing is better than one that silently matches nothing. The
+/// built-ins come from the same builders, so a project whose schema has
+/// exactly the default values gets them verbatim.
 ///
 /// `None` for backends whose templates do not depend on the schema.
 pub(crate) fn derive_templates(
@@ -342,17 +488,16 @@ pub(crate) fn derive_templates(
     fields: &[tracker_core::ProjectCustomField],
 ) -> Option<Vec<CachedQueryTemplate>> {
     let backend = backend_type.to_ascii_lowercase();
-    if backend != "youtrack" && backend != "jira" {
-        return None;
-    }
+    let syntax = QuerySyntax::of(&backend)?;
     let field_named = |name: &str| {
         fields
             .iter()
             .find(|field| tracker_core::unicode_eq_ignore_case(&field.name, name))
     };
     // Only a complete value list says what a project does not have.
+    let complete = |field: &&tracker_core::ProjectCustomField| field.values_complete;
     let matching = |field: Option<&tracker_core::ProjectCustomField>, wanted: &[&str]| {
-        field.filter(|field| field.values_complete).map(|field| {
+        field.filter(complete).map(|field| {
             field
                 .values
                 .iter()
@@ -361,113 +506,53 @@ pub(crate) fn derive_templates(
                 .collect::<Vec<String>>()
         })
     };
-    let state_field = fields
+    let high = matching(field_named("Priority"), &HIGH_PRIORITY_NAMES);
+    let has_bug = matching(field_named("Type"), &["bug"]).map(|bugs| !bugs.is_empty());
+    // The state field, and those of its unresolved states that mean "being
+    // worked on".
+    let in_progress = fields
         .iter()
-        .find(|field| field.field_type.to_ascii_lowercase().contains("state"));
-    let unresolved_states: Option<Vec<String>> = state_field
-        .filter(|field| field.values_complete && !field.state_values.is_empty())
+        .find(|field| field.field_type.to_ascii_lowercase().contains("state"))
+        .filter(|field| complete(field) && !field.state_values.is_empty())
         .map(|field| {
-            field
+            let states: Vec<&str> = field
                 .state_values
                 .iter()
                 .filter(|state| {
                     !state.is_resolved
                         && IN_PROGRESS_NAMES.contains(&state.name.to_lowercase().as_str())
                 })
-                .map(|state| state.name.clone())
-                .collect()
+                .map(|state| state.name.as_str())
+                .collect();
+            (field, states)
         });
-    let type_field = field_named("Type");
-    let has_bug = type_field
-        .filter(|field| field.values_complete)
-        .map(|field| {
-            field
-                .values
-                .iter()
-                .any(|value| value.eq_ignore_ascii_case("bug"))
-        });
-    let high = matching(field_named("Priority"), &HIGH_PRIORITY_NAMES);
 
-    let mut templates = Vec::new();
-    for mut template in TrackerCache::get_query_templates(&backend) {
-        let query = match template.name.as_str() {
-            "high_priority" => match &high {
-                // Nothing known about priorities: keep the built-in guess.
-                None => Some(template.query.clone()),
-                Some(values) if values.is_empty() => None,
-                Some(values) if backend == "jira" => Some(format!(
-                    "project = {{PROJECT}} AND priority IN ({}) AND resolution IS EMPTY",
-                    values
-                        .iter()
-                        .map(|v| jql_quote(v))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-                Some(values) => Some(format!(
-                    "project: {{PROJECT}} Priority: {} #Unresolved",
-                    values
-                        .iter()
-                        .map(|v| youtrack_value(v))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )),
-            },
-            "in_progress" => match (&unresolved_states, state_field) {
-                (Some(states), Some(_)) if states.is_empty() => None,
-                (Some(states), Some(_)) if backend == "jira" => Some(format!(
-                    "project = {{PROJECT}} AND status IN ({})",
-                    states
-                        .iter()
-                        .map(|v| jql_quote(v))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-                (Some(states), Some(field)) => Some(format!(
-                    "project: {{PROJECT}} {}: {}",
-                    youtrack_field(&field.name),
-                    states
-                        .iter()
-                        .map(|v| youtrack_value(v))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )),
-                _ => Some(template.query.clone()),
-            },
-            "bugs" => match has_bug {
-                Some(false) => None,
-                _ => Some(template.query.clone()),
-            },
-            _ => Some(template.query.clone()),
-        };
-        if let Some(query) = query {
-            template.query = query;
-            templates.push(template);
-        }
-    }
+    let templates = TrackerCache::get_query_templates(&backend)
+        .into_iter()
+        .filter_map(|mut template| {
+            // `None`: nothing is known, so the built-in guess stands.
+            // `Some(None)`: the project has no value that fits.
+            let fitted: Option<Option<String>> = match template.name.as_str() {
+                "high_priority" => high
+                    .as_deref()
+                    .map(|values| (!values.is_empty()).then(|| syntax.high_priority(values))),
+                "in_progress" => in_progress.as_ref().map(|(field, states)| {
+                    (!states.is_empty()).then(|| syntax.in_progress(&field.name, states))
+                }),
+                "bugs" => (has_bug == Some(false)).then_some(None),
+                _ => None,
+            };
+            match fitted {
+                None => Some(template),
+                Some(None) => None,
+                Some(Some(query)) => {
+                    template.query = query;
+                    Some(template)
+                }
+            }
+        })
+        .collect();
     Some(templates)
-}
-
-/// A value in YouTrack query syntax: braces when it holds a space.
-fn youtrack_value(value: &str) -> String {
-    if value.chars().any(char::is_whitespace) {
-        format!("{{{value}}}")
-    } else {
-        value.to_string()
-    }
-}
-
-/// A field name in YouTrack query syntax: braces when it holds a space.
-fn youtrack_field(name: &str) -> String {
-    youtrack_value(name)
-}
-
-/// A value in JQL: a bare word stays bare, anything else is quoted.
-fn jql_quote(value: &str) -> String {
-    if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric()) {
-        value.to_string()
-    } else {
-        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-    }
 }
 
 /// Whether an RFC 3339 timestamp is no older than `max_age`.
@@ -640,6 +725,9 @@ impl TrackerCache {
 
     /// Load cache from the sharded directory layout
     pub fn load(cache_dir: Option<PathBuf>) -> Result<Self> {
+        if cache_dir.is_none() {
+            migrate_legacy_layout_once();
+        }
         let root = Self::cache_dir_path(cache_dir.clone())?;
         let index_path = root.join("index.json");
         if !index_path.exists() {
@@ -668,43 +756,51 @@ impl TrackerCache {
     /// Writes every shard from this in-memory cache (a freshly refreshed one),
     /// and removes shards of projects it no longer lists.
     pub fn save(&self, cache_dir: Option<PathBuf>) -> Result<()> {
-        let root = Self::cache_dir_path(cache_dir.clone())?;
+        use Durability::Durable;
+        if cache_dir.is_none() {
+            migrate_legacy_layout_once();
+        }
+        let root = Self::cache_dir_path(cache_dir)?;
         create_dir_all_secure(&root)?;
+        let updated_at = self
+            .updated_at
+            .clone()
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
 
         // 1. Save index.json
         let index = CacheIndexV2 {
             version: CACHE_VERSION,
-            updated_at: self
-                .updated_at
-                .clone()
-                .unwrap_or_else(|| Utc::now().to_rfc3339()),
+            updated_at: updated_at.clone(),
             backend_metadata: self
                 .backend_metadata
                 .clone()
                 .ok_or_else(|| anyhow!("Missing backend metadata"))?,
             default_project: self.default_project.clone(),
         };
-        Self::write_json_shard(&root.join("index.json"), &index)?;
+        Self::write_json_shard(&root.join("index.json"), &index, Durable)?;
 
         // 2. Save backend shards
         let backend_dir = root.join("backend");
         create_dir_all_secure(&backend_dir)?;
 
-        Self::write_json_shard(&backend_dir.join("tags.json"), &self.tags)?;
+        Self::write_json_shard(&backend_dir.join(TAGS_SHARD), &self.tags, Durable)?;
         Self::write_json_shard(
             &backend_dir.join("query_templates.json"),
             &self.query_templates,
+            Durable,
         )?;
-        Self::write_json_shard(&backend_dir.join("link_types.json"), &self.link_types)?;
-        let me_path = backend_dir.join("me.json");
-        match &self.current_user {
-            Some(user) => Self::write_json_shard(&me_path, user)?,
-            // A refresh that could not tell who is logged in must not leave
-            // an earlier answer behind.
-            None => {
-                let _ = fs::remove_file(&me_path);
-            }
-        }
+        Self::write_json_shard(
+            &backend_dir.join("link_types.json"),
+            &self.link_types,
+            Durable,
+        )?;
+        // A refresh that could not tell who is logged in must not leave an
+        // earlier answer behind.
+        Self::write_or_remove_shard(
+            &backend_dir.join("me.json"),
+            self.current_user.as_ref(),
+            Durable,
+        )?;
 
         // 3. Save project shards
         let projects_dir = root.join("projects");
@@ -717,67 +813,60 @@ impl TrackerCache {
         Self::remove_stale_project_shards(&projects_dir, &shard_names)?;
 
         for project in &self.projects {
-            let project_dir = projects_dir.join(project_shard_dir_name(&project.short_name));
+            let key = &project.short_name;
+            let project_dir = projects_dir.join(project_shard_dir_name(key));
             create_dir_all_secure(&project_dir)?;
 
             let meta = ProjectShardMeta {
                 id: project.id.clone(),
-                short_name: project.short_name.clone(),
+                short_name: key.clone(),
                 name: project.name.clone(),
                 description: project.description.clone(),
-                updated_at: self
-                    .updated_at
-                    .clone()
-                    .unwrap_or_else(|| Utc::now().to_rfc3339()),
+                updated_at: updated_at.clone(),
             };
-            Self::write_json_shard(&project_dir.join("meta.json"), &meta)?;
+            Self::write_json_shard(&project_dir.join("meta.json"), &meta, Durable)?;
 
-            // Fields for this project
-            if let Some(fields) = self.get_project_fields(&project.short_name) {
-                Self::write_json_shard(&project_dir.join("fields.json"), &fields)?;
-            }
-
-            // The full schema, for lookups. A project this refresh fetched no
-            // detail for keeps whatever schema it already had.
-            if let Some(schema) = self.schemas.get(&project.short_name) {
-                let shard = ProjectSchemaShard {
-                    fetched_at: self
-                        .updated_at
-                        .clone()
-                        .unwrap_or_else(|| Utc::now().to_rfc3339()),
-                    fields: schema.clone(),
-                };
-                Self::write_json_shard(&project_dir.join(SCHEMA_SHARD), &shard)?;
-                Self::write_templates_shard(
+            match self.schemas.get(key) {
+                // The full schema, for lookups, and the views made from it.
+                Some(schema) => Self::write_schema_shards(
                     &project_dir,
-                    self.project_templates.get(&project.short_name),
-                )?;
+                    &ProjectSchemaShard {
+                        fetched_at: Cow::Borrowed(&updated_at),
+                        fields: Cow::Borrowed(schema),
+                    },
+                    self.get_project_fields(key).unwrap_or_default(),
+                    self.workflow_hints
+                        .iter()
+                        .find(|hints| &hints.project_short_name == key),
+                    self.project_templates.get(key).map(Vec::as_slice),
+                    Durable,
+                )?,
+                // A project this refresh fetched no detail for keeps the
+                // schema it had; only a cache put together in memory has
+                // fields without one.
+                None => {
+                    if let Some(fields) = self.get_project_fields(key) {
+                        Self::write_json_shard(&project_dir.join(FIELDS_SHARD), fields, Durable)?;
+                    }
+                }
             }
 
             // Users for this project
-            if let Some(users) = self.get_project_users(&project.short_name) {
-                Self::write_json_shard(&project_dir.join("users.json"), &users)?;
-            }
-
-            // Workflow hints for this project
-            if let Some(hints) = self
-                .workflow_hints
-                .iter()
-                .find(|h| h.project_short_name == project.short_name)
-            {
-                Self::write_json_shard(&project_dir.join("workflow.json"), hints)?;
+            if let Some(users) = self.get_project_users(key) {
+                Self::write_json_shard(&project_dir.join("users.json"), &users, Durable)?;
             }
 
             // Issue counts for this project
             let project_issue_counts: Vec<_> = self
                 .issue_counts
                 .iter()
-                .filter(|ic| ic.project_short_name == project.short_name)
+                .filter(|ic| &ic.project_short_name == key)
                 .collect();
             if !project_issue_counts.is_empty() {
                 Self::write_json_shard(
                     &project_dir.join("issue_counts.json"),
                     &project_issue_counts,
+                    Durable,
                 )?;
             }
         }
@@ -785,15 +874,36 @@ impl TrackerCache {
         // 4. Save kb shards
         let kb_dir = root.join("kb");
         create_dir_all_secure(&kb_dir)?;
-        Self::write_json_shard(&kb_dir.join("articles.json"), &self.articles)?;
-        Self::write_json_shard(&kb_dir.join("tree.json"), &self.article_tree)?;
+        Self::write_json_shard(&kb_dir.join("articles.json"), &self.articles, Durable)?;
+        Self::write_json_shard(&kb_dir.join("tree.json"), &self.article_tree, Durable)?;
 
         // 5. Save runtime shards
         let runtime_dir = root.join("runtime");
         create_dir_all_secure(&runtime_dir)?;
-        Self::write_json_shard(&runtime_dir.join("recent_issues.json"), &self.recent_issues)?;
+        Self::write_json_shard(
+            &runtime_dir.join("recent_issues.json"),
+            &self.recent_issues,
+            Durable,
+        )?;
 
         Ok(())
+    }
+
+    /// Write a project's schema and the views derived from it. A view the
+    /// schema yields nothing for is removed, so it cannot outlive the
+    /// schema it came from.
+    fn write_schema_shards(
+        dir: &Path,
+        schema: &ProjectSchemaShard<'_>,
+        fields: &[CachedField],
+        workflow: Option<&ProjectWorkflowHints>,
+        templates: Option<&[CachedQueryTemplate]>,
+        durability: Durability,
+    ) -> Result<()> {
+        Self::write_json_shard(&dir.join(SCHEMA_SHARD), schema, durability)?;
+        Self::write_json_shard(&dir.join(FIELDS_SHARD), fields, durability)?;
+        Self::write_or_remove_shard(&dir.join(WORKFLOW_SHARD), workflow, durability)?;
+        Self::write_or_remove_shard(&dir.join(TEMPLATES_SHARD), templates, durability)
     }
 
     /// Delete project shard directories not named in `keep`, so projects that
@@ -820,11 +930,11 @@ impl TrackerCache {
         let root = Self::cache_dir_path(cache_dir)?;
         let runtime_dir = root.join("runtime");
         create_dir_all_secure(&runtime_dir)?;
-        Self::atomic_write_relaxed(
+        Self::write_json_shard(
             &runtime_dir.join("recent_issues.json"),
-            &serde_json::to_vec(&self.recent_issues)?,
-        )?;
-        Ok(())
+            &self.recent_issues,
+            Durability::Relaxed,
+        )
     }
 
     /// Load all shards eagerly
@@ -855,7 +965,7 @@ impl TrackerCache {
             return Ok(());
         }
 
-        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let root = self.dir()?;
         let projects_dir = root.join("projects");
         if projects_dir.exists() {
             let project_dirs: Vec<PathBuf> = fs::read_dir(&projects_dir)?
@@ -885,10 +995,10 @@ impl TrackerCache {
         }
         self.loaded_shards.backend = true;
 
-        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let root = self.dir()?;
         let backend_dir = root.join("backend");
         if backend_dir.exists() {
-            if let Some(tags) = Self::read_json_shard(&backend_dir.join("tags.json")) {
+            if let Some(tags) = Self::read_json_shard(&backend_dir.join(TAGS_SHARD)) {
                 self.tags = tags;
             }
             if let Some(templates) =
@@ -911,7 +1021,7 @@ impl TrackerCache {
         }
         self.loaded_shards.kb = true;
 
-        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let root = self.dir()?;
         let kb_dir = root.join("kb");
         if kb_dir.exists() {
             if let Some(articles) = Self::read_json_shard(&kb_dir.join("articles.json")) {
@@ -931,7 +1041,7 @@ impl TrackerCache {
         }
         self.loaded_shards.runtime = true;
 
-        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let root = self.dir()?;
         let runtime_dir = root.join("runtime");
         if runtime_dir.exists()
             && let Some(recent) = Self::read_json_shard(&runtime_dir.join("recent_issues.json"))
@@ -947,7 +1057,7 @@ impl TrackerCache {
             return Ok(());
         }
 
-        let root = Self::cache_dir_path(self.cache_dir.clone())?;
+        let root = self.dir()?;
         let project_dir = root
             .join("projects")
             .join(project_shard_dir_name(project_key));
@@ -967,7 +1077,7 @@ impl TrackerCache {
             });
 
         // Load fields
-        if let Some(fields) = Self::read_json_shard(&project_dir.join("fields.json")) {
+        if let Some(fields) = Self::read_json_shard(&project_dir.join(FIELDS_SHARD)) {
             self.project_fields
                 .retain(|pf| pf.project_short_name != project_key);
             self.project_fields.push(ProjectFieldsCache {
@@ -989,7 +1099,7 @@ impl TrackerCache {
         }
 
         // Load workflow
-        if let Some(hints) = Self::read_json_shard(&project_dir.join("workflow.json")) {
+        if let Some(hints) = Self::read_json_shard(&project_dir.join(WORKFLOW_SHARD)) {
             self.workflow_hints
                 .retain(|wh| wh.project_short_name != project_key);
             self.workflow_hints.push(hints);
@@ -1021,34 +1131,43 @@ impl TrackerCache {
     /// - Otherwise (global context), use ~/.tracker-cli/cache/
     ///
     /// The last three get a subdirectory named after the active backend.
+    /// Only works the path out: nothing on disk is read or moved.
     fn cache_dir_path(cache_dir: Option<PathBuf>) -> Result<PathBuf> {
         if let Some(dir) = cache_dir {
             return Ok(dir.join(CACHE_DIR_NAME));
         }
+        let root = Self::shared_root()?;
+        // One directory per backend, so switching backends in one place does
+        // not make each refresh overwrite the other's data.
+        Ok(match active_backend() {
+            Some(active) => root.join(&active.backend),
+            None => root,
+        })
+    }
 
+    /// The directory that holds every backend's cache.
+    fn shared_root() -> Result<PathBuf> {
         // An explicit override keeps runs that must not share state (the eval
         // harness, CI) away from the project and global caches.
-        let root = if let Some(dir) = std::env::var_os(CACHE_DIR_ENV).filter(|dir| !dir.is_empty())
-        {
-            PathBuf::from(dir)
+        if let Some(dir) = std::env::var_os(CACHE_DIR_ENV).filter(|dir| !dir.is_empty()) {
+            Ok(PathBuf::from(dir))
         } else if crate::config::is_project_context() {
             // Project context: cache alongside .track.toml
-            PathBuf::from(CACHE_DIR_NAME)
+            Ok(PathBuf::from(CACHE_DIR_NAME))
         } else {
             // Global context: cache in ~/.tracker-cli/cache/
             crate::config::global_cache_dir()
-                .ok_or_else(|| anyhow!("Could not determine home directory for global cache"))?
-        };
-
-        // One directory per backend, so switching backends in one place does
-        // not make each refresh overwrite the other's data.
-        match active_backend() {
-            Some(active) => {
-                migrate_legacy_layout(&root);
-                Ok(root.join(&active.backend))
-            }
-            None => Ok(root),
+                .ok_or_else(|| anyhow!("Could not determine home directory for global cache"))
         }
+    }
+
+    /// This cache's directory, worked out once.
+    fn dir(&self) -> Result<&Path> {
+        if let Some(dir) = self.dir.get() {
+            return Ok(dir);
+        }
+        let dir = Self::cache_dir_path(self.cache_dir.clone())?;
+        Ok(self.dir.get_or_init(|| dir))
     }
 
     /// Get the resolved cache directory path (for external use, e.g. `cache path` command)
@@ -1056,33 +1175,41 @@ impl TrackerCache {
         Self::cache_dir_path(None)
     }
 
-    /// Write `value` to a shard file as pretty JSON, atomically and durably.
-    fn write_json_shard<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
-        Self::atomic_write(path, serde_json::to_string_pretty(value)?.as_bytes())
+    /// Write `value` to a shard file as pretty JSON, atomically. A durable
+    /// write also survives a power cut; a relaxed one, for the small updates
+    /// commands make in passing, skips the fsync.
+    fn write_json_shard<T: Serialize + ?Sized>(
+        path: &Path,
+        value: &T,
+        durability: Durability,
+    ) -> Result<()> {
+        crate::fsutil::atomic_write(
+            path,
+            serde_json::to_string_pretty(value)?.as_bytes(),
+            durability == Durability::Durable,
+        )
+    }
+
+    /// Write `value` to a shard file, or remove the file when there is none,
+    /// so an earlier answer is not left behind.
+    fn write_or_remove_shard<T: Serialize + ?Sized>(
+        path: &Path,
+        value: Option<&T>,
+        durability: Durability,
+    ) -> Result<()> {
+        match value {
+            Some(value) => Self::write_json_shard(path, value, durability),
+            None => {
+                let _ = fs::remove_file(path);
+                Ok(())
+            }
+        }
     }
 
     /// Read a JSON shard file; `None` when it is missing or does not parse.
     fn read_json_shard<T: DeserializeOwned>(path: &Path) -> Option<T> {
         let content = fs::read_to_string(path).ok()?;
         serde_json::from_str(&content).ok()
-    }
-
-    /// Atomic write helper: write temp -> fsync -> rename
-    fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
-        Self::atomic_write_inner(path, content, true)
-    }
-
-    /// Relaxed atomic write helper: write temp -> rename, without fsync.
-    ///
-    /// Used for non-critical runtime metadata on hot paths where preserving
-    /// atomic replacement and file permissions matters more than durability
-    /// across sudden power loss.
-    fn atomic_write_relaxed(path: &Path, content: &[u8]) -> Result<()> {
-        Self::atomic_write_inner(path, content, false)
-    }
-
-    fn atomic_write_inner(path: &Path, content: &[u8], durable: bool) -> Result<()> {
-        crate::fsutil::atomic_write(path, content, durable)
     }
 
     /// Refresh cache from tracker API
@@ -1104,8 +1231,21 @@ impl TrackerCache {
             ..Self::default()
         };
 
-        // Fetch projects
-        let projects = client.list_projects().context("Failed to fetch projects")?;
+        // The instance-level fetches depend on nothing else, so they run
+        // while the project list is fetched.
+        let (projects, tags, current_user, link_types) = thread::scope(|scope| {
+            let tags = scope.spawn(|| client.list_tags());
+            let current_user = scope.spawn(|| client.current_user());
+            let link_types = scope.spawn(|| client.list_link_types());
+            let projects = client.list_projects();
+            (
+                projects,
+                join_fetch(tags),
+                join_fetch(current_user),
+                join_fetch(link_types),
+            )
+        });
+        let projects = projects.context("Failed to fetch projects")?;
         cache.projects = projects
             .into_iter()
             .map(|p| CachedProject {
@@ -1133,13 +1273,13 @@ impl TrackerCache {
             .map(|p| p.short_name.clone())
             .collect();
 
-        // Fetch tags (instance-level, always fetch all)
-        if let Ok(tags) = client.list_tags() {
+        // Tags and link types are instance-level, always fetched in full.
+        if let Ok(tags) = tags {
             cache.tags = tags.iter().map(cached_tag_from).collect();
         }
 
         // Who the credentials belong to. Optional: not every backend can say.
-        if let Ok(Some(user)) = client.current_user() {
+        if let Ok(Some(user)) = current_user {
             cache.current_user = Some(CachedUser {
                 id: user.id,
                 login: user.login,
@@ -1147,8 +1287,7 @@ impl TrackerCache {
             });
         }
 
-        // Fetch link types (instance-level, always fetch all)
-        if let Ok(link_types) = client.list_link_types() {
+        if let Ok(link_types) = link_types {
             cache.link_types = link_types
                 .into_iter()
                 .map(|lt| CachedLinkType {
@@ -1163,39 +1302,27 @@ impl TrackerCache {
 
         let concurrency = cache_refresh_concurrency();
 
-        // Fetch custom fields and build workflow hints for scoped projects
-        let field_results =
+        // Fetch the schema of each scoped project, and derive what the cache
+        // keeps beside it.
+        let schema_results =
             bounded_parallel_map_indexed(&projects_for_details, concurrency, |_, project| {
-                let fields = client.get_project_custom_fields(&project.id).ok()?;
-                let workflow_hints =
-                    Self::build_workflow_hints(&project.short_name, &project.id, &fields);
-                let cached_fields = cached_fields_from(&fields);
-
-                let project_fields = ProjectFieldsCache {
-                    project_short_name: project.short_name.clone(),
-                    project_id: project.id.clone(),
-                    fields: cached_fields,
-                };
-
-                Some((
-                    project_fields,
-                    (!workflow_hints.state_fields.is_empty()).then_some(workflow_hints),
-                    fields,
-                ))
+                client.get_project_custom_fields(&project.id).ok()
             });
-        for (_, (project_fields, workflow_hints, schema)) in field_results {
-            if let Some(templates) = derive_templates(backend_type, &schema) {
+        for (index, schema) in schema_results {
+            let project = projects_for_details[index];
+            let views = SchemaViews::of(backend_type, project, &schema);
+            cache.project_fields.push(ProjectFieldsCache {
+                project_short_name: project.short_name.clone(),
+                project_id: project.id.clone(),
+                fields: views.fields,
+            });
+            cache.workflow_hints.extend(views.workflow);
+            if let Some(templates) = views.templates {
                 cache
                     .project_templates
-                    .insert(project_fields.project_short_name.clone(), templates);
+                    .insert(project.short_name.clone(), templates);
             }
-            cache
-                .schemas
-                .insert(project_fields.project_short_name.clone(), schema);
-            cache.project_fields.push(project_fields);
-            if let Some(workflow_hints) = workflow_hints {
-                cache.workflow_hints.push(workflow_hints);
-            }
+            cache.schemas.insert(project.short_name.clone(), schema);
         }
 
         // Fetch project users for scoped projects
@@ -1315,7 +1442,9 @@ impl TrackerCache {
         Ok(cache)
     }
 
-    /// Get compiled built-in query templates for a backend.
+    /// Get compiled built-in query templates for a backend. The ones that
+    /// name schema values come from the builders [`derive_templates`] fits
+    /// to each project.
     pub(crate) fn get_query_templates(backend_type: &str) -> Vec<CachedQueryTemplate> {
         match backend_type {
             "youtrack" => vec![
@@ -1340,13 +1469,13 @@ impl TrackerCache {
                 CachedQueryTemplate {
                     name: "high_priority".to_string(),
                     description: "High priority unresolved issues".to_string(),
-                    query: "project: {PROJECT} Priority: Critical,Major #Unresolved".to_string(),
+                    query: QuerySyntax::YouTrack.high_priority(&["Critical", "Major"]),
                     backend: "youtrack".to_string(),
                 },
                 CachedQueryTemplate {
                     name: "in_progress".to_string(),
                     description: "Issues currently in progress".to_string(),
-                    query: "project: {PROJECT} State: {In Progress}".to_string(),
+                    query: QuerySyntax::YouTrack.in_progress("State", &["In Progress"]),
                     backend: "youtrack".to_string(),
                 },
                 CachedQueryTemplate {
@@ -1366,7 +1495,9 @@ impl TrackerCache {
                 CachedQueryTemplate {
                     name: "my_issues".to_string(),
                     description: "Issues assigned to current user".to_string(),
-                    query: "project = {PROJECT} AND assignee = currentUser() AND resolution IS EMPTY".to_string(),
+                    query:
+                        "project = {PROJECT} AND assignee = currentUser() AND resolution IS EMPTY"
+                            .to_string(),
                     backend: "jira".to_string(),
                 },
                 CachedQueryTemplate {
@@ -1378,19 +1509,20 @@ impl TrackerCache {
                 CachedQueryTemplate {
                     name: "high_priority".to_string(),
                     description: "High priority unresolved issues".to_string(),
-                    query: "project = {PROJECT} AND priority IN (Highest, High) AND resolution IS EMPTY".to_string(),
+                    query: QuerySyntax::Jql.high_priority(&["Highest", "High"]),
                     backend: "jira".to_string(),
                 },
                 CachedQueryTemplate {
                     name: "in_progress".to_string(),
                     description: "Issues currently in progress".to_string(),
-                    query: "project = {PROJECT} AND status = \"In Progress\"".to_string(),
+                    query: QuerySyntax::Jql.in_progress("status", &["In Progress"]),
                     backend: "jira".to_string(),
                 },
                 CachedQueryTemplate {
                     name: "bugs".to_string(),
                     description: "Bug issues".to_string(),
-                    query: "project = {PROJECT} AND issuetype = Bug AND resolution IS EMPTY".to_string(),
+                    query: "project = {PROJECT} AND issuetype = Bug AND resolution IS EMPTY"
+                        .to_string(),
                     backend: "jira".to_string(),
                 },
             ],
@@ -1730,28 +1862,10 @@ impl TrackerCache {
         }
     }
 
-    /// Write a project's fitted templates, or remove the file when the
-    /// backend's built-ins apply as they are.
-    fn write_templates_shard(
-        project_dir: &Path,
-        templates: Option<&Vec<CachedQueryTemplate>>,
-    ) -> Result<()> {
-        let path = project_dir.join(TEMPLATES_SHARD);
-        match templates {
-            Some(templates) => Self::atomic_write_relaxed(
-                &path,
-                serde_json::to_string_pretty(templates)?.as_bytes(),
-            ),
-            None => {
-                let _ = fs::remove_file(&path);
-                Ok(())
-            }
-        }
-    }
-
     /// The query templates `-T` accepts for `project`: the ones fitted to
     /// its schema when there are any, else the backend's built-ins. The
-    /// project's shard must have been loaded.
+    /// project's shard must have been loaded; [`Self::templates_for_project`]
+    /// loads it.
     pub fn templates_for(&self, project: Option<&str>) -> &[CachedQueryTemplate] {
         project
             .and_then(|project| {
@@ -1761,6 +1875,19 @@ impl TrackerCache {
             })
             .map(|(_, templates)| templates.as_slice())
             .unwrap_or(&self.query_templates)
+    }
+
+    /// [`Self::templates_for`] a project named by key (any case) or id,
+    /// after reading what that takes from disk.
+    pub fn templates_for_project(&mut self, project: Option<&str>) -> &[CachedQueryTemplate] {
+        let _ = self.ensure_backend_shards();
+        let key = project
+            .and_then(|project| self.find_project(project))
+            .map(|project| project.short_name);
+        if let Some(key) = &key {
+            let _ = self.ensure_project_shard(key);
+        }
+        self.templates_for(key.as_deref().or(project))
     }
 
     /// A cached project by short name (any case) or id.
@@ -1775,7 +1902,8 @@ impl TrackerCache {
     }
 
     fn project_dir(&self, short_name: &str) -> Result<PathBuf> {
-        Ok(Self::cache_dir_path(self.cache_dir.clone())?
+        Ok(self
+            .dir()?
             .join("projects")
             .join(project_shard_dir_name(short_name)))
     }
@@ -1789,12 +1917,13 @@ impl TrackerCache {
         let project = self.find_project(key_or_id)?;
         let dir = self.project_dir(&project.short_name).ok()?;
         let shard: ProjectSchemaShard = Self::read_json_shard(&dir.join(SCHEMA_SHARD))?;
-        is_fresh(&shard.fetched_at, max_age).then_some(shard.fields)
+        is_fresh(&shard.fetched_at, max_age).then(|| shard.fields.into_owned())
     }
 
-    /// Record a schema just fetched for a project the cache already lists.
-    /// A project it does not list is left alone: its shard directory is
-    /// named after the backend's own key, which is not known here.
+    /// Record a schema just fetched for a project the cache already lists,
+    /// with the views derived from it. A project it does not list is left
+    /// alone: its shard directory is named after the backend's own key,
+    /// which is not known here.
     pub fn store_project_schema(
         &mut self,
         key_or_id: &str,
@@ -1804,35 +1933,22 @@ impl TrackerCache {
             return Ok(());
         };
         let dir = self.project_dir(&project.short_name)?;
-        let shard = ProjectSchemaShard {
-            fetched_at: Utc::now().to_rfc3339(),
-            fields: fields.to_vec(),
-        };
-        Self::atomic_write_relaxed(&dir.join(SCHEMA_SHARD), &serde_json::to_vec(&shard)?)?;
-
-        // Keep the display views in step with the schema.
-        Self::atomic_write_relaxed(
-            &dir.join("fields.json"),
-            serde_json::to_string_pretty(&cached_fields_from(fields))?.as_bytes(),
-        )?;
         let backend_type = self
             .backend_metadata
             .as_ref()
-            .map(|meta| meta.backend_type.clone())
-            .unwrap_or_default();
-        Self::write_templates_shard(&dir, derive_templates(&backend_type, fields).as_ref())?;
-
-        let hints = Self::build_workflow_hints(&project.short_name, &project.id, fields);
-        let workflow_path = dir.join("workflow.json");
-        if hints.state_fields.is_empty() {
-            let _ = fs::remove_file(&workflow_path);
-        } else {
-            Self::atomic_write_relaxed(
-                &workflow_path,
-                serde_json::to_string_pretty(&hints)?.as_bytes(),
-            )?;
-        }
-        Ok(())
+            .map_or("", |meta| meta.backend_type.as_str());
+        let views = SchemaViews::of(backend_type, &project, fields);
+        Self::write_schema_shards(
+            &dir,
+            &ProjectSchemaShard {
+                fetched_at: Cow::Owned(Utc::now().to_rfc3339()),
+                fields: Cow::Borrowed(fields),
+            },
+            &views.fields,
+            views.workflow.as_ref(),
+            views.templates.as_deref(),
+            Durability::Relaxed,
+        )
     }
 
     /// Forget a project's schema so the next lookup fetches it again.
@@ -1849,43 +1965,68 @@ impl TrackerCache {
         if self.ensure_projects().is_err() {
             return;
         }
-        let keys: Vec<String> = self.projects.iter().map(|p| p.short_name.clone()).collect();
-        for key in keys {
-            if let Ok(dir) = self.project_dir(&key) {
-                let _ = fs::remove_file(dir.join(SCHEMA_SHARD));
-            }
+        let Ok(projects_dir) = self.dir().map(|dir| dir.join("projects")) else {
+            return;
+        };
+        for project in &self.projects {
+            let dir = projects_dir.join(project_shard_dir_name(&project.short_name));
+            let _ = fs::remove_file(dir.join(SCHEMA_SHARD));
         }
     }
 
     fn resolved_projects_path(&self) -> Result<PathBuf> {
-        Ok(Self::cache_dir_path(self.cache_dir.clone())?
-            .join("backend")
-            .join(RESOLVED_PROJECTS_SHARD))
+        Ok(self.dir()?.join("backend").join(RESOLVED_PROJECTS_SHARD))
+    }
+
+    fn resolved_projects(&self) -> HashMap<String, ResolvedProject> {
+        self.resolved_projects_path()
+            .ok()
+            .and_then(|path| Self::read_json_shard(&path))
+            .unwrap_or_default()
+    }
+
+    /// Rewrite the remembered resolutions after `change`.
+    fn update_resolved_projects(
+        &self,
+        change: impl FnOnce(&mut HashMap<String, ResolvedProject>),
+    ) -> Result<()> {
+        let path = self.resolved_projects_path()?;
+        let mut map = self.resolved_projects();
+        change(&mut map);
+        Self::write_json_shard(&path, &map, Durability::Relaxed)
     }
 
     /// What `resolve_project_id` returned for `identifier`, if remembered
     /// and no older than `max_age`. Kept verbatim because a backend's
     /// resolved id need not be the id its project list reports.
     pub fn resolved_project_id(&self, identifier: &str, max_age: Duration) -> Option<String> {
-        let path = self.resolved_projects_path().ok()?;
-        let map: HashMap<String, ResolvedProject> = Self::read_json_shard(&path)?;
+        let map = self.resolved_projects();
         let entry = map.get(&tracker_core::case_key(identifier))?;
         is_fresh(&entry.fetched_at, max_age).then(|| entry.id.clone())
     }
 
     /// Remember what `identifier` resolved to.
     pub fn store_resolved_project_id(&self, identifier: &str, id: &str) -> Result<()> {
-        let path = self.resolved_projects_path()?;
-        let mut map: HashMap<String, ResolvedProject> =
-            Self::read_json_shard(&path).unwrap_or_default();
-        map.insert(
-            tracker_core::case_key(identifier),
-            ResolvedProject {
-                id: id.to_string(),
-                fetched_at: Utc::now().to_rfc3339(),
-            },
-        );
-        Self::atomic_write_relaxed(&path, &serde_json::to_vec(&map)?)
+        self.update_resolved_projects(|map| {
+            map.insert(
+                tracker_core::case_key(identifier),
+                ResolvedProject {
+                    id: id.to_string(),
+                    fetched_at: Utc::now().to_rfc3339(),
+                },
+            );
+        })
+    }
+
+    /// Forget what `identifier` resolved to, so the next lookup asks again.
+    pub fn forget_resolved_project_id(&self, identifier: &str) -> Result<()> {
+        let key = tracker_core::case_key(identifier);
+        if !self.resolved_projects().contains_key(&key) {
+            return Ok(());
+        }
+        self.update_resolved_projects(|map| {
+            map.remove(&key);
+        })
     }
 
     /// After a refresh: resolve the default project once and remember the
@@ -1899,19 +2040,41 @@ impl TrackerCache {
     }
 
     /// Apply a change to the cached tag list and write it back.
-    pub fn update_tags(&mut self, change: impl FnOnce(&mut Vec<CachedTag>)) -> Result<()> {
+    fn update_tags(&mut self, change: impl FnOnce(&mut Vec<CachedTag>)) -> Result<()> {
         self.ensure_backend_shards()?;
         change(&mut self.tags);
-        let path = Self::cache_dir_path(self.cache_dir.clone())?
-            .join("backend")
-            .join("tags.json");
-        Self::atomic_write_relaxed(&path, serde_json::to_string_pretty(&self.tags)?.as_bytes())
+        let path = self.dir()?.join("backend").join(TAGS_SHARD);
+        Self::write_json_shard(&path, &self.tags, Durability::Relaxed)
     }
 
     /// Replace the cached tag list with one just read from the backend.
     pub fn store_tags(&mut self, tags: &[tracker_core::IssueTag]) -> Result<()> {
         let cached: Vec<CachedTag> = tags.iter().map(cached_tag_from).collect();
         self.update_tags(|current| *current = cached)
+    }
+
+    /// Record a tag the backend just created or changed. `replacing` names
+    /// the tag it was before a rename; names match in any case.
+    pub fn upsert_tag(
+        &mut self,
+        tag: &tracker_core::IssueTag,
+        replacing: Option<&str>,
+    ) -> Result<()> {
+        self.update_tags(|tags| {
+            tags.retain(|cached| {
+                !tracker_core::unicode_eq_ignore_case(&cached.name, &tag.name)
+                    && !replacing
+                        .is_some_and(|old| tracker_core::unicode_eq_ignore_case(&cached.name, old))
+            });
+            tags.push(cached_tag_from(tag));
+        })
+    }
+
+    /// Forget a tag the backend just deleted (name in any case).
+    pub fn remove_tag(&mut self, name: &str) -> Result<()> {
+        self.update_tags(|tags| {
+            tags.retain(|cached| !tracker_core::unicode_eq_ignore_case(&cached.name, name));
+        })
     }
 
     /// Add a project, or update the name and description of one already
@@ -1926,21 +2089,18 @@ impl TrackerCache {
             description: project.description.clone(),
             updated_at: Utc::now().to_rfc3339(),
         };
-        Self::atomic_write_relaxed(
-            &dir.join("meta.json"),
-            serde_json::to_string_pretty(&meta)?.as_bytes(),
-        )
-    }
-}
-
-/// Apply `change` to the cache for the active backend, if there is one.
-///
-/// For commands that learn something the cache also holds. Nothing happens
-/// without a matching cache, and callers ignore failures: the cache is a
-/// convenience and must not fail the command that feeds it.
-pub fn with_active_cache(change: impl FnOnce(&mut TrackerCache)) {
-    if let Some(mut cache) = TrackerCache::open_active() {
-        change(&mut cache);
+        Self::write_json_shard(&dir.join("meta.json"), &meta, Durability::Relaxed)?;
+        if self.loaded_shards.projects {
+            self.projects
+                .retain(|cached| cached.short_name != project.short_name);
+            self.projects.push(CachedProject {
+                id: meta.id,
+                short_name: meta.short_name,
+                name: meta.name,
+                description: meta.description,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -2590,16 +2750,28 @@ mod tests {
             schema_field("Type", "enum[1]", &["Bug", "Task"], &[]),
         ];
 
-        let derived = derive_templates("youtrack", &schema).unwrap();
-        let built_in = TrackerCache::get_query_templates("youtrack");
+        let jira_schema = vec![
+            schema_field(
+                "Status",
+                "state[1]",
+                &["To Do", "In Progress", "Done"],
+                &["Done"],
+            ),
+            schema_field("Priority", "enum[1]", &["Highest", "High", "Medium"], &[]),
+        ];
 
-        for template in &built_in {
-            assert_eq!(
-                template_query(&derived, &template.name).as_deref(),
-                Some(template.query.as_str()),
-                "{}",
-                template.name
-            );
+        for (backend, schema) in [("youtrack", schema), ("jira", jira_schema)] {
+            let derived = derive_templates(backend, &schema).unwrap();
+            let built_in = TrackerCache::get_query_templates(backend);
+            assert_eq!(derived.len(), built_in.len(), "{backend}");
+            for template in &built_in {
+                assert_eq!(
+                    template_query(&derived, &template.name).as_deref(),
+                    Some(template.query.as_str()),
+                    "{backend} {}",
+                    template.name
+                );
+            }
         }
     }
 
@@ -2632,13 +2804,26 @@ mod tests {
 
         let templates = derive_templates("jira", &schema).unwrap();
 
+        // One state reads as the built-in does.
         assert_eq!(
             template_query(&templates, "in_progress").as_deref(),
-            Some("project = {PROJECT} AND status IN (\"In Progress\")")
+            Some("project = {PROJECT} AND status = \"In Progress\"")
         );
         assert_eq!(
             template_query(&templates, "high_priority").as_deref(),
             Some("project = {PROJECT} AND priority IN (Blocker, High) AND resolution IS EMPTY")
+        );
+
+        let several = vec![schema_field(
+            "Status",
+            "state[1]",
+            &["To Do", "In Progress", "Doing", "Done"],
+            &["Done"],
+        )];
+        let templates = derive_templates("jira", &several).unwrap();
+        assert_eq!(
+            template_query(&templates, "in_progress").as_deref(),
+            Some("project = {PROJECT} AND status IN (\"In Progress\", Doing)")
         );
     }
 
@@ -2712,5 +2897,199 @@ mod tests {
             cache.resolved_project_id("DEMO", Duration::seconds(-1)),
             None
         );
+
+        cache.forget_resolved_project_id("demo").unwrap();
+        assert_eq!(cache.resolved_project_id("DEMO", Duration::hours(1)), None);
+        // Forgetting what was never remembered writes nothing.
+        cache.forget_resolved_project_id("OTHER").unwrap();
+    }
+
+    fn youtrack_project(short_name: &str, id: &str) -> CachedProject {
+        CachedProject {
+            id: id.to_string(),
+            short_name: short_name.to_string(),
+            name: short_name.to_string(),
+            description: None,
+        }
+    }
+
+    /// A cache as `refresh` leaves it, with `schema` fetched for one project.
+    fn refreshed_cache(project: &CachedProject, schema: &[ProjectCustomField]) -> TrackerCache {
+        let mut cache = TrackerCache {
+            updated_at: Some(Utc::now().to_rfc3339()),
+            backend_metadata: Some(CachedBackendMetadata {
+                backend_type: "youtrack".to_string(),
+                base_url: "https://example.com".to_string(),
+                scope: None,
+            }),
+            projects: vec![project.clone()],
+            query_templates: TrackerCache::get_query_templates("youtrack"),
+            ..Default::default()
+        };
+        let views = SchemaViews::of("youtrack", project, schema);
+        cache.project_fields.push(ProjectFieldsCache {
+            project_short_name: project.short_name.clone(),
+            project_id: project.id.clone(),
+            fields: views.fields,
+        });
+        cache.workflow_hints.extend(views.workflow);
+        if let Some(templates) = views.templates {
+            cache
+                .project_templates
+                .insert(project.short_name.clone(), templates);
+        }
+        cache
+            .schemas
+            .insert(project.short_name.clone(), schema.to_vec());
+        cache
+    }
+
+    fn project_shard(root: &Path, name: &str) -> Option<String> {
+        fs::read_to_string(root.join(".tracker-cache/projects/DEMO").join(name)).ok()
+    }
+
+    use tracker_core::ProjectCustomField;
+
+    #[test]
+    fn refresh_and_lookups_write_the_same_schema_shards() {
+        let project = youtrack_project("DEMO", "0-1");
+        let schema = vec![
+            schema_field(
+                "Stage",
+                "state[1]",
+                &["Open", "In Development", "Done"],
+                &["Done"],
+            ),
+            schema_field("Priority", "enum[1]", &["Critical", "Normal"], &[]),
+        ];
+
+        let saved = tempfile::TempDir::new().unwrap();
+        refreshed_cache(&project, &schema)
+            .save(Some(saved.path().to_path_buf()))
+            .unwrap();
+
+        let stored = tempfile::TempDir::new().unwrap();
+        refreshed_cache(&project, &[])
+            .save(Some(stored.path().to_path_buf()))
+            .unwrap();
+        let mut cache = TrackerCache::load(Some(stored.path().to_path_buf())).unwrap();
+        cache.store_project_schema("0-1", &schema).unwrap();
+
+        for shard in [FIELDS_SHARD, WORKFLOW_SHARD, TEMPLATES_SHARD] {
+            let written = project_shard(saved.path(), shard);
+            assert!(written.is_some(), "{shard}");
+            assert_eq!(written, project_shard(stored.path(), shard), "{shard}");
+        }
+        let schema_of = |root: &Path| {
+            let shard: serde_json::Value =
+                serde_json::from_str(&project_shard(root, SCHEMA_SHARD).unwrap()).unwrap();
+            shard["fields"].clone()
+        };
+        assert_eq!(schema_of(saved.path()), schema_of(stored.path()));
+    }
+
+    #[test]
+    fn a_schema_without_states_leaves_no_workflow_behind() {
+        let project = youtrack_project("DEMO", "0-1");
+        let with_states = vec![schema_field(
+            "State",
+            "state[1]",
+            &["Open", "Done"],
+            &["Done"],
+        )];
+        let without = vec![schema_field("Priority", "enum[1]", &["Normal"], &[])];
+
+        // A refresh after the state field went away.
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = Some(dir.path().to_path_buf());
+        refreshed_cache(&project, &with_states)
+            .save(root.clone())
+            .unwrap();
+        assert!(project_shard(dir.path(), WORKFLOW_SHARD).is_some());
+        refreshed_cache(&project, &without)
+            .save(root.clone())
+            .unwrap();
+        assert!(project_shard(dir.path(), WORKFLOW_SHARD).is_none());
+
+        // A lookup that fetched the schema.
+        refreshed_cache(&project, &with_states)
+            .save(root.clone())
+            .unwrap();
+        let mut cache = TrackerCache::load(root).unwrap();
+        cache.store_project_schema("DEMO", &without).unwrap();
+        assert!(project_shard(dir.path(), WORKFLOW_SHARD).is_none());
+    }
+
+    #[test]
+    fn templates_for_a_project_named_by_its_id_are_its_own() {
+        let project = youtrack_project("DEMO", "0-1");
+        let schema = vec![schema_field(
+            "Stage",
+            "state[1]",
+            &["Open", "In Development", "Done"],
+            &["Done"],
+        )];
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = Some(dir.path().to_path_buf());
+        refreshed_cache(&project, &schema)
+            .save(root.clone())
+            .unwrap();
+        let fitted = Some("project: {PROJECT} Stage: {In Development}".to_string());
+
+        for name in ["0-1", "demo", "DEMO"] {
+            let mut cache = TrackerCache::load(root.clone()).unwrap();
+            let templates = cache.templates_for_project(Some(name));
+            assert_eq!(template_query(templates, "in_progress"), fitted, "{name}");
+        }
+        let mut cache = TrackerCache::load(root).unwrap();
+        assert_eq!(
+            template_query(cache.templates_for_project(None), "in_progress").as_deref(),
+            Some("project: {PROJECT} State: {In Progress}")
+        );
+    }
+
+    #[test]
+    fn tag_changes_match_names_in_any_case() {
+        let tag = |id: &str, name: &str| tracker_core::IssueTag {
+            id: id.to_string(),
+            name: name.to_string(),
+            color: None,
+            issues_count: None,
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = Some(dir.path().to_path_buf());
+        let mut cache = cache_with_projects(&[]);
+        cache.tags = vec![
+            cached_tag_from(&tag("1", "Bug")),
+            cached_tag_from(&tag("2", "Old")),
+        ];
+        cache.save(root.clone()).unwrap();
+
+        let mut cache = TrackerCache::load(root.clone()).unwrap();
+        cache.upsert_tag(&tag("9", "bug"), None).unwrap();
+        cache.upsert_tag(&tag("3", "New"), Some("old")).unwrap();
+        let names = |cache: &TrackerCache| -> Vec<(String, String)> {
+            let mut names: Vec<_> = cache
+                .tags
+                .iter()
+                .map(|t| (t.id.clone(), t.name.clone()))
+                .collect();
+            names.sort();
+            names
+        };
+        let expected = vec![
+            ("3".to_string(), "New".to_string()),
+            ("9".to_string(), "bug".to_string()),
+        ];
+        assert_eq!(names(&cache), expected);
+
+        let mut reloaded = TrackerCache::load(root.clone()).unwrap();
+        reloaded.ensure_backend_shards().unwrap();
+        assert_eq!(names(&reloaded), expected);
+
+        reloaded.remove_tag("NEW").unwrap();
+        let mut reloaded = TrackerCache::load(root).unwrap();
+        reloaded.ensure_backend_shards().unwrap();
+        assert_eq!(names(&reloaded), vec![("9".to_string(), "bug".to_string())]);
     }
 }

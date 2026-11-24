@@ -496,7 +496,6 @@ fn handle_create(
     default_project: Option<&str>,
     verbose: bool,
 ) -> Result<()> {
-    let client = lookup.client();
     let create = if let Some(payload) = args.json {
         parse_create_payload(lookup, payload)?
     } else {
@@ -564,9 +563,7 @@ fn handle_create(
         return Ok(());
     }
 
-    let issue = client
-        .create_issue(&create)
-        .context("Failed to create issue")?;
+    let issue = lookup.create_issue(&create)?;
 
     let warnings = verify_issue_create(&create, &issue);
     crate::output::output_verification_warnings(&warnings, format);
@@ -1408,9 +1405,9 @@ fn resolve_template_query(
 
     // Built-ins are fitted to the project they are run for, when its schema
     // is cached: the project's own state field and the values it really has.
-    let cache = TrackerCache::load_all(None)?;
+    let mut cache = TrackerCache::load(None)?;
     let target = project.or(default_project);
-    let templates = cache.templates_for(target);
+    let templates = cache.templates_for_project(target).to_vec();
     if let Some(template_def) = templates
         .iter()
         .find(|qt| unicode_eq_ignore_case(&qt.name, tmpl))

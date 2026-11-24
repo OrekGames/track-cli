@@ -42,7 +42,12 @@ pub struct Cli {
     pub token: Option<String>,
 
     /// Answer project lookups from the tracker instead of the local cache
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        env = "TRACK_NO_CACHE",
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
     pub no_cache: bool,
 
     /// How errors are written to stderr (json: one object on one line).

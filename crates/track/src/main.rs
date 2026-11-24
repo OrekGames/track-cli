@@ -505,10 +505,7 @@ fn run_with_client(
     config: &Config,
     backend: Backend,
 ) -> Result<()> {
-    if cli.no_cache {
-        lookup::disable_cache();
-    }
-    let lookup = lookup::Lookup::new(issue_client);
+    let lookup = lookup::Lookup::new(issue_client, !cli.no_cache);
     match &cli.command {
         Commands::Issue { action } => commands::issue::handle_issue(
             &lookup,
@@ -522,10 +519,10 @@ fn run_with_client(
             cli.config.as_deref(),
         ),
         Commands::Project { action } => {
-            commands::project::handle_project(issue_client, action, cli.format.output())
+            commands::project::handle_project(&lookup, action, cli.format.output())
         }
         Commands::Tags { action } => {
-            commands::tags::handle_tags(issue_client, action, cli.format.output())
+            commands::tags::handle_tags(&lookup, action, cli.format.output())
         }
         Commands::Cache { action } => commands::cache::handle_cache(
             issue_client,
@@ -546,10 +543,10 @@ fn run_with_client(
             commands::article::handle_article(issue_client, kb_client, action, cli.format.output())
         }
         Commands::Field { action } => {
-            commands::field::handle_field(issue_client, action, cli.format.output())
+            commands::field::handle_field(&lookup, action, cli.format.output())
         }
         Commands::Bundle { action } => {
-            commands::bundle::handle_bundle(issue_client, action, cli.format.output())
+            commands::bundle::handle_bundle(&lookup, action, cli.format.output())
         }
         Commands::Context {
             project,

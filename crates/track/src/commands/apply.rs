@@ -656,9 +656,7 @@ fn execute_create_issue(
         return Ok(result);
     }
 
-    let issue = client
-        .create_issue(&create)
-        .context("Failed to create issue")?;
+    let issue = lookup.create_issue(&create)?;
     let issue_id = issue_output_id(&issue);
     if let Some(ref_name) = ref_name {
         refs.insert(ref_name.to_string(), issue_id.clone());

@@ -834,3 +834,52 @@ fn test_missing_cache_directory_shows_empty() {
 
     fs::remove_dir_all(&dir).unwrap();
 }
+
+// =============================================================================
+// Layout from before one directory per backend
+// =============================================================================
+
+/// A version 2 cache, which kept its shards directly in `.tracker-cache/`.
+fn write_legacy_cache(dir: &Path) -> PathBuf {
+    let root = dir.join(".tracker-cache");
+    fs::create_dir_all(root.join("projects/DEMO")).unwrap();
+    fs::write(
+        root.join("index.json"),
+        r#"{"version": 2, "updated_at": "2026-01-01T00:00:00Z",
+            "backend_metadata": {"backend_type": "youtrack", "base_url": "https://mock.test"},
+            "default_project": null}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("projects/DEMO/meta.json"),
+        r#"{"id": "0-1", "short_name": "DEMO", "name": "Demo", "description": null,
+            "updated_at": "2026-01-01T00:00:00Z"}"#,
+    )
+    .unwrap();
+    root
+}
+
+#[test]
+fn a_legacy_cache_moves_when_it_is_read_and_not_when_its_path_is_asked() {
+    let dir = temp_dir();
+    let root = write_legacy_cache(&dir);
+
+    track_in_no_mock(&dir)
+        .args(["cache", "path"])
+        .assert()
+        .success();
+    assert!(
+        root.join("index.json").is_file(),
+        "`cache path` only reports where the cache is"
+    );
+
+    track_in_no_mock(&dir)
+        .args(["cache", "status"])
+        .assert()
+        .success();
+    assert!(!root.join("index.json").exists());
+    assert!(root.join("youtrack/index.json").is_file());
+    assert!(root.join("youtrack/projects/DEMO/meta.json").is_file());
+
+    fs::remove_dir_all(&dir).unwrap();
+}

@@ -18,13 +18,15 @@ track cache status        # Age, freshness, data counts
 them from the cache when it holds an answer no older than 24 hours, and write back what they
 had to fetch. After one `track cache refresh`, a validated `issue create` is a single request,
 and so is `issue start`. A cached "no" is never final: before an unknown field or invalid value
-becomes an error, the schema is fetched once more from the tracker. Commands that exist to read
-(`project fields`, `project list`, `tags list`, `issue get`) always ask the tracker, and
-`project fields` and `tags list` refresh the cache with what they read.
+becomes an error, the schema is fetched once more from the tracker, and a cached project id the
+tracker turns down (the project was deleted and recreated) is looked up again before the write
+fails. Commands that exist to read (`project fields`, `project list`, `tags list`, `issue get`)
+always ask the tracker for what they show, and `project fields` and `tags list` refresh the cache
+with what they read.
 
 | Control | Effect |
 |---------|--------|
-| `--no-cache` or `TRACK_NO_CACHE=1` | Answer every lookup from the tracker |
+| `--no-cache` or `TRACK_NO_CACHE=1` | Answer every lookup from the tracker (`0`, `false`, `off` or empty leave the cache on). Changes a command makes, such as a new tag or project, still reach the cache |
 | `TRACK_SCHEMA_TTL=7d` | How long a cached schema or project id is trusted (default `24h`) |
 | `TRACK_CACHE_DIR=<path>` | Use this directory as the cache, instead of the project or global one |
 

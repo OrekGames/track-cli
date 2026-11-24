@@ -1,15 +1,13 @@
 //! Bundle admin command handlers
 
 use crate::cli::{BundleCommands, OutputFormat};
+use crate::lookup::Lookup;
 use crate::output::{output_json, output_result};
 use anyhow::{Context, Result, anyhow};
 use tracker_core::{BundleType, CreateBundle, CreateBundleValue, IssueTracker};
 
-pub fn handle_bundle(
-    client: &dyn IssueTracker,
-    action: &BundleCommands,
-    format: OutputFormat,
-) -> Result<()> {
+pub fn handle_bundle(lookup: &Lookup, action: &BundleCommands, format: OutputFormat) -> Result<()> {
+    let client = lookup.client();
     match action {
         BundleCommands::List { bundle_type } => handle_list(client, bundle_type, format),
         BundleCommands::Create {
@@ -23,7 +21,7 @@ pub fn handle_bundle(
             bundle_type,
             value,
             resolved,
-        } => handle_add_value(client, bundle_id, bundle_type, value, *resolved, format),
+        } => handle_add_value(lookup, bundle_id, bundle_type, value, *resolved, format),
     }
 }
 
@@ -121,7 +119,7 @@ pub(crate) fn build_bundle_values(
 }
 
 fn handle_add_value(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     bundle_id: &str,
     bundle_type: &str,
     value: &str,
@@ -146,12 +144,13 @@ fn handle_add_value(
         ordinal: None, // Server will assign
     };
 
-    let created = client
+    let created = lookup
+        .client()
         .add_bundle_values(bundle_id, bt, &[create_value])
         .context("Failed to add value to bundle")?;
     // Which projects use the bundle is not known here, so every cached
     // schema is suspect.
-    crate::cache::with_active_cache(|cache| cache.invalidate_all_schemas());
+    lookup.forget_all_schemas();
 
     match format {
         OutputFormat::Json => {

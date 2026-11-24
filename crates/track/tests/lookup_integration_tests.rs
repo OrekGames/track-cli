@@ -584,3 +584,231 @@ fn tag_changes_reach_the_cached_tag_list() {
 
     fs::remove_dir_all(&dir).unwrap();
 }
+
+// =============================================================================
+// Project ids
+// =============================================================================
+
+/// Route `create_issue` for `project_id` to an error with `status`, ahead of
+/// the scenario's own responses.
+fn refuse_creates_in(scenario: &Path, project_id: &str, status: u16) {
+    fs::write(
+        scenario.join("responses/create_refused.json"),
+        format!(r#"{{"message": "Entity with id {project_id} not found"}}"#),
+    )
+    .unwrap();
+    let manifest = scenario.join("manifest.toml");
+    let original = fs::read_to_string(&manifest).unwrap();
+    fs::write(
+        &manifest,
+        format!(
+            "[[responses]]\nmethod = \"create_issue\"\nfile = \"create_refused.json\"\n\
+             status = {status}\n[responses.args]\nproject = \"{project_id}\"\n\n{original}"
+        ),
+    )
+    .unwrap();
+}
+
+/// The project every `create_issue` since the log was last cleared went to.
+fn create_projects(scenario: &Path) -> Vec<String> {
+    fs::read_to_string(scenario.join("call_log.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|entry| entry["method"] == "create_issue")
+        .map(|entry| entry["args"]["project"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_project_recreated_under_a_new_id_is_found_again() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    warm_cache(&dir, &scenario);
+    // DEMO is deleted and recreated: the cache still says 0-1.
+    let projects = scenario.join("responses/list_projects.json");
+    let recreated = fs::read_to_string(&projects)
+        .unwrap()
+        .replace("\"0-1\"", "\"0-5\"");
+    fs::write(&projects, recreated).unwrap();
+    refuse_creates_in(&scenario, "0-1", 404);
+
+    track_mock(&dir, &scenario)
+        .args(create_args("Type=Bug"))
+        .assert()
+        .success();
+    // The cached id was turned down, so it was asked for once more.
+    assert_eq!(create_projects(&scenario), ["0-1", "0-5"]);
+    assert_eq!(
+        take_calls(&scenario),
+        ["create_issue", "list_projects", "create_issue"]
+    );
+
+    // The cache learned the new id: the next run does not try the old one.
+    track_mock(&dir, &scenario)
+        .args(create_args("Type=Bug"))
+        .assert()
+        .success();
+    assert_eq!(create_projects(&scenario), ["0-5"]);
+    assert!(!take_calls(&scenario).contains(&"list_projects".to_string()));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_cached_id_that_was_right_is_not_written_to_twice() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    warm_cache(&dir, &scenario);
+    // The tracker refuses the create for another reason.
+    refuse_creates_in(&scenario, "0-1", 400);
+
+    track_mock(&dir, &scenario)
+        .args(create_args("Type=Bug"))
+        .assert()
+        .failure();
+
+    // One check that the id still holds, and no second create.
+    assert_eq!(create_projects(&scenario), ["0-1"]);
+    assert_eq!(take_calls(&scenario), ["create_issue", "list_projects"]);
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_deleted_project_is_reported_and_forgotten() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    warm_cache(&dir, &scenario);
+    fs::write(scenario.join("responses/list_projects.json"), "[]").unwrap();
+    refuse_creates_in(&scenario, "0-1", 404);
+
+    track_mock(&dir, &scenario)
+        .args(create_args("Type=Bug"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Failed to resolve project 'DEMO'"));
+
+    let resolved =
+        fs::read_to_string(dir.join(".tracker-cli/cache/youtrack/backend/resolved_projects.json"))
+            .unwrap();
+    assert!(!resolved.contains("demo"), "{resolved}");
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_plan_resolves_each_project_once() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    let plan = dir.join("plan.json");
+    let create = |summary: &str| {
+        serde_json::json!({
+            "op": "create_issue",
+            "summary": summary,
+            "fields": {"Priority": "Normal", "Type": "Bug"}
+        })
+    };
+    fs::write(
+        &plan,
+        serde_json::json!({
+            "version": 1,
+            "defaults": {"project": "DEMO"},
+            "operations": [
+                create("Fix login timeout bug"),
+                create("Add remember me checkbox"),
+                create("Update password validation"),
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Without the cache every answer comes from the backend, once.
+    track_mock(&dir, &scenario)
+        .arg("--no-cache")
+        .arg("apply")
+        .arg(&plan)
+        .assert()
+        .success();
+
+    assert_eq!(
+        take_calls(&scenario),
+        [
+            "list_projects",
+            "get_project_custom_fields",
+            "create_issue",
+            "create_issue",
+            "create_issue"
+        ]
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn no_cache_env_values_that_mean_off_keep_the_cache() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    warm_cache(&dir, &scenario);
+
+    for value in ["0", "false", "off", ""] {
+        track_mock(&dir, &scenario)
+            .env("TRACK_NO_CACHE", value)
+            .args(create_args("Type=Bug"))
+            .assert()
+            .success();
+        assert_eq!(
+            take_calls(&scenario),
+            ["create_issue"],
+            "TRACK_NO_CACHE={value:?}"
+        );
+    }
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn changes_reach_the_cache_even_without_cached_lookups() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "project-operations");
+    warm_cache(&dir, &scenario);
+
+    track_mock(&dir, &scenario)
+        .args([
+            "--no-cache",
+            "project",
+            "create",
+            "-n",
+            "Test Project",
+            "-s",
+            "TEST",
+        ])
+        .assert()
+        .success();
+
+    // `--no-cache` is about answering lookups; a cache that missed the new
+    // project would say it does not exist.
+    let meta = dir.join(".tracker-cli/cache/youtrack/projects/TEST/meta.json");
+    let meta: serde_json::Value = serde_json::from_str(&fs::read_to_string(meta).unwrap()).unwrap();
+    assert_eq!(meta["id"], "0-3");
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn project_fields_uses_the_cached_project_id() {
+    let dir = temp_dir();
+    let scenario = copy_scenario(&dir, "cache-efficiency");
+    warm_cache(&dir, &scenario);
+
+    track_mock(&dir, &scenario)
+        .args(["project", "fields", "DEMO"])
+        .assert()
+        .success();
+
+    // The schema is read live, the id is not looked up again.
+    assert_eq!(take_calls(&scenario), ["get_project_custom_fields"]);
+
+    fs::remove_dir_all(&dir).unwrap();
+}
