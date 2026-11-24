@@ -3,10 +3,12 @@
 //!
 //! Refusals happen before any request, so these tests need no server.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use std::path::PathBuf;
+
+mod common;
+use common::{TestDir, temp_dir};
 
 /// A port nothing listens on, for the cases that are allowed to connect.
 const CLOSED_LOCAL_URL: &str = "http://127.0.0.1:9";
@@ -14,13 +16,13 @@ const CLOSED_LOCAL_URL: &str = "http://127.0.0.1:9";
 /// A fresh home directory (holding the global config) and a repository
 /// checkout inside it.
 struct Workspace {
-    home: PathBuf,
+    home: TestDir,
     repo: PathBuf,
 }
 
 impl Workspace {
     fn new() -> Self {
-        let home = tempfile::tempdir().unwrap().keep();
+        let home = temp_dir();
         let repo = home.join("cloned-repo");
         fs::create_dir_all(home.join(".tracker-cli")).unwrap();
         fs::create_dir_all(&repo).unwrap();
@@ -43,35 +45,10 @@ impl Workspace {
 
     /// `track` run inside the repository with only this workspace's config.
     fn track(&self) -> assert_cmd::Command {
-        let mut cmd = cargo_bin_cmd!("track");
+        let mut cmd = common::track();
         cmd.current_dir(&self.repo)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home);
-        for var in [
-            "TRACKER_URL",
-            "TRACKER_TOKEN",
-            "TRACKER_BACKEND",
-            "TRACKER_CONFIG",
-            "YOUTRACK_URL",
-            "YOUTRACK_TOKEN",
-            "JIRA_URL",
-            "JIRA_EMAIL",
-            "JIRA_TOKEN",
-            "GITHUB_TOKEN",
-            "GITHUB_OWNER",
-            "GITHUB_REPO",
-            "GITHUB_API_URL",
-            "GITLAB_TOKEN",
-            "GITLAB_URL",
-            "GITLAB_PROJECT_ID",
-            "LINEAR_TOKEN",
-            "LINEAR_API_URL",
-            "LINEAR_URL",
-            "LINEAR_DEFAULT_TEAM",
-            "TRACK_MOCK_DIR",
-        ] {
-            cmd.env_remove(var);
-        }
         cmd
     }
 
@@ -88,12 +65,6 @@ impl Workspace {
             String::from_utf8_lossy(&output.stderr)
         );
         serde_json::from_slice(&output.stdout).unwrap()
-    }
-}
-
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.home);
     }
 }
 

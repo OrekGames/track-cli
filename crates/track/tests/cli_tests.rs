@@ -1,10 +1,12 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::json;
 
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+mod common;
+use common::{TestDir, canonical_temp_dir, track, track_in};
 
 fn start_mock_server(response_body: String) -> (u16, thread::JoinHandle<()>) {
     use std::io::{Read, Write};
@@ -47,65 +49,15 @@ Connection: close
     (port, handle)
 }
 
-fn create_temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    // macOS clocks tick in microseconds, so parallel tests can read the same
-    // time; the counter keeps their directories apart.
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut dir = std::env::temp_dir();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!("track-test-{}-{}-{}", std::process::id(), nanos, n));
-    std::fs::create_dir_all(&dir).unwrap();
-    // GitHub Actions Windows gives `C:\Users\RUNNER~1\...` (8.3). Passing that
-    // through `--config` makes `Path::exists()` fail in the child even though
-    // the parent just wrote the file. Use the long path.
-    std::fs::canonicalize(&dir).unwrap_or(dir)
-}
-
-fn track_with_home(temp_home: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(temp_home)
-        .env("HOME", temp_home)
-        .env("USERPROFILE", temp_home)
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("TRACKER_BACKEND")
-        .env_remove("TRACKER_CONFIG")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
-        .env_remove("JIRA_URL")
-        .env_remove("JIRA_EMAIL")
-        .env_remove("JIRA_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_OWNER")
-        .env_remove("GITHUB_REPO")
-        .env_remove("GITHUB_API_URL")
-        .env_remove("GITLAB_TOKEN")
-        .env_remove("GITLAB_URL")
-        .env_remove("GITLAB_PROJECT_ID")
-        .env_remove("GITLAB_NAMESPACE")
-        .env_remove("LINEAR_TOKEN")
-        .env_remove("LINEAR_API_URL")
-        .env_remove("LINEAR_URL")
-        .env_remove("LINEAR_DEFAULT_TEAM")
-        .env_remove("LINEAR_DEFAULT_PROJECT")
-        .env_remove("TRACK_MOCK_DIR");
-    cmd
-}
-
 fn global_config_path(temp_home: &Path) -> PathBuf {
     temp_home.join(".tracker-cli").join(".track.toml")
 }
 
 fn assert_init_rejects_url(url: &str) {
-    let temp_dir = create_temp_dir();
+    let temp_dir = canonical_temp_dir();
     let config_path = global_config_path(&temp_dir);
 
-    track_with_home(&temp_dir)
+    track_in(&temp_dir)
         .args([
             "--format", "json", "init", "--url", url, "--token", "test", "-b", "youtrack",
             "--global",
@@ -127,15 +79,13 @@ fn assert_init_rejects_url(url: &str) {
         "rejected init URL should not create config: {}",
         config_path.display()
     );
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 fn assert_init_rejects_userinfo_url(url: &str) {
-    let temp_dir = create_temp_dir();
+    let temp_dir = canonical_temp_dir();
     let config_path = global_config_path(&temp_dir);
 
-    let output = track_with_home(&temp_dir)
+    let output = track_in(&temp_dir)
         .args([
             "--format", "json", "init", "--url", url, "--token", "test", "-b", "youtrack",
             "--global",
@@ -161,15 +111,13 @@ fn assert_init_rejects_userinfo_url(url: &str) {
         "rejected init URL should not create config: {}",
         config_path.display()
     );
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 fn assert_init_allows_url(url: &str) {
-    let temp_dir = create_temp_dir();
+    let temp_dir = canonical_temp_dir();
     let config_path = global_config_path(&temp_dir);
 
-    let output = track_with_home(&temp_dir)
+    let output = track_in(&temp_dir)
         .args([
             "--format", "json", "init", "--url", url, "--token", "test", "-b", "youtrack",
             "--global",
@@ -188,26 +136,22 @@ fn assert_init_allows_url(url: &str) {
     assert!(config.contains("backend = \"youtrack\""));
     assert!(config.contains(&format!("url = \"{url}\"")));
     assert!(config.contains("token = \"test\""));
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_missing_config() {
-    let temp_home = create_temp_dir();
+    let temp_home = canonical_temp_dir();
 
-    track_with_home(&temp_home)
+    track_in(&temp_home)
         .args(["issue", "get", "PROJ-1"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("URL not configured"));
-
-    let _ = std::fs::remove_dir_all(&temp_home);
 }
 
 #[test]
 fn test_help_command() {
-    cargo_bin_cmd!("track")
+    track()
         .arg("--help")
         .assert()
         .success()
@@ -216,7 +160,7 @@ fn test_help_command() {
 
 #[test]
 fn test_issue_subcommand_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "--help"])
         .assert()
         .success()
@@ -225,7 +169,7 @@ fn test_issue_subcommand_help() {
 
 #[test]
 fn test_project_subcommand_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["project", "--help"])
         .assert()
         .success()
@@ -234,7 +178,7 @@ fn test_project_subcommand_help() {
 
 #[test]
 fn test_version() {
-    cargo_bin_cmd!("track")
+    track()
         .arg("--version")
         .assert()
         .success()
@@ -272,7 +216,7 @@ fn test_init_enforces_https_for_remote_urls() {
 
 #[test]
 fn test_config_file_is_used_for_defaults() {
-    let temp_dir = create_temp_dir();
+    let temp_dir = canonical_temp_dir();
     let config_path = temp_dir.join("config.toml");
 
     let mock_response = json!([{
@@ -288,7 +232,7 @@ fn test_config_file_is_used_for_defaults() {
     std::fs::write(&config_path, config_contents).unwrap();
     let config_path = std::fs::canonicalize(&config_path).unwrap();
 
-    let output = track_with_home(&temp_dir)
+    let output = track_in(&temp_dir)
         .args(["--config"])
         .arg(&config_path)
         .args(["--format", "json", "project", "list"])
@@ -303,14 +247,12 @@ fn test_config_file_is_used_for_defaults() {
     assert!(json.is_array());
     // The output uses snake_case from tracker_core models
     assert_eq!(json[0]["short_name"], "PROJ");
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 /// Write a `TRACK_MOCK_DIR` scenario that answers each `(method, JSON body)`
 /// pair for any arguments.
-fn write_mock_scenario(responses: &[(&str, &str)]) -> PathBuf {
-    let dir = create_temp_dir();
+fn write_mock_scenario(responses: &[(&str, &str)]) -> TestDir {
+    let dir = canonical_temp_dir();
     let responses_dir = dir.join("responses");
     std::fs::create_dir_all(&responses_dir).unwrap();
     let mut manifest = String::new();
@@ -340,7 +282,7 @@ const MOCK_ARTICLE: &str = r#"{
 }"#;
 
 fn stdout_json(args: &[&str], mock_dir: &Path) -> serde_json::Value {
-    let output = track_with_home(mock_dir)
+    let output = track_in(mock_dir)
         .env("TRACK_MOCK_DIR", mock_dir)
         .args(args)
         .assert()
@@ -367,8 +309,6 @@ fn article_move_json_output_is_only_the_article() {
         &mock_dir,
     );
     assert_eq!(json["id_readable"], "KB-A-1");
-
-    let _ = std::fs::remove_dir_all(&mock_dir);
 }
 
 #[test]
@@ -377,8 +317,6 @@ fn article_delete_json_output_is_json() {
 
     let json = stdout_json(&["-o", "json", "article", "delete", "KB-A-1"], &mock_dir);
     assert_eq!(json["success"], true);
-
-    let _ = std::fs::remove_dir_all(&mock_dir);
 }
 
 // These tests require a mock server or real YouTrack instance
@@ -387,7 +325,7 @@ fn article_delete_json_output_is_json() {
 /*
 #[test]
 fn test_json_output_format() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["--format", "json", "issue", "get", "PROJ-1"])
         .env("YOUTRACK_TOKEN", "test-token")
         .env("YOUTRACK_URL", "https://test.youtrack.cloud")
@@ -397,7 +335,7 @@ fn test_json_output_format() {
 
 #[test]
 fn test_search_issues() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "search", "project: Test", "--limit", "10"])
         .env("YOUTRACK_TOKEN", "test-token")
         .env("YOUTRACK_URL", "https://test.youtrack.cloud")

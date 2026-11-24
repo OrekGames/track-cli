@@ -13,22 +13,19 @@
 //!
 //!   - The configured project must exist and the token must have API scope
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
+mod common;
+use common::{temp_dir, track, track_in, workspace_root};
+
 /// Get the path to the .track.toml config file at project root
 fn config_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(".track.toml")
+    workspace_root().join(".track.toml")
 }
 
 /// Check if the config file exists (skip tests if not)
@@ -50,7 +47,7 @@ fn temp_attachment_file(prefix: &str) -> PathBuf {
 
 /// Helper to build a track command with GitLab backend and config
 fn track_gitlab() -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "gitlab", "--config"])
         .arg(config_path())
         .timeout(Duration::from_secs(30));
@@ -59,7 +56,7 @@ fn track_gitlab() -> assert_cmd::Command {
 
 /// Helper to build a track command with GitLab backend, JSON output, and config
 fn track_gitlab_json() -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "gitlab", "-o", "json", "--config"])
         .arg(config_path())
         .timeout(Duration::from_secs(30));
@@ -1805,7 +1802,7 @@ fn test_gitlab_cli_aliases() {
     }
 
     // Test -b gl alias
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "gl", "-o", "json", "--config"])
         .arg(config_path())
         .args(["p", "ls"]) // project list aliases
@@ -1814,7 +1811,7 @@ fn test_gitlab_cli_aliases() {
         .success();
 
     // Test i s alias (issue search)
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "gl", "--config"])
         .arg(config_path())
         .args(["i", "s", "test", "--limit", "1"])
@@ -1823,7 +1820,7 @@ fn test_gitlab_cli_aliases() {
         .success();
 
     // Test t ls alias (tags list)
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "gl", "--config"])
         .arg(config_path())
         .args(["t", "ls"])
@@ -1978,11 +1975,10 @@ fn mock_gitlab_issue_simple(iid: u64, title: &str) -> serde_json::Value {
     })
 }
 
-/// Write a temporary GitLab config file and return its path.
-fn write_gitlab_mock_config(port: u16) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("track-gl-test-{}", port));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config_path = dir.join(".track.toml");
+/// Write a GitLab config for the mock server at `port` into `dir` and return
+/// its path.
+fn write_gitlab_mock_config(dir: &Path, port: u16) -> PathBuf {
+    let config_path = dir.join("gitlab.toml");
     let content = format!(
         r#"
 [gitlab]
@@ -1998,6 +1994,7 @@ project_id = "1"
 
 #[test]
 fn test_gitlab_pagination_hint_on_full_page() {
+    let dir = temp_dir();
     // GitLab returns issues array + X-Total header
     let search_response = serde_json::json!([
         mock_gitlab_issue_simple(1, "Issue 1"),
@@ -2010,8 +2007,8 @@ fn test_gitlab_pagination_hint_on_full_page() {
     );
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_gitlab_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_gitlab_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "gitlab", "--config"])
         .arg(&cfg)
         .args(["issue", "search", "#open", "--limit", "2"])
@@ -2031,6 +2028,7 @@ fn test_gitlab_pagination_hint_on_full_page() {
 
 #[test]
 fn test_gitlab_no_hint_on_partial_page() {
+    let dir = temp_dir();
     let search_response = serde_json::json!([
         mock_gitlab_issue_simple(1, "Issue 1"),
         mock_gitlab_issue_simple(2, "Issue 2")
@@ -2042,8 +2040,8 @@ fn test_gitlab_no_hint_on_partial_page() {
     );
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_gitlab_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_gitlab_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "gitlab", "--config"])
         .arg(&cfg)
         .args(["issue", "search", "#open", "--limit", "10"])
@@ -2067,13 +2065,14 @@ fn test_gitlab_no_hint_on_partial_page() {
 
 #[test]
 fn test_gitlab_unlink_text_output() {
+    let dir = temp_dir();
     // GitLab returns 200 OK on delete issue link
     let mock_response = String::new();
     let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_gitlab_mock_config(port);
-    cargo_bin_cmd!("track")
+    let cfg = write_gitlab_mock_config(&dir, port);
+    track_in(&dir)
         .args(["-b", "gitlab", "--config"])
         .arg(&cfg)
         .args(["issue", "unlink", "#42", "789"])
@@ -2087,12 +2086,13 @@ fn test_gitlab_unlink_text_output() {
 
 #[test]
 fn test_gitlab_unlink_json_output() {
+    let dir = temp_dir();
     let mock_response = String::new();
     let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_gitlab_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_gitlab_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "gitlab", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "unlink", "#42", "789"])
@@ -2116,6 +2116,7 @@ fn test_gitlab_unlink_json_output() {
 
 #[test]
 fn test_gitlab_link_depends_text_output() {
+    let dir = temp_dir();
     // GitLab returns 201 Created on POST to issue links
     let mock_response = serde_json::json!({
         "source_issue": mock_gitlab_issue_simple(1, "Source"),
@@ -2125,8 +2126,8 @@ fn test_gitlab_link_depends_text_output() {
     let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_gitlab_mock_config(port);
-    cargo_bin_cmd!("track")
+    let cfg = write_gitlab_mock_config(&dir, port);
+    track_in(&dir)
         .args(["-b", "gitlab", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "#1", "#2", "-t", "depends"])
@@ -2140,6 +2141,7 @@ fn test_gitlab_link_depends_text_output() {
 
 #[test]
 fn test_gitlab_link_depends_json_output() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!({
         "source_issue": mock_gitlab_issue_simple(1, "Source"),
         "target_issue": mock_gitlab_issue_simple(2, "Target")
@@ -2148,8 +2150,8 @@ fn test_gitlab_link_depends_json_output() {
     let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_gitlab_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_gitlab_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "gitlab", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "#1", "#2", "-t", "depends"])
@@ -2170,6 +2172,7 @@ fn test_gitlab_link_depends_json_output() {
 
 #[test]
 fn test_gitlab_link_relates_text_output() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!({
         "source_issue": mock_gitlab_issue_simple(1, "Source"),
         "target_issue": mock_gitlab_issue_simple(2, "Target")
@@ -2178,8 +2181,8 @@ fn test_gitlab_link_relates_text_output() {
     let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_gitlab_mock_config(port);
-    cargo_bin_cmd!("track")
+    let cfg = write_gitlab_mock_config(&dir, port);
+    track_in(&dir)
         .args(["-b", "gitlab", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "#1", "#2", "-t", "relates"])
@@ -2191,6 +2194,7 @@ fn test_gitlab_link_relates_text_output() {
 
 #[test]
 fn test_gitlab_link_custom_type_passthrough() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!({
         "source_issue": mock_gitlab_issue_simple(1, "Source"),
         "target_issue": mock_gitlab_issue_simple(2, "Target")
@@ -2199,8 +2203,8 @@ fn test_gitlab_link_custom_type_passthrough() {
     let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_gitlab_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_gitlab_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "gitlab", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "#1", "#2", "-t", "clones"])
@@ -2217,10 +2221,8 @@ fn test_gitlab_link_custom_type_passthrough() {
 }
 
 /// Write a GitLab mock config with custom link_mappings.
-fn write_gitlab_mock_config_with_mappings(port: u16) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("track-gl-link-map-test-{}", port));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config_path = dir.join(".track.toml");
+fn write_gitlab_mock_config_with_mappings(dir: &Path, port: u16) -> PathBuf {
+    let config_path = dir.join("gitlab.toml");
     let content = format!(
         r#"
 [gitlab]
@@ -2239,6 +2241,7 @@ depends = "is_blocked_by"
 
 #[test]
 fn test_gitlab_link_with_config_mappings() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!({
         "source_issue": mock_gitlab_issue_simple(1, "Source"),
         "target_issue": mock_gitlab_issue_simple(2, "Target")
@@ -2247,8 +2250,8 @@ fn test_gitlab_link_with_config_mappings() {
     let (_server, port) = start_gitlab_mock_server_with_headers(mock_response, vec![]);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_gitlab_mock_config_with_mappings(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_gitlab_mock_config_with_mappings(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "gitlab", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "#1", "#2", "-t", "depends"])

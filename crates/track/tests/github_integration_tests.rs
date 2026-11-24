@@ -13,22 +13,19 @@
 //!
 //!   - The configured repo must exist and the token must have Issues read/write scope
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
+mod common;
+use common::{temp_dir, track, track_in, workspace_root};
+
 /// Get the path to the .track.toml config file at project root
 fn config_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(".track.toml")
+    workspace_root().join(".track.toml")
 }
 
 /// Check if the config file exists (skip tests if not)
@@ -50,26 +47,18 @@ fn temp_attachment_file(prefix: &str) -> PathBuf {
 
 /// Helper to build a track command with GitHub backend and config
 fn track_github() -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "github", "--config"])
         .arg(config_path())
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_API_URL")
         .timeout(Duration::from_secs(30));
     cmd
 }
 
 /// Helper to build a track command with GitHub backend, JSON output, and config
 fn track_github_json() -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "github", "-o", "json", "--config"])
         .arg(config_path())
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_API_URL")
         .timeout(Duration::from_secs(30));
     cmd
 }
@@ -1499,7 +1488,7 @@ fn test_github_cli_aliases() {
     }
 
     // Test -b gh alias
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "gh", "-o", "json", "--config"])
         .arg(config_path())
         .args(["p", "ls"]) // project list aliases
@@ -1508,7 +1497,7 @@ fn test_github_cli_aliases() {
         .success();
 
     // Test i s alias (issue search)
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "gh", "--config"])
         .arg(config_path())
         .args(["i", "s", "is:open", "--limit", "1"])
@@ -1657,11 +1646,10 @@ fn mock_github_issue_json(number: u64, title: &str) -> serde_json::Value {
     })
 }
 
-/// Write a temporary GitHub config file and return its path.
-fn write_github_mock_config(port: u16) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("track-gh-test-{}", port));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config_path = dir.join(".track.toml");
+/// Write a GitHub config for the mock server at `port` into `dir` and
+/// return its path.
+fn write_github_mock_config(dir: &Path, port: u16) -> PathBuf {
+    let config_path = dir.join("github.toml");
     let content = format!(
         r#"
 [github]
@@ -1691,14 +1679,11 @@ fn test_github_pagination_hint_on_full_page() {
     let (_server, port) = start_github_mock_server(search_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_github_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let dir = temp_dir();
+    let cfg = write_github_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "github", "--config"])
         .arg(&cfg)
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_API_URL")
         .args(["issue", "search", "is:open", "--limit", "2"])
         .timeout(Duration::from_secs(5))
         .assert()
@@ -1728,14 +1713,11 @@ fn test_github_no_hint_on_partial_page() {
     let (_server, port) = start_github_mock_server(search_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_github_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let dir = temp_dir();
+    let cfg = write_github_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "github", "--config"])
         .arg(&cfg)
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_API_URL")
         .args(["issue", "search", "is:open", "--limit", "10"])
         .timeout(Duration::from_secs(5))
         .assert()
@@ -1755,20 +1737,13 @@ fn test_github_no_hint_on_partial_page() {
 // Field validation (with mock server)
 // ============================================================================
 
-/// `track` against GitHub at `port`, with the cache in the config's directory.
-fn track_github_at(port: u16) -> assert_cmd::Command {
-    let cfg = write_github_mock_config(port);
-    let home = cfg.parent().unwrap().to_path_buf();
-    let mut cmd = cargo_bin_cmd!("track");
+/// `track` against GitHub at `port`, run in `dir` with its config and
+/// cache there.
+fn track_github_at(dir: &Path, port: u16) -> assert_cmd::Command {
+    let cfg = write_github_mock_config(dir, port);
+    let mut cmd = track_in(dir);
     cmd.args(["-b", "github", "--config"])
         .arg(&cfg)
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_API_URL")
-        .env_remove("TRACK_CACHE_DIR")
         .timeout(Duration::from_secs(5));
     cmd
 }
@@ -1776,7 +1751,8 @@ fn track_github_at(port: u16) -> assert_cmd::Command {
 #[test]
 fn test_github_strict_validation_refuses_what_github_would_drop() {
     // Nothing listens on port 1: the check has to decide before any request.
-    track_github_at(1)
+    let dir = temp_dir();
+    track_github_at(&dir, 1)
         .args([
             "issue",
             "update",
@@ -1800,7 +1776,8 @@ fn test_github_strict_validation_takes_the_state_shorthand() {
     thread::sleep(Duration::from_millis(50));
 
     // State is GitHub's Status, and `done` is how it spells closed.
-    track_github_at(port)
+    let dir = temp_dir();
+    track_github_at(&dir, port)
         .args(["issue", "update", "42", "--state", "done", "--validate"])
         .assert()
         .success()

@@ -1,50 +1,17 @@
 //! Failures carry a stable code and, where one is known, the next step.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-fn temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-error-test-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
+mod common;
+use common::{copy_scenario, temp_dir, track_in};
 
-fn scenario(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("fixtures")
-        .join("scenarios")
-        .join(name)
-}
-
+/// [`common::track_mock`] against a copy of the scenario `name` in `dir`,
+/// with DEMO as the default project.
 fn track_mock(dir: &Path, name: &str) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .env("HOME", dir)
-        .env("USERPROFILE", dir)
-        .env("TRACK_MOCK_DIR", scenario(name))
-        .env("TRACKER_DEFAULT_PROJECT", "DEMO")
-        .env_remove("TRACK_ERROR_FORMAT")
-        .env_remove("TRACK_OUTPUT")
-        .args(["--url", "https://mock.test", "--token", "mock-token"]);
+    let scenario = copy_scenario(dir, name);
+    let mut cmd = common::track_mock(dir, &scenario);
+    cmd.env("TRACKER_DEFAULT_PROJECT", "DEMO");
     cmd
 }
 
@@ -72,8 +39,6 @@ fn a_missing_issue_reports_not_found_with_a_hint() {
     assert!(lines[0].starts_with("Error: Failed to fetch issue 'DEMO-999'"));
     assert_eq!(lines[1], "Code: not_found");
     assert!(lines[2].starts_with("Hint: "), "{lines:?}");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -111,8 +76,6 @@ fn an_unknown_field_reports_its_code_and_the_fix() {
         5,
     );
     assert_eq!(lines[1], "Code: invalid_value");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -166,23 +129,13 @@ fn other_cli_failures_have_codes_too() {
     assert_eq!(lines[1], "Code: select_no_match");
 
     // No configuration at all.
-    let output = cargo_bin_cmd!("track")
-        .current_dir(&dir)
-        .env("HOME", &dir)
-        .env("USERPROFILE", &dir)
-        .env_remove("TRACK_MOCK_DIR")
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
+    let output = track_in(&dir)
         .args(["issue", "search", "x"])
         .output()
         .unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("\nCode: not_configured"), "{stderr}");
     assert_eq!(output.status.code(), Some(4));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -208,8 +161,6 @@ fn json_error_format_is_one_object_on_stderr() {
         assert!(json["error"]["message"].as_str().unwrap().contains("Prio"));
         assert!(json["error"]["hint"].is_string());
     }
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -234,8 +185,6 @@ fn batch_failures_carry_a_code_per_issue() {
     for result in failed {
         assert!(result["code"].is_string(), "{result}");
     }
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -247,6 +196,4 @@ fn success_prints_no_code_or_hint() {
         .assert()
         .success()
         .stderr(predicate::str::contains("Code:").not());
-
-    fs::remove_dir_all(&dir).unwrap();
 }

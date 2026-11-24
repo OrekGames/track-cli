@@ -4,101 +4,16 @@
 //! client (TRACK_MOCK_DIR), and failure paths use configs that are rejected
 //! before any client is built.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Create a unique temp directory for test isolation.
-fn temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-doctor-test-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// Build a track command running in the given directory with a clean env.
-fn track_in(dir: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .env("HOME", dir)
-        .env("USERPROFILE", dir)
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("TRACKER_BACKEND")
-        .env_remove("TRACKER_CONFIG")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
-        .env_remove("JIRA_URL")
-        .env_remove("JIRA_EMAIL")
-        .env_remove("JIRA_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_OWNER")
-        .env_remove("GITHUB_REPO")
-        .env_remove("GITHUB_API_URL")
-        .env_remove("GITLAB_TOKEN")
-        .env_remove("GITLAB_URL")
-        .env_remove("GITLAB_PROJECT_ID")
-        .env_remove("GITLAB_NAMESPACE")
-        .env_remove("LINEAR_TOKEN")
-        .env_remove("LINEAR_API_URL")
-        .env_remove("LINEAR_URL")
-        .env_remove("LINEAR_DEFAULT_TEAM")
-        .env_remove("LINEAR_DEFAULT_PROJECT")
-        .env_remove("TRACK_MOCK_DIR");
-    cmd
-}
-
-fn fixtures_path() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("fixtures")
-        .join("scenarios")
-}
-
-fn copy_dir_recursive(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let source = entry.path();
-        let target = to.join(entry.file_name());
-        if source.is_dir() {
-            copy_dir_recursive(&source, &target);
-        } else {
-            fs::copy(&source, &target).unwrap();
-        }
-    }
-}
-
-fn copy_scenario(dir: &Path, name: &str) -> PathBuf {
-    let scenario = dir.join(name);
-    copy_dir_recursive(&fixtures_path().join(name), &scenario);
-    fs::write(scenario.join("call_log.jsonl"), "").unwrap();
-    scenario
-}
+mod common;
+use common::{copy_scenario, temp_dir, track_in, track_mock};
 
 fn doctor_json(dir: &Path, scenario: &Path, extra_args: &[&str]) -> serde_json::Value {
-    let mut cmd = track_in(dir);
-    cmd.env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
-        .args(["-o", "json", "doctor"])
-        .args(extra_args);
+    let mut cmd = track_mock(dir, scenario);
+    cmd.args(["-o", "json", "doctor"]).args(extra_args);
     let output = cmd.output().unwrap();
     assert!(
         output.status.success(),
@@ -171,8 +86,6 @@ fn doctor_json_reports_per_check_statuses_against_mock() {
 
     // Secrets must never appear in the report.
     assert!(!report.to_string().contains("mock-token"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -205,8 +118,6 @@ fn doctor_write_check_validates_locally_without_mutations() {
             log
         );
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -223,8 +134,6 @@ fn doctor_respects_project_flag() {
             .unwrap()
             .contains("resolved 'DEMO'")
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -271,8 +180,6 @@ project_id = "123"
     assert!(text.contains(".track.toml"));
     assert!(!text.contains("yt-token"));
     assert!(!text.contains("gl-token"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -323,8 +230,6 @@ project_id = "123"
         report["backends"][1]["config"]["url"],
         "https://gitlab.mock.test/api/v4"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -366,8 +271,6 @@ token = "yt-token"
         .map(|b| b["backend"].as_str().unwrap())
         .collect();
     assert_eq!(backends, vec!["youtrack", "gitlab"]);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -406,8 +309,6 @@ project_id = "123"
         report["backends"][0]["config"]["url"],
         "https://gitlab.mock.test/api/v4"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -443,8 +344,6 @@ token = "gl-token"
         "ok",
         "report: {report}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -478,8 +377,6 @@ fn doctor_invalid_config_fails_only_under_strict() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("--strict"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -489,14 +386,10 @@ fn doctor_strict_passes_when_only_degraded() {
     let dir = temp_dir();
     let scenario = copy_scenario(&dir, "basic-workflow");
 
-    track_in(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args(["doctor", "--strict"])
         .assert()
         .success();
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -504,9 +397,7 @@ fn doctor_text_output_lists_checks() {
     let dir = temp_dir();
     let scenario = copy_scenario(&dir, "basic-workflow");
 
-    track_in(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .arg("doctor")
         .assert()
         .success()
@@ -514,8 +405,6 @@ fn doctor_text_output_lists_checks() {
         .stdout(predicate::str::contains("auth_connectivity"))
         .stdout(predicate::str::contains("issue_search"))
         .stdout(predicate::str::contains("write_validation"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -528,6 +417,4 @@ fn doctor_help_documents_flags() {
         .stdout(predicate::str::contains("--all-backends"))
         .stdout(predicate::str::contains("--write-check"))
         .stdout(predicate::str::contains("--strict"));
-
-    let _ = fs::remove_dir_all(&dir);
 }

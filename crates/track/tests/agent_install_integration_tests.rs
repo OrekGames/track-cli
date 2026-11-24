@@ -1,63 +1,78 @@
 //! `track agent install | uninstall | status` and `track guide`.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-fn temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-agent-install-test-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
+mod common;
+use common::{TestDir, read_json};
+
+/// A [`TestDir`] holding a home directory, `home`, and a repository, `repo`.
+fn temp_dir() -> TestDir {
+    let dir = common::temp_dir();
     fs::create_dir_all(dir.join("home")).unwrap();
     fs::create_dir_all(dir.join("repo")).unwrap();
     dir
 }
 
 /// `track` run in `dir/repo` with its home in `dir/home`. Every variable the
-/// installer reads a location from is pinned, so the test sees the same
-/// paths on every platform and on a developer's machine, and none that a
-/// Claude Code session running the tests sets (`CLAUDE_ENV_FILE`) leaks in.
+/// installer reads a location from is pinned or removed (most by
+/// [`common::isolate`]), so the test sees the same paths on every platform
+/// and on a developer's machine.
 fn track(dir: &Path) -> assert_cmd::Command {
     let home = dir.join("home");
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = common::track();
     cmd.current_dir(dir.join("repo"))
         .env("HOME", &home)
         .env("USERPROFILE", &home)
-        .env("OREK_HOME", home.join("orek"));
-    for var in [
-        "CODEX_HOME",
-        "XDG_CONFIG_HOME",
-        "APPDATA",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "TRACK_MOCK_DIR",
-        "TRACK_CACHE_DIR",
-        "TRACK_OUTPUT",
-        "TRACK_ERROR_FORMAT",
-        "TRACKER_CONFIG",
-        "TRACKER_BACKEND",
-        "CLAUDE_ENV_FILE",
-    ] {
-        cmd.env_remove(var);
-    }
+        .env("OREK_HOME", home.join("orek"))
+        // Windows' other sources of a home and of Orek's config folder.
+        .env_remove("APPDATA")
+        .env_remove("HOMEDRIVE")
+        .env_remove("HOMEPATH");
     cmd
 }
 
-fn read_json(path: &Path) -> Value {
-    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+/// Each tool's session-start hook: the name it passes to `track prime
+/// --hook=`, its file in the user and in the project scope, and where in
+/// that file the command sits.
+const HOOKS: [(&str, &str, &str, &str); 5] = [
+    (
+        "claude",
+        ".claude/settings.json",
+        ".claude/settings.json",
+        "/hooks/SessionStart/0/hooks/0/command",
+    ),
+    (
+        "codex",
+        ".codex/hooks.json",
+        ".codex/hooks.json",
+        "/hooks/SessionStart/0/hooks/0/command",
+    ),
+    (
+        "gemini",
+        ".gemini/settings.json",
+        ".gemini/settings.json",
+        "/hooks/SessionStart/0/hooks/0/command",
+    ),
+    (
+        "cursor",
+        ".cursor/hooks.json",
+        ".cursor/hooks.json",
+        "/hooks/sessionStart/0/command",
+    ),
+    (
+        "antigravity",
+        ".gemini/config/hooks.json",
+        ".agents/hooks.json",
+        "/track/SessionStart/0/command",
+    ),
+];
+
+/// The command at `pointer` in the JSON file `path`.
+fn hook_command(path: &Path, pointer: &str) -> Option<Value> {
+    read_json(path).pointer(pointer).cloned()
 }
 
 fn status(dir: &Path) -> Value {
@@ -102,32 +117,20 @@ fn user_install_sets_up_every_tool_where_its_docs_say() {
     assert!(!home.join(".gemini/skills").exists());
 
     // Session-start hooks, each in its tool's own shape.
+    for (tool, file, _, pointer) in HOOKS {
+        assert_eq!(
+            hook_command(&home.join(file), pointer),
+            Some(json!(format!("track prime --hook={tool}"))),
+            "{file}"
+        );
+    }
     let claude = read_json(&home.join(".claude/settings.json"));
-    let hook = &claude["hooks"]["SessionStart"][0]["hooks"][0];
-    assert_eq!(hook["type"], "command");
-    assert_eq!(hook["command"], "track prime --hook=claude");
+    assert_eq!(
+        claude["hooks"]["SessionStart"][0]["hooks"][0]["type"],
+        "command"
+    );
     assert!(claude.get("env").is_none());
-    let codex = read_json(&home.join(".codex/hooks.json"));
-    assert_eq!(
-        codex["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "track prime --hook=codex"
-    );
-    let gemini = read_json(&home.join(".gemini/settings.json"));
-    assert_eq!(
-        gemini["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "track prime --hook=gemini"
-    );
-    let cursor = read_json(&home.join(".cursor/hooks.json"));
-    assert_eq!(cursor["version"], 1);
-    assert_eq!(
-        cursor["hooks"]["sessionStart"][0]["command"],
-        "track prime --hook=cursor"
-    );
-    let antigravity = read_json(&home.join(".gemini/config/hooks.json"));
-    assert_eq!(
-        antigravity["track"]["SessionStart"][0]["command"],
-        "track prime --hook=antigravity"
-    );
+    assert_eq!(read_json(&home.join(".cursor/hooks.json"))["version"], 1);
 
     // Codex gets the output format from its shell environment policy.
     let config = fs::read_to_string(home.join(".codex/config.toml")).unwrap();
@@ -170,8 +173,6 @@ fn user_install_sets_up_every_tool_where_its_docs_say() {
     for skills in ["orek/config/skills", ".claude/skills", ".agents/skills"] {
         assert!(!home.join(skills).join("track").exists(), "{skills}");
     }
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -223,8 +224,6 @@ fn uninstalling_one_tool_keeps_what_the_others_still_read() {
         .success();
     assert!(!home.join(".gemini/GEMINI.md").exists());
     assert!(!home.join(".gemini/config/hooks.json").exists());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -261,8 +260,6 @@ fn uninstalling_one_tool_from_a_project_keeps_the_shared_agents_md_block() {
         "installed"
     );
     assert_eq!(tool_status(&status, 1, "Codex")["skill"], "current");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -292,8 +289,6 @@ fn uninstall_prunes_only_folders_on_the_named_tools_paths() {
 
     assert!(!repo.join(".claude").exists());
     assert!(repo.join(".gemini").is_dir());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -350,8 +345,6 @@ fn a_settings_file_with_comments_skips_that_file_and_sets_up_the_rest() {
         .code(6)
         .stdout(predicate::str::contains("Not set up:"))
         .stderr(predicate::str::contains("Code: partial_failure"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[cfg(unix)]
@@ -399,8 +392,6 @@ fn install_keeps_the_permissions_of_the_users_files_and_folders() {
     fs::create_dir(dir.join("reference-dir")).unwrap();
     assert_eq!(mode(&repo.join(".codex/hooks.json")), mode(&reference));
     assert_eq!(mode(&repo.join(".codex")), mode(&dir.join("reference-dir")));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[cfg(unix)]
@@ -443,8 +434,6 @@ fn a_symlinked_settings_file_stays_a_link_to_the_edited_dotfile() {
             .is_symlink()
     );
     assert_eq!(read_json(&dotfile), serde_json::json!({ "model": "opus" }));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -465,8 +454,6 @@ fn tools_limits_install_to_the_named_tools() {
     assert!(!home.join(".claude").exists());
     assert!(!home.join(".codex").exists());
     assert!(!home.join(".gemini").exists());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -492,8 +479,6 @@ fn a_skill_left_by_an_earlier_version_is_moved_not_duplicated() {
     assert!(!home.join(".gemini/skills/track").exists());
     assert!(home.join(".cursor/skills/other").exists());
     assert!(home.join(".agents/skills/track/SKILL.md").is_file());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -546,8 +531,6 @@ fn install_is_idempotent_and_preserves_existing_settings() {
         1
     );
     assert_eq!(settings["model"], "opus");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -564,8 +547,6 @@ fn a_settings_file_that_does_not_parse_is_left_untouched() {
         .stderr(predicate::str::contains("was left unchanged"));
 
     assert_eq!(fs::read_to_string(&settings_path).unwrap(), "{ broken");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -593,25 +574,10 @@ fn project_install_adds_shared_files_and_uninstall_restores_the_repository() {
     assert!(repo.join(".orek/skills/track/SKILL.md").is_file());
     assert!(repo.join(".claude/skills/track/SKILL.md").is_file());
     assert!(repo.join(".agents/skills/track/SKILL.md").is_file());
-    for (file, pointer) in [
-        (
-            ".claude/settings.json",
-            "/hooks/SessionStart/0/hooks/0/command",
-        ),
-        (".codex/hooks.json", "/hooks/SessionStart/0/hooks/0/command"),
-        (
-            ".gemini/settings.json",
-            "/hooks/SessionStart/0/hooks/0/command",
-        ),
-        (".cursor/hooks.json", "/hooks/sessionStart/0/command"),
-        (".agents/hooks.json", "/track/SessionStart/0/command"),
-    ] {
-        let command = read_json(&repo.join(file))
-            .pointer(pointer)
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        assert!(
-            command.is_some_and(|c| c.starts_with("track prime --hook=")),
+    for (tool, _, file, pointer) in HOOKS {
+        assert_eq!(
+            hook_command(&repo.join(file), pointer),
+            Some(json!(format!("track prime --hook={tool}"))),
             "{file}"
         );
     }
@@ -648,8 +614,6 @@ fn project_install_adds_shared_files_and_uninstall_restores_the_repository() {
         .collect();
     left.sort();
     assert_eq!(left, ["AGENTS.md", "CLAUDE.md"]);
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -668,8 +632,6 @@ fn an_agents_file_that_only_held_the_block_is_removed_with_it() {
         .assert()
         .success();
     assert!(!repo.join("AGENTS.md").exists());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -683,8 +645,6 @@ fn init_skills_still_installs_the_whole_skill() {
     assert!(skill.join("references/output.md").is_file());
     // It installs skills only, as before.
     assert!(!dir.join("home/.claude/settings.json").exists());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -717,6 +677,4 @@ fn guide_lists_topics_and_prints_one() {
             "No guide topic 'nope'. Topics: youtrack, jira",
         ))
         .stderr(predicate::str::contains("Code: unknown_topic"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }

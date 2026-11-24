@@ -5,42 +5,24 @@
 //! Note: Tests that modify call logs use #[serial] to avoid race conditions.
 
 use assert_cmd::Command;
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serial_test::serial;
 use std::fs;
 use std::path::PathBuf;
 
-/// Get the path to the fixtures directory (relative to workspace root)
-fn fixtures_path() -> PathBuf {
-    // Tests run from the workspace root when using cargo test
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent() // crates/
-        .unwrap()
-        .parent() // workspace root
-        .unwrap()
-        .join("fixtures")
-        .join("scenarios")
+mod common;
+use common::{fixtures_path, temp_dir, workspace_root};
+
+/// [`common::track`] run from the workspace root, for consistent paths.
+fn track() -> Command {
+    let mut cmd = common::track();
+    cmd.current_dir(workspace_root());
+    cmd
 }
 
 /// Get path to a specific scenario
 fn scenario_path(name: &str) -> PathBuf {
     fixtures_path().join(name)
-}
-
-/// Helper to run track command from workspace root
-fn track() -> Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    // Set current dir to workspace root for consistent paths
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    cmd.current_dir(workspace_root);
-    cmd
 }
 
 #[test]
@@ -327,8 +309,7 @@ fn write_scenario_file(root: &std::path::Path, dir: &str, contents: &str) {
 
 #[test]
 fn test_eval_list_is_sorted_and_reports_unloadable_scenarios() {
-    let root = std::env::temp_dir().join(format!("track-eval-list-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
+    let root = temp_dir();
     // Created out of order so that directory iteration order is not sorted order.
     for name in ["delta", "bravo", "echo", "alpha", "charlie"] {
         write_scenario_file(
@@ -367,6 +348,4 @@ fn test_eval_list_is_sorted_and_reports_unloadable_scenarios() {
         stderr.contains("Warning") && stderr.contains("broken"),
         "a scenario that fails to load must be reported, got stderr:\n{stderr}"
     );
-
-    let _ = fs::remove_dir_all(&root);
 }

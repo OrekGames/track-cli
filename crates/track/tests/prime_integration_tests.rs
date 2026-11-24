@@ -7,84 +7,10 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-fn temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-prime-test-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// Every variable `track` reads that the environment running the tests may
-/// have set. `CLAUDE_ENV_FILE` matters most: run from inside a Claude Code
-/// session, a hook test would otherwise append to that session's real file.
-const AMBIENT_VARS: &[&str] = &[
-    "TRACKER_URL",
-    "TRACKER_TOKEN",
-    "TRACKER_BACKEND",
-    "TRACKER_CONFIG",
-    "YOUTRACK_URL",
-    "YOUTRACK_TOKEN",
-    "JIRA_URL",
-    "JIRA_EMAIL",
-    "JIRA_TOKEN",
-    "GITHUB_TOKEN",
-    "GITHUB_OWNER",
-    "GITHUB_REPO",
-    "GITHUB_API_URL",
-    "GITLAB_TOKEN",
-    "GITLAB_URL",
-    "GITLAB_PROJECT_ID",
-    "GITLAB_NAMESPACE",
-    "LINEAR_TOKEN",
-    "LINEAR_API_URL",
-    "LINEAR_URL",
-    "LINEAR_DEFAULT_TEAM",
-    "LINEAR_DEFAULT_PROJECT",
-    "TRACK_MOCK_DIR",
-    "TRACK_CACHE_DIR",
-    "TRACK_CACHE_REFRESH_CONCURRENCY",
-    "TRACK_NO_CACHE",
-    "TRACK_SCHEMA_TTL",
-    "TRACK_MAX_RESULTS",
-    "TRACK_OUTPUT",
-    "TRACK_ERROR_FORMAT",
-    "CLAUDE_ENV_FILE",
-    "CODEX_HOME",
-    "OREK_HOME",
-];
-
-/// Drop every variable in [`AMBIENT_VARS`] from `cmd`.
-fn isolate(cmd: &mut assert_cmd::Command) -> &mut assert_cmd::Command {
-    for var in AMBIENT_VARS {
-        cmd.env_remove(var);
-    }
-    cmd
-}
-
-/// Isolated CLI invocation: HOME is the temp dir and no variable `track`
-/// reads leaks in from the environment running the tests.
-fn track_in(dir: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    isolate(&mut cmd)
-        .current_dir(dir)
-        .env("HOME", dir)
-        .env("USERPROFILE", dir);
-    cmd
-}
+mod common;
+use common::{isolate, stdout_of, temp_dir, track_in};
 
 const PROJECT_CONFIG: &str = r#"backend = "youtrack"
 url = "https://yt.example.com"
@@ -180,16 +106,6 @@ fn seed_cache_for(dir: &Path, backend_type: &str, updated_at: &str, scope: &str)
     .unwrap();
 }
 
-fn stdout_of(cmd: &mut assert_cmd::Command) -> String {
-    let output = cmd.output().unwrap();
-    assert!(
-        output.status.success(),
-        "command failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
-}
-
 #[test]
 fn prime_prints_the_project_briefing_offline() {
     let dir = temp_dir();
@@ -229,8 +145,6 @@ fn prime_prints_the_project_briefing_offline() {
         "briefing grew to {} bytes",
         stdout.len()
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -251,8 +165,6 @@ fn prime_json_carries_the_same_facts() {
     assert_eq!(json["state_fields"][0]["states"][2]["resolved"], true);
     assert_eq!(json["templates"][0]["count"], 42);
     assert!(json["cache_age_seconds"].as_i64().unwrap() >= 7_200);
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -267,8 +179,6 @@ fn prime_caps_long_lists_and_says_how_to_get_the_rest() {
         stdout.contains("  Priority (enum): Low, Normal, … +2 more (track -o json p f DEMO)"),
         "{stdout}"
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -285,8 +195,6 @@ fn prime_warns_when_the_cache_is_stale() {
         stdout.contains("! cache was last refreshed 3d ago: run `track cache refresh`"),
         "{stdout}"
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -301,8 +209,6 @@ fn prime_without_a_cache_says_how_to_build_one() {
         "{stdout}"
     );
     assert!(!stdout.contains("state field:"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -317,8 +223,6 @@ fn prime_does_not_present_another_backends_cache() {
 
     assert!(stdout.contains("! no cached project data yet"), "{stdout}");
     assert!(!stdout.contains("Priority"), "{stdout}");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -360,8 +264,6 @@ fn prime_does_not_present_a_cache_written_for_another_instance() {
         stdout.contains("! the cache here is for another youtrack instance"),
         "{stdout}"
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -383,8 +285,6 @@ fn a_cache_in_the_old_single_directory_layout_is_moved_and_used() {
     assert!(root.join("youtrack/projects/DEMO/fields.json").is_file());
     assert!(!root.join("index.json").exists());
     assert!(!root.join("projects").exists());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -411,8 +311,6 @@ fn prime_flattens_hostile_cached_strings() {
         tag_lines[0].ends_with('…'),
         "over-long values are cut: {stdout}"
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -425,8 +323,6 @@ fn prime_hook_adds_nothing_outside_a_track_project() {
         .success()
         .stdout("{}\n")
         .stderr(predicate::str::is_empty());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -457,8 +353,6 @@ fn prime_hook_ignores_a_global_only_config() {
         .assert()
         .success()
         .stdout(predicate::str::contains("# track · youtrack"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -472,8 +366,6 @@ fn prime_hook_briefs_a_configured_project() {
         .assert()
         .success()
         .stdout(predicate::str::contains("state field: Stage"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 /// The text a hook's JSON output hands the agent, by that agent's protocol.
@@ -515,8 +407,6 @@ fn prime_hook_speaks_each_agents_protocol() {
         .success()
         .stdout("{}\n")
         .stderr(predicate::str::is_empty());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -553,8 +443,6 @@ fn prime_hook_briefs_the_folder_the_agent_names_on_stdin() {
             "{agent}: {stdout}"
         );
     }
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -564,7 +452,7 @@ fn a_claude_hook_run_by_cursor_defers_to_cursors_own_hook() {
     let dir = temp_dir();
     write_project_config(&dir);
     seed_cache(&dir, "youtrack", &hours_ago(1));
-    let from_cursor = serde_json::json!({ "cursor_version": "2.0", "workspace_roots": [dir] });
+    let from_cursor = serde_json::json!({ "cursor_version": "2.0", "workspace_roots": [&*dir] });
 
     let briefed = stdout_of(
         track_in(&dir)
@@ -589,11 +477,9 @@ fn a_claude_hook_run_by_cursor_defers_to_cursors_own_hook() {
     let in_claude = stdout_of(
         track_in(&dir)
             .args(["prime", "--hook=claude"])
-            .write_stdin(serde_json::json!({ "cwd": dir }).to_string()),
+            .write_stdin(serde_json::json!({ "cwd": &*dir }).to_string()),
     );
     assert!(hook_context("claude", &in_claude).contains("state field: Stage"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -615,8 +501,6 @@ fn the_claude_hook_sets_agent_output_for_the_session() {
         fs::read_to_string(&env_file).unwrap(),
         "export TRACK_OUTPUT=agent\n"
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -641,8 +525,6 @@ fn hook_tests_never_write_to_the_session_running_them() {
         .stdout(predicate::str::contains("hookSpecificOutput"));
 
     assert!(!live_session_file.exists());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -668,8 +550,6 @@ fn prime_hook_never_fails_or_prints_errors() {
         .success()
         .stdout("{}\n")
         .stderr(predicate::str::is_empty());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -690,8 +570,6 @@ fn prime_hook_survives_an_invalid_workflow_pack() {
             "templates (-T): unresolved (42), bugs",
         ))
         .stderr(predicate::str::is_empty());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -710,8 +588,6 @@ fn context_reports_how_old_its_data_is() {
 
     let text = stdout_of(track_in(&dir).arg("context"));
     assert!(text.contains("Cache: 3 days ago (stale"), "{text}");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -731,6 +607,4 @@ fn context_lists_states_without_a_computed_transition_list() {
 
     let text = stdout_of(track_in(&dir).arg("context"));
     assert!(!text.contains("Transitions:"), "{text}");
-
-    fs::remove_dir_all(&dir).unwrap();
 }

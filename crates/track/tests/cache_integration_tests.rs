@@ -5,47 +5,16 @@
 //! interference between tests.
 
 use assert_cmd::Command;
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Get the path to the fixtures directory
-fn fixtures_path() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent() // crates/
-        .unwrap()
-        .parent() // workspace root
-        .unwrap()
-        .join("fixtures")
-        .join("scenarios")
-}
+mod common;
+use common::{copy_scenario, fixtures_path, read_json, temp_dir};
 
 /// Get path to the cache-operations scenario
 fn cache_scenario() -> PathBuf {
     fixtures_path().join("cache-operations")
-}
-
-/// Create a unique temp directory for cache isolation.
-/// Uses an atomic counter to guarantee uniqueness across parallel test threads.
-fn temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-cache-test-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
 }
 
 /// Ensure a .track.toml exists in the temp directory so the cache resolves locally.
@@ -61,11 +30,7 @@ fn ensure_project_context(dir: &Path) {
 /// Creates a .track.toml to ensure project context (local cache).
 fn track_in(dir: &Path) -> Command {
     ensure_project_context(dir);
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .env("TRACK_MOCK_DIR", cache_scenario().to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"]);
-    cmd
+    common::track_mock(dir, &cache_scenario())
 }
 
 /// Build a track command pointed at a temp directory WITHOUT mock (for reading cache only).
@@ -73,9 +38,8 @@ fn track_in(dir: &Path) -> Command {
 /// Creates a .track.toml to ensure project context (local cache).
 fn track_in_no_mock(dir: &Path) -> Command {
     ensure_project_context(dir);
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .args(["--url", "https://mock.test", "--token", "mock-token"]);
+    let mut cmd = common::track_in(dir);
+    cmd.args(["--url", "https://mock.test", "--token", "mock-token"]);
     cmd
 }
 
@@ -84,22 +48,29 @@ fn populate_cache(dir: &Path) {
     track_in(dir).args(["cache", "refresh"]).assert().success();
 }
 
+/// Where `track` keeps the YouTrack cache of the project in `dir`.
+fn cache_root(dir: &Path) -> PathBuf {
+    dir.join(".tracker-cache").join("youtrack")
+}
+
+/// The cache file `rel` (relative to [`cache_root`]), parsed.
+fn shard(dir: &Path, rel: &str) -> serde_json::Value {
+    read_json(&cache_root(dir).join(rel))
+}
+
 /// Make the cache in `dir` look as if it was written for another instance
 /// of the same backend (the config's URL changed since, or the cache was
 /// committed by someone using another tracker). Returns the index path.
 fn mark_cache_as_another_instance(dir: &Path) -> PathBuf {
-    let index = dir.join(".tracker-cache/youtrack/index.json");
-    let mut json: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&index).unwrap()).unwrap();
+    let index = cache_root(dir).join("index.json");
+    let mut json = read_json(&index);
     json["backend_metadata"]["scope"] = "https://elsewhere.test|".into();
     fs::write(&index, serde_json::to_string_pretty(&json).unwrap()).unwrap();
     index
 }
 
 fn cache_scope_in(index: &Path) -> String {
-    let json: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(index).unwrap()).unwrap();
-    json["backend_metadata"]["scope"]
+    read_json(index)["backend_metadata"]["scope"]
         .as_str()
         .unwrap_or_default()
         .to_string()
@@ -114,7 +85,7 @@ fn test_cache_refresh_creates_sharded_directory_layout() {
     let dir = temp_dir();
     populate_cache(&dir);
 
-    let cache_dir = dir.join(".tracker-cache").join("youtrack");
+    let cache_dir = cache_root(&dir);
 
     // Index
     assert!(
@@ -173,8 +144,6 @@ fn test_cache_refresh_creates_sharded_directory_layout() {
         cache_dir.join("runtime/recent_issues.json").exists(),
         "recent_issues.json should exist"
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -182,16 +151,11 @@ fn test_cache_refresh_index_contains_version_and_metadata() {
     let dir = temp_dir();
     populate_cache(&dir);
 
-    let index: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/youtrack/index.json")).unwrap(),
-    )
-    .unwrap();
+    let index = shard(&dir, "index.json");
 
     assert_eq!(index["version"], 3);
     assert!(index["updated_at"].is_string());
     assert_eq!(index["backend_metadata"]["backend_type"], "youtrack");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -200,19 +164,13 @@ fn test_cache_refresh_project_shard_content() {
     populate_cache(&dir);
 
     // Check project meta
-    let meta: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/meta.json")).unwrap(),
-    )
-    .unwrap();
+    let meta = shard(&dir, "projects/DEMO/meta.json");
     assert_eq!(meta["short_name"], "DEMO");
     assert_eq!(meta["name"], "Demo Project");
     assert_eq!(meta["id"], "0-1");
 
     // Check fields
-    let fields: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/fields.json")).unwrap(),
-    )
-    .unwrap();
+    let fields = shard(&dir, "projects/DEMO/fields.json");
     let fields_arr = fields.as_array().unwrap();
     assert!(
         fields_arr.len() >= 3,
@@ -230,28 +188,19 @@ fn test_cache_refresh_project_shard_content() {
     );
 
     // Check users
-    let users: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/users.json")).unwrap(),
-    )
-    .unwrap();
+    let users = shard(&dir, "projects/DEMO/users.json");
     let users_arr = users.as_array().unwrap();
     assert_eq!(users_arr.len(), 2);
     assert_eq!(users_arr[0]["login"], "john.doe");
 
     // Check workflow
-    let workflow: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/workflow.json"))
-            .unwrap(),
-    )
-    .unwrap();
+    let workflow = shard(&dir, "projects/DEMO/workflow.json");
     assert_eq!(workflow["project_short_name"], "DEMO");
     let state_fields = workflow["state_fields"].as_array().unwrap();
     assert!(
         !state_fields.is_empty(),
         "Should have state field workflows"
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -260,10 +209,7 @@ fn test_cache_refresh_backend_shard_content() {
     populate_cache(&dir);
 
     // Tags
-    let tags: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/tags.json")).unwrap(),
-    )
-    .unwrap();
+    let tags = shard(&dir, "backend/tags.json");
     let tag_names: Vec<&str> = tags
         .as_array()
         .unwrap()
@@ -275,21 +221,14 @@ fn test_cache_refresh_backend_shard_content() {
     assert!(tag_names.contains(&"urgent"));
 
     // Link types
-    let link_types: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/link_types.json")).unwrap(),
-    )
-    .unwrap();
+    let link_types = shard(&dir, "backend/link_types.json");
     assert!(
         !link_types.as_array().unwrap().is_empty(),
         "Should have link types"
     );
 
     // Query templates
-    let templates: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/query_templates.json"))
-            .unwrap(),
-    )
-    .unwrap();
+    let templates = shard(&dir, "backend/query_templates.json");
     let template_names: Vec<&str> = templates
         .as_array()
         .unwrap()
@@ -298,8 +237,6 @@ fn test_cache_refresh_backend_shard_content() {
         .collect();
     assert!(template_names.contains(&"unresolved"));
     assert!(template_names.contains(&"bugs"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -312,8 +249,6 @@ fn test_cache_refresh_text_output() {
         .stdout(predicate::str::contains("Cache refreshed"))
         .stdout(predicate::str::contains("Projects"))
         .stdout(predicate::str::contains("Tags"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -324,8 +259,6 @@ fn test_cache_refresh_json_output() {
         .assert()
         .success()
         .stdout(predicate::str::contains(r#""success": true"#));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 // =============================================================================
@@ -342,8 +275,6 @@ fn test_cache_status_empty() {
         .assert()
         .success()
         .stdout(predicate::str::contains("empty"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -358,8 +289,6 @@ fn test_cache_status_after_refresh() {
         .stdout(predicate::str::contains("Cache status"))
         .stdout(predicate::str::contains("Projects"))
         .stdout(predicate::str::contains("Tags"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -380,8 +309,6 @@ fn test_cache_status_json_output() {
     assert!(json["age_seconds"].is_number());
     assert!(json["projects_count"].as_u64().unwrap() >= 2);
     assert!(json["tags_count"].as_u64().unwrap() >= 3);
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 // =============================================================================
@@ -428,8 +355,6 @@ fn test_cache_show_json_contains_all_shards() {
 
     // Articles
     assert!(!json["articles"].as_array().unwrap().is_empty());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -443,8 +368,6 @@ fn test_cache_show_text_output() {
         .success()
         .stdout(predicate::str::contains("DEMO"))
         .stdout(predicate::str::contains("Demo Project"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 // =============================================================================
@@ -469,8 +392,6 @@ fn test_cache_path_reports_directory() {
         "cache path should end with .tracker-cache/youtrack, got: {}",
         path_str
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -500,8 +421,6 @@ fn test_cache_dir_env_overrides_project_and_global_cache() {
         String::from_utf8(output.stdout).unwrap().trim(),
         cache_dir.join("youtrack").to_string_lossy()
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -523,8 +442,6 @@ fn test_cache_path_json_output() {
         "cache path should end with .tracker-cache/youtrack, got: {}",
         path
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 // =============================================================================
@@ -543,8 +460,6 @@ fn test_cache_refresh_if_stale_skips_fresh_cache() {
         .assert()
         .success()
         .stdout(predicate::str::contains("fresh"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -562,8 +477,6 @@ fn test_cache_refresh_if_stale_json_output() {
 
     assert_eq!(json["skipped"], true);
     assert!(json["age_seconds"].is_number());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -586,8 +499,6 @@ fn test_cache_refresh_if_stale_refreshes_a_cache_for_another_instance() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(json.get("skipped").is_none(), "{json}");
     assert!(cache_scope_in(&index).starts_with("mock:"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 // =============================================================================
@@ -606,8 +517,6 @@ fn test_context_loads_from_cache() {
         .success()
         .stdout(predicate::str::contains("DEMO"))
         .stdout(predicate::str::contains("Projects"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -628,8 +537,6 @@ fn test_context_json_output_from_cache() {
     assert!(!json["tags"].as_array().unwrap().is_empty());
     assert!(!json["query_templates"].as_array().unwrap().is_empty());
     assert!(!json["workflow_hints"].as_array().unwrap().is_empty());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -649,8 +556,6 @@ fn test_context_project_filter() {
     let projects = json["projects"].as_array().unwrap();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0]["short_name"], "DEMO");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -678,8 +583,6 @@ fn test_context_refetches_a_cache_written_for_another_instance() {
         "{json}"
     );
     assert!(cache_scope_in(&index).starts_with("mock:"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 // =============================================================================
@@ -692,30 +595,23 @@ fn test_issue_access_preserves_other_shards() {
     populate_cache(&dir);
 
     // Read all shard files before issue access
-    let tags_before =
-        fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/tags.json")).unwrap();
+    let tags_before = fs::read_to_string(cache_root(&dir).join("backend/tags.json")).unwrap();
     let fields_before =
-        fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/fields.json")).unwrap();
-    let meta_before =
-        fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/meta.json")).unwrap();
+        fs::read_to_string(cache_root(&dir).join("projects/DEMO/fields.json")).unwrap();
+    let meta_before = fs::read_to_string(cache_root(&dir).join("projects/DEMO/meta.json")).unwrap();
 
     // Access an issue (triggers record_issue_access + save_runtime)
-    let scenario = fixtures_path().join("basic-workflow");
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    let scenario = copy_scenario(&dir, "basic-workflow");
+    common::track_mock(&dir, &scenario)
         .args(["issue", "get", "DEMO-1"])
         .assert()
         .success();
 
     // Verify other shards were NOT modified
-    let tags_after =
-        fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/tags.json")).unwrap();
+    let tags_after = fs::read_to_string(cache_root(&dir).join("backend/tags.json")).unwrap();
     let fields_after =
-        fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/fields.json")).unwrap();
-    let meta_after =
-        fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/meta.json")).unwrap();
+        fs::read_to_string(cache_root(&dir).join("projects/DEMO/fields.json")).unwrap();
+    let meta_after = fs::read_to_string(cache_root(&dir).join("projects/DEMO/meta.json")).unwrap();
 
     assert_eq!(
         tags_before, tags_after,
@@ -731,11 +627,7 @@ fn test_issue_access_preserves_other_shards() {
     );
 
     // But runtime shard should have the accessed issue
-    let recent: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/youtrack/runtime/recent_issues.json"))
-            .unwrap(),
-    )
-    .unwrap();
+    let recent = shard(&dir, "runtime/recent_issues.json");
     let recent_arr = recent.as_array().unwrap();
     assert!(
         !recent_arr.is_empty(),
@@ -755,8 +647,6 @@ fn test_issue_access_preserves_other_shards() {
     );
     let loaded: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(loaded["recent_issues"][0]["id_readable"], "DEMO-1");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 // =============================================================================
@@ -770,7 +660,7 @@ fn test_corrupted_project_shard_does_not_crash_show() {
 
     // Corrupt one project's fields.json
     fs::write(
-        dir.join(".tracker-cache/youtrack/projects/DEMO/fields.json"),
+        cache_root(&dir).join("projects/DEMO/fields.json"),
         "not valid json {{{",
     )
     .unwrap();
@@ -791,8 +681,6 @@ fn test_corrupted_project_shard_does_not_crash_show() {
     // Both projects should still be listed (meta.json is fine)
     let projects = json["projects"].as_array().unwrap();
     assert!(projects.len() >= 2);
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -801,7 +689,7 @@ fn test_corrupted_index_still_loads_shards() {
     populate_cache(&dir);
 
     // Corrupt the index (but leave shard files intact)
-    fs::write(dir.join(".tracker-cache/youtrack/index.json"), "broken").unwrap();
+    fs::write(cache_root(&dir).join("index.json"), "broken").unwrap();
 
     // Status should still work — ensure_* methods load shards independently.
     // The load() fails on index parse → unwrap_or_default → empty struct,
@@ -817,8 +705,6 @@ fn test_corrupted_index_still_loads_shards() {
     // updated_at is null (came from index), but projects still load from shard dirs
     assert!(json["updated_at"].is_null());
     assert!(json["projects_count"].as_u64().unwrap() >= 2);
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -831,8 +717,6 @@ fn test_missing_cache_directory_shows_empty() {
         .assert()
         .success()
         .stdout(predicate::str::contains("empty"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 // =============================================================================
@@ -880,6 +764,4 @@ fn a_legacy_cache_moves_when_it_is_read_and_not_when_its_path_is_asked() {
     assert!(!root.join("index.json").exists());
     assert!(root.join("youtrack/index.json").is_file());
     assert!(root.join("youtrack/projects/DEMO/meta.json").is_file());
-
-    fs::remove_dir_all(&dir).unwrap();
 }

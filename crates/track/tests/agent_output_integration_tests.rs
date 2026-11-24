@@ -1,81 +1,18 @@
 //! `-o agent`: compact text that never drops data without saying so, plus
 //! the output changes that keep JSON honest and help short.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-fn temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-agent-out-test-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
+mod common;
+use common::{copy_scenario, mock_call_methods, stdout_of, temp_dir, track_in};
 
-fn fixtures_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("fixtures")
-        .join("scenarios")
-}
-
-fn copy_dir_recursive(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let source = entry.path();
-        let target = to.join(entry.file_name());
-        if source.is_dir() {
-            copy_dir_recursive(&source, &target);
-        } else {
-            fs::copy(&source, &target).unwrap();
-        }
-    }
-}
-
-fn copy_scenario(dir: &Path, name: &str) -> PathBuf {
-    let scenario = dir.join(name);
-    copy_dir_recursive(&fixtures_path().join(name), &scenario);
-    fs::write(scenario.join("call_log.jsonl"), "").unwrap();
-    scenario
-}
-
+/// [`common::track_mock`] with DEMO as the default project.
 fn track_mock(dir: &Path, scenario: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .env("HOME", dir)
-        .env("USERPROFILE", dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .env("TRACKER_DEFAULT_PROJECT", "DEMO")
-        .env_remove("TRACK_OUTPUT")
-        .args(["--url", "https://mock.test", "--token", "mock-token"]);
+    let mut cmd = common::track_mock(dir, scenario);
+    cmd.env("TRACKER_DEFAULT_PROJECT", "DEMO");
     cmd
-}
-
-fn stdout_of(cmd: &mut assert_cmd::Command) -> String {
-    let output = cmd.output().unwrap();
-    assert!(
-        output.status.success(),
-        "command failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
 }
 
 const SEARCH: [&str; 3] = ["issue", "search", "project: DEMO #Unresolved"];
@@ -111,8 +48,6 @@ fn agent_search_is_one_line_per_issue_with_a_verdict_on_completeness() {
         stdout.lines().last(),
         Some("# 2 shown; more may exist: --skip 2, or --all for everything")
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -152,20 +87,6 @@ fn agent_article_lists_are_one_line_each_with_a_verdict_on_completeness() {
             "no article content in a list: {stdout}"
         );
     }
-
-    fs::remove_dir_all(&dir).unwrap();
-}
-
-/// The methods the mock was called with, in order.
-fn called_methods(scenario: &Path) -> Vec<String> {
-    fs::read_to_string(scenario.join("call_log.jsonl"))
-        .unwrap()
-        .lines()
-        .map(|line| {
-            let entry: serde_json::Value = serde_json::from_str(line).unwrap();
-            entry["method"].as_str().unwrap().to_string()
-        })
-        .collect()
 }
 
 #[test]
@@ -187,7 +108,7 @@ fn a_select_that_misses_after_a_write_does_not_fail_the_write() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["id_readable"], "DEMO-10", "{json}");
     assert_eq!(
-        called_methods(&scenario)
+        mock_call_methods(&scenario)
             .iter()
             .filter(|method| *method == "create_issue")
             .count(),
@@ -218,8 +139,6 @@ fn a_select_that_misses_after_a_write_does_not_fail_the_write() {
         .assert()
         .code(5)
         .stdout(predicate::str::is_empty());
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -251,8 +170,6 @@ fn selecting_a_field_the_issue_has_without_a_value_gives_null() {
         .arg("fields.Asignee")
         .assert()
         .code(5);
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -285,8 +202,6 @@ fn agent_get_full_carries_everything_in_fewer_bytes() {
         json.len()
     );
     assert!(!agent.contains('\u{1b}'), "no colour codes in agent output");
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -328,8 +243,6 @@ fn agent_get_full_names_the_comments_it_leaves_out() {
     assert!(agent.contains("comment 6 line 1"));
     // Bodies are whole, not cut to three lines.
     assert!(agent.contains("comment 25 line 1\nline 2\nline 3\nline 4\nline 5"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -354,8 +267,6 @@ fn agent_writes_are_acknowledged_in_one_line() {
         stdout,
         "created DEMO-10  Fix login timeout bug | State: Open | Priority: Normal | Type: Bug\n"
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -370,8 +281,6 @@ fn agent_project_fields_include_the_values() {
     assert!(stdout.contains("State (state, required): Open, In Progress, Done*"));
     assert!(stdout.contains("Priority (enum, required): Low, Normal, High, Critical"));
     assert!(!stdout.contains("\n\n"));
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -406,8 +315,6 @@ fn track_output_env_sets_the_default_and_the_flag_wins() {
             "TRACK_OUTPUT={value:?}: {text}"
         );
     }
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -424,8 +331,6 @@ fn select_is_refused_for_text_output_including_agent() {
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("--select needs JSON output"));
     }
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -454,19 +359,13 @@ fn transition_json_reports_what_the_tracker_did() {
         !json["warnings"].as_array().unwrap().is_empty(),
         "an unverified transition must say why: {json}"
     );
-
-    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
 fn subcommand_help_lists_its_own_options_only() {
     let dir = temp_dir();
 
-    let help = stdout_of(
-        cargo_bin_cmd!("track")
-            .current_dir(&dir)
-            .args(["cache", "-h"]),
-    );
+    let help = stdout_of(track_in(&dir).args(["cache", "-h"]));
     assert!(help.contains("refresh"));
     assert!(!help.contains("--token <TOKEN>"), "{help}");
     // Generated from the global options, so it names every one of them.
@@ -479,25 +378,16 @@ fn subcommand_help_lists_its_own_options_only() {
     assert!(help.len() < 700, "cache -h is {} bytes", help.len());
 
     // They are still documented once, and still accepted everywhere.
-    let top = stdout_of(cargo_bin_cmd!("track").current_dir(&dir).arg("--help"));
+    let top = stdout_of(track_in(&dir).arg("--help"));
     for flag in ["--format", "--backend", "--select", "--no-cache", "--token"] {
         assert!(top.contains(flag), "top-level help must list {flag}");
     }
-    cargo_bin_cmd!("track")
-        .current_dir(&dir)
-        .env("HOME", &dir)
-        .env("USERPROFILE", &dir)
+    track_in(&dir)
         .args(["workflow", "list", "-o", "json", "-b", "github"])
         .assert()
         .success();
 
     // `init` keeps its own --url and --token, visible in its help.
-    let init = stdout_of(
-        cargo_bin_cmd!("track")
-            .current_dir(&dir)
-            .args(["init", "-h"]),
-    );
+    let init = stdout_of(track_in(&dir).args(["init", "-h"]));
     assert!(init.contains("--url") && init.contains("--token"), "{init}");
-
-    fs::remove_dir_all(&dir).unwrap();
 }

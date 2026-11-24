@@ -1,57 +1,9 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-apply-test-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn track_in(dir: &Path, scenario: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .env("HOME", dir)
-        .env("USERPROFILE", dir)
-        .env("TRACK_MOCK_DIR", scenario)
-        .env_remove("TRACKER_BACKEND")
-        .env_remove("TRACKER_CONFIG")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
-        .env_remove("JIRA_URL")
-        .env_remove("JIRA_EMAIL")
-        .env_remove("JIRA_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_OWNER")
-        .env_remove("GITHUB_REPO")
-        .env_remove("GITHUB_API_URL")
-        .env_remove("GITLAB_TOKEN")
-        .env_remove("GITLAB_URL")
-        .env_remove("GITLAB_PROJECT_ID")
-        .env_remove("GITLAB_NAMESPACE")
-        .env_remove("LINEAR_TOKEN")
-        .env_remove("LINEAR_API_URL")
-        .env_remove("LINEAR_URL")
-        .env_remove("LINEAR_DEFAULT_TEAM")
-        .env_remove("LINEAR_DEFAULT_PROJECT")
-        .args(["--url", "https://mock.test", "--token", "mock-token"]);
-    cmd
-}
+mod common;
+use common::{mock_call_methods, mock_calls, temp_dir, track_mock};
 
 fn write_scenario(dir: &Path, manifest: &str, responses: &[(&str, Value)]) -> PathBuf {
     let scenario = dir.join("scenario");
@@ -174,14 +126,6 @@ fn parse_stdout_json(output: &[u8]) -> Value {
     serde_json::from_slice(output).unwrap()
 }
 
-fn mock_call_methods(scenario: &Path) -> Vec<String> {
-    let log = fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default();
-    log.lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .map(|entry| entry["method"].as_str().unwrap().to_string())
-        .collect()
-}
-
 fn method_count(methods: &[String], method: &str) -> usize {
     methods
         .iter()
@@ -298,7 +242,7 @@ parent = "DEMO-100"
         }),
     );
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .assert()
@@ -320,8 +264,6 @@ parent = "DEMO-100"
     assert_eq!(method_count(&methods, "update_issue"), 1);
     assert_eq!(method_count(&methods, "add_comment"), 1);
     assert_eq!(method_count(&methods, "link_subtask"), 1);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -345,7 +287,7 @@ fn apply_dry_run_does_not_call_mutating_methods() {
         }),
     );
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .arg("--dry-run")
@@ -366,8 +308,6 @@ fn apply_dry_run_does_not_call_mutating_methods() {
     assert_eq!(method_count(&methods, "add_comment"), 0);
     assert_eq!(method_count(&methods, "link_subtask"), 0);
     assert_eq!(method_count(&methods, "delete_issue"), 0);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -386,7 +326,7 @@ fn apply_reads_plan_from_stdin() {
         ]
     });
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply", "-", "--dry-run"])
         .write_stdin(serde_json::to_string(&plan).unwrap())
         .assert()
@@ -402,8 +342,6 @@ fn apply_reads_plan_from_stdin() {
 
     let methods = mock_call_methods(&scenario);
     assert_eq!(method_count(&methods, "create_issue"), 0);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -426,7 +364,7 @@ fn apply_validation_failure_stops_before_mutation() {
         }),
     );
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .assert()
@@ -447,8 +385,6 @@ fn apply_validation_failure_stops_before_mutation() {
 
     let methods = mock_call_methods(&scenario);
     assert_eq!(method_count(&methods, "create_issue"), 0);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -508,7 +444,7 @@ issue_id = "DEMO-9"
         }),
     );
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .assert()
@@ -525,8 +461,6 @@ issue_id = "DEMO-9"
     let methods = mock_call_methods(&scenario);
     assert_eq!(method_count(&methods, "create_issue"), 0);
     assert_eq!(method_count(&methods, "add_comment"), 1);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -572,7 +506,7 @@ skip = "0"
         }),
     );
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .assert()
@@ -592,8 +526,6 @@ skip = "0"
 
     let methods = mock_call_methods(&scenario);
     assert_eq!(method_count(&methods, "create_issue"), 0);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -647,7 +579,7 @@ id = "DEMO-200"
     );
     let resume = dir.join("state.json");
 
-    track_in(&dir, &scenario)
+    track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .arg("--resume")
@@ -688,7 +620,7 @@ id = "DEMO-200"
     )
     .unwrap();
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .arg("--resume")
@@ -708,8 +640,6 @@ id = "DEMO-200"
     let methods = mock_call_methods(&scenario);
     assert_eq!(method_count(&methods, "create_issue"), 1);
     assert_eq!(method_count(&methods, "update_issue"), 2);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -738,7 +668,7 @@ id = "DEMO-1"
         }),
     );
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .assert()
@@ -759,7 +689,7 @@ id = "DEMO-1"
         0
     );
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .arg("--allow-delete")
@@ -775,8 +705,6 @@ id = "DEMO-1"
         method_count(&mock_call_methods(&scenario), "delete_issue"),
         1
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // ============================================================================
@@ -784,9 +712,8 @@ id = "DEMO-1"
 // ============================================================================
 
 fn log_entries(scenario: &Path, method: &str) -> Vec<Value> {
-    let log = fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default();
-    log.lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+    mock_calls(scenario)
+        .into_iter()
         .filter(|entry| entry["method"].as_str() == Some(method))
         .collect()
 }
@@ -844,7 +771,7 @@ id = "DEMO-1"
         }),
     );
 
-    track_in(&dir, &scenario)
+    track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .assert()
@@ -870,8 +797,6 @@ id = "DEMO-1"
         "create with assignee must be issued; log: {}",
         fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default()
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// A plan that creates an issue and then updates it through its `$ref`.
@@ -898,7 +823,7 @@ fn apply_dry_run_updates_planned_issue_without_fetching_it() {
         create_then_update_plan(json!({"State": "In Progress", "Priority": "Major"})),
     );
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .arg("--dry-run")
@@ -918,8 +843,6 @@ fn apply_dry_run_updates_planned_issue_without_fetching_it() {
     assert_eq!(method_count(&methods, "get_issue"), 0);
     assert_eq!(method_count(&methods, "create_issue"), 0);
     assert_eq!(method_count(&methods, "update_issue"), 0);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -932,7 +855,7 @@ fn apply_dry_run_rejects_invalid_update_of_planned_issue() {
         create_then_update_plan(json!({"Priority": "Impossible"})),
     );
 
-    let output = track_in(&dir, &scenario)
+    let output = track_mock(&dir, &scenario)
         .args(["-o", "json", "apply"])
         .arg(&plan)
         .arg("--dry-run")
@@ -950,6 +873,4 @@ fn apply_dry_run_rejects_invalid_update_of_planned_issue() {
         error.contains("Invalid value 'Impossible'"),
         "planned update must still be validated, got: {error}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }

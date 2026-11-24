@@ -3,70 +3,22 @@
 //! These test the command handlers extracted during the main.rs refactoring.
 //! All tests use temp directories for isolation and don't require a real backend.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::thread;
+
+mod common;
+use common::{
+    copy_scenario, mock_call_methods, mock_calls, parse_json_stdout, temp_dir, track, track_in,
+    track_mock,
+};
 
 // =============================================================================
 // Helpers
 // =============================================================================
-
-/// Create a unique temp directory for test isolation.
-fn temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-cmd-test-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// Build a track command running in the given directory.
-/// Clears env vars so only local config matters.
-fn track_in(dir: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .env("HOME", dir)
-        .env("USERPROFILE", dir)
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("TRACKER_BACKEND")
-        .env_remove("TRACKER_CONFIG")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
-        .env_remove("JIRA_URL")
-        .env_remove("JIRA_EMAIL")
-        .env_remove("JIRA_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_OWNER")
-        .env_remove("GITHUB_REPO")
-        .env_remove("GITHUB_API_URL")
-        .env_remove("GITLAB_TOKEN")
-        .env_remove("GITLAB_URL")
-        .env_remove("GITLAB_PROJECT_ID")
-        .env_remove("GITLAB_NAMESPACE")
-        .env_remove("LINEAR_TOKEN")
-        .env_remove("LINEAR_API_URL")
-        .env_remove("LINEAR_URL")
-        .env_remove("LINEAR_DEFAULT_TEAM")
-        .env_remove("LINEAR_DEFAULT_PROJECT")
-        .env_remove("TRACK_MOCK_DIR");
-    cmd
-}
 
 /// Write a minimal .track.toml in the given directory.
 fn write_config(dir: &Path, content: &str) {
@@ -89,39 +41,6 @@ fn start_one_request_json_server(body: &'static str) -> (thread::JoinHandle<()>,
     });
 
     (handle, format!("http://{}", addr))
-}
-
-/// Get the path to the fixtures directory.
-fn fixtures_path() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("fixtures")
-        .join("scenarios")
-}
-
-fn copy_dir_recursive(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let source = entry.path();
-        let target = to.join(entry.file_name());
-        if source.is_dir() {
-            copy_dir_recursive(&source, &target);
-        } else {
-            fs::copy(&source, &target).unwrap();
-        }
-    }
-}
-
-fn copy_scenario(dir: &Path, name: &str) -> PathBuf {
-    let scenario = dir.join(name);
-    copy_dir_recursive(&fixtures_path().join(name), &scenario);
-    fs::write(scenario.join("call_log.jsonl"), "").unwrap();
-    scenario
 }
 
 fn add_second_basic_issue(scenario: &Path) {
@@ -166,14 +85,6 @@ fn write_comments_response(scenario: &Path, count: usize) {
     .unwrap();
 }
 
-fn mock_call_methods(scenario: &Path) -> Vec<String> {
-    let log = fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default();
-    log.lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .map(|entry| entry["method"].as_str().unwrap().to_string())
-        .collect()
-}
-
 // =============================================================================
 // config keys
 // =============================================================================
@@ -195,8 +106,6 @@ fn test_config_keys_text_output() {
         .stdout(predicate::str::contains("gitlab.token"))
         .stdout(predicate::str::contains("linear.token"))
         .stdout(predicate::str::contains("linear.default_linear_project"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -211,8 +120,6 @@ fn test_config_backend_accepts_linear_alias() {
 
     let content = fs::read_to_string(dir.join(".track.toml")).unwrap();
     assert!(content.contains("backend = \"linear\""));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -237,8 +144,6 @@ fn test_linear_init_writes_backend_specific_config_without_api_validation() {
     assert!(content.contains("[linear]"));
     assert!(content.contains("url = \"https://linear.app/acme\""));
     assert!(content.contains("token = \"lin-token\""));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -247,10 +152,7 @@ fn test_issue_comments_all_fetches_multiple_pages() {
     let scenario = copy_scenario(&dir, "basic-workflow");
     write_comments_response(&scenario, 150);
 
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args(["issue", "comments", "DEMO-1", "--all"])
         .assert()
         .success()
@@ -266,8 +168,6 @@ fn test_issue_comments_all_fetches_multiple_pages() {
         "--all should request comment pages until the final partial page, got methods: {:?}",
         methods
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -288,8 +188,6 @@ fn test_config_keys_json_output() {
     assert!(first.get("key").is_some());
     assert!(first.get("type").is_some());
     assert!(first.get("description").is_some());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -315,8 +213,6 @@ fn test_config_set_and_get_round_trip() {
         .assert()
         .success()
         .stdout(predicate::str::contains("MYPROJ"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -341,8 +237,6 @@ fn test_config_set_and_get_json_output() {
     assert_eq!(json["key"], "url");
     assert_eq!(json["value"], "https://example.com");
     assert_eq!(json["is_set"], true);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -355,8 +249,6 @@ fn test_config_get_unset_key() {
         .assert()
         .success()
         .stdout(predicate::str::contains("not set"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -367,8 +259,6 @@ fn test_config_get_invalid_key() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Invalid configuration key"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -379,8 +269,6 @@ fn test_config_set_invalid_key() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Invalid configuration key"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -403,8 +291,6 @@ fn test_config_set_backend_value() {
         .assert()
         .success()
         .stdout(predicate::str::contains("jira"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -417,8 +303,6 @@ fn test_config_set_backend_invalid_value() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Invalid backend"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -437,8 +321,6 @@ fn test_config_get_masks_token_in_text() {
         .success()
         .stdout(predicate::str::contains("hidden"))
         .stdout(predicate::str::contains("super-secret").not());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -454,8 +336,6 @@ fn test_config_get_shows_token_in_json() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["value"], "(set - hidden)");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -477,8 +357,6 @@ fn test_config_show_with_config() {
         .stdout(predicate::str::contains("youtrack"))
         .stdout(predicate::str::contains("DEMO"))
         .stdout(predicate::str::contains("yt.example.com"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -490,8 +368,6 @@ fn test_config_show_no_config() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No configuration found"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -524,8 +400,6 @@ fn test_config_show_json_output() {
         find_val("url"),
         Some("https://jira.example.com".to_string())
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -560,8 +434,6 @@ fn test_config_clear_removes_defaults() {
         content.contains("token"),
         "token should be preserved after clear"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -573,8 +445,6 @@ fn test_config_clear_no_config() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No .track.toml"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -599,8 +469,6 @@ fn test_config_path_output() {
         "config path should reference .track.toml, got: {}",
         path_str.trim()
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -624,8 +492,6 @@ fn test_config_backend_subcommand() {
         content.contains("github"),
         "Backend should be updated to github"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -640,8 +506,6 @@ fn test_config_commands_work_without_url_or_token() {
     track_in(&dir).args(["config", "keys"]).assert().success();
     track_in(&dir).args(["config", "show"]).assert().success();
     track_in(&dir).args(["config", "path"]).assert().success();
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -680,8 +544,6 @@ fn test_init_creates_config_and_guide() {
     let content = fs::read_to_string(dir.join(".track.toml")).unwrap();
     assert!(content.contains("youtrack.example.com"));
     assert!(content.contains("perm:test-token"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -705,8 +567,6 @@ fn test_init_updates_existing_gitignore() {
     assert!(content.contains("target/"));
     assert!(content.lines().any(|line| line == ".track.toml"));
     assert!(content.lines().any(|line| line == ".tracker-cache/"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -741,8 +601,6 @@ fn test_init_does_not_duplicate_gitignore_entries() {
             .count(),
         1
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -771,8 +629,6 @@ fn test_init_json_output() {
             .unwrap()
             .contains(".track.toml")
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -785,8 +641,6 @@ fn test_init_fails_if_config_exists() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("already exists"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -798,8 +652,6 @@ fn test_init_rejects_invalid_url() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Invalid --url"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -827,8 +679,6 @@ fn test_init_with_backend_flag() {
         content.contains("company.atlassian.net"),
         "Config should have the URL"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -848,8 +698,6 @@ fn test_init_jira_requires_email() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("email"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -869,8 +717,6 @@ fn test_init_github_requires_project() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("GitHub setup requires --project"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -903,8 +749,6 @@ fn test_init_github_writes_backend_specific_config() {
     assert!(content.contains("owner = \"owner\""));
     assert!(content.contains("repo = \"repo\""));
     assert!(content.contains(&format!("api_url = \"{}\"", url)));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -924,8 +768,6 @@ fn test_init_gitlab_requires_project() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("GitLab init requires --project"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -957,8 +799,6 @@ fn test_init_gitlab_writes_backend_specific_config() {
     assert!(content.contains("url = \""));
     assert!(content.contains("token = \"glpat-token\""));
     assert!(content.contains("project_id = \"42\""));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -981,8 +821,6 @@ fn test_init_skills_only_mode() {
         !dir.join(".track.toml").exists(),
         ".track.toml should not be created in skills-only mode"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1024,8 +862,6 @@ fn test_init_with_skills_json_is_one_document() {
         let path = skill["path"].as_str().unwrap();
         assert!(Path::new(path).exists(), "skill file should exist: {path}");
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -1034,7 +870,7 @@ fn test_init_with_skills_json_is_one_document() {
 
 #[test]
 fn test_open_command_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["open", "--help"])
         .assert()
         .success()
@@ -1048,7 +884,7 @@ fn test_open_command_help() {
 
 #[test]
 fn test_config_command_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["config", "--help"])
         .assert()
         .success()
@@ -1065,7 +901,7 @@ fn test_config_command_help() {
 
 #[test]
 fn test_config_alias_cfg() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["cfg", "--help"])
         .assert()
         .success()
@@ -1075,7 +911,7 @@ fn test_config_alias_cfg() {
 
 #[test]
 fn test_init_command_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["init", "--help"])
         .assert()
         .success()
@@ -1088,7 +924,7 @@ fn test_init_command_help() {
 
 #[test]
 fn test_cache_command_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["cache", "--help"])
         .assert()
         .success()
@@ -1100,7 +936,7 @@ fn test_cache_command_help() {
 
 #[test]
 fn test_eval_command_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["eval", "--help"])
         .assert()
         .success()
@@ -1118,54 +954,35 @@ fn test_eval_command_help() {
 #[test]
 fn test_issue_shortcut_with_mock() {
     let dir = temp_dir();
-    let scenario = fixtures_path().join("basic-workflow");
+    let scenario = copy_scenario(&dir, "basic-workflow");
 
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .arg("DEMO-1")
         .assert()
         .success()
         .stdout(predicate::str::contains("DEMO-1"))
         .stdout(predicate::str::contains("Implement user authentication"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_issue_shortcut_with_full_flag() {
     let dir = temp_dir();
-    let scenario = fixtures_path().join("basic-workflow");
+    let scenario = copy_scenario(&dir, "basic-workflow");
 
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args(["DEMO-1", "--full"])
         .assert()
         .success()
         .stdout(predicate::str::contains("DEMO-1"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_issue_shortcut_json_output() {
     let dir = temp_dir();
-    let scenario = fixtures_path().join("basic-workflow");
+    let scenario = copy_scenario(&dir, "basic-workflow");
 
-    let output = cargo_bin_cmd!("track")
-        .current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args([
-            "-o",
-            "json",
-            "--url",
-            "https://mock.test",
-            "--token",
-            "mock-token",
-        ])
+    let output = track_mock(&dir, &scenario)
+        .args(["-o", "json"])
         .arg("DEMO-1")
         .output()
         .unwrap();
@@ -1173,8 +990,6 @@ fn test_issue_shortcut_json_output() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["id_readable"], "DEMO-1");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -1183,7 +998,7 @@ fn test_issue_shortcut_json_output() {
 
 #[test]
 fn test_non_issue_id_rejected() {
-    cargo_bin_cmd!("track")
+    track()
         .arg("foobar")
         .assert()
         .failure()
@@ -1192,7 +1007,7 @@ fn test_non_issue_id_rejected() {
 
 #[test]
 fn test_bare_number_rejected() {
-    cargo_bin_cmd!("track")
+    track()
         .arg("123")
         .assert()
         .failure()
@@ -1238,8 +1053,6 @@ fn test_config_set_nested_backend_keys() {
     assert!(content.contains("[github]"), "Should have [github] section");
     assert!(content.contains("myorg"));
     assert!(content.contains("myrepo"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1264,8 +1077,6 @@ fn test_config_set_gitlab_keys() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["value"], "42");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -1294,8 +1105,6 @@ token = "ghp_secret"
         .stdout(predicate::str::contains("github"))
         .stdout(predicate::str::contains("myorg"))
         .stdout(predicate::str::contains("myrepo"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1333,8 +1142,6 @@ token = "ghp_tok"
         find_entry("github.token").unwrap()["value"],
         "(set - hidden)"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -1350,8 +1157,6 @@ fn test_init_does_not_need_existing_config() {
         .args(["init", "--url", "https://yt.test", "--token", "tok"])
         .assert()
         .success();
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -1367,8 +1172,6 @@ fn test_eval_status_no_api_needed() {
         .assert()
         .success()
         .stdout(predicate::str::contains("TRACK_MOCK_DIR"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -1387,8 +1190,6 @@ fn test_config_clear_json_output() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["success"], true);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -1397,7 +1198,7 @@ fn test_config_clear_json_output() {
 
 #[test]
 fn test_body_file_appears_in_issue_create_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "create", "--help"])
         .assert()
         .success()
@@ -1407,7 +1208,7 @@ fn test_body_file_appears_in_issue_create_help() {
 
 #[test]
 fn test_body_file_appears_in_issue_update_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "update", "--help"])
         .assert()
         .success()
@@ -1416,7 +1217,7 @@ fn test_body_file_appears_in_issue_update_help() {
 
 #[test]
 fn test_body_file_appears_in_issue_comment_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "comment", "--help"])
         .assert()
         .success()
@@ -1425,7 +1226,7 @@ fn test_body_file_appears_in_issue_comment_help() {
 
 #[test]
 fn test_body_file_appears_in_project_create_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["project", "create", "--help"])
         .assert()
         .success()
@@ -1434,7 +1235,7 @@ fn test_body_file_appears_in_project_create_help() {
 
 #[test]
 fn test_body_file_appears_in_tag_create_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["tags", "create", "--help"])
         .assert()
         .success()
@@ -1443,7 +1244,7 @@ fn test_body_file_appears_in_tag_create_help() {
 
 #[test]
 fn test_body_file_appears_in_tag_update_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["tags", "update", "--help"])
         .assert()
         .success()
@@ -1452,7 +1253,7 @@ fn test_body_file_appears_in_tag_update_help() {
 
 #[test]
 fn test_body_file_appears_in_article_create_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "create", "--help"])
         .assert()
         .success()
@@ -1461,7 +1262,7 @@ fn test_body_file_appears_in_article_create_help() {
 
 #[test]
 fn test_body_file_appears_in_article_update_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "update", "--help"])
         .assert()
         .success()
@@ -1470,7 +1271,7 @@ fn test_body_file_appears_in_article_update_help() {
 
 #[test]
 fn test_body_file_appears_in_article_comment_help() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "comment", "--help"])
         .assert()
         .success()
@@ -1480,7 +1281,7 @@ fn test_body_file_appears_in_article_comment_help() {
 #[test]
 fn test_content_file_hidden_from_article_help() {
     // --content-file should be hidden (backward compat only)
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "create", "--help"])
         .assert()
         .success()
@@ -1489,7 +1290,7 @@ fn test_content_file_hidden_from_article_help() {
 
 #[test]
 fn test_body_file_conflicts_with_description() {
-    cargo_bin_cmd!("track")
+    track()
         .args([
             "issue",
             "create",
@@ -1509,7 +1310,7 @@ fn test_body_file_conflicts_with_description() {
 
 #[test]
 fn test_body_file_conflicts_with_json_on_update() {
-    cargo_bin_cmd!("track")
+    track()
         .args([
             "issue",
             "update",
@@ -1526,7 +1327,7 @@ fn test_body_file_conflicts_with_json_on_update() {
 
 #[test]
 fn test_comment_requires_message_or_body_file() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "comment", "PROJ-1"])
         .assert()
         .failure()
@@ -1536,7 +1337,7 @@ fn test_comment_requires_message_or_body_file() {
 #[test]
 fn test_body_file_reads_file_via_mock() {
     let dir = temp_dir();
-    let scenario = fixtures_path().join("basic-workflow");
+    let scenario = copy_scenario(&dir, "basic-workflow");
 
     // Write a body file
     let body = dir.join("comment.md");
@@ -1544,10 +1345,7 @@ fn test_body_file_reads_file_via_mock() {
 
     // Use mock mode to test the full flow — comment command reads the file
     // and sends it to the mock backend
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args([
             "issue",
             "comment",
@@ -1558,19 +1356,14 @@ fn test_body_file_reads_file_via_mock() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Comment"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_body_file_error_on_missing_file() {
     let dir = temp_dir();
-    let scenario = fixtures_path().join("basic-workflow");
+    let scenario = copy_scenario(&dir, "basic-workflow");
 
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args([
             "issue",
             "update",
@@ -1581,14 +1374,12 @@ fn test_body_file_error_on_missing_file() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("does not exist"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_body_file_reads_multiline_markdown() {
     let dir = temp_dir();
-    let scenario = fixtures_path().join("basic-workflow");
+    let scenario = copy_scenario(&dir, "basic-workflow");
 
     // Write complex markdown with code blocks, angle brackets, etc.
     let body = dir.join("complex.md");
@@ -1598,10 +1389,7 @@ fn test_body_file_reads_multiline_markdown() {
     )
     .unwrap();
 
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args([
             "issue",
             "comment",
@@ -1611,42 +1399,32 @@ fn test_body_file_reads_multiline_markdown() {
         ])
         .assert()
         .success();
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_body_file_stdin_via_pipe() {
     let dir = temp_dir();
-    let scenario = fixtures_path().join("basic-workflow");
+    let scenario = copy_scenario(&dir, "basic-workflow");
 
     // Test that --body-file - reads from stdin
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args(["issue", "comment", "DEMO-1", "--body-file", "-"])
         .write_stdin("Comment from stdin")
         .assert()
         .success()
         .stdout(predicate::str::contains("Comment"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_body_file_update_satisfies_required_fields() {
     let dir = temp_dir();
-    let scenario = fixtures_path().join("basic-workflow");
+    let scenario = copy_scenario(&dir, "basic-workflow");
 
     let body = dir.join("desc.md");
     fs::write(&body, "Updated description\n").unwrap();
 
     // --body-file alone should satisfy the "at least one field" requirement
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args([
             "issue",
             "update",
@@ -1656,8 +1434,6 @@ fn test_body_file_update_satisfies_required_fields() {
         ])
         .assert()
         .success();
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1665,10 +1441,7 @@ fn test_issue_update_validate_dry_run_does_not_update_single_issue() {
     let dir = temp_dir();
     let scenario = copy_scenario(&dir, "basic-workflow");
 
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args([
             "issue",
             "update",
@@ -1696,8 +1469,6 @@ fn test_issue_update_validate_dry_run_does_not_update_single_issue() {
         "dry-run update must not call update_issue, got methods: {:?}",
         methods
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1706,10 +1477,7 @@ fn test_issue_update_validate_dry_run_does_not_update_batch() {
     let scenario = copy_scenario(&dir, "basic-workflow");
     add_second_basic_issue(&scenario);
 
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    track_mock(&dir, &scenario)
         .args([
             "issue",
             "update",
@@ -1735,8 +1503,6 @@ fn test_issue_update_validate_dry_run_does_not_update_batch() {
         "batch dry-run update must not call update_issue, got methods: {:?}",
         methods
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1746,15 +1512,12 @@ fn test_content_file_backward_compat_still_parses() {
     // The actual API call may fail (mock may not support update_article),
     // so we only check that the error is NOT a parse/usage error.
     let dir = temp_dir();
-    let scenario = fixtures_path().join("basic-workflow");
+    let scenario = copy_scenario(&dir, "basic-workflow");
 
     let body = dir.join("article.md");
     fs::write(&body, "Article content from file\n").unwrap();
 
-    let output = cargo_bin_cmd!("track")
-        .current_dir(&dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"])
+    let output = track_mock(&dir, &scenario)
         .args([
             "article",
             "update",
@@ -1774,30 +1537,11 @@ fn test_content_file_backward_compat_still_parses() {
         "--content-file should be accepted as a hidden flag, got: {}",
         stderr
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
 // issue inspect
 // =============================================================================
-
-/// Build a track command wired to a mock scenario.
-fn track_mock(dir: &Path, scenario: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .env("HOME", dir)
-        .env("USERPROFILE", dir)
-        .env("TRACK_MOCK_DIR", scenario.to_str().unwrap())
-        .args(["--url", "https://mock.test", "--token", "mock-token"]);
-    cmd
-}
-
-fn parse_json_stdout(output: &std::process::Output) -> serde_json::Value {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("stdout is not valid JSON ({e}): {stdout}"))
-}
 
 #[test]
 fn test_issue_inspect_positional_ids_json_shape() {
@@ -1834,8 +1578,6 @@ fn test_issue_inspect_positional_ids_json_shape() {
     // subtasks/history were not requested
     assert!(issue.get("subtasks").is_none());
     assert!(issue.get("history").is_none());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1869,8 +1611,6 @@ fn test_issue_inspect_ids_file() {
     assert_eq!(report["failed"], 0);
     assert_eq!(report["issues"][0]["id_readable"], "DEMO-1");
     assert_eq!(report["issues"][1]["id_readable"], "DEMO-2");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1904,8 +1644,6 @@ fn test_issue_inspect_positional_ids_combine_with_ids_file() {
     assert_eq!(report["succeeded"], 2);
     assert_eq!(report["issues"][0]["id_readable"], "DEMO-1");
     assert_eq!(report["issues"][1]["id_readable"], "DEMO-2");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1923,8 +1661,6 @@ fn test_issue_inspect_ids_stdin() {
     let report = parse_json_stdout(&output);
     assert_eq!(report["total"], 1);
     assert_eq!(report["issues"][0]["id_readable"], "DEMO-1");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1962,8 +1698,6 @@ fn test_issue_inspect_query_uses_search_not_get() {
         !methods.iter().any(|m| m == "get_issue"),
         "query mode must not re-fetch issues via get_issue, got: {methods:?}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2015,8 +1749,6 @@ fn test_issue_inspect_query_total_reports_backend_match_count() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Query matched 42 issues"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2048,8 +1780,6 @@ fn test_issue_inspect_partial_failure_exits_zero() {
         "error should describe the failure: {}",
         errors[0]["error"]
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2083,8 +1813,6 @@ fn test_issue_inspect_strict_reports_all_then_fails() {
         stderr.contains("1 of 2 issues failed inspection"),
         "stderr should explain the strict failure: {stderr}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2096,8 +1824,6 @@ fn test_issue_inspect_strict_succeeds_when_all_pass() {
         .args(["issue", "inspect", "DEMO-1", "--strict", "-o", "json"])
         .assert()
         .success();
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2135,8 +1861,6 @@ fn test_issue_inspect_jsonl_one_line_per_result() {
     assert_eq!(second["success"], false);
     assert_eq!(second["id"], "NOTFOUND-999");
     assert!(second["error"].is_string());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// #292 first slice: issue search `--select` + `-o jsonl` for agent-friendly output.
@@ -2207,8 +1931,6 @@ fn test_issue_search_select_jsonl_projects_fields() {
             "--select must project only present fields (id_readable, summary): {line}"
         );
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// `-o jsonl` renders the `-o json` document, so only commands that print no
@@ -2239,8 +1961,6 @@ fn test_non_json_command_rejects_jsonl_format() {
         "rejection must name unsupported: stdout={stdout:?} stderr={stderr:?}"
     );
     assert!(stdout.is_empty(), "stdout must stay empty: {stdout}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// `--select` projects the JSON of every command, not only `issue search`.
@@ -2263,8 +1983,6 @@ fn test_select_projects_any_json_command() {
         let keys: Vec<&String> = project.as_object().unwrap().keys().collect();
         assert_eq!(keys, ["id"], "only the selected field: {project}");
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// A selection that reaches nothing fails loudly: `{}` would read as an
@@ -2290,8 +2008,6 @@ fn test_select_matching_nothing_is_an_error() {
         .stderr(predicate::str::contains(
             "--select matched nothing: no 'no_such_field'",
         ));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// `fields.<Name>` reaches a custom field by name, including inside the
@@ -2331,8 +2047,6 @@ fn test_select_reaches_custom_fields_by_name() {
         .output()
         .unwrap();
     assert!(parse_json_stdout(&plain).get("fields").is_none());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// #292 / #351: `--select` is JSON/JSONL only. Text mode must reject it
@@ -2372,8 +2086,6 @@ fn test_text_mode_rejects_select() {
             && !human.contains("add password reset feature"),
         "stdout must not be the usual human search table: {stdout}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// #292 / #351: `--select` with no usable paths (`parse_select_paths` empty)
@@ -2426,8 +2138,6 @@ fn test_empty_select_paths_are_rejected() {
             "empty --select {select:?} must not emit a JSON array of full issues: {stdout}"
         );
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2456,8 +2166,6 @@ fn test_issue_inspect_subtasks_derived_from_links() {
     assert_eq!(subtasks[0]["link_type"]["name"], "Subtask");
     // links itself was not requested, only the subtasks view
     assert!(issue.get("links").is_none());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2519,8 +2227,6 @@ fn test_issue_inspect_subtasks_honor_link_mappings() {
         "mapped link type must classify: {report}"
     );
     assert_eq!(subtasks[0]["link_type"]["name"], "Blocks Chain");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2577,8 +2283,6 @@ fn test_issue_inspect_include_fetch_failure_is_issue_failure() {
         !strict_output.status.success(),
         "--strict should fail when a requested include cannot be fetched"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2607,8 +2311,6 @@ fn test_issue_inspect_rejects_query_only_flags_in_id_mode() {
         stderr.contains("--all is only valid with --query or --template"),
         "should reject query-only --all in ID mode: {stderr}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2636,8 +2338,6 @@ fn test_issue_inspect_repeated_include_flags() {
     let issue = &report["issues"][0];
     assert!(issue["comments"].is_array());
     assert!(issue["links"].is_array());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2655,8 +2355,6 @@ fn test_issue_inspect_ix_alias_and_text_output() {
         .stdout(predicate::str::contains("DEMO-1"))
         .stdout(predicate::str::contains("comments: 1"))
         .stdout(predicate::str::contains("NOTFOUND-999"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2674,8 +2372,6 @@ fn test_issue_inspect_no_input_mode_errors() {
         stderr.contains("No issue IDs given"),
         "should explain input modes: {stderr}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2693,25 +2389,15 @@ fn test_issue_inspect_unknown_include_errors() {
         stderr.contains("Unknown --include value 'attachments'"),
         "should reject unknown include: {stderr}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
 // issue start/complete state field resolution (issue #308)
 // =============================================================================
 
-/// Read the full call log entries (method + args) for a scenario.
-fn mock_call_entries(scenario: &Path) -> Vec<serde_json::Value> {
-    let log = fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default();
-    log.lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .collect()
-}
-
 /// Collect (issue id, custom_fields summary) pairs for all update_issue calls.
 fn update_issue_calls(scenario: &Path) -> Vec<(String, String)> {
-    mock_call_entries(scenario)
+    mock_calls(scenario)
         .iter()
         .filter(|entry| entry["method"] == "update_issue")
         .map(|entry| {
@@ -2744,8 +2430,6 @@ fn test_issue_complete_resolves_state_field_from_schema() {
         update_issue_calls(&scenario),
         vec![("ALPHA-1".to_string(), "State=Done".to_string())]
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2765,8 +2449,6 @@ fn test_issue_complete_resolves_stage_field_from_schema() {
         update_issue_calls(&scenario),
         vec![("BETA-1".to_string(), "Stage=Done".to_string())]
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2793,8 +2475,6 @@ fn test_issue_complete_explicit_field_skips_schema_lookup() {
         update_issue_calls(&scenario),
         vec![("ALPHA-1".to_string(), "Stage=Done".to_string())]
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2813,8 +2493,6 @@ fn test_issue_complete_explicit_non_state_field_is_enum_update() {
         update_issue_calls(&scenario),
         vec![("ALPHA-1".to_string(), "Kanban State=Done".to_string())]
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2849,8 +2527,6 @@ fn test_issue_complete_batch_resolves_per_project_with_cached_schema() {
         "schema lookups must be cached per project in a batch, got methods: {:?}",
         methods
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2865,8 +2541,6 @@ fn test_issue_start_resolves_state_field_from_schema() {
         .success()
         .stdout(predicate::str::contains("started"))
         .stdout(predicate::str::contains("Stage=Develop"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2884,8 +2558,6 @@ fn test_issue_complete_json_output_is_valid_json() {
     assert_eq!(json["success"], true);
     assert_eq!(json["action"], "completed");
     assert_eq!(json["state"], "Done");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -2931,8 +2603,6 @@ fn test_issue_batch_partial_failure_reports_all_then_fails() {
         String::from_utf8_lossy(&output.stderr).contains("1 of 2 issues were not updated"),
         "stderr should summarize the failure: {output:?}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2947,14 +2617,12 @@ fn test_issue_batch_ignores_blank_ids_and_succeeds_when_all_pass() {
         .success()
         .stdout(predicate::str::contains("2 issues deleted"));
 
-    let deleted: Vec<String> = mock_call_entries(&scenario)
+    let deleted: Vec<String> = mock_calls(&scenario)
         .iter()
         .filter(|entry| entry["method"] == "delete_issue")
         .map(|entry| entry["args"]["id"].as_str().unwrap_or_default().to_string())
         .collect();
     assert_eq!(deleted, vec!["DEMO-1", "DEMO-2"]);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2971,8 +2639,6 @@ fn test_issue_batch_commands_require_an_id() {
         track_mock(&dir, &scenario).args(&args).assert().failure();
     }
     assert!(mock_call_methods(&scenario).is_empty());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -3001,8 +2667,6 @@ fn test_issue_link_json_output_escapes_values() {
     assert_eq!(json["target"], "DEMO-2");
     assert_eq!(json["linkType"], link_type);
     assert_eq!(json["description"], link_type.to_lowercase());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -3030,8 +2694,6 @@ fn test_context_include_issues_on_gitlab_needs_no_default_project() {
         )
     });
     assert!(!issues.is_empty(), "expected open issues: {json}");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3051,8 +2713,6 @@ fn test_context_include_issues_without_project_warns() {
         String::from_utf8_lossy(&output.stderr).contains("--include-issues needs --project"),
         "skipping issues must warn: {output:?}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -3078,8 +2738,6 @@ fn test_project_create_rejects_empty_leader_naming_the_flag() {
             .iter()
             .any(|method| method == "create_project")
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -3114,8 +2772,6 @@ fn test_issue_update_verbose_json_stdout_is_only_the_issue() {
         "JSON stdout must start with the document, not a blank line: {stdout:?}"
     );
     assert_eq!(parse_json_stdout(&output)["id_readable"], "DEMO-1");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -3220,8 +2876,6 @@ fn test_jsonl_list_commands_emit_one_record_per_element() {
         assert!(!items.is_empty(), "{args:?} fixture should not be empty");
         assert_eq!(&records, items, "{args:?}: one record per array element");
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3233,8 +2887,6 @@ fn test_jsonl_empty_list_prints_nothing() {
     let (json, records) = json_and_jsonl(&dir, &scenario, &["issue", "comments", "DEMO-1"]);
     assert_eq!(json, serde_json::json!([]));
     assert!(records.is_empty(), "an empty list has no records");
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3253,8 +2905,6 @@ fn test_jsonl_single_object_commands_emit_one_line() {
         assert!(json.is_object(), "{args:?} -o json should print an object");
         assert_eq!(records, vec![json], "{args:?}: exactly one line");
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3270,8 +2920,6 @@ fn test_jsonl_batch_update_emits_one_summary_line() {
     assert_eq!(json["total"], 2);
     assert_eq!(json["results"].as_array().unwrap().len(), 2);
     assert_eq!(records, vec![json]);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3288,8 +2936,6 @@ fn test_jsonl_verbose_update_emits_only_the_issue() {
     );
     assert_eq!(json["id_readable"], "DEMO-1");
     assert_eq!(records, vec![json]);
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3321,8 +2967,6 @@ fn test_jsonl_works_for_offline_commands() {
     let records = parse_jsonl_stdout(&output);
     assert_eq!(records.len(), 1, "init prints one document: {records:?}");
     assert!(records[0]["skills_installed"].is_array());
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3342,6 +2986,4 @@ fn test_select_applies_to_jsonl_of_any_command() {
         let keys: Vec<&String> = line.as_object().unwrap().keys().collect();
         assert_eq!(keys, ["id"]);
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }

@@ -1,4 +1,3 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
@@ -6,6 +5,9 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
+
+mod common;
+use common::{temp_dir, track, track_in, workspace_root};
 
 // Helper to create a mock server that returns the bound port
 fn start_mock_server(response_body: String) -> (thread::JoinHandle<()>, u16) {
@@ -49,17 +51,6 @@ fn start_mock_server(response_body: String) -> (thread::JoinHandle<()>, u16) {
     });
 
     (handle, port)
-}
-
-fn isolated_config_dir(test_name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "track-youtrack-{}-{}",
-        test_name,
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("failed to create isolated config dir");
-    dir
 }
 
 /// Helper to create a mock server that handles multiple sequential requests.
@@ -107,6 +98,7 @@ fn start_mock_server_multi(responses: Vec<String>) -> (thread::JoinHandle<()>, u
 
 #[test]
 fn test_issue_get_with_json_output() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!({
         "id": "2-45",
         "idReadable": "PROJ-123",
@@ -126,12 +118,10 @@ fn test_issue_get_with_json_output() {
     let (_server, port) = start_mock_server(mock_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args(["--format", "json", "issue", "get", "PROJ-123"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -148,6 +138,7 @@ fn test_issue_get_with_json_output() {
 
 #[test]
 fn test_issue_get_with_text_output() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!({
         "id": "2-45",
         "idReadable": "PROJ-456",
@@ -165,12 +156,10 @@ fn test_issue_get_with_text_output() {
     let (_server, port) = start_mock_server(mock_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    cargo_bin_cmd!("track")
+    track_in(&dir)
         .args(["issue", "get", "PROJ-456"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -180,6 +169,7 @@ fn test_issue_get_with_text_output() {
 
 #[test]
 fn test_issue_search_with_results() {
+    let dir = temp_dir();
     // Search returns fewer items than the requested limit, so the optimized
     // YouTrack path should not issue a count request.
     let search_response = serde_json::json!([
@@ -209,7 +199,7 @@ fn test_issue_search_with_results() {
     let (_server, port) = start_mock_server_multi(vec![search_response]);
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args([
             "--format",
             "json",
@@ -221,8 +211,6 @@ fn test_issue_search_with_results() {
         ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -238,6 +226,7 @@ fn test_issue_search_with_results() {
 
 #[test]
 fn test_project_list_json() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!([
         {
             "id": "0-1",
@@ -250,12 +239,10 @@ fn test_project_list_json() {
     let (_server, port) = start_mock_server(mock_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args(["-o", "json", "project", "list"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -272,51 +259,31 @@ fn test_project_list_json() {
 
 #[test]
 fn test_missing_url_configuration() {
-    let dir = isolated_config_dir("missing-url");
+    let dir = temp_dir();
 
-    cargo_bin_cmd!("track")
+    track_in(&dir)
         .args(["issue", "get", "PROJ-1"])
-        .current_dir(&dir)
-        .env("HOME", &dir)
-        .env("USERPROFILE", &dir)
         .env("TRACKER_TOKEN", "test-token")
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_BACKEND")
-        .env_remove("TRACKER_CONFIG")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("URL not configured"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_missing_token_configuration() {
-    let dir = isolated_config_dir("missing-token");
+    let dir = temp_dir();
 
-    cargo_bin_cmd!("track")
+    track_in(&dir)
         .args(["issue", "get", "PROJ-1"])
-        .current_dir(&dir)
-        .env("HOME", &dir)
-        .env("USERPROFILE", &dir)
         .env("TRACKER_URL", "https://test.youtrack.cloud")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("TRACKER_BACKEND")
-        .env_remove("TRACKER_CONFIG")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("token not configured"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_issue_create_command_format() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "create", "--help"])
         .assert()
         .success()
@@ -327,7 +294,7 @@ fn test_issue_create_command_format() {
 
 #[test]
 fn test_issue_update_command_format() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "update", "--help"])
         .assert()
         .success()
@@ -337,7 +304,7 @@ fn test_issue_update_command_format() {
 
 #[test]
 fn test_issue_search_with_limit_and_skip() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "search", "--help"])
         .assert()
         .success()
@@ -347,7 +314,7 @@ fn test_issue_search_with_limit_and_skip() {
 
 #[test]
 fn test_output_format_option() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["--help"])
         .assert()
         .success()
@@ -358,7 +325,7 @@ fn test_output_format_option() {
 
 #[test]
 fn test_global_options_available() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["--help"])
         .assert()
         .success()
@@ -370,7 +337,7 @@ fn test_global_options_available() {
 
 #[test]
 fn test_issue_delete_command_exists() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["issue", "--help"])
         .assert()
         .success()
@@ -380,7 +347,7 @@ fn test_issue_delete_command_exists() {
 
 #[test]
 fn test_project_get_command_exists() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["project", "--help"])
         .assert()
         .success()
@@ -390,7 +357,7 @@ fn test_project_get_command_exists() {
 
 #[test]
 fn test_invalid_subcommand() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["invalid-command"])
         .assert()
         .failure()
@@ -399,12 +366,11 @@ fn test_invalid_subcommand() {
 
 #[test]
 fn test_issue_get_requires_id() {
-    cargo_bin_cmd!("track")
+    let dir = temp_dir();
+    track_in(&dir)
         .args(["issue", "get"])
         .env("TRACKER_TOKEN", "test")
         .env("TRACKER_URL", "https://test.example.com")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("required"));
@@ -412,12 +378,11 @@ fn test_issue_get_requires_id() {
 
 #[test]
 fn test_issue_create_requires_project() {
-    cargo_bin_cmd!("track")
+    let dir = temp_dir();
+    track_in(&dir)
         .args(["issue", "create", "--summary", "Test"])
         .env("TRACKER_TOKEN", "test")
         .env("TRACKER_URL", "https://test.example.com")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("--project"));
@@ -425,12 +390,11 @@ fn test_issue_create_requires_project() {
 
 #[test]
 fn test_issue_create_requires_summary() {
-    cargo_bin_cmd!("track")
+    let dir = temp_dir();
+    track_in(&dir)
         .args(["issue", "create", "--project", "PROJ"])
         .env("TRACKER_TOKEN", "test")
         .env("TRACKER_URL", "https://test.example.com")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("--summary"));
@@ -440,7 +404,7 @@ fn test_issue_create_requires_summary() {
 
 #[test]
 fn test_article_commands_exist() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "--help"])
         .assert()
         .success()
@@ -454,12 +418,11 @@ fn test_article_commands_exist() {
 
 #[test]
 fn test_article_get_requires_id() {
-    cargo_bin_cmd!("track")
+    let dir = temp_dir();
+    track_in(&dir)
         .args(["article", "get"])
         .env("TRACKER_TOKEN", "test")
         .env("TRACKER_URL", "https://test.example.com")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("required"));
@@ -467,12 +430,11 @@ fn test_article_get_requires_id() {
 
 #[test]
 fn test_article_create_requires_project() {
-    cargo_bin_cmd!("track")
+    let dir = temp_dir();
+    track_in(&dir)
         .args(["article", "create", "--summary", "Test Article"])
         .env("TRACKER_TOKEN", "test")
         .env("TRACKER_URL", "https://test.example.com")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("--project"));
@@ -480,12 +442,11 @@ fn test_article_create_requires_project() {
 
 #[test]
 fn test_article_create_requires_summary() {
-    cargo_bin_cmd!("track")
+    let dir = temp_dir();
+    track_in(&dir)
         .args(["article", "create", "--project", "KB"])
         .env("TRACKER_TOKEN", "test")
         .env("TRACKER_URL", "https://test.example.com")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .failure()
         .stderr(predicate::str::contains("--summary"));
@@ -493,7 +454,7 @@ fn test_article_create_requires_summary() {
 
 #[test]
 fn test_article_tree_command_exists() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "--help"])
         .assert()
         .success()
@@ -503,7 +464,7 @@ fn test_article_tree_command_exists() {
 
 #[test]
 fn test_article_move_command_exists() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "--help"])
         .assert()
         .success()
@@ -513,7 +474,7 @@ fn test_article_move_command_exists() {
 
 #[test]
 fn test_article_attachments_command_exists() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "--help"])
         .assert()
         .success()
@@ -523,7 +484,7 @@ fn test_article_attachments_command_exists() {
 
 #[test]
 fn test_article_comment_command_exists() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "--help"])
         .assert()
         .success()
@@ -533,6 +494,7 @@ fn test_article_comment_command_exists() {
 
 #[test]
 fn test_article_get_with_json_output() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!({
         "id": "123-456",
         "idReadable": "KB-A-1",
@@ -552,12 +514,10 @@ fn test_article_get_with_json_output() {
     let (_server, port) = start_mock_server(mock_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args(["--format", "json", "article", "get", "KB-A-1"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -573,6 +533,7 @@ fn test_article_get_with_json_output() {
 
 #[test]
 fn test_article_get_with_text_output() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!({
         "id": "123-456",
         "idReadable": "KB-A-2",
@@ -590,12 +551,10 @@ fn test_article_get_with_text_output() {
     let (_server, port) = start_mock_server(mock_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    cargo_bin_cmd!("track")
+    track_in(&dir)
         .args(["article", "get", "KB-A-2"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -605,6 +564,7 @@ fn test_article_get_with_text_output() {
 
 #[test]
 fn test_article_list_with_results() {
+    let dir = temp_dir();
     let mock_response = serde_json::json!([
         {
             "id": "123-1",
@@ -631,12 +591,10 @@ fn test_article_list_with_results() {
     let (_server, port) = start_mock_server(mock_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args(["--format", "json", "article", "list", "--limit", "10"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -652,7 +610,7 @@ fn test_article_list_with_results() {
 
 #[test]
 fn test_article_search_with_query() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "search", "--help"])
         .assert()
         .success()
@@ -663,7 +621,7 @@ fn test_article_search_with_query() {
 
 #[test]
 fn test_article_create_command_format() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "create", "--help"])
         .assert()
         .success()
@@ -677,7 +635,7 @@ fn test_article_create_command_format() {
 
 #[test]
 fn test_article_update_command_format() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["article", "update", "--help"])
         .assert()
         .success()
@@ -692,7 +650,7 @@ fn test_article_update_command_format() {
 
 #[test]
 fn test_completions_command_exists() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["completions", "--help"])
         .assert()
         .success()
@@ -704,7 +662,7 @@ fn test_completions_command_exists() {
 
 #[test]
 fn test_completions_bash_output() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["completions", "bash"])
         .assert()
         .success()
@@ -714,7 +672,7 @@ fn test_completions_bash_output() {
 
 #[test]
 fn test_completions_zsh_output() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["completions", "zsh"])
         .assert()
         .success()
@@ -724,7 +682,7 @@ fn test_completions_zsh_output() {
 
 #[test]
 fn test_completions_fish_output() {
-    cargo_bin_cmd!("track")
+    track()
         .args(["completions", "fish"])
         .assert()
         .success()
@@ -734,12 +692,7 @@ fn test_completions_fish_output() {
 #[test]
 fn test_completions_no_config_required() {
     // Completions should work without any configuration
-    cargo_bin_cmd!("track")
-        .args(["completions", "bash"])
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .assert()
-        .success();
+    track().args(["completions", "bash"]).assert().success();
 }
 
 // ============================================================================
@@ -748,6 +701,7 @@ fn test_completions_no_config_required() {
 
 #[test]
 fn test_pagination_hint_on_full_page() {
+    let dir = temp_dir();
     // YouTrack search: first request = search results, second request = count
     // because the full page needs a best-effort total for the hint.
     let count_response = serde_json::json!({ "count": 10 }).to_string();
@@ -770,12 +724,10 @@ fn test_pagination_hint_on_full_page() {
     let (_server, port) = start_mock_server_multi(vec![search_response, count_response]);
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args(["issue", "search", "project: PROJ", "--limit", "2"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -797,6 +749,7 @@ fn test_pagination_hint_on_full_page() {
 
 #[test]
 fn test_no_pagination_hint_on_partial_page() {
+    let dir = temp_dir();
     // Return fewer items than limit -- no hint expected and no count request needed.
     let search_response = serde_json::json!([
         {
@@ -817,12 +770,10 @@ fn test_no_pagination_hint_on_partial_page() {
     let (_server, port) = start_mock_server_multi(vec![search_response]);
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args(["issue", "search", "project: PROJ", "--limit", "10"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -839,6 +790,7 @@ fn test_no_pagination_hint_on_partial_page() {
 
 #[test]
 fn test_json_mode_says_when_a_page_is_full() {
+    let dir = temp_dir();
     let count_response = serde_json::json!({ "count": 10 }).to_string();
     let search_response = serde_json::json!([
         {
@@ -859,7 +811,7 @@ fn test_json_mode_says_when_a_page_is_full() {
     let (_server, port) = start_mock_server_multi(vec![search_response, count_response]);
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args([
             "--format",
             "json",
@@ -871,8 +823,6 @@ fn test_json_mode_says_when_a_page_is_full() {
         ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -893,6 +843,7 @@ fn test_json_mode_says_when_a_page_is_full() {
 
 #[test]
 fn test_pagination_hint_shows_total() {
+    let dir = temp_dir();
     let count_response = serde_json::json!({ "count": 10 }).to_string();
     let search_response = serde_json::json!([
         {
@@ -913,12 +864,10 @@ fn test_pagination_hint_shows_total() {
     let (_server, port) = start_mock_server_multi(vec![search_response, count_response]);
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args(["issue", "search", "project: PROJ", "--limit", "2"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -951,12 +900,7 @@ fn test_pagination_hint_shows_total() {
 
 /// Get the path to the .track.toml config file at project root
 fn config_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(".track.toml")
+    workspace_root().join(".track.toml")
 }
 
 /// Check if the config file exists (skip tests if not)
@@ -969,7 +913,7 @@ const YOUTRACK_PROJECT: &str = "OGIT";
 
 /// Helper to build a track command with YouTrack config (default backend)
 fn track_yt() -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["--config"])
         .arg(config_path())
         .timeout(Duration::from_secs(30));
@@ -978,7 +922,7 @@ fn track_yt() -> assert_cmd::Command {
 
 /// Helper to build a track command with YouTrack config + JSON output
 fn track_yt_json() -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-o", "json", "--config"])
         .arg(config_path())
         .timeout(Duration::from_secs(30));
@@ -2264,17 +2208,16 @@ fn test_youtrack_comment_structure() {
 
 #[test]
 fn test_unlink_text_output() {
+    let dir = temp_dir();
     // The DELETE endpoint returns 200 with empty body
     let mock_response = String::new();
     let (_server, port) = start_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    cargo_bin_cmd!("track")
+    track_in(&dir)
         .args(["issue", "unlink", "PROJ-123", "142-3t/PROJ-456"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -2285,11 +2228,12 @@ fn test_unlink_text_output() {
 
 #[test]
 fn test_unlink_json_output() {
+    let dir = temp_dir();
     let mock_response = String::new();
     let (_server, port) = start_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args([
             "--format",
             "json",
@@ -2300,8 +2244,6 @@ fn test_unlink_json_output() {
         ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -2318,14 +2260,13 @@ fn test_unlink_json_output() {
 
 #[test]
 fn test_unlink_invalid_link_id_format() {
+    let dir = temp_dir();
     // A link ID without "/" is invalid for YouTrack — the trait_impl rejects it
     // before making any HTTP call, so no mock server is needed.
-    cargo_bin_cmd!("track")
+    track_in(&dir)
         .args(["issue", "unlink", "PROJ-123", "bad-id-no-slash"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", "http://127.0.0.1:1")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .failure()
@@ -2334,16 +2275,15 @@ fn test_unlink_invalid_link_id_format() {
 
 #[test]
 fn test_unlink_alias_ul() {
+    let dir = temp_dir();
     let mock_response = String::new();
     let (_server, port) = start_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    cargo_bin_cmd!("track")
+    track_in(&dir)
         .args(["issue", "ul", "PROJ-123", "142-3t/PROJ-456"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -2424,6 +2364,7 @@ fn mock_link_buckets_response() -> String {
 
 #[test]
 fn test_youtrack_link_relates_text_output() {
+    let dir = temp_dir();
     // YouTrack link requires 2 calls: GET links (find bucket ID), POST add issue to link
     let responses = vec![
         mock_link_buckets_response(), // GET /api/issues/PROJ-1/links
@@ -2432,12 +2373,10 @@ fn test_youtrack_link_relates_text_output() {
     let (_server, port) = start_mock_server_multi(responses);
     thread::sleep(Duration::from_millis(50));
 
-    cargo_bin_cmd!("track")
+    track_in(&dir)
         .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "relates"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -2448,6 +2387,7 @@ fn test_youtrack_link_relates_text_output() {
 
 #[test]
 fn test_youtrack_link_depends_json_output() {
+    let dir = temp_dir();
     let responses = vec![
         mock_link_buckets_response(), // GET /api/issues/PROJ-1/links
         String::new(),                // POST /api/issues/PROJ-1/links/101-0o/issues
@@ -2455,14 +2395,12 @@ fn test_youtrack_link_depends_json_output() {
     let (_server, port) = start_mock_server_multi(responses);
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args([
             "-o", "json", "issue", "link", "PROJ-1", "PROJ-2", "-t", "depends",
         ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -2480,6 +2418,7 @@ fn test_youtrack_link_depends_json_output() {
 
 #[test]
 fn test_youtrack_link_required_uses_inward_direction() {
+    let dir = temp_dir();
     // "required" should look for the INWARD Depend bucket
     let responses = vec![
         mock_link_buckets_response(), // GET /api/issues/PROJ-1/links
@@ -2488,14 +2427,12 @@ fn test_youtrack_link_required_uses_inward_direction() {
     let (_server, port) = start_mock_server_multi(responses);
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args([
             "-o", "json", "issue", "link", "PROJ-1", "PROJ-2", "-t", "required",
         ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
@@ -2511,6 +2448,7 @@ fn test_youtrack_link_required_uses_inward_direction() {
 
 #[test]
 fn test_youtrack_link_custom_type_passthrough() {
+    let dir = temp_dir();
     // Custom type "clones" gets passed through with BOTH direction.
     // The mock returns a matching "clones" bucket for BOTH direction.
     let responses = vec![
@@ -2520,14 +2458,12 @@ fn test_youtrack_link_custom_type_passthrough() {
     let (_server, port) = start_mock_server_multi(responses);
     thread::sleep(Duration::from_millis(50));
 
-    let output = cargo_bin_cmd!("track")
+    let output = track_in(&dir)
         .args([
             "-o", "json", "issue", "link", "PROJ-1", "PROJ-2", "-t", "clones",
         ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .timeout(Duration::from_secs(5))
         .assert()
         .success()
