@@ -164,6 +164,15 @@ fn hook_command(agent: HookAgent) -> String {
     format!("{HOOK_COMMAND_PREFIX}={agent}")
 }
 
+/// `base` joined with a relative path written with `/`, one component at a
+/// time, so the path prints with the platform's separator. (A single
+/// `join("a/b")` keeps the `/` on Windows and the shown path mixes both.)
+fn under(base: &Path, relative: &str) -> PathBuf {
+    relative
+        .split('/')
+        .fold(base.to_path_buf(), |path, part| path.join(part))
+}
+
 /// Codex's home: `$CODEX_HOME`, else `~/.codex`.
 fn codex_home(home: &Path) -> PathBuf {
     env_path("CODEX_HOME").unwrap_or_else(|| home.join(".codex"))
@@ -192,7 +201,7 @@ fn orek_user_config_for(
         return root.join("config");
     }
     match os {
-        "macos" => home.join("Library/Application Support/orek-ai"),
+        "macos" => under(home, "Library/Application Support/orek-ai"),
         "windows" => appdata
             .unwrap_or_else(|| home.join("AppData").join("Roaming"))
             .join("orek-ai")
@@ -241,18 +250,18 @@ impl Roots {
         let (home, project) = (&self.home, &self.project);
         let skills = match (self.scope, tool) {
             (AgentScope::User, AgentTool::Orek) => orek_user_config(home).join("skills"),
-            (AgentScope::User, AgentTool::Claude) => home.join(".claude/skills"),
+            (AgentScope::User, AgentTool::Claude) => under(home, ".claude/skills"),
             (AgentScope::User, AgentTool::Codex | AgentTool::Cursor | AgentTool::Gemini) => {
-                home.join(".agents/skills")
+                under(home, ".agents/skills")
             }
-            (AgentScope::User, AgentTool::Antigravity) => home.join(".gemini/config/skills"),
-            (AgentScope::User, AgentTool::Copilot) => home.join(".copilot/skills"),
-            (AgentScope::Project, AgentTool::Orek) => project.join(".orek/skills"),
-            (AgentScope::Project, AgentTool::Claude) => project.join(".claude/skills"),
+            (AgentScope::User, AgentTool::Antigravity) => under(home, ".gemini/config/skills"),
+            (AgentScope::User, AgentTool::Copilot) => under(home, ".copilot/skills"),
+            (AgentScope::Project, AgentTool::Orek) => under(project, ".orek/skills"),
+            (AgentScope::Project, AgentTool::Claude) => under(project, ".claude/skills"),
             (
                 AgentScope::Project,
                 AgentTool::Codex | AgentTool::Cursor | AgentTool::Gemini | AgentTool::Antigravity,
-            ) => project.join(".agents/skills"),
+            ) => under(project, ".agents/skills"),
             (AgentScope::Project, AgentTool::Copilot) => return None,
         };
         Some(skills.join(SKILL_NAME))
@@ -271,7 +280,7 @@ impl Roots {
             // then matcher groups, then handlers.
             AgentTool::Claude => (
                 HookAgent::Claude,
-                base.join(".claude/settings.json"),
+                under(base, ".claude/settings.json"),
                 HookStyle::Nested {
                     matcher: None,
                     timeout: HOOK_TIMEOUT_SECS,
@@ -282,7 +291,7 @@ impl Roots {
                 if user {
                     codex_home(&self.home).join("hooks.json")
                 } else {
-                    self.project.join(".codex/hooks.json")
+                    under(&self.project, ".codex/hooks.json")
                 },
                 // Codex filters SessionStart on its `source`; these are the
                 // ones a briefing belongs in.
@@ -293,7 +302,7 @@ impl Roots {
             ),
             AgentTool::Gemini => (
                 HookAgent::Gemini,
-                base.join(".gemini/settings.json"),
+                under(base, ".gemini/settings.json"),
                 // Gemini CLI takes its timeout in milliseconds.
                 HookStyle::Nested {
                     matcher: None,
@@ -302,15 +311,15 @@ impl Roots {
             ),
             AgentTool::Cursor => (
                 HookAgent::Cursor,
-                base.join(".cursor/hooks.json"),
+                under(base, ".cursor/hooks.json"),
                 HookStyle::Cursor,
             ),
             AgentTool::Antigravity => (
                 HookAgent::Antigravity,
                 if user {
-                    self.home.join(".gemini/config/hooks.json")
+                    under(&self.home, ".gemini/config/hooks.json")
                 } else {
-                    self.project.join(".agents/hooks.json")
+                    under(&self.project, ".agents/hooks.json")
                 },
                 HookStyle::Antigravity,
             ),
@@ -333,7 +342,7 @@ impl Roots {
                 Some(codex_home(&self.home).join("config.toml"))
             }
             (AgentTool::Codex, AgentScope::Project) => {
-                Some(self.project.join(".codex/config.toml"))
+                Some(under(&self.project, ".codex/config.toml"))
             }
             _ => None,
         }
@@ -350,7 +359,7 @@ impl Roots {
         match self.scope {
             AgentScope::User => match tool {
                 AgentTool::Claude => vec![file(
-                    home.join(".claude/CLAUDE.md"),
+                    under(home, ".claude/CLAUDE.md"),
                     USER_INSTRUCTIONS,
                     true,
                 )],
@@ -369,7 +378,7 @@ impl Roots {
                 }
                 // One file serves both: Gemini CLI and Antigravity read it.
                 AgentTool::Antigravity | AgentTool::Gemini => vec![file(
-                    home.join(".gemini/GEMINI.md"),
+                    under(home, ".gemini/GEMINI.md"),
                     USER_INSTRUCTIONS,
                     true,
                 )],
@@ -395,7 +404,7 @@ impl Roots {
                 };
                 for (name, import) in imports {
                     files.push(file(
-                        project.join(name),
+                        under(project, name),
                         &format!(
                             "Issue-tracker instructions for this project are in AGENTS.md:\n\n{import}"
                         ),
@@ -412,8 +421,12 @@ impl Roots {
     /// twice.
     fn legacy_skill_dirs(&self, tool: AgentTool) -> Vec<PathBuf> {
         match (self.scope, tool) {
-            (AgentScope::User, AgentTool::Cursor) => vec![self.home.join(".cursor/skills/track")],
-            (AgentScope::User, AgentTool::Gemini) => vec![self.home.join(".gemini/skills/track")],
+            (AgentScope::User, AgentTool::Cursor) => {
+                vec![under(&self.home, ".cursor/skills/track")]
+            }
+            (AgentScope::User, AgentTool::Gemini) => {
+                vec![under(&self.home, ".gemini/skills/track")]
+            }
             _ => Vec::new(),
         }
     }
@@ -1498,6 +1511,16 @@ pub fn handle_guide(topic: Option<&str>, format: OutputFormat) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_paths_are_joined_one_component_at_a_time() {
+        let base = Path::new("home");
+        assert_eq!(
+            under(base, ".agents/skills"),
+            base.join(".agents").join("skills")
+        );
+        assert_eq!(under(base, "AGENTS.md"), base.join("AGENTS.md"));
+    }
 
     #[test]
     fn the_core_skill_stays_within_its_budget() {
