@@ -1,11 +1,13 @@
 //! Implementation of tracker-core traits for GitLabClient
 
 use tracker_core::pagination::{Page, fetch_window};
+use tracker_core::validation::STATE_FIELD_ALIASES;
 use tracker_core::{
     Article, ArticleAttachment, ArticleRef, AttachmentUpload, Comment, CreateArticle, CreateIssue,
-    CreateProject, CreateTag, Issue, IssueAttachment, IssueHistoryEvent, IssueLink, IssueLinkType,
-    IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, ProjectRef, Result,
-    SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
+    CreateProject, CreateTag, CustomFieldUpdate, Issue, IssueAttachment, IssueHistoryEvent,
+    IssueLink, IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField,
+    ProjectRef, Result, SearchResult, TrackerError, UpdateArticle, UpdateIssue, User,
+    ValidationRules, unicode_eq_ignore_case,
 };
 
 use crate::client::GitLabClient;
@@ -50,15 +52,51 @@ fn find_label_id(client: &GitLabClient, name: &str) -> Result<u64> {
         .ok_or_else(|| TrackerError::InvalidInput(format!("Tag '{}' not found", name)))
 }
 
-fn assignee_login(fields: &[tracker_core::CustomFieldUpdate]) -> Option<&str> {
-    fields.iter().find_map(|field| match field {
-        tracker_core::CustomFieldUpdate::SingleUser { name, login }
-            if name.eq_ignore_ascii_case("assignee") =>
-        {
-            Some(login.as_str())
-        }
-        _ => None,
-    })
+/// How GitLab's write path reads custom-field names. Validation uses these
+/// rules, and [`write_target`] resolves names through the same aliases, so
+/// a name validation places on Status or Assignee is one the write path
+/// applies, whatever the update's type.
+const FIELD_RULES: ValidationRules = ValidationRules {
+    // The write path reads only the state and the assignee from custom
+    // fields; anything else is dropped without a word.
+    names_exhaustive: true,
+    name_aliases: STATE_FIELD_ALIASES,
+    read_only_fields: &[
+        ("Labels", "Use --tag <label> (repeatable) instead."),
+        ("Milestone", "track cannot set milestones yet."),
+    ],
+};
+
+/// The part of a GitLab issue a custom-field update sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteTarget {
+    /// Opened or closed, through `state_event`.
+    State,
+    /// The assignees, through `assignee_ids`.
+    Assignees,
+}
+
+/// What the write path does with an update named `name`: matched by name,
+/// or through an alias in [`FIELD_RULES`]. `None` for a field it ignores.
+pub(crate) fn write_target(name: &str) -> Option<WriteTarget> {
+    let name = FIELD_RULES.alias_target(name).unwrap_or(name);
+    if unicode_eq_ignore_case(name, "Status") {
+        Some(WriteTarget::State)
+    } else if unicode_eq_ignore_case(name, "Assignee") {
+        Some(WriteTarget::Assignees)
+    } else {
+        None
+    }
+}
+
+/// The first update in `fields` that sets `target`.
+pub(crate) fn update_for(
+    fields: &[CustomFieldUpdate],
+    target: WriteTarget,
+) -> Option<&CustomFieldUpdate> {
+    fields
+        .iter()
+        .find(|cf| write_target(cf.name()) == Some(target))
 }
 
 /// Resolve the assignee custom field into `assignee_ids` for the GitLab API.
@@ -66,15 +104,36 @@ fn assignee_login(fields: &[tracker_core::CustomFieldUpdate]) -> Option<&str> {
 /// GitLab ignores unknown ids in `assignee_ids` (creates succeed with no
 /// assignee), so ids must be resolved and verified up front. `None` means no
 /// assignee field was sent (do not touch assignees); `Some(Vec::new())` is an
-/// explicit request to clear assignees (`""`, `"0"`, or `"@0"`).
+/// explicit request to clear assignees (`""`, `"0"`, `"@0"`, or no values).
 fn assignee_ids(
     client: &GitLabClient,
-    fields: &[tracker_core::CustomFieldUpdate],
+    fields: &[CustomFieldUpdate],
 ) -> std::result::Result<Option<Vec<u64>>, TrackerError> {
-    match assignee_login(fields) {
-        None => Ok(None),
-        Some("") | Some("0") | Some("@0") => Ok(Some(Vec::new())),
-        Some(login) => Ok(Some(vec![client.find_user_id(login)?])),
+    let Some(update) = update_for(fields, WriteTarget::Assignees) else {
+        return Ok(None);
+    };
+    match update.values().as_slice() {
+        [] | [""] | ["0"] | ["@0"] => Ok(Some(Vec::new())),
+        logins => logins
+            .iter()
+            .map(|login| client.find_user_id(login))
+            .collect::<Result<Vec<u64>>>()
+            .map(Some),
+    }
+}
+
+/// The `state_event` the state update in `fields` asks for, if any.
+pub(crate) fn state_event(fields: &[CustomFieldUpdate]) -> Result<Option<String>> {
+    let Some(update) = update_for(fields, WriteTarget::State) else {
+        return Ok(None);
+    };
+    match update.values().as_slice() {
+        [value] => Ok(state_event_for(value).map(str::to_string)),
+        values => Err(TrackerError::InvalidInput(format!(
+            "Field '{}' takes one state, not {}.",
+            update.name(),
+            values.len()
+        ))),
     }
 }
 
@@ -176,17 +235,8 @@ impl IssueTracker for GitLabClient {
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
         let iid = parse_issue_iid(id)?;
 
-        // Check for state changes in custom_fields
-        let state_event = update.custom_fields.iter().find_map(|cf| match cf {
-            tracker_core::CustomFieldUpdate::State { name, value }
-                if name.eq_ignore_ascii_case("status")
-                    || name.eq_ignore_ascii_case("state")
-                    || name.eq_ignore_ascii_case("stage") =>
-            {
-                state_event_for(value).map(str::to_string)
-            }
-            _ => None,
-        });
+        // A state change may arrive under any state field name and type.
+        let state_event = state_event(&update.custom_fields)?;
 
         let labels = if update.tags.is_empty() {
             None
@@ -349,17 +399,9 @@ impl IssueTracker for GitLabClient {
         Ok(get_gitlab_link_types())
     }
 
-    // The write path reads only the state and the assignee from custom
-    // fields; anything else is dropped without a word.
-    fn validation_rules(&self) -> tracker_core::ValidationRules {
-        tracker_core::ValidationRules {
-            names_exhaustive: true,
-            name_aliases: &[("State", "Status"), ("Stage", "Status")],
-            read_only_fields: &[
-                ("Labels", "Use --tag <label> (repeatable) instead."),
-                ("Milestone", "track cannot set milestones yet."),
-            ],
-        }
+    // The same rules the write path reads names with.
+    fn validation_rules(&self) -> ValidationRules {
+        FIELD_RULES
     }
 
     fn check_field_value(
@@ -367,7 +409,7 @@ impl IssueTracker for GitLabClient {
         field: &ProjectCustomField,
         value: &str,
     ) -> tracker_core::ValueCheck {
-        if field.name.eq_ignore_ascii_case("status") {
+        if write_target(&field.name) == Some(WriteTarget::State) {
             return match state_event_for(value) {
                 Some(_) => tracker_core::ValueCheck::Valid,
                 None => tracker_core::ValueCheck::Invalid {

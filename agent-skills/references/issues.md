@@ -130,7 +130,7 @@ What the default mode can reject depends on how much a backend's schema says:
 | YouTrack | Error | Error, for every field with a value list |
 | GitHub, GitLab | Error. Only the state and `Assignee` are settable with field flags; use `--tag` for labels | Error for the state (anything that is not open/closed or an alias of them) |
 | Jira | Warning | Error for `Priority`, `Type` and `Components` when their lists were read from the instance; the status is left to the API |
-| Linear | Warning | Error for the state and `Priority`; assignee, labels and project are left to the API |
+| Linear | Error. The state, `Priority`, `Assignee`, `Labels` (or `Tags`) and `Project` are settable | Error for the state and `Priority`; assignee, labels and project are left to the API |
 
 An error names the fix: `Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State,
 Priority, Type`, or the list of valid values with the nearest one.

@@ -1,10 +1,11 @@
 //! Model conversions from GitHub types to tracker-core types
 
 use chrono::{DateTime, Utc};
+use tracker_core::validation::STATE_FIELD_ALIASES;
 use tracker_core::{
     Comment, CommentAuthor, CreateIssue, CustomField, CustomFieldUpdate, FIELD_STATUS, Issue,
     IssueHistoryEvent, IssueTag, Project, ProjectCustomField, ProjectRef, StateValueInfo, Tag,
-    TagColor, UpdateIssue,
+    TagColor, TrackerError, UpdateIssue, ValidationRules, unicode_eq_ignore_case,
 };
 
 use crate::models::*;
@@ -313,21 +314,75 @@ impl From<GitHubLabel> for IssueTag {
     }
 }
 
+/// How GitHub's write path reads custom-field names. Validation uses these
+/// rules, and [`write_target`] resolves names through the same aliases, so
+/// a name validation places on Status or Assignee is one the write path
+/// applies, whatever the update's type.
+pub const FIELD_RULES: ValidationRules = ValidationRules {
+    // The write path reads only the state and the assignees from custom
+    // fields; anything else is dropped without a word.
+    names_exhaustive: true,
+    name_aliases: STATE_FIELD_ALIASES,
+    read_only_fields: &[
+        ("Labels", "Use --tag <label> (repeatable) instead."),
+        ("Milestone", "track cannot set milestones yet."),
+    ],
+};
+
+/// The part of a GitHub issue a custom-field update sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteTarget {
+    /// `open` or `closed`.
+    State,
+    /// The assignees, by login.
+    Assignees,
+}
+
+/// What the write path does with an update named `name`: matched by name,
+/// or through an alias in [`FIELD_RULES`]. `None` for a field it ignores.
+pub fn write_target(name: &str) -> Option<WriteTarget> {
+    let name = FIELD_RULES.alias_target(name).unwrap_or(name);
+    if unicode_eq_ignore_case(name, "Status") {
+        Some(WriteTarget::State)
+    } else if unicode_eq_ignore_case(name, "Assignee") {
+        Some(WriteTarget::Assignees)
+    } else {
+        None
+    }
+}
+
+/// Every assignee login `fields` set, or `None` when they set none.
+fn assignees_from(fields: &[CustomFieldUpdate]) -> Option<Vec<String>> {
+    let assignees: Vec<String> = fields
+        .iter()
+        .filter(|cf| write_target(cf.name()) == Some(WriteTarget::Assignees))
+        .flat_map(CustomFieldUpdate::values)
+        .map(str::to_string)
+        .collect();
+    (!assignees.is_empty()).then_some(assignees)
+}
+
+/// The `state` the first state update in `fields` asks for. Unrecognised
+/// values are sent as given; GitHub rejects them.
+fn state_from(fields: &[CustomFieldUpdate]) -> tracker_core::Result<Option<String>> {
+    let Some(cf) = fields
+        .iter()
+        .find(|cf| write_target(cf.name()) == Some(WriteTarget::State))
+    else {
+        return Ok(None);
+    };
+    match cf.values().as_slice() {
+        [value] => Ok(Some(normalize_state(value).unwrap_or(value).to_string())),
+        values => Err(TrackerError::InvalidInput(format!(
+            "Field '{}' takes one state, not {}.",
+            cf.name(),
+            values.len()
+        ))),
+    }
+}
+
 /// Convert a tracker-core CreateIssue to a GitHub CreateGitHubIssue
 pub fn create_issue_from_core(issue: &CreateIssue) -> CreateGitHubIssue {
-    let assignees: Vec<String> = issue
-        .custom_fields
-        .iter()
-        .filter_map(|cf| match cf {
-            CustomFieldUpdate::SingleUser { name, login }
-                if name.eq_ignore_ascii_case("assignee") =>
-            {
-                Some(login.clone())
-            }
-            _ => None,
-        })
-        .collect();
-
     CreateGitHubIssue {
         title: issue.summary.clone(),
         body: issue.description.clone(),
@@ -336,11 +391,7 @@ pub fn create_issue_from_core(issue: &CreateIssue) -> CreateGitHubIssue {
         } else {
             Some(issue.tags.clone())
         },
-        assignees: if assignees.is_empty() {
-            None
-        } else {
-            Some(assignees)
-        },
+        assignees: assignees_from(&issue.custom_fields),
         milestone: None,
     }
 }
@@ -355,50 +406,24 @@ pub fn normalize_state(value: &str) -> Option<&'static str> {
     }
 }
 
-/// Convert a tracker-core UpdateIssue to a GitHub UpdateGitHubIssue
-pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
-    // Extract state from custom fields (CLI sends "State" or "Stage", backends may use "Status")
-    let state = update.custom_fields.iter().find_map(|cf| match cf {
-        CustomFieldUpdate::State { name, value }
-            if name.eq_ignore_ascii_case("status")
-                || name.eq_ignore_ascii_case("state")
-                || name.eq_ignore_ascii_case("stage") =>
-        {
-            // Unrecognised values are sent as given; GitHub rejects them.
-            Some(normalize_state(value).unwrap_or(value).to_string())
-        }
-        _ => None,
-    });
-
-    let assignees: Vec<String> = update
-        .custom_fields
-        .iter()
-        .filter_map(|cf| match cf {
-            CustomFieldUpdate::SingleUser { name, login }
-                if name.eq_ignore_ascii_case("assignee") =>
-            {
-                Some(login.clone())
-            }
-            _ => None,
-        })
-        .collect();
-
-    UpdateGitHubIssue {
+/// Convert a tracker-core UpdateIssue to a GitHub UpdateGitHubIssue.
+///
+/// Fields are read by name ([`write_target`]), not by update type: the CLI
+/// types `--field State=closed` from the schema, which calls the field
+/// Status, so the update can arrive as a plain enum.
+pub fn update_issue_from_core(update: &UpdateIssue) -> tracker_core::Result<UpdateGitHubIssue> {
+    Ok(UpdateGitHubIssue {
         title: update.summary.clone(),
         body: update.description.clone(),
-        state,
+        state: state_from(&update.custom_fields)?,
         labels: if update.tags.is_empty() {
             None
         } else {
             Some(update.tags.clone())
         },
-        assignees: if assignees.is_empty() {
-            None
-        } else {
-            Some(assignees)
-        },
+        assignees: assignees_from(&update.custom_fields),
         milestone: None,
-    }
+    })
 }
 
 /// Convert a simple tracker-core query to GitHub search syntax

@@ -6,7 +6,7 @@ mod tests {
     use tracker_core::{
         AttachmentUpload, CreateIssue, Issue, IssueTracker, TrackerError, UpdateIssue,
     };
-    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use wiremock::matchers::{body_json, body_partial_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Serve `response` for issue 1 and fetch it through the `IssueTracker` trait.
@@ -1408,6 +1408,133 @@ mod tests {
                 .errors
                 .as_slice(),
             [FieldProblem::ReadOnlyField { .. }]
+        ));
+    }
+
+    /// Validation and the write path read field names from one table: every
+    /// update validation accepts, of any type, changes the PATCH body, and
+    /// every update it rejects leaves the body alone.
+    #[test]
+    fn validation_and_write_path_agree_on_every_name_and_type() {
+        use crate::convert::update_issue_from_core;
+        use tracker_core::validation::validate_fields;
+        use tracker_core::{CustomFieldUpdate, IssueTracker};
+
+        let client = GitHubClient::with_base_url("http://localhost", "owner", "repo", "token");
+        let schema = client.get_project_custom_fields("").unwrap();
+        let rules = client.validation_rules();
+        let mut names: Vec<&str> = schema.iter().map(|f| f.name.as_str()).collect();
+        names.extend(rules.name_aliases.iter().map(|(alias, _)| *alias));
+        names.extend(["status", "STATE", "assignee", "Priority", "Sprint"]);
+
+        for name in names {
+            let updates = [
+                CustomFieldUpdate::SingleEnum {
+                    name: name.to_string(),
+                    value: "closed".to_string(),
+                },
+                CustomFieldUpdate::State {
+                    name: name.to_string(),
+                    value: "closed".to_string(),
+                },
+                CustomFieldUpdate::SingleUser {
+                    name: name.to_string(),
+                    login: "closed".to_string(),
+                },
+                CustomFieldUpdate::MultiEnum {
+                    name: name.to_string(),
+                    values: vec!["closed".to_string()],
+                },
+            ];
+            for update in updates {
+                let accepted =
+                    validate_fields(&client, &schema, std::slice::from_ref(&update)).is_ok();
+                let body = update_issue_from_core(&UpdateIssue {
+                    custom_fields: vec![update.clone()],
+                    ..Default::default()
+                })
+                .unwrap();
+                let applied = body.state.is_some() || body.assignees.is_some();
+                assert_eq!(accepted, applied, "{update:?}");
+            }
+        }
+    }
+
+    /// `--field State=closed` arrives as a plain enum named State (the
+    /// schema calls the field Status); it must still close the issue.
+    #[tokio::test]
+    async fn trait_update_sends_state_for_any_state_field_name() {
+        use tracker_core::CustomFieldUpdate;
+
+        let cases = [
+            (
+                CustomFieldUpdate::SingleEnum {
+                    name: "State".to_string(),
+                    value: "closed".to_string(),
+                },
+                "closed",
+            ),
+            (
+                CustomFieldUpdate::SingleEnum {
+                    name: "Stage".to_string(),
+                    value: "Done".to_string(),
+                },
+                "closed",
+            ),
+            (
+                CustomFieldUpdate::State {
+                    name: "State".to_string(),
+                    value: "reopened".to_string(),
+                },
+                "open",
+            ),
+            (
+                CustomFieldUpdate::SingleEnum {
+                    name: "status".to_string(),
+                    value: "open".to_string(),
+                },
+                "open",
+            ),
+        ];
+        for (update, state) in cases {
+            let mock_server = MockServer::start().await;
+            Mock::given(method("PATCH"))
+                .and(path("/repos/owner/repo/issues/42"))
+                .and(body_partial_json(serde_json::json!({ "state": state })))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(mock_github_issue(42, "Issue")),
+                )
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+
+            let client =
+                GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+            let update = UpdateIssue {
+                custom_fields: vec![update],
+                ..Default::default()
+            };
+            <GitHubClient as IssueTracker>::update_issue(&client, "42", &update)
+                .unwrap_or_else(|err| panic!("{update:?}: {err}"));
+        }
+    }
+
+    /// A state update with several values is refused, not half-applied.
+    #[test]
+    fn update_with_several_states_is_refused() {
+        use crate::convert::update_issue_from_core;
+        use tracker_core::CustomFieldUpdate;
+
+        let update = UpdateIssue {
+            custom_fields: vec![CustomFieldUpdate::MultiEnum {
+                name: "State".to_string(),
+                values: vec!["open".to_string(), "closed".to_string()],
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            update_issue_from_core(&update),
+            Err(TrackerError::InvalidInput(_))
         ));
     }
 }

@@ -5,7 +5,8 @@ use tracker_core::{
     Article, ArticleAttachment, AttachmentUpload, Comment, CreateArticle, CreateIssue,
     CreateProject, CreateTag, CustomFieldUpdate, Issue, IssueHistoryEvent, IssueLink,
     IssueLinkType, IssueTag, IssueTracker, KnowledgeBase, Project, ProjectCustomField, Result,
-    SearchResult, TrackerError, UpdateArticle, UpdateIssue, User, unicode_eq_ignore_case,
+    SearchResult, TrackerError, UpdateArticle, UpdateIssue, User, ValidationRules,
+    unicode_eq_ignore_case,
 };
 
 use serde_json::Value;
@@ -171,20 +172,9 @@ impl IssueTracker for LinearClient {
         Ok(team_details_custom_fields(&details))
     }
 
-    // The schema leaves out Project, which the write path accepts, so names
-    // are not exhaustive; Linear's own error names the supported fields.
-    fn validation_rules(&self) -> tracker_core::ValidationRules {
-        tracker_core::ValidationRules {
-            names_exhaustive: false,
-            name_aliases: &[
-                ("State", "Status"),
-                ("Stage", "Status"),
-                ("Tags", "Labels"),
-                ("Tag", "Labels"),
-                ("Label", "Labels"),
-            ],
-            read_only_fields: &[],
-        }
+    // The same rules the write path reads names with.
+    fn validation_rules(&self) -> ValidationRules {
+        FIELD_RULES
     }
 
     fn check_field_value(
@@ -193,34 +183,22 @@ impl IssueTracker for LinearClient {
         value: &str,
     ) -> tracker_core::ValueCheck {
         use tracker_core::ValueCheck;
-        if is_state_field(&field.name) {
+        match write_target(&field.name) {
             // A state by name, or one of the words the write path maps onto
             // the team's first started or completed state.
-            let known = field
-                .values
-                .iter()
-                .any(|state| unicode_eq_ignore_case(state, value));
-            return if known || state_type_alias(value).is_some() {
-                ValueCheck::Valid
-            } else if field.values.is_empty() {
-                ValueCheck::Unknown
-            } else {
-                ValueCheck::Invalid {
-                    valid_values: field.values.clone(),
-                }
-            };
-        }
-        if field.name.eq_ignore_ascii_case("priority") {
-            return match priority_from_label(value) {
+            Some(WriteTarget::State) if state_type_alias(value).is_some() => ValueCheck::Valid,
+            Some(WriteTarget::State) => tracker_core::validation::check_membership(field, value),
+            Some(WriteTarget::Priority) => match priority_from_label(value) {
                 Some(_) => ValueCheck::Valid,
                 None => ValueCheck::Invalid {
                     valid_values: field.values.clone(),
                 },
-            };
+            },
+            // Assignees resolve by login, name or id, labels may come from
+            // the workspace as well as the team, and projects by name, id or
+            // slug: only the API can tell.
+            _ => ValueCheck::Unknown,
         }
-        // Assignees resolve by login, name or id, and labels may come from
-        // the workspace as well as the team: only the API can tell.
-        ValueCheck::Unknown
     }
 
     fn current_user(&self) -> Result<Option<User>> {
@@ -575,6 +553,8 @@ impl LinearClient {
         Ok(input)
     }
 
+    /// Resolve each update to the input field [`write_target`] names, so
+    /// the write path sets exactly the names validation accepts.
     fn resolve_custom_fields(
         &self,
         team_id: &str,
@@ -582,13 +562,24 @@ impl LinearClient {
     ) -> Result<ResolvedFields> {
         let mut resolved = ResolvedFields::default();
         for field in fields {
-            match field {
-                CustomFieldUpdate::State { name, value } if is_state_field(name) => {
-                    resolved.state_id = Some(self.resolve_state_id(team_id, value)?);
+            let Some(target) = write_target(field.name()) else {
+                return Err(unsupported_linear_field(field));
+            };
+            let values = field.values();
+            let single = || match values.as_slice() {
+                [value] => Ok(*value),
+                _ => Err(TrackerError::InvalidInput(format!(
+                    "Field '{}' takes one value, not {}.",
+                    field.name(),
+                    values.len()
+                ))),
+            };
+            match target {
+                WriteTarget::State => {
+                    resolved.state_id = Some(self.resolve_state_id(team_id, single()?)?);
                 }
-                CustomFieldUpdate::SingleEnum { name, value }
-                    if name.eq_ignore_ascii_case("priority") =>
-                {
+                WriteTarget::Priority => {
+                    let value = single()?;
                     resolved.priority = Some(priority_from_label(value).ok_or_else(|| {
                         TrackerError::InvalidInput(format!(
                             "Invalid Linear priority '{}'. Valid values: No priority, Urgent, High, Medium, Low",
@@ -596,30 +587,16 @@ impl LinearClient {
                         ))
                     })?);
                 }
-                CustomFieldUpdate::SingleUser { name, login }
-                    if name.eq_ignore_ascii_case("assignee") =>
-                {
-                    resolved.assignee_id = Some(self.find_user(team_id, login)?.id);
+                WriteTarget::Assignee => {
+                    resolved.assignee_id = Some(self.find_user(team_id, single()?)?.id);
                 }
-                CustomFieldUpdate::SingleEnum { name, value }
-                    if name.eq_ignore_ascii_case("project") =>
-                {
-                    resolved.project_id = Some(self.find_project(team_id, value)?.id);
+                WriteTarget::Project => {
+                    resolved.project_id = Some(self.find_project(team_id, single()?)?.id);
                 }
-                CustomFieldUpdate::MultiEnum { name, values }
-                    if name.eq_ignore_ascii_case("labels") || name.eq_ignore_ascii_case("tags") =>
-                {
-                    resolved.label_ids = Some(self.resolve_label_ids(team_id, values)?);
+                // Every value; none clears the labels.
+                WriteTarget::Labels => {
+                    resolved.label_ids = Some(self.resolve_label_ids(team_id, &values)?);
                 }
-                CustomFieldUpdate::SingleEnum { name, value }
-                    if name.eq_ignore_ascii_case("label")
-                        || name.eq_ignore_ascii_case("labels")
-                        || name.eq_ignore_ascii_case("tag") =>
-                {
-                    resolved.label_ids =
-                        Some(self.resolve_label_ids(team_id, std::slice::from_ref(value))?);
-                }
-                other => return Err(unsupported_linear_field(other)),
             }
         }
         Ok(resolved)
@@ -653,10 +630,10 @@ impl LinearClient {
         )))
     }
 
-    fn resolve_label_ids(&self, team_id: &str, labels: &[String]) -> Result<Vec<String>> {
+    fn resolve_label_ids(&self, team_id: &str, labels: &[impl AsRef<str>]) -> Result<Vec<String>> {
         labels
             .iter()
-            .map(|name| Ok(self.find_label(team_id, name)?.id))
+            .map(|name| Ok(self.find_label(team_id, name.as_ref())?.id))
             .collect()
     }
 
@@ -739,10 +716,48 @@ fn state_type_alias(value: &str) -> Option<&'static str> {
     }
 }
 
-fn is_state_field(name: &str) -> bool {
-    name.eq_ignore_ascii_case("status")
-        || name.eq_ignore_ascii_case("state")
-        || name.eq_ignore_ascii_case("stage")
+/// How Linear's write path reads custom-field names. Validation uses these
+/// rules, and [`write_target`] resolves names through the same aliases, so
+/// the names validation accepts (the schema's plus these) are exactly the
+/// names the write path sets, whatever the update's type.
+const FIELD_RULES: ValidationRules = ValidationRules {
+    // The team schema lists every field the write path sets.
+    names_exhaustive: true,
+    name_aliases: &[
+        ("State", "Status"),
+        ("Stage", "Status"),
+        ("Tags", "Labels"),
+        ("Tag", "Labels"),
+        ("Label", "Labels"),
+    ],
+    read_only_fields: &[],
+};
+
+/// The Linear issue input field a custom-field update sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteTarget {
+    State,
+    Priority,
+    Assignee,
+    Project,
+    Labels,
+}
+
+/// What the write path does with an update named `name`: matched by its
+/// schema name, or through an alias in [`FIELD_RULES`]. `None` for a field
+/// Linear cannot set.
+pub(crate) fn write_target(name: &str) -> Option<WriteTarget> {
+    let name = FIELD_RULES.alias_target(name).unwrap_or(name);
+    [
+        ("Status", WriteTarget::State),
+        ("Priority", WriteTarget::Priority),
+        ("Assignee", WriteTarget::Assignee),
+        ("Project", WriteTarget::Project),
+        ("Labels", WriteTarget::Labels),
+    ]
+    .into_iter()
+    .find(|(field, _)| unicode_eq_ignore_case(field, name))
+    .map(|(_, target)| target)
 }
 
 fn unsupported_linear_field(field: &CustomFieldUpdate) -> TrackerError {
