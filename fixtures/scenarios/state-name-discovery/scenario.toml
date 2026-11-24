@@ -1,0 +1,47 @@
+# State Name Discovery Scenario
+# Tests: using the project's real state field and state names instead of guessing
+
+[scenario]
+name = "state-name-discovery"
+description = "Move issues through a workflow whose state field and state names are not the defaults"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["state", "workflow", "prime"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Start work on issue DEMO-1.
+2. Send issue DEMO-2 for review.
+3. Finish issue DEMO-3.
+
+This project does not use the default workflow names.
+"""
+default_project = "DEMO"
+cache_available = true
+hints = """
+- `track prime -p DEMO` prints the project's state field and its states
+- The state field is "Stage": Backlog, Building, In Review, Shipped (resolved)
+"""
+
+[expected_outcomes]
+started = { method_called = "update_issue", issue = "DEMO-1", contains = "Building" }
+in_review = { method_called = "update_issue", issue = "DEMO-2", contains = "In Review" }
+finished = { method_called = "update_issue", issue = "DEMO-3", contains = "Shipped" }
+
+[scoring]
+min_commands = 3
+max_commands = 8
+optimal_commands = 3
+base_score = 100
+output_byte_budget = 2500
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5

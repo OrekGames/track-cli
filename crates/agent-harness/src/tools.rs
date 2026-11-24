@@ -70,9 +70,7 @@ pub fn execute_track(args: &[String], scenario_dir: &std::path::Path) -> (String
 
     let mut command = Command::new(&track_bin);
     command.args(args).env("TRACK_MOCK_DIR", scenario_dir);
-    if let Some(cache_dir) = crate::runner::run_settings().cache_dir {
-        command.env("TRACK_CACHE_DIR", cache_dir);
-    }
+    command.envs(crate::runner::track_env());
     let result = command.output();
 
     match result {

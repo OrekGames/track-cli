@@ -16,9 +16,7 @@ pub(crate) fn route_track_to_mock(cmd: &mut Command, scenario_path: &Path, track
     cmd.env("TRACK_MOCK_DIR", scenario_path);
     // A cache private to the run: the agent's own cache or an earlier run
     // must not change how many backend calls this one makes.
-    if let Some(cache_dir) = crate::runner::run_settings().cache_dir {
-        cmd.env("TRACK_CACHE_DIR", cache_dir);
-    }
+    cmd.envs(crate::runner::track_env());
 
     if let Some(bin_dir) = Path::new(track_bin).parent()
         && !bin_dir.as_os_str().is_empty()

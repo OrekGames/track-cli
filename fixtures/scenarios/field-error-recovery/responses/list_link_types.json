@@ -1,0 +1,23 @@
+[
+  {
+    "id": "lt-1",
+    "name": "Subtask",
+    "source_to_target": "is parent for",
+    "target_to_source": "is subtask of",
+    "directed": true
+  },
+  {
+    "id": "lt-2",
+    "name": "Relates",
+    "source_to_target": "relates to",
+    "target_to_source": "relates to",
+    "directed": false
+  },
+  {
+    "id": "lt-3",
+    "name": "Depend",
+    "source_to_target": "depends on",
+    "target_to_source": "is required for",
+    "directed": true
+  }
+]

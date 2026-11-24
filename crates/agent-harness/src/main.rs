@@ -449,6 +449,7 @@ fn run_agent_session(
         context: options.context,
         scenario_path: scenario_path.clone(),
         backend: scenario.scenario.backend.to_ascii_lowercase(),
+        default_project: scenario.setup.default_project.clone(),
         cache_dir: Some(cache_dir.0.clone()),
     });
 

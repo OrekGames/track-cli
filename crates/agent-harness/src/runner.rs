@@ -52,6 +52,8 @@ pub struct RunSettings {
     pub scenario_path: PathBuf,
     /// Backend the scenario runs against (`youtrack`, `jira`, ...)
     pub backend: String,
+    /// The scenario's default project, as a configured project would have
+    pub default_project: Option<String>,
     /// Cache directory private to this run
     pub cache_dir: Option<PathBuf>,
 }
@@ -60,6 +62,24 @@ static RUN_SETTINGS: std::sync::Mutex<Option<RunSettings>> = std::sync::Mutex::n
 
 pub fn set_run_settings(settings: RunSettings) {
     *RUN_SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(settings);
+}
+
+/// Environment a `track` command of the current run gets beyond the mock
+/// directory: its private cache, the project's default, and, when the
+/// session hook is being simulated, the output mode the hook sets.
+pub(crate) fn track_env() -> Vec<(&'static str, String)> {
+    let settings = run_settings();
+    let mut env = Vec::new();
+    if let Some(cache_dir) = settings.cache_dir {
+        env.push(("TRACK_CACHE_DIR", cache_dir.display().to_string()));
+    }
+    if settings.context == ContextMode::Prime {
+        if let Some(project) = settings.default_project {
+            env.push(("TRACKER_DEFAULT_PROJECT", project));
+        }
+        env.push(("TRACK_OUTPUT", "agent".to_string()));
+    }
+    env
 }
 
 pub(crate) fn run_settings() -> RunSettings {
@@ -76,12 +96,22 @@ pub(crate) fn reference_block() -> String {
     match settings.context {
         ContextMode::None => String::new(),
         ContextMode::Prime => {
+            // What a session hook would have printed. A project that uses the
+            // hook has a cache, so build one first; that setup is not part of
+            // the run being scored.
+            let _ =
+                tools::execute_track(&["cache".into(), "refresh".into()], &settings.scenario_path);
             let (output, is_error) =
                 tools::execute_track(&["prime".to_string()], &settings.scenario_path);
+            let _ = std::fs::write(settings.scenario_path.join("call_log.jsonl"), "");
             if is_error || output.trim().is_empty() {
                 String::new()
             } else {
-                format!("---\n\n{}\n---\n\n", output.trim_end())
+                format!(
+                    "## Project briefing (printed by `track prime` at session start)\n\n```\n{}\n```\n\n\
+                     `track guide` lists reference topics; `track <command> -h` shows a command's options.\n\n",
+                    output.trim_end()
+                )
             }
         }
         ContextMode::Skill => match load_skill_file() {

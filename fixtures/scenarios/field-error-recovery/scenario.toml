@@ -1,0 +1,43 @@
+# Field Error Recovery Scenario
+# Tests: recovering from a wrong field name or value using the error's own hint
+
+[scenario]
+name = "field-error-recovery"
+description = "Set fields whose names and values differ from what the task casually calls them"
+backend = "youtrack"
+difficulty = "medium"
+tags = ["validation", "errors", "fields"]
+
+[setup]
+prompt = """
+You have access to a YouTrack instance with project DEMO.
+
+Task:
+1. Raise the priority of issue DEMO-1 to the highest level the project has.
+2. Mark issue DEMO-2 as belonging to the documentation area.
+"""
+default_project = "DEMO"
+cache_available = true
+hints = """
+- This project has no "Priority" field; an error from track lists the fields and values that exist
+- Fields: Severity (Minor, Normal, Major, Blocker), Area (Backend, Frontend, Docs)
+"""
+
+[expected_outcomes]
+severity_raised = { method_called = "update_issue", issue = "DEMO-1", contains = "Severity=Blocker" }
+area_set = { method_called = "update_issue", issue = "DEMO-2", contains = "Area=Docs" }
+
+[scoring]
+min_commands = 2
+max_commands = 8
+optimal_commands = 2
+base_score = 100
+output_byte_budget = 2500
+
+[scoring.penalties]
+extra_command = -5
+command_error = -15
+
+[scoring.bonuses]
+cache_use = 10
+under_optimal = 5
