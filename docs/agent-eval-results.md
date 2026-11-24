@@ -7,7 +7,60 @@ This document tracks the performance of different AI providers when using the `t
 - **Evaluation Date**: 2026-03-02
 - **Max Turns**: 20
 - **Min Passing Score**: 70%
-- **Total Scenarios**: 21
+- **Total Scenarios**: 21 at the time of the per-provider tables below; 26 now
+
+## Context cost after the agent-efficiency work (track 2.0.0)
+
+**Provider**: `claude-code` · **Date**: 2026-11-24 · single runs
+
+"Skill" gives the agent the skill as installed: before, one 48 KB file; after, the 4.7 KB core
+plus the scenario backend's reference. "Hook" simulates `track agent install`: no skill, the
+`track prime` briefing in the prompt, a warm cache and `TRACK_OUTPUT=agent`. Totals are over
+the 23 scenarios every run completed.
+
+| Run | Passed | Avg score | Backend calls | Turns | Tool output bytes | Prompt per run |
+|-----|--------|-----------|---------------|-------|-------------------|----------------|
+| Before: skill, hints | 21/23 | 87.4% | 186 | 83 | 39031 | 47948 (~11987 tokens) |
+| Before: skill, no hints | 21/23 | 87.6% | 185 | 83 | 33819 | 47767 (~11941 tokens) |
+| After: skill, hints | 20/23 | 85.8% | 189 | 94 | 31891 | 6941 (~1735 tokens) |
+| After: skill, no hints | 21/23 | 86.7% | 189 | 103 | 33848 | 6755 (~1688 tokens) |
+| After: hook, hints | 22/23 | 89.8% | 150 | 110 | 31621 | 1849 (~462 tokens) |
+| After: hook, no hints | 21/23 | 86.2% | 159 | 126 | 35936 | 1663 (~415 tokens) |
+
+The two scenarios added with this work (state names and field names the task does not spell out):
+
+| Scenario | Skill, hints | Skill, no hints | Hook, hints | Hook, no hints |
+|----------|--------------|-----------------|-------------|----------------|
+| state-name-discovery | 100% / 7 calls / 202 B | 80% / 14 calls / 2258 B | 90% / 7 calls / 3499 B | 100% / 5 calls / 269 B |
+| field-error-recovery | 100% / 6 calls / 270 B | 85% / 13 calls / 2123 B | 100% / 2 calls / 90 B | 100% / 2 calls / 89 B |
+
+What this shows, and what it does not:
+
+- **Prompt size is the win.** The context an agent starts with fell from about 12,000 tokens
+  to about 1,700 with the split skill and about 450 with the hook.
+- **Backend calls fell about 17% with the hook** (186 to 150-159), because lookups read through
+  the cache the hook setup warms. With the skill alone the cache is cold and calls are unchanged.
+- **Scores did not move** beyond run-to-run noise. Pass counts differ by one or two scenarios
+  between any two runs of the same configuration.
+- **Tool output did not shrink overall.** Agent-mode output is smaller per command, but with
+  less reference material up front agents ran more exploratory commands (`-h`, `track guide`).
+- **Turns went up**, most with the hook and no hints (83 to 126). The smaller prompt is paid
+  for partly in extra round trips. Whether that trade is worth it depends on the session: the
+  prompt saving is paid on every turn of a long session, the extra turns only once.
+- `issue-batch-operations` fails in every configuration, before and after; it is a scenario
+  problem, not something this work changed.
+- These are single runs. Treat differences of a few points or calls as noise; the prompt-size
+  and backend-call differences are far outside it.
+
+Reproduce with:
+
+```bash
+cargo build -p track -p agent-harness
+./target/debug/track-agent run-all --provider claude-code --context skill --hints off -o json
+./target/debug/track-agent run-all --provider claude-code --context prime --hints off -o json
+```
+
+---
 
 ## Context cost baseline (before the agent-efficiency work)
 
