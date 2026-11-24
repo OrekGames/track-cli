@@ -78,6 +78,15 @@ struct JsonlSuccess<'a> {
     issue: &'a Map<String, Value>,
 }
 
+/// JSONL failure line: a `success` flag plus the same fields, with the same
+/// omissions, as the error's entry in the report's `errors` array.
+#[derive(Serialize)]
+struct JsonlFailure<'a> {
+    success: bool,
+    #[serde(flatten)]
+    error: &'a InspectError,
+}
+
 pub(crate) fn handle_inspect(
     client: &dyn IssueTracker,
     args: &InspectArgs,
@@ -481,12 +490,10 @@ fn output_jsonl_line(outcome: &InspectOutcome) -> Result<()> {
             success: true,
             issue: obj,
         })?,
-        InspectOutcome::Failure(err) => crate::output::jsonl_line(&serde_json::json!({
-            "success": false,
-            "id": err.id,
-            "error": err.error,
-            "code": err.code,
-        }))?,
+        InspectOutcome::Failure(err) => crate::output::jsonl_line(&JsonlFailure {
+            success: false,
+            error: err,
+        })?,
     };
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{}", line)?;
@@ -739,5 +746,29 @@ mod tests {
         });
         assert_eq!((succeeded, failed), (2, 1));
         assert_eq!(outcomes.len(), 3);
+    }
+
+    #[test]
+    fn a_jsonl_failure_line_has_the_shape_of_its_errors_entry() {
+        for code in [None, Some("issue_not_found")] {
+            let error = InspectError {
+                id: "X-1".to_string(),
+                error: "boom".to_string(),
+                code,
+            };
+            let mut entry = serde_json::to_value(&error).unwrap();
+            let line = serde_json::to_value(JsonlFailure {
+                success: false,
+                error: &error,
+            })
+            .unwrap();
+            entry
+                .as_object_mut()
+                .unwrap()
+                .insert("success".to_string(), false.into());
+            assert_eq!(line, entry);
+            // A missing code is left out, as in the `errors` array.
+            assert_eq!(line.get("code").is_some(), code.is_some(), "{line}");
+        }
     }
 }

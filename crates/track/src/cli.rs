@@ -378,8 +378,20 @@ pub enum Commands {
     External(Vec<String>),
 }
 
-/// Shown under every subcommand's help in place of the global options.
-const GLOBAL_OPTIONS_NOTE: &str = "Global options (-o, -b, --select, --config, --no-cache, --error-format, -v, --color, --url, --token): see 'track --help'";
+/// Shown under every subcommand's help in place of the global options:
+/// each one's short flag, or its long one, in the order `track --help`
+/// lists them.
+fn global_options_note(globals: &[clap::Arg]) -> String {
+    let flags: Vec<String> = globals
+        .iter()
+        .filter_map(|arg| {
+            arg.get_short()
+                .map(|short| format!("-{short}"))
+                .or_else(|| arg.get_long().map(|long| format!("--{long}")))
+        })
+        .collect();
+    format!("Global options ({}): see 'track --help'", flags.join(", "))
+}
 
 /// Give every subcommand a hidden copy of each global option.
 ///
@@ -387,7 +399,11 @@ const GLOBAL_OPTIONS_NOTE: &str = "Global options (-o, -b, --select, --config, -
 /// most of what an agent reads when it asks how one command works. An
 /// argument a subcommand already defines is not propagated again, so the
 /// hidden copy is the one its help uses. The options keep working there.
-fn hide_globals_in_subcommands(command: clap::Command, globals: &[clap::Arg]) -> clap::Command {
+fn hide_globals_in_subcommands(
+    command: clap::Command,
+    globals: &[clap::Arg],
+    note: &str,
+) -> clap::Command {
     let names: Vec<String> = command
         .get_subcommands()
         .map(|sub| sub.get_name().to_string())
@@ -405,8 +421,8 @@ fn hide_globals_in_subcommands(command: clap::Command, globals: &[clap::Arg]) ->
                 .filter(|arg| !own.contains(arg.get_id()))
                 .cloned()
                 .map(|arg| arg.hide(true));
-            let sub = sub.args(hidden).after_help(GLOBAL_OPTIONS_NOTE);
-            hide_globals_in_subcommands(sub, globals)
+            let sub = sub.args(hidden).after_help(note.to_string());
+            hide_globals_in_subcommands(sub, globals, note)
         })
     })
 }
@@ -421,7 +437,8 @@ impl Cli {
             .filter(|arg| arg.is_global_set())
             .cloned()
             .collect();
-        hide_globals_in_subcommands(command, &globals)
+        let note = global_options_note(&globals);
+        hide_globals_in_subcommands(command, &globals, &note)
     }
 
     /// Parse the process arguments.
@@ -1366,6 +1383,39 @@ pub enum ArticleCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subcommand_help_names_every_global_option() {
+        let command = Cli::parsing_command();
+        let globals: Vec<&clap::Arg> = command
+            .get_arguments()
+            .filter(|arg| arg.is_global_set())
+            .collect();
+        assert!(globals.len() >= 10, "{} globals", globals.len());
+        let issue = command.find_subcommand("issue").unwrap();
+        for sub in [
+            command.find_subcommand("cache").unwrap(),
+            issue.find_subcommand("get").unwrap(),
+        ] {
+            let note = sub
+                .get_after_help()
+                .expect("a global options note")
+                .to_string();
+            assert!(note.starts_with("Global options (-o, "), "{note}");
+            for arg in &globals {
+                let flag = match (arg.get_short(), arg.get_long()) {
+                    (Some(short), _) => format!("-{short}"),
+                    (None, Some(long)) => format!("--{long}"),
+                    (None, None) => panic!("global {:?} has no flag", arg.get_id()),
+                };
+                assert!(
+                    note.contains(&format!("{flag},")) || note.contains(&format!("{flag})")),
+                    "{} help does not name {flag}: {note}",
+                    sub.get_name()
+                );
+            }
+        }
+    }
 
     #[test]
     fn parses_global_flags_for_issue_get() {

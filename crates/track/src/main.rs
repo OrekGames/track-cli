@@ -104,12 +104,7 @@ fn cli_main() -> ExitCode {
             commands::prime::print_empty_hook_output();
             return ExitCode::SUCCESS;
         }
-        let code = output_error(&e, error_format);
-        if let Some(tip) = output::untrusted_certificate_tip(&format!("{e:#}")) {
-            use colored::Colorize;
-            eprintln!("{} {}", "Tip:".yellow(), tip);
-        }
-        return ExitCode::from(errors::exit_code(code));
+        return ExitCode::from(output_error(&e, error_format).exit_code);
     }
 
     ExitCode::SUCCESS
@@ -142,6 +137,77 @@ fn command_supports_cli_jsonl(command: &Commands) -> bool {
     !matches!(command, Commands::Completions { .. })
 }
 
+/// Whether `command` only reads: running it again changes nothing on the
+/// tracker or on disk, beyond refreshing the local cache. A command not
+/// listed here counts as a write, so that a new command is never reported
+/// as failed after its write was done.
+fn is_read_only(command: &Commands) -> bool {
+    use cli::{
+        AgentCommands, ArticleCommands, BundleCommands, CacheCommands, ConfigCommands,
+        EvalCommands, FieldCommands, IssueCommands, ProjectCommands, TagCommands,
+    };
+    match command {
+        Commands::Issue { action } => matches!(
+            action,
+            IssueCommands::Create { dry_run: true, .. }
+                | IssueCommands::Update { dry_run: true, .. }
+                | IssueCommands::Get { .. }
+                | IssueCommands::Search { .. }
+                | IssueCommands::Inspect { .. }
+                | IssueCommands::Attachments { .. }
+                | IssueCommands::Comments { .. }
+                | IssueCommands::History { .. }
+        ),
+        Commands::Project { action } => matches!(
+            action,
+            ProjectCommands::List | ProjectCommands::Get { .. } | ProjectCommands::Fields { .. }
+        ),
+        Commands::Tags { action } => matches!(action, TagCommands::List),
+        Commands::Cache { action } => matches!(
+            action,
+            CacheCommands::Status | CacheCommands::Show | CacheCommands::Path
+        ),
+        Commands::Eval { action } => matches!(
+            action,
+            EvalCommands::Run { .. }
+                | EvalCommands::RunAll { .. }
+                | EvalCommands::List { .. }
+                | EvalCommands::Show { .. }
+                | EvalCommands::Status
+        ),
+        Commands::Config { action } => matches!(
+            action,
+            ConfigCommands::Get { .. }
+                | ConfigCommands::Show
+                | ConfigCommands::Keys
+                | ConfigCommands::Path
+                | ConfigCommands::Test
+        ),
+        Commands::Article { action } => matches!(
+            action,
+            ArticleCommands::Get { .. }
+                | ArticleCommands::List { .. }
+                | ArticleCommands::Search { .. }
+                | ArticleCommands::Tree { .. }
+                | ArticleCommands::Attachments { .. }
+                | ArticleCommands::Comments { .. }
+        ),
+        Commands::Field { action } => matches!(action, FieldCommands::List),
+        Commands::Bundle { action } => matches!(action, BundleCommands::List { .. }),
+        Commands::Agent { action } => matches!(action, AgentCommands::Status),
+        Commands::Apply { dry_run, .. } => *dry_run,
+        // `External` is `track PROJ-1`, the `issue get` shortcut.
+        Commands::Doctor { .. }
+        | Commands::Workflow { .. }
+        | Commands::Context { .. }
+        | Commands::Prime { .. }
+        | Commands::Guide { .. }
+        | Commands::Completions { .. }
+        | Commands::External(_) => true,
+        Commands::Init { .. } | Commands::Open { .. } => false,
+    }
+}
+
 fn run(cli: Cli) -> Result<()> {
     if cli.format.is_jsonl() && !command_supports_cli_jsonl(&cli.command) {
         return Err(anyhow!(
@@ -162,7 +228,8 @@ fn run(cli: Cli) -> Result<()> {
 
     // `--select` projects whatever JSON a command prints. Text has no
     // fields to select, and a flag with no usable paths is not a successful
-    // no-op projection.
+    // no-op projection. A selection that matches nothing fails a read, but
+    // not a write that is already done.
     if let Some(select) = cli.select.as_deref() {
         if cli.format.output() == cli::OutputFormat::Text {
             return Err(anyhow!(
@@ -173,7 +240,7 @@ fn run(cli: Cli) -> Result<()> {
         if paths.is_empty() {
             return Err(anyhow!("--select requires at least one field path"));
         }
-        output::set_select_paths(paths);
+        output::set_select_paths(paths, is_read_only(&cli.command));
     }
 
     // Handle completions command - no API needed
@@ -317,7 +384,7 @@ fn run(cli: Cli) -> Result<()> {
                 commands::prime::print_empty_hook_output();
                 return Ok(());
             }
-            valid.map_err(|err| errors::coded("not_configured", err))?;
+            valid.map_err(|err| errors::coded(errors::CliCode::NotConfigured, err))?;
         }
         return commands::prime::handle_prime(&commands::prime::PrimeOptions {
             project: project.as_deref(),
@@ -352,7 +419,7 @@ fn run(cli: Cli) -> Result<()> {
 
     config
         .validate(effective_backend)
-        .map_err(|err| errors::coded("not_configured", err))?;
+        .map_err(|err| errors::coded(errors::CliCode::NotConfigured, err))?;
     token_guard::ensure_token_destination_allowed(
         cli.config.as_deref(),
         effective_backend,
@@ -360,7 +427,7 @@ fn run(cli: Cli) -> Result<()> {
         cli.token.as_deref(),
         &config,
     )
-    .map_err(|err| errors::coded("token_refused", err))?;
+    .map_err(|err| errors::coded(errors::CliCode::TokenRefused, err))?;
 
     // Create the appropriate backend client
     let client = build_client(effective_backend, &config)?;
@@ -630,6 +697,47 @@ fn run_with_client(
         }
         Commands::Prime { .. } => {
             unreachable!("Prime command should be handled before API validation")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn read_only(args: &[&str]) -> bool {
+        let cli = Cli::try_parse_from(std::iter::once("track").chain(args.iter().copied()))
+            .unwrap_or_else(|err| panic!("{args:?}: {err}"));
+        is_read_only(&cli.command)
+    }
+
+    #[test]
+    fn writes_are_told_apart_from_reads() {
+        for args in [
+            &["issue", "get", "X-1"][..],
+            &["issue", "search", "q"],
+            &["X-1"],
+            &["article", "list"],
+            &["apply", "plan.json", "--dry-run"],
+            &["issue", "update", "X-1", "--summary", "x", "--dry-run"],
+            &["context"],
+            &["config", "show"],
+        ] {
+            assert!(read_only(args), "{args:?} only reads");
+        }
+        for args in [
+            &["issue", "create", "-s", "x"][..],
+            &["issue", "update", "X-1", "--summary", "x"],
+            &["issue", "delete", "X-1"],
+            &["issue", "comment", "X-1", "-m", "hi"],
+            &["issue", "complete", "X-1"],
+            &["article", "create", "-p", "KB", "-s", "x"],
+            &["apply", "plan.json"],
+            &["cache", "refresh"],
+            &["config", "set", "url", "x"],
+        ] {
+            assert!(!read_only(args), "{args:?} writes");
         }
     }
 }
