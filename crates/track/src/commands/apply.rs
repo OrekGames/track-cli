@@ -1,5 +1,6 @@
 use crate::cli::OutputFormat;
-use crate::commands::issue;
+use crate::commands::issue::{self, IssueFieldsRequest, ValidationMode};
+use crate::lookup::{IssueProject, Lookup};
 use crate::output::output_json;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -15,13 +16,14 @@ pub(crate) struct ApplyOptions<'a> {
     pub(crate) plan_path: &'a Path,
     pub(crate) dry_run: bool,
     pub(crate) validate: bool,
+    pub(crate) no_validate: bool,
     pub(crate) resume_path: Option<&'a Path>,
     pub(crate) allow_delete: bool,
     pub(crate) format: OutputFormat,
     pub(crate) default_project: Option<&'a str>,
 }
 
-pub fn handle_apply(client: &dyn IssueTracker, options: ApplyOptions<'_>) -> Result<()> {
+pub fn handle_apply(lookup: &Lookup, options: ApplyOptions<'_>) -> Result<()> {
     let raw_plan = read_plan_bytes(options.plan_path)?;
     let checksum = plan_checksum(&raw_plan);
     let plan = parse_apply_plan(&raw_plan)?;
@@ -56,12 +58,19 @@ pub fn handle_apply(client: &dyn IssueTracker, options: ApplyOptions<'_>) -> Res
         return Err(anyhow!(first_error(&output)));
     }
 
+    // What the command line says about validation; `None` leaves it to the
+    // plan's `defaults.validate`.
+    let validation = match (options.validate, options.no_validate) {
+        (_, true) => Some(ValidationMode::Off),
+        (true, false) => Some(ValidationMode::Strict),
+        (false, false) => None,
+    };
     let execution = execute_plan(ApplyExecution {
-        client,
+        lookup,
         plan: &plan,
         checksum,
         dry_run: options.dry_run,
-        validate: options.validate,
+        validation,
         resume_path: options.resume_path,
         default_project: options.default_project,
         resumed,
@@ -286,11 +295,11 @@ struct ApplySummary {
 }
 
 struct ApplyExecution<'a> {
-    client: &'a dyn IssueTracker,
+    lookup: &'a Lookup<'a>,
     plan: &'a ApplyPlan,
     checksum: String,
     dry_run: bool,
-    validate: bool,
+    validation: Option<ValidationMode>,
     resume_path: Option<&'a Path>,
     default_project: Option<&'a str>,
     resumed: bool,
@@ -300,9 +309,10 @@ struct ApplyExecution<'a> {
 #[derive(Clone, Copy)]
 struct OperationContext<'a> {
     client: &'a dyn IssueTracker,
+    lookup: &'a Lookup<'a>,
     plan: &'a ApplyPlan,
     dry_run: bool,
-    validate: bool,
+    validation: Option<ValidationMode>,
     default_project: Option<&'a str>,
 }
 
@@ -332,10 +342,11 @@ fn execute_plan(execution: ApplyExecution<'_>) -> Result<ExecutionResult> {
     // its placeholder id, for later operations that need its project schema.
     let mut planned_projects = BTreeMap::new();
     let operation_context = OperationContext {
-        client: execution.client,
+        client: execution.lookup.client(),
+        lookup: execution.lookup,
         plan: execution.plan,
         dry_run: execution.dry_run,
-        validate: execution.validate,
+        validation: execution.validation,
         default_project: execution.default_project,
     };
 
@@ -430,11 +441,11 @@ fn execute_operation(
             parent,
             dedupe,
         } => execute_create_issue(
-            context.client,
+            context.lookup,
             context.plan,
             index,
             context.dry_run,
-            context.validate,
+            context.validation,
             context.default_project,
             refs,
             planned_projects,
@@ -463,11 +474,11 @@ fn execute_operation(
             tags,
             parent,
         } => execute_update_issue(
-            context.client,
+            context.lookup,
             context.plan,
             index,
             context.dry_run,
-            context.validate,
+            context.validation,
             refs,
             planned_projects,
             issue,
@@ -544,11 +555,11 @@ fn execute_operation(
 
 #[allow(clippy::too_many_arguments)]
 fn execute_create_issue(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     plan: &ApplyPlan,
     index: usize,
     dry_run: bool,
-    validate: bool,
+    validation: Option<ValidationMode>,
     default_project: Option<&str>,
     refs: &mut BTreeMap<String, String>,
     planned_projects: &mut BTreeMap<String, String>,
@@ -574,27 +585,24 @@ fn execute_create_issue(
             )
         })?;
 
-    let project_id = client
-        .resolve_project_id(project_input)
-        .with_context(|| format!("Failed to resolve project '{}'", project_input))?;
-    // Generic `fields` need the project schema to detect each field's type.
-    let schema = if fields.is_empty() {
-        None
-    } else {
-        client.get_project_custom_fields(&project_id).ok()
-    };
-    let custom_fields = build_custom_field_updates(
-        fields,
-        raw_custom_fields,
-        state,
-        priority,
-        assignee,
-        schema.as_deref(),
+    let client = lookup.client();
+    let project_id = lookup.project_id(project_input)?;
+    let has_custom_fields = !fields.is_empty()
+        || !raw_custom_fields.is_empty()
+        || state.is_some()
+        || priority.is_some()
+        || assignee.is_some();
+    let custom_fields = issue::build_and_check(
+        lookup,
+        &project_id,
+        effective_validation(validation, plan),
+        // Generic `fields` need the project schema to detect each field's type.
+        !fields.is_empty(),
+        has_custom_fields,
+        |schema| {
+            build_custom_field_updates(fields, raw_custom_fields, state, priority, assignee, schema)
+        },
     )?;
-    let effective_validate = validate || plan.defaults.validate.unwrap_or(false);
-    if effective_validate {
-        issue::validate_custom_fields(client, &project_id, &custom_fields)?;
-    }
 
     if let Some(dedupe) = dedupe {
         let matches = dedupe_matches(client, dedupe)?;
@@ -665,11 +673,11 @@ fn execute_create_issue(
 
 #[allow(clippy::too_many_arguments)]
 fn execute_update_issue(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     plan: &ApplyPlan,
     index: usize,
     dry_run: bool,
-    validate: bool,
+    validation: Option<ValidationMode>,
     refs: &BTreeMap<String, String>,
     planned_projects: &BTreeMap<String, String>,
     issue_ref: &str,
@@ -684,23 +692,31 @@ fn execute_update_issue(
     parent: Option<&str>,
 ) -> Result<ApplyOperationResult> {
     let issue_id = resolve_issue_ref(issue_ref, refs)?;
-    let effective_validate = validate || plan.defaults.validate.unwrap_or(false);
-    // Generic `fields` need the project schema to detect each field's type.
-    let schema_project_id = if fields.is_empty() {
-        None
-    } else {
-        Some(target_project_id(client, &issue_id, planned_projects)?)
-    };
-    let schema = schema_project_id
-        .as_deref()
-        .and_then(|project_id| client.get_project_custom_fields(project_id).ok());
-    let custom_fields = build_custom_field_updates(
-        fields,
-        raw_custom_fields,
-        state,
-        priority,
-        assignee,
-        schema.as_deref(),
+    let client = lookup.client();
+    let has_custom_fields = !fields.is_empty()
+        || !raw_custom_fields.is_empty()
+        || state.is_some()
+        || priority.is_some()
+        || assignee.is_some();
+    let (custom_fields, _) = issue::build_issue_fields(
+        lookup,
+        &issue_id,
+        IssueFieldsRequest {
+            // An issue planned earlier in a dry run does not exist yet; its
+            // project is the one it was planned for.
+            known_project: planned_projects.get(&issue_id).map(|id| IssueProject {
+                id: id.clone(),
+                derived: false,
+            }),
+            mode: effective_validation(validation, plan),
+            // Generic `fields` need the project schema to detect each field's type.
+            fetch_schema: !fields.is_empty(),
+            has_custom_fields,
+            confirm_issue: false,
+        },
+        |schema| {
+            build_custom_field_updates(fields, raw_custom_fields, state, priority, assignee, schema)
+        },
     )?;
     let parent = parent
         .map(|parent| resolve_issue_ref(parent, refs))
@@ -713,14 +729,6 @@ fn execute_update_issue(
         && parent.is_none()
     {
         bail!("update_issue operation must include at least one field to update");
-    }
-
-    if effective_validate && !custom_fields.is_empty() {
-        let project_id = match schema_project_id {
-            Some(project_id) => project_id,
-            None => target_project_id(client, &issue_id, planned_projects)?,
-        };
-        issue::validate_custom_fields(client, &project_id, &custom_fields)?;
     }
 
     let update = UpdateIssue {
@@ -788,22 +796,14 @@ fn build_custom_field_updates(
     Ok(updates)
 }
 
-/// Project id of the issue an update targets. A dry run creates nothing, so
-/// an issue created earlier in the same dry run is looked up in
-/// `planned_projects` rather than fetched from the backend, where it does not
-/// exist.
-fn target_project_id(
-    client: &dyn IssueTracker,
-    issue_id: &str,
-    planned_projects: &BTreeMap<String, String>,
-) -> Result<String> {
-    if let Some(project_id) = planned_projects.get(issue_id) {
-        return Ok(project_id.clone());
-    }
-    let existing = client
-        .get_issue(issue_id)
-        .with_context(|| format!("Failed to fetch issue '{}' for validation", issue_id))?;
-    Ok(existing.project.id)
+/// The validation mode for an operation: the command line wins, then the
+/// plan's `defaults.validate` (`true` strict, `false` off), then the default.
+fn effective_validation(command_line: Option<ValidationMode>, plan: &ApplyPlan) -> ValidationMode {
+    command_line.unwrap_or(match plan.defaults.validate {
+        Some(true) => ValidationMode::Strict,
+        Some(false) => ValidationMode::Off,
+        None => ValidationMode::Default,
+    })
 }
 
 fn dedupe_matches(client: &dyn IssueTracker, dedupe: &Dedupe) -> Result<Vec<Issue>> {

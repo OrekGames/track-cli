@@ -387,10 +387,12 @@ track open PROJ-123         # Open in browser
 track issue get PROJ-123
 track i g PROJ-123 --full
 
-# Create (with validation)
+# Create (fields are validated by default)
 track issue create -p PROJ -s "Summary" -d "Description"
 track i new -s "Subtask" --parent PROJ-100 --priority "Major"
-track i new -p PROJ -s "Title" --field "Priority=Major" --validate
+track i new -p PROJ -s "Title" --field "Priority=Major"
+track i new -p PROJ -s "Title" --field "Priority=Major" --dry-run   # Check only
+track i new -p PROJ -s "Title" --field "Custom=x" --no-validate     # Send as given
 
 # Update (single or batch)
 track issue update PROJ-123 --summary "New title"
@@ -430,6 +432,41 @@ track i ix PROJ-1,PROJ-404 --strict     # Exit non-zero if any issue fails (afte
 track issue delete PROJ-123
 track i del PROJ-1,PROJ-2,PROJ-3        # Batch delete
 ```
+
+#### Field validation
+
+Field updates are checked before they are sent, on every `issue create`, `issue update` and
+`apply` operation:
+
+| Mode | Flag | What is rejected |
+|------|------|------------------|
+| Default | (none) | Only what the backend would reject or silently drop (see below) |
+| Strict | `--validate` | Any field name not in the project schema, and any value not in a listed value set. Failing to fetch the schema is an error |
+| Off | `--no-validate` | Nothing; fields are sent as given |
+
+What the default mode can reject depends on how much a backend's schema says:
+
+| Backend | Unknown field name | Invalid value |
+|---------|--------------------|---------------|
+| YouTrack | Error | Error, for every field with a value list |
+| GitHub, GitLab | Error. Only the state and `Assignee` are settable with field flags; use `--tag` for labels | Error for the state (anything that is not open/closed or an alias of them) |
+| Jira | Warning | Error for `Priority`, `Type` and `Components` when their lists were read from the instance; the status is left to the API |
+| Linear | Warning | Error for the state and `Priority`; assignee, labels and project are left to the API |
+
+An error names the fix: `Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State,
+Priority, Type`, or the list of valid values with the nearest one.
+
+The default check never costs an extra request. It uses the schema the command already needs
+(any `--field` needs it for typing) or a cached one. With only `--state`, `--priority` or
+`--assignee` and no cache, nothing is checked. `--dry-run` no longer needs `--validate`: it
+checks, reports, and writes nothing.
+
+`issue start` and `issue complete` check the state before they write. When the project's state
+field has no state with the backend's default name, the command fails without touching the
+issue and lists the states the project does have (`Invalid value 'Develop' for field 'State'.
+Valid values: Open, In Progress, Done. Pass --state <NAME> to choose one.`). `issue complete`
+without `--state` uses the project's only resolved state when there is exactly one. An explicit
+`--field` skips the check and every lookup.
 
 ### Comments
 
@@ -634,11 +671,36 @@ The cache stores comprehensive tracker context for fast lookups:
 - Issue counts per project and query template
 - Recently accessed issues (LRU, max 50)
 
+**Read-through lookups.** Commands that need a project's id or schema to build a write take
+them from the cache when it holds an answer no older than 24 hours, and write back what they
+had to fetch. After one `track cache refresh`, a validated `issue create` is a single request,
+and so is `issue start`. A cached "no" is never final: before an unknown field or invalid value
+becomes an error, the schema is fetched once more from the tracker. Commands that exist to read
+(`project fields`, `project list`, `tags list`, `issue get`) always ask the tracker, and
+`project fields` and `tags list` refresh the cache with what they read.
+
+| Control | Effect |
+|---------|--------|
+| `--no-cache` or `TRACK_NO_CACHE=1` | Answer every lookup from the tracker |
+| `TRACK_SCHEMA_TTL=7d` | How long a cached schema or project id is trusted (default `24h`) |
+| `TRACK_CACHE_DIR=<path>` | Use this directory as the cache, instead of the project or global one |
+
+**One directory per backend.** The cache lives in `.tracker-cache/<backend>/` (or
+`~/.tracker-cli/cache/<backend>/`), so switching backends in one directory no longer makes each
+refresh overwrite the other. A cache in the old single-directory layout is moved into place the
+first time it is used. Lookups only trust a cache written for the same instance (API endpoint,
+plus the repository or project for GitHub and GitLab).
+
+Built-in templates are fitted to each project whose schema is cached (YouTrack and Jira): they
+use the project's own state field name, and `high_priority`, `in_progress` and `bugs` are built
+from the values the project really has. A template with no fitting value is left out for that
+project, and `-T` says so instead of running a query that matches nothing.
+
 Cached built-in templates are backend-scoped: the cache records which backend wrote it, and
 `workflow list` / template resolution only expose templates whose backend matches the selected
 one. A repository workflow pack (`[workflow_pack]` in `.track.toml`) takes precedence over
 cache-built-ins on name collision (shadowing); pack queries are never written into the cache.
-Run `track cache refresh` after switching backends.
+Each backend keeps its own cache directory, so run `track cache refresh` once per backend.
 
 ### Workflow Packs
 

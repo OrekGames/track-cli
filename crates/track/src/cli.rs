@@ -38,6 +38,10 @@ pub struct Cli {
     #[arg(long, env = "TRACKER_TOKEN", global = true)]
     pub token: Option<String>,
 
+    /// Answer project lookups from the tracker instead of the local cache
+    #[arg(long, global = true)]
+    pub no_cache: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -271,9 +275,13 @@ pub enum Commands {
         /// Parse, resolve, validate, and dedupe-check without mutating
         #[arg(long)]
         dry_run: bool,
-        /// Validate custom fields against project schema before create/update writes
-        #[arg(long)]
+        /// Strict validation of custom fields before create/update writes: every
+        /// name and listed value must match the project schema
+        #[arg(long, conflicts_with = "no_validate")]
         validate: bool,
+        /// Skip the default field validation and send the fields as given
+        #[arg(long)]
+        no_validate: bool,
         /// Explicit JSON resume state path
         #[arg(long, value_name = "PATH")]
         resume: Option<PathBuf>,
@@ -527,14 +535,18 @@ pub enum IssueCommands {
         /// Parent issue ID to create this as a subtask (e.g., PROJ-123)
         #[arg(long, conflicts_with = "json")]
         parent: Option<String>,
-        /// Validate custom fields against project schema before creating
-        #[arg(long)]
+        /// Strict validation: every field name and listed value must match the
+        /// project schema, and failing to fetch the schema is an error
+        #[arg(long, conflicts_with = "no_validate")]
         validate: bool,
-        /// Validate only, do not create the issue (requires --validate)
-        #[arg(long, requires = "validate")]
+        /// Skip the default field validation and send the fields as given
+        #[arg(long)]
+        no_validate: bool,
+        /// Validate only, do not create the issue
+        #[arg(long, conflicts_with = "no_validate")]
         dry_run: bool,
         /// JSON payload for issue creation
-        #[arg(long, conflicts_with_all = ["project", "summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
+        #[arg(long, conflicts_with_all = ["project", "summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "no_validate", "dry_run"], value_name = "JSON")]
         json: Option<String>,
     },
     /// Update existing issue(s) - supports comma-separated IDs for batch updates
@@ -580,14 +592,18 @@ pub enum IssueCommands {
         /// Parent issue ID to set on this issue (e.g., PROJ-123)
         #[arg(long, conflicts_with = "json")]
         parent: Option<String>,
-        /// Validate custom fields against project schema before updating
-        #[arg(long)]
+        /// Strict validation: every field name and listed value must match the
+        /// project schema, and failing to fetch the schema is an error
+        #[arg(long, conflicts_with = "no_validate")]
         validate: bool,
-        /// Validate only, do not update the issue (requires --validate)
-        #[arg(long, requires = "validate")]
+        /// Skip the default field validation and send the fields as given
+        #[arg(long)]
+        no_validate: bool,
+        /// Validate only, do not update the issue
+        #[arg(long, conflicts_with = "no_validate")]
         dry_run: bool,
         /// JSON payload for issue update
-        #[arg(long, conflicts_with_all = ["summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
+        #[arg(long, conflicts_with_all = ["summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "no_validate", "dry_run"], value_name = "JSON")]
         json: Option<String>,
     },
     /// Search issues
@@ -2333,8 +2349,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dry_run_without_validate() {
-        let result = Cli::try_parse_from([
+    fn dry_run_no_longer_needs_validate() {
+        let cli = Cli::parse_from([
             "track",
             "issue",
             "create",
@@ -2345,7 +2361,39 @@ mod tests {
             "--dry-run",
         ]);
 
-        assert!(result.is_err());
+        match cli.command {
+            Commands::Issue {
+                action:
+                    IssueCommands::Create {
+                        validate,
+                        no_validate,
+                        dry_run,
+                        ..
+                    },
+            } => {
+                assert!(dry_run);
+                assert!(!validate);
+                assert!(!no_validate);
+            }
+            _ => panic!("expected issue create"),
+        }
+    }
+
+    #[test]
+    fn no_validate_conflicts_with_validate_and_dry_run() {
+        for flag in ["--validate", "--dry-run"] {
+            let result = Cli::try_parse_from([
+                "track",
+                "issue",
+                "update",
+                "PROJ-1",
+                "--field",
+                "Priority=High",
+                "--no-validate",
+                flag,
+            ]);
+            assert!(result.is_err(), "--no-validate must conflict with {flag}");
+        }
     }
 
     #[test]
@@ -3073,6 +3121,7 @@ mod tests {
                 validate,
                 resume,
                 allow_delete,
+                ..
             } => {
                 assert_eq!(plan, PathBuf::from("plan.json"));
                 assert!(!dry_run);
@@ -3132,6 +3181,7 @@ mod tests {
                 validate,
                 resume,
                 allow_delete,
+                ..
             } => {
                 assert_eq!(plan, PathBuf::from("-"));
                 assert!(dry_run);

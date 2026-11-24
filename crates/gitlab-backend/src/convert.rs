@@ -404,6 +404,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                     ordinal: 1,
                 },
             ],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "assignee".to_string(),
@@ -412,6 +413,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![],
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "labels".to_string(),
@@ -420,6 +422,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![],
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "milestone".to_string(),
@@ -428,6 +431,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![],
             state_values: vec![],
+            values_complete: false,
         },
     ]
 }

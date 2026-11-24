@@ -73,6 +73,7 @@ pub fn handle_cache(
                 default_project,
             )?;
             cache.save(None)?;
+            cache.remember_default_project(client);
 
             match format {
                 cli::OutputFormat::Json => {

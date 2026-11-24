@@ -305,6 +305,7 @@ pub fn team_details_custom_fields(
             required: true,
             values: state_names,
             state_values,
+            values_complete: false,
         },
         ProjectCustomField {
             id: "assignee".to_string(),
@@ -318,6 +319,7 @@ pub fn team_details_custom_fields(
                 .map(linear_user_login)
                 .collect(),
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "priority".to_string(),
@@ -332,6 +334,7 @@ pub fn team_details_custom_fields(
                 "Low".to_string(),
             ],
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "labels".to_string(),
@@ -345,6 +348,7 @@ pub fn team_details_custom_fields(
                 .map(|label| label.name.clone())
                 .collect(),
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "project".to_string(),
@@ -358,6 +362,7 @@ pub fn team_details_custom_fields(
                 .map(|project| project.name.clone())
                 .collect(),
             state_values: vec![],
+            values_complete: false,
         },
     ]
 }

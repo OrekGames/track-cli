@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::models::*;
+use crate::validation::{ValidationRules, ValueCheck};
 
 /// Offset window used by the default `*_all_*` auto-pagination methods.
 const AUTO_PAGINATION_PAGE_SIZE: usize = 100;
@@ -251,6 +252,36 @@ pub trait IssueTracker: Send + Sync {
     /// API return an error by default.
     fn get_issue_history(&self, _issue_id: &str) -> Result<Vec<IssueHistoryEvent>> {
         unsupported("Issue history is not supported by this backend")
+    }
+
+    // ========== Validation ==========
+
+    /// How field names in an update can be checked against the schema.
+    ///
+    /// The default is lenient: an unknown name is only a warning, because a
+    /// write path may accept names its schema does not list.
+    fn validation_rules(&self) -> ValidationRules {
+        ValidationRules::default()
+    }
+
+    /// Whether the write path accepts `value` for `field`.
+    ///
+    /// The default trusts a value list the backend marked complete and
+    /// otherwise declines to judge. Backends whose write path accepts more
+    /// than the list (aliases, ids) override this with the same resolver the
+    /// write path uses.
+    fn check_field_value(&self, field: &ProjectCustomField, value: &str) -> ValueCheck {
+        if field.values_complete {
+            crate::validation::check_membership(field, value)
+        } else {
+            ValueCheck::Unknown
+        }
+    }
+
+    /// True when every project has the same schema and reading it costs no
+    /// request, so the project of an issue need not be looked up first.
+    fn schema_is_project_independent(&self) -> bool {
+        false
     }
 
     // ========== Identity ==========

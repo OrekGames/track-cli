@@ -331,6 +331,39 @@ impl IssueTracker for GitHubClient {
         Ok(github_timeline_to_events(timeline))
     }
 
+    // The write path reads only the state and the assignee from custom
+    // fields; anything else is dropped without a word.
+    fn validation_rules(&self) -> tracker_core::ValidationRules {
+        tracker_core::ValidationRules {
+            names_exhaustive: true,
+            name_aliases: &[("State", "Status"), ("Stage", "Status")],
+            read_only_fields: &[
+                ("Labels", "Use --tag <label> (repeatable) instead."),
+                ("Milestone", "track cannot set milestones yet."),
+            ],
+        }
+    }
+
+    fn check_field_value(
+        &self,
+        field: &ProjectCustomField,
+        value: &str,
+    ) -> tracker_core::ValueCheck {
+        if field.name.eq_ignore_ascii_case("status") {
+            return match crate::convert::normalize_state(value) {
+                Some(_) => tracker_core::ValueCheck::Valid,
+                None => tracker_core::ValueCheck::Invalid {
+                    valid_values: vec!["open".to_string(), "closed".to_string()],
+                },
+            };
+        }
+        tracker_core::ValueCheck::Unknown
+    }
+
+    fn schema_is_project_independent(&self) -> bool {
+        true
+    }
+
     fn current_user(&self) -> Result<Option<User>> {
         let user = self.get_current_user()?;
         // GET /user carries the profile name; fall back to the login.

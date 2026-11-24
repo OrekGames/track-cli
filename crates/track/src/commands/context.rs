@@ -114,6 +114,7 @@ pub fn handle_context(
         let cache = TrackerCache::refresh(client, backend_type, base_url, default_project)
             .context("Failed to refresh cache from API")?;
         cache.save(None)?;
+        cache.remember_default_project(client);
         cache
     } else {
         // Try to load existing cache, refresh if empty
@@ -124,6 +125,7 @@ pub fn handle_context(
             let cache = TrackerCache::refresh(client, backend_type, base_url, default_project)
                 .context("Failed to refresh cache from API")?;
             cache.save(None)?;
+            cache.remember_default_project(client);
             cache
         } else {
             loaded
@@ -134,9 +136,10 @@ pub fn handle_context(
     cache.ensure_all_loaded()?;
 
     let loaded_pack = require_valid_workflow_pack(explicit_config)?;
+    // Templates fitted to the project in view, when its schema is cached.
     let query_templates = super::workflow::overlay_query_templates(
         loaded_pack.as_ref().map(|loaded| &loaded.pack),
-        &cache.query_templates,
+        cache.templates_for(project.or(default_project)),
         backend_type,
     );
     let mut issue_counts = cache.issue_counts.clone();

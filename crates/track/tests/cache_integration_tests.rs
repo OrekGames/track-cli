@@ -93,7 +93,7 @@ fn test_cache_refresh_creates_sharded_directory_layout() {
     let dir = temp_dir();
     populate_cache(&dir);
 
-    let cache_dir = dir.join(".tracker-cache");
+    let cache_dir = dir.join(".tracker-cache").join("youtrack");
 
     // Index
     assert!(
@@ -161,11 +161,12 @@ fn test_cache_refresh_index_contains_version_and_metadata() {
     let dir = temp_dir();
     populate_cache(&dir);
 
-    let index: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(dir.join(".tracker-cache/index.json")).unwrap())
-            .unwrap();
+    let index: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.join(".tracker-cache/youtrack/index.json")).unwrap(),
+    )
+    .unwrap();
 
-    assert_eq!(index["version"], 2);
+    assert_eq!(index["version"], 3);
     assert!(index["updated_at"].is_string());
     assert_eq!(index["backend_metadata"]["backend_type"], "youtrack");
 
@@ -179,7 +180,7 @@ fn test_cache_refresh_project_shard_content() {
 
     // Check project meta
     let meta: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/projects/DEMO/meta.json")).unwrap(),
+        &fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/meta.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(meta["short_name"], "DEMO");
@@ -188,7 +189,7 @@ fn test_cache_refresh_project_shard_content() {
 
     // Check fields
     let fields: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/projects/DEMO/fields.json")).unwrap(),
+        &fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/fields.json")).unwrap(),
     )
     .unwrap();
     let fields_arr = fields.as_array().unwrap();
@@ -209,7 +210,7 @@ fn test_cache_refresh_project_shard_content() {
 
     // Check users
     let users: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/projects/DEMO/users.json")).unwrap(),
+        &fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/users.json")).unwrap(),
     )
     .unwrap();
     let users_arr = users.as_array().unwrap();
@@ -218,7 +219,8 @@ fn test_cache_refresh_project_shard_content() {
 
     // Check workflow
     let workflow: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/projects/DEMO/workflow.json")).unwrap(),
+        &fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/workflow.json"))
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(workflow["project_short_name"], "DEMO");
@@ -238,7 +240,7 @@ fn test_cache_refresh_backend_shard_content() {
 
     // Tags
     let tags: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/backend/tags.json")).unwrap(),
+        &fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/tags.json")).unwrap(),
     )
     .unwrap();
     let tag_names: Vec<&str> = tags
@@ -253,7 +255,7 @@ fn test_cache_refresh_backend_shard_content() {
 
     // Link types
     let link_types: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/backend/link_types.json")).unwrap(),
+        &fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/link_types.json")).unwrap(),
     )
     .unwrap();
     assert!(
@@ -263,7 +265,8 @@ fn test_cache_refresh_backend_shard_content() {
 
     // Query templates
     let templates: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/backend/query_templates.json")).unwrap(),
+        &fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/query_templates.json"))
+            .unwrap(),
     )
     .unwrap();
     let template_names: Vec<&str> = templates
@@ -441,8 +444,8 @@ fn test_cache_path_reports_directory() {
     let path_str = path_str.trim();
 
     assert!(
-        path_str.ends_with(".tracker-cache"),
-        "cache path should end with .tracker-cache, got: {}",
+        std::path::Path::new(path_str).ends_with(".tracker-cache/youtrack"),
+        "cache path should end with .tracker-cache/youtrack, got: {}",
         path_str
     );
 
@@ -461,7 +464,7 @@ fn test_cache_dir_env_overrides_project_and_global_cache() {
         .assert()
         .success();
 
-    assert!(cache_dir.join("index.json").is_file());
+    assert!(cache_dir.join("youtrack/index.json").is_file());
     assert!(
         !dir.join(".tracker-cache").exists(),
         "the project cache must stay untouched when TRACK_CACHE_DIR is set"
@@ -474,7 +477,7 @@ fn test_cache_dir_env_overrides_project_and_global_cache() {
         .unwrap();
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
-        cache_dir.to_string_lossy()
+        cache_dir.join("youtrack").to_string_lossy()
     );
 
     fs::remove_dir_all(&dir).unwrap();
@@ -495,8 +498,8 @@ fn test_cache_path_json_output() {
         .unwrap_or_else(|e| panic!("cache path -o json must print JSON ({e}): {output:?}"));
     let path = json["path"].as_str().unwrap();
     assert!(
-        path.ends_with(".tracker-cache"),
-        "cache path should end with .tracker-cache, got: {}",
+        std::path::Path::new(path).ends_with(".tracker-cache/youtrack"),
+        "cache path should end with .tracker-cache/youtrack, got: {}",
         path
     );
 
@@ -614,11 +617,12 @@ fn test_issue_access_preserves_other_shards() {
     populate_cache(&dir);
 
     // Read all shard files before issue access
-    let tags_before = fs::read_to_string(dir.join(".tracker-cache/backend/tags.json")).unwrap();
+    let tags_before =
+        fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/tags.json")).unwrap();
     let fields_before =
-        fs::read_to_string(dir.join(".tracker-cache/projects/DEMO/fields.json")).unwrap();
+        fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/fields.json")).unwrap();
     let meta_before =
-        fs::read_to_string(dir.join(".tracker-cache/projects/DEMO/meta.json")).unwrap();
+        fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/meta.json")).unwrap();
 
     // Access an issue (triggers record_issue_access + save_runtime)
     let scenario = fixtures_path().join("basic-workflow");
@@ -631,11 +635,12 @@ fn test_issue_access_preserves_other_shards() {
         .success();
 
     // Verify other shards were NOT modified
-    let tags_after = fs::read_to_string(dir.join(".tracker-cache/backend/tags.json")).unwrap();
+    let tags_after =
+        fs::read_to_string(dir.join(".tracker-cache/youtrack/backend/tags.json")).unwrap();
     let fields_after =
-        fs::read_to_string(dir.join(".tracker-cache/projects/DEMO/fields.json")).unwrap();
+        fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/fields.json")).unwrap();
     let meta_after =
-        fs::read_to_string(dir.join(".tracker-cache/projects/DEMO/meta.json")).unwrap();
+        fs::read_to_string(dir.join(".tracker-cache/youtrack/projects/DEMO/meta.json")).unwrap();
 
     assert_eq!(
         tags_before, tags_after,
@@ -652,7 +657,8 @@ fn test_issue_access_preserves_other_shards() {
 
     // But runtime shard should have the accessed issue
     let recent: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(".tracker-cache/runtime/recent_issues.json")).unwrap(),
+        &fs::read_to_string(dir.join(".tracker-cache/youtrack/runtime/recent_issues.json"))
+            .unwrap(),
     )
     .unwrap();
     let recent_arr = recent.as_array().unwrap();
@@ -689,7 +695,7 @@ fn test_corrupted_project_shard_does_not_crash_show() {
 
     // Corrupt one project's fields.json
     fs::write(
-        dir.join(".tracker-cache/projects/DEMO/fields.json"),
+        dir.join(".tracker-cache/youtrack/projects/DEMO/fields.json"),
         "not valid json {{{",
     )
     .unwrap();
@@ -720,7 +726,7 @@ fn test_corrupted_index_still_loads_shards() {
     populate_cache(&dir);
 
     // Corrupt the index (but leave shard files intact)
-    fs::write(dir.join(".tracker-cache/index.json"), "broken").unwrap();
+    fs::write(dir.join(".tracker-cache/youtrack/index.json"), "broken").unwrap();
 
     // Status should still work — ensure_* methods load shards independently.
     // The load() fails on index parse → unwrap_or_default → empty struct,

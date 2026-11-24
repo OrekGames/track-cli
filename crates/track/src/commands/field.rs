@@ -150,6 +150,7 @@ fn handle_new(
     let attached = client
         .attach_field_to_project(&project_id, &attachment)
         .context("Failed to attach field to project")?;
+    crate::cache::with_active_cache(|cache| cache.invalidate_project_schema(&project_id));
 
     // Output result
     #[derive(serde::Serialize)]

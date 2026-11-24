@@ -1385,4 +1385,85 @@ mod tests {
             "expected ProjectNotFound(\"OPS\"), got: {err:?}"
         );
     }
+
+    /// The value forms Linear's write path resolves must pass validation.
+    #[test]
+    fn validation_matches_what_the_write_path_accepts() {
+        use tracker_core::validation::{FieldProblem, validate_fields};
+        use tracker_core::{CustomFieldUpdate, ProjectCustomField};
+
+        let client = LinearClient::with_base_url("http://localhost", "token");
+        let field = |name: &str, field_type: &str, values: &[&str]| ProjectCustomField {
+            id: name.to_lowercase(),
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            required: false,
+            values: values.iter().map(|v| v.to_string()).collect(),
+            state_values: vec![],
+            values_complete: false,
+        };
+        let schema = vec![
+            field("Status", "state[1]", &["Backlog", "Building", "Shipped"]),
+            field(
+                "Priority",
+                "enum[1]",
+                &["No priority", "Urgent", "High", "Medium", "Low"],
+            ),
+            field("Assignee", "user[1]", &["jane@example.com"]),
+            field("Labels", "enum[*]", &["Bug"]),
+        ];
+        let state = |name: &str, value: &str| CustomFieldUpdate::State {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+        let priority = |value: &str| CustomFieldUpdate::SingleEnum {
+            name: "Priority".to_string(),
+            value: value.to_string(),
+        };
+
+        // A state by name, or a word mapped onto the first started/completed state.
+        for (name, value) in [
+            ("Status", "building"),
+            ("State", "In Progress"),
+            ("Stage", "Done"),
+            ("state", "started"),
+        ] {
+            let report = validate_fields(&client, &schema, &[state(name, value)]);
+            assert!(report.is_ok(), "{name}={value}: {:?}", report.errors);
+            assert!(report.warnings.is_empty(), "{name}={value}");
+        }
+        for value in ["high", "Urgent", "normal", "none", "2", "No priority"] {
+            assert!(
+                validate_fields(&client, &schema, &[priority(value)]).is_ok(),
+                "{value}"
+            );
+        }
+        // Assignees resolve by login, name, id or "me": never judged here.
+        let me = CustomFieldUpdate::SingleUser {
+            name: "Assignee".to_string(),
+            login: "me".to_string(),
+        };
+        assert!(validate_fields(&client, &schema, &[me]).is_ok());
+        // Project is accepted by the write path but not in the schema.
+        let project = CustomFieldUpdate::SingleEnum {
+            name: "Project".to_string(),
+            value: "Track CLI".to_string(),
+        };
+        let report = validate_fields(&client, &schema, &[project]);
+        assert!(report.is_ok());
+        assert_eq!(report.warnings.len(), 1);
+
+        assert!(matches!(
+            validate_fields(&client, &schema, &[state("State", "Blocked")])
+                .errors
+                .as_slice(),
+            [FieldProblem::InvalidValue { .. }]
+        ));
+        assert!(matches!(
+            validate_fields(&client, &schema, &[priority("sometime")])
+                .errors
+                .as_slice(),
+            [FieldProblem::InvalidValue { .. }]
+        ));
+    }
 }

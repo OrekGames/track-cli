@@ -1070,20 +1070,46 @@ track workflow validate
 
 ### Field Validation
 
-Validate custom fields before creating/updating (prevents API errors):
+Field updates are checked before they are sent, on every `issue create`, `issue update` and
+`apply` operation:
+
+| Mode | Flag | What is rejected |
+|------|------|------------------|
+| Default | (none) | Only what the backend would reject or silently drop (see below) |
+| Strict | `--validate` | Any field name not in the project schema, and any value not in a listed value set. Failing to fetch the schema is an error |
+| Off | `--no-validate` | Nothing; fields are sent as given |
+
+What the default mode can reject depends on how much a backend's schema says:
+
+| Backend | Unknown field name | Invalid value |
+|---------|--------------------|---------------|
+| YouTrack | Error | Error, for every field with a value list |
+| GitHub, GitLab | Error. Only the state and `Assignee` are settable with field flags; use `--tag` for labels | Error for the state (anything that is not open/closed or an alias of them) |
+| Jira | Warning | Error for `Priority`, `Type` and `Components` when their lists were read from the instance; the status is left to the API |
+| Linear | Warning | Error for the state and `Priority`; assignee, labels and project are left to the API |
+
+An error names the fix: `Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State,
+Priority, Type`, or the list of valid values with the nearest one.
+
+The default check never costs an extra request. It uses the schema the command already needs
+(any `--field` needs it for typing) or a cached one. With only `--state`, `--priority` or
+`--assignee` and no cache, nothing is checked. `--dry-run` no longer needs `--validate`: it
+checks, reports, and writes nothing.
 
 ```bash
-# Validate before creating
-track i new -p PROJ -s "Title" --field "Priority=Major" --validate
-
-# Validate only (dry run - doesn't create)
-track i new -p PROJ -s "Title" --field "Priority=Invalid" --validate --dry-run
+track i new -p PROJ -s "Title" --field "Priority=Major"              # Checked, then created
+track i new -p PROJ -s "Title" --field "Priority=Invalid" --dry-run  # Checked only
 # Error: Invalid value 'Invalid' for field 'Priority'. Valid values: Critical, Major, Normal, Minor
-
-# Validate before updating
-track i u PROJ-123 --field "State=Done" --validate
-track i u PROJ-123 --field "State=Done" --validate --dry-run
+track i u PROJ-123 --field "State=Done" --validate                   # Strict
+track i u PROJ-123 --field "Custom=x" --no-validate                  # Sent as given
 ```
+
+`issue start` and `issue complete` check the state before they write. When the project's state
+field has no state with the backend's default name, the command fails without touching the
+issue and lists the states the project does have (`Invalid value 'Develop' for field 'State'.
+Valid values: Open, In Progress, Done. Pass --state <NAME> to choose one.`). `issue complete`
+without `--state` uses the project's only resolved state when there is exactly one. An explicit
+`--field` skips the check and every lookup.
 
 ### Post-Action Verification & Diffing
 

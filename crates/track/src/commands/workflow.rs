@@ -262,10 +262,20 @@ fn load_cached_templates(backend: &str) -> Option<Vec<CachedQueryTemplate>> {
     {
         return None;
     }
+    // The default project's fitted templates are what `-T` resolves to
+    // without `-p`, so they are what the list shows.
+    let default_project = cache.default_project.clone();
+    if let Some(project) = default_project
+        .as_deref()
+        .and_then(|project| cache.find_project(project))
+    {
+        let _ = cache.ensure_project_shard(&project.short_name);
+    }
     let templates: Vec<CachedQueryTemplate> = cache
-        .query_templates
-        .into_iter()
+        .templates_for(default_project.as_deref())
+        .iter()
         .filter(|template| template.backend.eq_ignore_ascii_case(backend))
+        .cloned()
         .collect();
     if templates.is_empty() {
         None

@@ -2874,4 +2874,55 @@ mod tests {
         assert_eq!(user.login.as_deref(), Some("jdoe"));
         assert_eq!(user.display_name, "Jane Doe");
     }
+
+    /// Every name and state form the write path takes must pass its own
+    /// validation, and what it would drop must not.
+    #[test]
+    fn validation_matches_what_the_write_path_accepts() {
+        use tracker_core::validation::{FieldProblem, validate_fields};
+        use tracker_core::{CustomFieldUpdate, IssueTracker};
+
+        let client = GitLabClient::new("http://localhost", "token", Some("123"));
+        let schema = client.get_project_custom_fields("").unwrap();
+        let state = |name: &str, value: &str| CustomFieldUpdate::State {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+
+        for name in ["Status", "State", "Stage"] {
+            for value in [
+                "Closed",
+                "resolved",
+                "done",
+                "completed",
+                "Open",
+                "opened",
+                "reopen",
+                "reopened",
+                "In Progress",
+                "Develop",
+            ] {
+                let report = validate_fields(&client, &schema, &[state(name, value)]);
+                assert!(report.is_ok(), "{name}={value}: {:?}", report.errors);
+            }
+        }
+
+        // An unrecognised state would leave the issue as it is.
+        assert!(matches!(
+            validate_fields(&client, &schema, &[state("State", "blocked")])
+                .errors
+                .as_slice(),
+            [FieldProblem::InvalidValue { .. }]
+        ));
+        let milestone = CustomFieldUpdate::SingleEnum {
+            name: "Milestone".to_string(),
+            value: "v1".to_string(),
+        };
+        assert!(matches!(
+            validate_fields(&client, &schema, &[milestone])
+                .errors
+                .as_slice(),
+            [FieldProblem::ReadOnlyField { .. }]
+        ));
+    }
 }

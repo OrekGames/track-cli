@@ -425,7 +425,7 @@ fn templates(
         _ => None,
     };
     let builtins: Vec<_> = cache
-        .query_templates
+        .templates_for(project)
         .iter()
         .filter(|template| template.backend.eq_ignore_ascii_case(&backend))
         .cloned()

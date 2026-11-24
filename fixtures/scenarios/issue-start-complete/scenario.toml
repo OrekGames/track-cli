@@ -24,8 +24,9 @@ default_project = "DEMO"
 cache_available = true
 context = """
 Default field for state: "State"
-Default start state: "In Progress"
-Default complete state: "Done"
+This project's states: Open, In Progress, Done
+Without --state, start uses the backend default ("Develop" on YouTrack), which
+this project does not have; complete uses "Done".
 Custom fields can be specified with --field and --state flags.
 """
 

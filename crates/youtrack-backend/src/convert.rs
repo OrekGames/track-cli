@@ -189,6 +189,9 @@ fn project_custom_field_to_core(
         name,
         field_type,
         required: !can_be_empty,
+        // A bundle is the whole set; fields without one (text, user, date)
+        // list nothing and cannot be judged.
+        values_complete: !values.is_empty(),
         values,
         state_values,
     }

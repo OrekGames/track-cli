@@ -149,6 +149,9 @@ fn handle_add_value(
     let created = client
         .add_bundle_values(bundle_id, bt, &[create_value])
         .context("Failed to add value to bundle")?;
+    // Which projects use the bundle is not known here, so every cached
+    // schema is suspect.
+    crate::cache::with_active_cache(|cache| cache.invalidate_all_schemas());
 
     match format {
         OutputFormat::Json => {

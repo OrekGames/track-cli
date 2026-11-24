@@ -69,6 +69,31 @@ track cache refresh --if-stale 1h
 track cache status
 ```
 
+**Read-through lookups.** Commands that need a project's id or schema to build a write take
+them from the cache when it holds an answer no older than 24 hours, and write back what they
+had to fetch. After one `track cache refresh`, a validated `issue create` is a single request,
+and so is `issue start`. A cached "no" is never final: before an unknown field or invalid value
+becomes an error, the schema is fetched once more from the tracker. Commands that exist to read
+(`project fields`, `project list`, `tags list`, `issue get`) always ask the tracker, and
+`project fields` and `tags list` refresh the cache with what they read.
+
+| Control | Effect |
+|---------|--------|
+| `--no-cache` or `TRACK_NO_CACHE=1` | Answer every lookup from the tracker |
+| `TRACK_SCHEMA_TTL=7d` | How long a cached schema or project id is trusted (default `24h`) |
+| `TRACK_CACHE_DIR=<path>` | Use this directory as the cache, instead of the project or global one |
+
+**One directory per backend.** The cache lives in `.tracker-cache/<backend>/` (or
+`~/.tracker-cli/cache/<backend>/`), so switching backends in one directory no longer makes each
+refresh overwrite the other. A cache in the old single-directory layout is moved into place the
+first time it is used. Lookups only trust a cache written for the same instance (API endpoint,
+plus the repository or project for GitHub and GitLab).
+
+Built-in templates are fitted to each project whose schema is cached (YouTrack and Jira): they
+use the project's own state field name, and `high_priority`, `in_progress` and `bugs` are built
+from the values the project really has. A template with no fitting value is left out for that
+project, and `-T` says so instead of running a query that matches nothing.
+
 ## Capability audit
 
 Run `track doctor` at session start when you need to know which backend

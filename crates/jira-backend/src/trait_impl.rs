@@ -296,6 +296,31 @@ impl IssueTracker for JiraClient {
                 status_field.values = values;
                 status_field.state_values = state_values;
             }
+
+            // The same response is grouped by issue type, so it also names
+            // every type the project has.
+            let mut types: Vec<String> = Vec::new();
+            for group in &groups {
+                if !types.contains(&group.name) {
+                    types.push(group.name.clone());
+                }
+            }
+            if !types.is_empty()
+                && let Some(type_field) = standard.iter_mut().find(|f| f.id == "issuetype")
+            {
+                type_field.values = types;
+                type_field.values_complete = true;
+            }
+        }
+
+        // Priorities are defined per instance. Without them the built-in
+        // names stay, as a guess that is never used to reject a value.
+        if let Ok(priorities) = self.list_priorities()
+            && !priorities.is_empty()
+            && let Some(priority_field) = standard.iter_mut().find(|f| f.id == "priority")
+        {
+            priority_field.values = priorities;
+            priority_field.values_complete = true;
         }
 
         // Try to fetch real project components and splice them into the "components" field
@@ -305,6 +330,7 @@ impl IssueTracker for JiraClient {
                 && let Some(components_field) = standard.iter_mut().find(|f| f.id == "components")
             {
                 components_field.values = values;
+                components_field.values_complete = true;
             }
         }
 
@@ -354,6 +380,21 @@ impl IssueTracker for JiraClient {
             .into_iter()
             .map(Into::into)
             .collect())
+    }
+
+    // System fields are writable but not all listed, so names are only
+    // checked for a warning. Status is left to the API: it takes transition
+    // names as well as status names.
+    fn validation_rules(&self) -> tracker_core::ValidationRules {
+        tracker_core::ValidationRules {
+            names_exhaustive: false,
+            name_aliases: &[
+                ("State", "Status"),
+                ("Stage", "Status"),
+                ("issuetype", "Type"),
+            ],
+            read_only_fields: &[],
+        }
     }
 
     fn current_user(&self) -> Result<Option<User>> {

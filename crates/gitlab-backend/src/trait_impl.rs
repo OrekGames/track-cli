@@ -78,6 +78,17 @@ fn assignee_ids(
     }
 }
 
+/// The GitLab `state_event` a state name the CLI may send stands for.
+/// `None` for a name GitLab issues have no equivalent of; the update then
+/// leaves the state alone.
+fn state_event_for(value: &str) -> Option<&'static str> {
+    match value.to_lowercase().as_str() {
+        "closed" | "resolved" | "done" | "completed" => Some("close"),
+        "open" | "opened" | "reopen" | "reopened" | "in progress" | "develop" => Some("reopen"),
+        _ => None,
+    }
+}
+
 impl IssueTracker for GitLabClient {
     fn get_issue(&self, id: &str) -> Result<Issue> {
         let iid = parse_issue_iid(id)?;
@@ -172,13 +183,7 @@ impl IssueTracker for GitLabClient {
                     || name.eq_ignore_ascii_case("state")
                     || name.eq_ignore_ascii_case("stage") =>
             {
-                match value.to_lowercase().as_str() {
-                    "closed" | "resolved" | "done" | "completed" => Some("close".to_string()),
-                    "open" | "opened" | "reopen" | "reopened" | "in progress" | "develop" => {
-                        Some("reopen".to_string())
-                    }
-                    _ => None,
-                }
+                state_event_for(value).map(str::to_string)
             }
             _ => None,
         });
@@ -342,6 +347,39 @@ impl IssueTracker for GitLabClient {
 
     fn list_link_types(&self) -> Result<Vec<IssueLinkType>> {
         Ok(get_gitlab_link_types())
+    }
+
+    // The write path reads only the state and the assignee from custom
+    // fields; anything else is dropped without a word.
+    fn validation_rules(&self) -> tracker_core::ValidationRules {
+        tracker_core::ValidationRules {
+            names_exhaustive: true,
+            name_aliases: &[("State", "Status"), ("Stage", "Status")],
+            read_only_fields: &[
+                ("Labels", "Use --tag <label> (repeatable) instead."),
+                ("Milestone", "track cannot set milestones yet."),
+            ],
+        }
+    }
+
+    fn check_field_value(
+        &self,
+        field: &ProjectCustomField,
+        value: &str,
+    ) -> tracker_core::ValueCheck {
+        if field.name.eq_ignore_ascii_case("status") {
+            return match state_event_for(value) {
+                Some(_) => tracker_core::ValueCheck::Valid,
+                None => tracker_core::ValueCheck::Invalid {
+                    valid_values: vec!["Open".to_string(), "Closed".to_string()],
+                },
+            };
+        }
+        tracker_core::ValueCheck::Unknown
+    }
+
+    fn schema_is_project_independent(&self) -> bool {
+        true
     }
 
     fn current_user(&self) -> Result<Option<User>> {

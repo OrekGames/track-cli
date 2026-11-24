@@ -3,6 +3,8 @@ mod cli;
 mod color;
 mod commands;
 mod config;
+mod fsutil;
+mod lookup;
 mod output;
 mod token_guard;
 
@@ -69,6 +71,27 @@ fn cli_main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// What the configured credentials point at, as the cache records it: a
+/// cache answers lookups only for the instance it was written for.
+fn cache_scope(backend: Backend, config: &Config) -> String {
+    if let Some(mock_dir) = tracker_mock::get_mock_dir() {
+        let dir = std::fs::canonicalize(&mock_dir).unwrap_or(mock_dir);
+        return format!("mock:{}", dir.display());
+    }
+    let endpoint = config.token_endpoint(backend).unwrap_or_default();
+    // GitHub and GitLab clients are bound to one repository or project.
+    let bound_to = match backend {
+        Backend::GitHub => format!(
+            "{}/{}",
+            config.github.owner.as_deref().unwrap_or_default(),
+            config.github.repo.as_deref().unwrap_or_default()
+        ),
+        Backend::GitLab => config.gitlab.project_id.clone().unwrap_or_default(),
+        _ => String::new(),
+    };
+    format!("{}|{}", endpoint.trim_end_matches('/'), bound_to)
 }
 
 /// `-o jsonl` renders the document `-o json` prints, so every command that
@@ -231,6 +254,11 @@ fn run(cli: Cli) -> Result<()> {
             cli.format.output(),
         );
     }
+
+    cache::set_active_backend(
+        &effective_backend.to_string(),
+        cache_scope(effective_backend, &config),
+    );
 
     // Prime is offline too, and in hook mode it only speaks for a directory
     // that is set up for track.
@@ -430,9 +458,13 @@ fn run_with_client(
     config: &Config,
     backend: Backend,
 ) -> Result<()> {
+    if cli.no_cache {
+        lookup::disable_cache();
+    }
+    let lookup = lookup::Lookup::new(issue_client);
     match &cli.command {
         Commands::Issue { action } => commands::issue::handle_issue(
-            issue_client,
+            &lookup,
             action,
             commands::issue::IssueOutput {
                 format: cli.format.output(),
@@ -511,14 +543,16 @@ fn run_with_client(
             plan,
             dry_run,
             validate,
+            no_validate,
             resume,
             allow_delete,
         } => commands::apply::handle_apply(
-            issue_client,
+            &lookup,
             commands::apply::ApplyOptions {
                 plan_path: plan,
                 dry_run: *dry_run,
                 validate: *validate,
+                no_validate: *no_validate,
                 resume_path: resume.as_deref(),
                 allow_delete: *allow_delete,
                 format: cli.format.output(),

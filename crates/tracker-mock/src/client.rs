@@ -354,6 +354,22 @@ impl IssueTracker for MockClient {
         self.get_response("get_project_custom_fields", args, None)
     }
 
+    // Fixtures describe YouTrack-style projects: the schema is the whole truth.
+    fn validation_rules(&self) -> tracker_core::ValidationRules {
+        tracker_core::ValidationRules {
+            names_exhaustive: true,
+            ..Default::default()
+        }
+    }
+
+    fn check_field_value(
+        &self,
+        field: &ProjectCustomField,
+        value: &str,
+    ) -> tracker_core::ValueCheck {
+        tracker_core::validation::check_membership(field, value)
+    }
+
     fn current_user(&self) -> Result<Option<User>> {
         // Optional: scenarios without a `current_user` response have none.
         Ok(self.get_response("current_user", HashMap::new(), None).ok())

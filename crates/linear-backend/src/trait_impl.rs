@@ -171,6 +171,58 @@ impl IssueTracker for LinearClient {
         Ok(team_details_custom_fields(&details))
     }
 
+    // The schema leaves out Project, which the write path accepts, so names
+    // are not exhaustive; Linear's own error names the supported fields.
+    fn validation_rules(&self) -> tracker_core::ValidationRules {
+        tracker_core::ValidationRules {
+            names_exhaustive: false,
+            name_aliases: &[
+                ("State", "Status"),
+                ("Stage", "Status"),
+                ("Tags", "Labels"),
+                ("Tag", "Labels"),
+                ("Label", "Labels"),
+            ],
+            read_only_fields: &[],
+        }
+    }
+
+    fn check_field_value(
+        &self,
+        field: &ProjectCustomField,
+        value: &str,
+    ) -> tracker_core::ValueCheck {
+        use tracker_core::ValueCheck;
+        if is_state_field(&field.name) {
+            // A state by name, or one of the words the write path maps onto
+            // the team's first started or completed state.
+            let known = field
+                .values
+                .iter()
+                .any(|state| unicode_eq_ignore_case(state, value));
+            return if known || state_type_alias(value).is_some() {
+                ValueCheck::Valid
+            } else if field.values.is_empty() {
+                ValueCheck::Unknown
+            } else {
+                ValueCheck::Invalid {
+                    valid_values: field.values.clone(),
+                }
+            };
+        }
+        if field.name.eq_ignore_ascii_case("priority") {
+            return match priority_from_label(value) {
+                Some(_) => ValueCheck::Valid,
+                None => ValueCheck::Invalid {
+                    valid_values: field.values.clone(),
+                },
+            };
+        }
+        // Assignees resolve by login, name or id, and labels may come from
+        // the workspace as well as the team: only the API can tell.
+        ValueCheck::Unknown
+    }
+
     fn current_user(&self) -> Result<Option<User>> {
         Ok(Some(self.viewer()?.into()))
     }
@@ -582,20 +634,7 @@ impl LinearClient {
             return Ok(state.id.clone());
         }
 
-        let lower = value.to_lowercase();
-        let target_type = if matches!(
-            lower.as_str(),
-            "develop" | "started" | "start" | "in progress" | "progress"
-        ) {
-            Some("started")
-        } else if matches!(
-            lower.as_str(),
-            "done" | "complete" | "completed" | "resolved" | "closed"
-        ) {
-            Some("completed")
-        } else {
-            None
-        };
+        let target_type = state_type_alias(value);
 
         if let Some(target_type) = target_type
             && let Some(state) = states.iter().find(|state| state.state_type == target_type)
@@ -687,6 +726,16 @@ impl KnowledgeBase for LinearClient {
 
     fn add_article_comment(&self, _article_id: &str, _text: &str) -> Result<Comment> {
         Err(linear_articles_unsupported())
+    }
+}
+
+/// The Linear state type a generic state word stands for, when the team has
+/// no state of that name.
+fn state_type_alias(value: &str) -> Option<&'static str> {
+    match value.to_lowercase().as_str() {
+        "develop" | "started" | "start" | "in progress" | "progress" => Some("started"),
+        "done" | "complete" | "completed" | "resolved" | "closed" => Some("completed"),
+        _ => None,
     }
 }
 

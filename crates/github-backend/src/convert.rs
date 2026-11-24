@@ -345,6 +345,16 @@ pub fn create_issue_from_core(issue: &CreateIssue) -> CreateGitHubIssue {
     }
 }
 
+/// Map a state name the CLI may send onto GitHub's `open`/`closed`.
+/// `None` for a name GitHub issues have no equivalent of.
+pub fn normalize_state(value: &str) -> Option<&'static str> {
+    match value.to_lowercase().as_str() {
+        "done" | "resolved" | "closed" | "completed" => Some("closed"),
+        "open" | "in progress" | "develop" | "reopened" => Some("open"),
+        _ => None,
+    }
+}
+
 /// Convert a tracker-core UpdateIssue to a GitHub UpdateGitHubIssue
 pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
     // Extract state from custom fields (CLI sends "State" or "Stage", backends may use "Status")
@@ -354,12 +364,8 @@ pub fn update_issue_from_core(update: &UpdateIssue) -> UpdateGitHubIssue {
                 || name.eq_ignore_ascii_case("state")
                 || name.eq_ignore_ascii_case("stage") =>
         {
-            let mapped_value = match value.to_lowercase().as_str() {
-                "done" | "resolved" | "closed" | "completed" => "closed",
-                "open" | "in progress" | "develop" | "reopened" => "open",
-                _ => value.as_str(), // Fallback
-            };
-            Some(mapped_value.to_string())
+            // Unrecognised values are sent as given; GitHub rejects them.
+            Some(normalize_state(value).unwrap_or(value).to_string())
         }
         _ => None,
     });
@@ -456,6 +462,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                     ordinal: 1,
                 },
             ],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "assignee".to_string(),
@@ -464,6 +471,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![],
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "labels".to_string(),
@@ -472,6 +480,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![],
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "milestone".to_string(),
@@ -480,6 +489,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![],
             state_values: vec![],
+            values_complete: false,
         },
     ]
 }

@@ -420,6 +420,16 @@ impl JiraClient {
         self.get_json(&self.api_url(&format!("/project/{}/statuses", project_key)))
     }
 
+    /// GET /rest/api/3/priority: the priorities this instance defines
+    pub fn list_priorities(&self) -> Result<Vec<String>> {
+        #[derive(serde::Deserialize)]
+        struct Priority {
+            name: String,
+        }
+        let priorities: Vec<Priority> = self.get_json(&self.api_url("/priority"))?;
+        Ok(priorities.into_iter().map(|p| p.name).collect())
+    }
+
     /// GET /rest/api/3/project/{projectIdOrKey}/components
     pub fn list_project_components(&self, project_key: &str) -> Result<Vec<JiraComponent>> {
         self.get_json(&self.api_url(&format!("/project/{}/components", project_key)))

@@ -649,6 +649,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                 "Lowest".to_string(),
             ],
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "assignee".to_string(),
@@ -657,6 +658,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![], // Users are fetched separately
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "components".to_string(),
@@ -665,6 +667,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![], // Per-project components are spliced in by the caller
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "status".to_string(),
@@ -693,6 +696,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                     ordinal: 2,
                 },
             ],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "issuetype".to_string(),
@@ -707,6 +711,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                 "Subtask".to_string(),
             ],
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "labels".to_string(),
@@ -715,6 +720,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![], // Labels are created dynamically
             state_values: vec![],
+            values_complete: false,
         },
     ]
 }
@@ -746,6 +752,7 @@ pub fn jira_field_to_project_custom_field(field: &JiraField) -> ProjectCustomFie
         required: false,
         values: vec![],
         state_values: vec![],
+        values_complete: false,
     }
 }
 
@@ -1557,6 +1564,7 @@ mod tests {
                 required: false,
                 values: vec![],
                 state_values: vec![],
+                values_complete: false,
             },
             ProjectCustomField {
                 id: "customfield_10016".to_string(),
@@ -1565,6 +1573,7 @@ mod tests {
                 required: false,
                 values: vec![],
                 state_values: vec![],
+                values_complete: false,
             },
         ];
         let merged = merge_fields(standard, instance);

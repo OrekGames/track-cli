@@ -1345,4 +1345,69 @@ mod tests {
         assert_eq!(user.login.as_deref(), Some("octocat"));
         assert_eq!(user.display_name, "The Octocat");
     }
+
+    /// Every name and state form the write path takes must pass its own
+    /// validation, and what it would drop must not.
+    #[test]
+    fn validation_matches_what_the_write_path_accepts() {
+        use tracker_core::validation::{FieldProblem, validate_fields};
+        use tracker_core::{CustomFieldUpdate, IssueTracker};
+
+        let client = GitHubClient::with_base_url("http://localhost", "owner", "repo", "token");
+        let schema = client.get_project_custom_fields("").unwrap();
+        let state = |name: &str, value: &str| CustomFieldUpdate::State {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+
+        for name in ["Status", "State", "Stage", "status"] {
+            for value in [
+                "open",
+                "closed",
+                "Done",
+                "resolved",
+                "completed",
+                "In Progress",
+                "Develop",
+                "reopened",
+            ] {
+                let report = validate_fields(&client, &schema, &[state(name, value)]);
+                assert!(report.is_ok(), "{name}={value}: {:?}", report.errors);
+                assert!(report.warnings.is_empty(), "{name}={value}");
+            }
+        }
+        let assignee = CustomFieldUpdate::SingleUser {
+            name: "Assignee".to_string(),
+            login: "octocat".to_string(),
+        };
+        assert!(validate_fields(&client, &schema, &[assignee]).is_ok());
+
+        let report = validate_fields(&client, &schema, &[state("State", "blocked")]);
+        assert!(matches!(
+            report.errors.as_slice(),
+            [FieldProblem::InvalidValue { valid_values, .. }] if valid_values == &["open", "closed"]
+        ));
+
+        // The write path reads nothing else from custom fields.
+        let priority = CustomFieldUpdate::SingleEnum {
+            name: "Priority".to_string(),
+            value: "High".to_string(),
+        };
+        assert!(matches!(
+            validate_fields(&client, &schema, &[priority])
+                .errors
+                .as_slice(),
+            [FieldProblem::UnknownField { .. }]
+        ));
+        let labels = CustomFieldUpdate::MultiEnum {
+            name: "Labels".to_string(),
+            values: vec!["bug".to_string()],
+        };
+        assert!(matches!(
+            validate_fields(&client, &schema, &[labels])
+                .errors
+                .as_slice(),
+            [FieldProblem::ReadOnlyField { .. }]
+        ));
+    }
 }

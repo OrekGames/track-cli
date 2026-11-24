@@ -136,6 +136,11 @@ pub struct ProjectCustomField {
     /// State values with workflow metadata (for state-type fields only)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub state_values: Vec<StateValueInfo>,
+    /// True when `values` is the full set the backend accepts for this
+    /// field, so a value outside it can be rejected without asking. False
+    /// for hardcoded or partial lists.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub values_complete: bool,
 }
 
 /// State value with workflow metadata

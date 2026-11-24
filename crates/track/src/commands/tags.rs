@@ -1,6 +1,7 @@
 use crate::cli::{OutputFormat, TagCommands};
 use crate::output::{output_list, output_result};
 use anyhow::{Context, Result};
+use tracker_core::unicode_eq_ignore_case;
 use tracker_core::{CreateTag, IssueTracker};
 
 pub fn handle_tags(
@@ -48,6 +49,9 @@ pub fn handle_tags(
 
 fn handle_list(client: &dyn IssueTracker, format: OutputFormat) -> Result<()> {
     let tags = client.list_tags().context("Failed to list tags")?;
+    crate::cache::with_active_cache(|cache| {
+        let _ = cache.store_tags(&tags);
+    });
 
     output_list(&tags, format)?;
     Ok(())
@@ -67,6 +71,12 @@ fn handle_create(
     };
 
     let created = client.create_tag(&tag).context("Failed to create tag")?;
+    crate::cache::with_active_cache(|cache| {
+        let _ = cache.update_tags(|tags| {
+            tags.retain(|cached| !unicode_eq_ignore_case(&cached.name, &created.name));
+            tags.push(crate::cache::cached_tag_from(&created));
+        });
+    });
 
     output_result(&created, format)?;
     Ok(())
@@ -74,6 +84,11 @@ fn handle_create(
 
 fn handle_delete(client: &dyn IssueTracker, name: &str) -> Result<()> {
     client.delete_tag(name).context("Failed to delete tag")?;
+    crate::cache::with_active_cache(|cache| {
+        let _ = cache.update_tags(|tags| {
+            tags.retain(|cached| !unicode_eq_ignore_case(&cached.name, name));
+        });
+    });
 
     eprintln!("Deleted tag: {}", name);
     Ok(())
@@ -105,6 +120,15 @@ fn handle_update(
     let updated = client
         .update_tag(current_name, &tag)
         .context("Failed to update tag")?;
+    crate::cache::with_active_cache(|cache| {
+        let _ = cache.update_tags(|tags| {
+            tags.retain(|cached| {
+                !unicode_eq_ignore_case(&cached.name, current_name)
+                    && !unicode_eq_ignore_case(&cached.name, &updated.name)
+            });
+            tags.push(crate::cache::cached_tag_from(&updated));
+        });
+    });
 
     output_result(&updated, format)?;
     Ok(())

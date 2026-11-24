@@ -2955,4 +2955,90 @@ mod tests {
         assert_eq!(user.id, "712020:abc");
         assert_eq!(user.display_name, "Jane Doe");
     }
+
+    #[tokio::test]
+    async fn test_trait_project_custom_fields_mark_fetched_lists_complete() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project/PROJ/statuses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "1", "name": "Story", "statuses": [
+                    {"id": "10", "name": "To Do", "statusCategory": {"key": "new", "name": "To Do"}},
+                    {"id": "11", "name": "Shipped", "statusCategory": {"key": "done", "name": "Done"}}
+                ]},
+                {"id": "2", "name": "Defect", "statuses": [
+                    {"id": "10", "name": "To Do", "statusCategory": {"key": "new", "name": "To Do"}}
+                ]}
+            ])))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project/PROJ/components"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "100", "name": "Rendering"}
+            ])))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/priority"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "1", "name": "Blocker"},
+                {"id": "2", "name": "Trivial"}
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::validation::{FieldProblem, validate_fields};
+        use tracker_core::{CustomFieldUpdate, IssueTracker};
+        let fields = IssueTracker::get_project_custom_fields(&client, "PROJ").unwrap();
+        let field = |id: &str| fields.iter().find(|f| f.id == id).unwrap();
+
+        // Lists read from the instance are the whole truth...
+        assert_eq!(field("priority").values, ["Blocker", "Trivial"]);
+        assert!(field("priority").values_complete);
+        assert_eq!(field("issuetype").values, ["Story", "Defect"]);
+        assert!(field("issuetype").values_complete);
+        assert!(field("components").values_complete);
+        // ...but a status can also be reached by a transition name.
+        assert!(!field("status").values_complete);
+
+        let single = |name: &str, value: &str| CustomFieldUpdate::SingleEnum {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+        assert!(validate_fields(&client, &fields, &[single("Priority", "blocker")]).is_ok());
+        assert!(matches!(
+            validate_fields(&client, &fields, &[single("Priority", "High")])
+                .errors
+                .as_slice(),
+            [FieldProblem::InvalidValue { .. }]
+        ));
+        assert!(validate_fields(&client, &fields, &[single("issuetype", "Defect")]).is_ok());
+        // The `--state` shorthand says "State"; Jira calls the field "Status".
+        let state = CustomFieldUpdate::State {
+            name: "State".to_string(),
+            value: "Start Progress".to_string(),
+        };
+        let report = validate_fields(&client, &fields, &[state]);
+        assert!(report.is_ok() && report.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_trait_project_custom_fields_keep_guesses_unverified() {
+        let mock_server = MockServer::start().await;
+        // Every lookup fails: the built-in lists stay, marked as guesses.
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::validation::validate_fields;
+        use tracker_core::{CustomFieldUpdate, IssueTracker};
+        let fields = IssueTracker::get_project_custom_fields(&client, "PROJ").unwrap();
+
+        assert!(fields.iter().all(|f| !f.values_complete));
+        let critical = CustomFieldUpdate::SingleEnum {
+            name: "Priority".to_string(),
+            value: "Critical".to_string(),
+        };
+        assert!(validate_fields(&client, &fields, &[critical]).is_ok());
+    }
 }

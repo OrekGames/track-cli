@@ -81,6 +81,9 @@ fn handle_create(
     let project = client
         .create_project(&create)
         .context("Failed to create project")?;
+    crate::cache::with_active_cache(|cache| {
+        let _ = cache.upsert_project_meta(&project);
+    });
 
     output_result(&project, format)?;
     Ok(())
@@ -109,6 +112,10 @@ fn handle_fields(client: &dyn IssueTracker, id: &str, format: OutputFormat) -> R
     let fields = client
         .get_project_custom_fields(&project_id)
         .with_context(|| format!("Failed to fetch custom fields for project '{}'", id))?;
+    // A fresh schema is exactly what later commands look up.
+    crate::cache::with_active_cache(|cache| {
+        let _ = cache.store_project_schema(&project_id, &fields);
+    });
 
     output_list(&fields, format)?;
     Ok(())
@@ -145,6 +152,7 @@ fn handle_attach_field(
                 field_id, project
             )
         })?;
+    crate::cache::with_active_cache(|cache| cache.invalidate_project_schema(&project_id));
 
     output_result(&attached, format)?;
     Ok(())
