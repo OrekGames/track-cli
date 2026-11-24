@@ -9,6 +9,71 @@ This document tracks the performance of different AI providers when using the `t
 - **Min Passing Score**: 70%
 - **Total Scenarios**: 21
 
+## Context cost baseline (before the agent-efficiency work)
+
+**Provider**: `claude-code` · **Date**: 2026-11-24 · **track**: 1.19.3 plus the measurement changes · **Context**: full skill file
+
+The harness now records what each run cost in context, not only how many backend
+calls it made. `Prompt` is the system prompt plus the task; `Output` is every byte
+of `track` output the agent read. Each scenario ran once with its hints and extra
+context (`--hints on`) and once without (`--hints off`).
+
+| Scenario | Score (hints) | Calls | Output bytes | Score (no hints) | Calls | Output bytes |
+|----------|---------------|-------|--------------|------------------|-------|--------------|
+| article-workflow | 90% | 11 | 1207 | 90% | 11 | 1293 |
+| basic-workflow | 90% | 5 | 1100 | 65% | 9 | 2258 |
+| cache-efficiency | 75% | 12 | 0 | 75% | 12 | 0 |
+| cache-operations | 75% | 12 | 1236 | 75% | 12 | 1236 |
+| config-management | 100% | 3 | 198 | 100% | 3 | 198 |
+| context-aggregation | 90% | 7 | 1273 | 90% | 7 | 1273 |
+| error-recovery | 95% | 4 | 803 | 95% | 4 | 506 |
+| github-basic-workflow | 100% | 4 | 3099 | 100% | 6 | 1153 |
+| issue-batch-operations | 0% | 31 | 6799 | 0% | 30 | 6652 |
+| issue-comments-listing | 90% | 5 | 645 | 90% | 5 | 614 |
+| issue-create-advanced | 100% | 11 | 826 | 100% | 11 | 3606 |
+| issue-delete | 100% | 5 | 255 | 100% | 5 | 436 |
+| issue-get-full | 90% | 8 | 1068 | 100% | 6 | 678 |
+| issue-history | 90% | 3 | 1780 | 90% | 3 | 1788 |
+| issue-linking | 100% | 5 | 2599 | 100% | 3 | 2454 |
+| issue-search-templates | 95% | 11 | 9435 | 95% | 11 | 4270 |
+| issue-start-complete | 90% | 8 | 130 | 90% | 8 | 130 |
+| jira-basic-workflow | 60% | 9 | 2422 | 80% | 7 | 919 |
+| json-output | 100% | 4 | 1859 | 100% | 4 | 1859 |
+| project-operations | 100% | 6 | 1239 | 100% | 6 | 1239 |
+| state-field-resolution | 90% | 6 | 60 | 90% | 6 | 60 |
+| tags-operations | 100% | 7 | 697 | 100% | 7 | 882 |
+| validation-dry-run | 90% | 9 | 301 | 90% | 9 | 315 |
+
+| Totals over 23 scenarios | Hints on | Hints off |
+|---|---|---|
+| Passed | 21/23 | 21/23 |
+| Average score | 87.4% | 87.6% |
+| Backend calls | 186 | 185 |
+| Tool output read | 39031 bytes | 33819 bytes |
+| Prompt per run | 47948 bytes (~11987 tokens) | 47767 bytes (~11941 tokens) |
+
+What this shows:
+
+- The prompt dominates. About 12,000 tokens of every run are the skill file; all the
+  `track` output an agent reads in a scenario averages under 500 tokens.
+- Withholding hints barely moves scores or call counts here, because the skill file
+  already carries the same advice.
+- `gitlab-basic-workflow` uses an older scenario format the harness skips, so 23 of
+  the 24 scenario directories ran.
+- These are single runs. Differences of a call or two between the columns are noise.
+
+Reproduce with:
+
+```bash
+cargo build -p track -p agent-harness
+./target/debug/track-agent run-all --provider claude-code --hints on -o json
+./target/debug/track-agent run-all --provider claude-code --hints off -o json
+```
+
+`--context skill|prime|none` chooses what reference material the agent starts with.
+
+---
+
 ## Results by Provider
 
 ### Claude Code (CLI)
