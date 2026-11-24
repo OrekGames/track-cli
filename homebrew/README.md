@@ -7,11 +7,11 @@ This directory contains the Homebrew formula template for Track CLI. The formula
 ```bash
 brew tap OrekGames/tap
 brew install track
-track init --skills   # optional: install the agent skill for Claude Code, Copilot, Cursor and Gemini CLI
+track agent install   # optional: agent skill for Claude Code, Copilot, Cursor and Gemini CLI, plus a Claude Code session hook
 ```
 
 Homebrew runs post-install steps with an isolated `HOME`, so the formula cannot
-write the agent skill into your home directory; `track init --skills` does that
+write the agent skill into your home directory; `track agent install` does that
 per user. A reference copy is installed at `$(brew --prefix)/share/track/agent-skills/`.
 
 ## Updating

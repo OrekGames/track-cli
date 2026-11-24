@@ -51,12 +51,13 @@ curl -fsSL https://raw.githubusercontent.com/OrekGames/track-cli/v1.15.1/scripts
 $env:TRACK_VERSION = "1.15.1"; irm https://raw.githubusercontent.com/OrekGames/track-cli/v1.15.1/scripts/install.ps1 | iex
 ```
 
-Agent skills are optional and installed explicitly after the CLI is available.
-`track init --skills` installs the bundled `track` reference for Claude Code,
-GitHub Copilot, Cursor, and Gemini CLI:
+Agent setup is optional and done explicitly after the CLI is available.
+`track agent install` installs the bundled `track` skill for Claude Code, GitHub
+Copilot, Cursor, and Gemini CLI, and a Claude Code session hook that prints the
+project briefing at the start of every session:
 
 ```bash
-track init --skills
+track agent install
 ```
 
 ### Homebrew (Package Manager)
@@ -68,8 +69,9 @@ brew install track
 
 Shell completions for bash, zsh, and fish are installed automatically.
 
-To install the agent skill for Claude Code, Copilot, Cursor, and Gemini CLI, run
-`track init --skills` (Homebrew can't write into your home directory itself).
+To set up AI coding agents (the skill for Claude Code, Copilot, Cursor, and Gemini CLI,
+plus a Claude Code session hook), run `track agent install` (Homebrew can't write into your
+home directory itself).
 
 ### From Source
 
@@ -122,10 +124,10 @@ track init --url https://your-domain.atlassian.net --token YOUR_TOKEN --backend 
 track init --url https://linear.app/your-workspace --token YOUR_LINEAR_API_KEY --backend linear --project PROJ
 ```
 
-For AI-assisted workflows, install the agent skill reference once per user:
+For AI-assisted workflows, set up agents once per user:
 
 ```bash
-track init --skills
+track agent install
 ```
 
 This installs guidance for Claude Code, GitHub Copilot, Cursor, and Gemini CLI.
