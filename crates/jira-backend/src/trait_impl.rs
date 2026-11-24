@@ -356,6 +356,10 @@ impl IssueTracker for JiraClient {
             .collect())
     }
 
+    fn current_user(&self) -> Result<Option<User>> {
+        Ok(Some(self.get_current_user()?.into()))
+    }
+
     fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
         Ok(self
             .list_assignable_users(project_id)?

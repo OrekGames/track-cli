@@ -344,6 +344,10 @@ impl IssueTracker for GitLabClient {
         Ok(get_gitlab_link_types())
     }
 
+    fn current_user(&self) -> Result<Option<User>> {
+        Ok(Some(self.get_current_user()?.into()))
+    }
+
     fn list_project_users(&self, _project_id: &str) -> Result<Vec<User>> {
         Ok(self
             .list_project_members()?

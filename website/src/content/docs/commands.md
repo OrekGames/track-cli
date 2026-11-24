@@ -295,6 +295,18 @@ track -b gl i u 42 --assignee 7
 track -b gl i u 42 --assignee ""            # clear
 ```
 
+## Prime (agent briefing)
+
+```bash
+track prime                # Compact briefing: states, required fields, values, users, templates
+track prime -p PROJ        # Brief on another cached project
+track prime --max-values 5 # Tighter cap per field (default 12)
+track -o json prime        # The same facts as JSON
+track prime --hook         # For session hooks: silent unless this directory is a track project
+```
+
+Offline: reads the local cache and config only. See [AI agents](../ai-agents/).
+
 ## Context (aggregated project context)
 
 ```bash

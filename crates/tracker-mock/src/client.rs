@@ -354,6 +354,11 @@ impl IssueTracker for MockClient {
         self.get_response("get_project_custom_fields", args, None)
     }
 
+    fn current_user(&self) -> Result<Option<User>> {
+        // Optional: scenarios without a `current_user` response have none.
+        Ok(self.get_response("current_user", HashMap::new(), None).ok())
+    }
+
     fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
         let args = call_args([("project_id", project_id)]);
         self.get_response("list_project_users", args, None)

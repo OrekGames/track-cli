@@ -1322,4 +1322,27 @@ mod tests {
             Err(tracker_core::TrackerError::InvalidInput(_))
         ));
     }
+
+    #[tokio::test]
+    async fn test_trait_current_user_reads_the_token_owner() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "login": "octocat", "id": 583231, "name": "The Octocat"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitHubClient::with_base_url(&mock_server.uri(), "owner", "repo", "test-token");
+        let user = tracker_core::IssueTracker::current_user(&client)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(user.id, "583231");
+        assert_eq!(user.login.as_deref(), Some("octocat"));
+        assert_eq!(user.display_name, "The Octocat");
+    }
 }

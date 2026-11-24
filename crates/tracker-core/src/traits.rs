@@ -253,6 +253,15 @@ pub trait IssueTracker: Send + Sync {
         unsupported("Issue history is not supported by this backend")
     }
 
+    // ========== Identity ==========
+
+    /// The user the configured credentials authenticate as.
+    ///
+    /// `Ok(None)` (the default) means the backend has no way to tell.
+    fn current_user(&self) -> Result<Option<User>> {
+        Ok(None)
+    }
+
     // ========== Web UI ==========
 
     /// Browser URL of `issue_id`, or of the issue list when `issue_id` is `None`.

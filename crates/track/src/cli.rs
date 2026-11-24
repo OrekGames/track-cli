@@ -245,6 +245,25 @@ pub enum Commands {
         #[arg(long, default_value_t = 10)]
         issue_limit: usize,
     },
+    /// Print a compact briefing for AI agents: this project's states, fields, values and users
+    ///
+    /// Offline: reads the local cache and config only. Run `track cache refresh`
+    /// once to populate it. Meant to be printed at the start of an agent
+    /// session, so it stays within a few hundred tokens.
+    Prime {
+        /// Project to brief on (defaults to the configured default project)
+        #[arg(long, short = 'p')]
+        project: Option<String>,
+
+        /// Session-hook mode: print nothing and exit 0 unless this directory is
+        /// configured for track; never fail
+        #[arg(long)]
+        hook: bool,
+
+        /// Values listed per field before the rest is summarised
+        #[arg(long, default_value_t = crate::commands::prime::DEFAULT_MAX_VALUES, value_name = "N")]
+        max_values: usize,
+    },
     /// Execute a JSON issue-operation plan against the selected backend
     Apply {
         /// Path to a JSON apply plan, or "-" to read from stdin

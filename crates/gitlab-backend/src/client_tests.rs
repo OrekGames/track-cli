@@ -2851,4 +2851,27 @@ mod tests {
         <GitLabClient as IssueTracker>::link_issues(&client, "42", "43", "relates", "outward")
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn test_trait_current_user_reads_the_token_owner() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "username": "jdoe", "name": "Jane Doe"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let user = tracker_core::IssueTracker::current_user(&client)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(user.id, "7");
+        assert_eq!(user.login.as_deref(), Some("jdoe"));
+        assert_eq!(user.display_name, "Jane Doe");
+    }
 }

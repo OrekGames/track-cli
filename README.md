@@ -672,6 +672,28 @@ track i s -T ready -p PROJ
 - An invalid pack fails pack-consuming commands (`-T` search, `workflow` commands) instead
   of silently falling back to built-ins; ordinary commands like `issue get` are unaffected.
 
+### Prime (agent briefing)
+
+```bash
+track prime                # Compact briefing: states, required fields, values, users, templates
+track prime -p PROJ        # Brief on another cached project
+track prime --max-values 5 # Tighter cap per field (default 12)
+track -o json prime        # The same facts as JSON
+track prime --hook         # For session hooks: silent unless this directory is a track project
+```
+
+`track prime` prints what an agent needs before it touches this project: the real state names
+(with the resolved ones marked), the fields required on create, every enum value, assignable
+users, tags, the `-T` templates with counts, and a few commands in the backend's own query
+syntax. It reads only the local cache and config, never the network, and stays within a few
+hundred tokens. Long lists are cut to a cap and say how many entries were left out and which
+command lists them. Run `track cache refresh` once to populate the cache; a cache older than a
+day gets a warning line.
+
+`--hook` is for running it automatically at the start of an agent session: it prints nothing
+and exits 0 unless the current directory has its own `.track.toml` (or `--config` is given),
+and it never fails.
+
 ### Context (AI-Optimized)
 
 ```bash
@@ -683,6 +705,10 @@ track -o json context            # JSON output for parsing
 ```
 
 Single command to get all relevant data: projects, fields, users, query templates, workflow hints, issue counts, and recent issues.
+
+The JSON also says how old that data is: `cache_updated_at`, `cache_age_seconds` and `stale`
+(true after 24 hours). `generated_at` is only when the command ran. `current_user` is the
+account the token belongs to, when the backend reports it.
 
 ## Command Aliases
 

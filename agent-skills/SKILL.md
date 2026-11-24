@@ -708,13 +708,17 @@ track doctor --all-backends -o json  # Per-backend capability audit (recommended
 track config test                  # Quick single-probe alternative
 track -b gh config test            # Override to test specific backend
 
-# 2. Get aggregated context (recommended)
+# 2. Get the project briefing (offline, a few hundred tokens)
+track prime                        # Real state names, required fields, enum values, users, -T templates
+track prime -p PROJ                # Another cached project
+
+# 3. Full aggregated context, when the briefing is not enough
 track context                      # Full context from cache
 track context --refresh            # Force refresh from API
 track context --include-issues     # Include unresolved issues
 track -o json context              # JSON for parsing
 
-# 3. Check cache freshness
+# 4. Check cache freshness
 track cache status
 track cache refresh --if-stale 1h  # Only if older than 1 hour
 ```
@@ -724,6 +728,14 @@ track cache refresh --if-stale 1h  # Only if older than 1 hour
 ---
 
 ## AI-Optimized Features
+
+### Prime Command
+
+`track prime` prints the facts worth knowing before any write: the state field and its states
+(`*` marks resolved ones), fields required on create, every enum value, assignable users, tags
+and `-T` templates with counts. It reads only the local cache. Capped lists end with
+`… +N more (<command>)`; lines starting with `!` are warnings (no cache, another backend's
+cache, or a cache older than a day). `track -o json prime` gives the same as JSON.
 
 ### Context Command
 
@@ -735,6 +747,8 @@ track context --include-issues       # Include unresolved issues
 track context --issue-limit 25       # Limit issues (default: 10)
 track -o json context                # JSON for parsing
 ```
+
+**Freshness**: the JSON has `cache_updated_at`, `cache_age_seconds` and `stale` (true after 24 h); `generated_at` is only when the command ran. `current_user` is the token's account when the backend reports it.
 
 **Output includes**: Backend info, projects, custom fields with enum values, tags/labels, link types, optional `workflow_pack`, query templates (pack first, then unshadowed built-ins), assignable users, workflow hints, issue counts (shadowed built-in names dropped), recent issues.
 

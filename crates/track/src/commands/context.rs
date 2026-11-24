@@ -1,7 +1,7 @@
 use crate::cache::{
     CachedBackendMetadata, CachedIssueCount, CachedLinkType, CachedProject, CachedQueryTemplate,
-    CachedRecentIssue, CachedTag, ProjectFieldsCache, ProjectUsersCache, ProjectWorkflowHints,
-    TrackerCache,
+    CachedRecentIssue, CachedTag, CachedUser, ProjectFieldsCache, ProjectUsersCache,
+    ProjectWorkflowHints, TrackerCache,
 };
 use crate::cli::OutputFormat;
 use crate::config::{LoadedWorkflowPack, pack_query_named, require_valid_workflow_pack};
@@ -18,6 +18,15 @@ use tracker_core::{Issue, IssueTracker, KnowledgeBase};
 pub struct AggregatedContext {
     /// Timestamp when this context was generated
     pub generated_at: String,
+    /// When the cached data below was last fetched from the tracker
+    pub cache_updated_at: Option<String>,
+    /// Age of the cached data in seconds
+    pub cache_age_seconds: Option<i64>,
+    /// True when the cached data is more than a day old
+    pub stale: bool,
+    /// The user the credentials authenticate as, when the backend reports it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_user: Option<CachedUser>,
     /// Backend metadata (type and URL)
     pub backend: Option<CachedBackendMetadata>,
     /// Default project from config
@@ -136,8 +145,13 @@ pub fn handle_context(
     }
 
     // Build aggregated context
+    let cache_age = cache.age();
     let mut context = AggregatedContext {
         generated_at: chrono::Utc::now().to_rfc3339(),
+        cache_updated_at: cache.updated_at.clone(),
+        cache_age_seconds: cache_age.map(|age| age.num_seconds()),
+        stale: cache.is_stale(chrono::Duration::hours(24)),
+        current_user: cache.current_user.clone(),
         backend: cache.backend_metadata.clone(),
         default_project: default_project.map(|s| s.to_string()),
         projects: cache.projects.clone(),
@@ -201,6 +215,23 @@ pub fn handle_context(
         OutputFormat::Text => {
             println!("{}:", "AI Context".white().bold());
             println!("  {}: {}", "Generated".dimmed(), context.generated_at);
+            if context.stale {
+                println!(
+                    "  {}: {} {}",
+                    "Cache".dimmed(),
+                    cache.age_string().yellow(),
+                    "(stale: run 'track cache refresh' or 'track context --refresh')".yellow()
+                );
+            } else {
+                println!("  {}: {}", "Cache".dimmed(), cache.age_string());
+            }
+            if let Some(user) = &context.current_user {
+                println!(
+                    "  {}: {}",
+                    "You".dimmed(),
+                    user.login.as_deref().unwrap_or(&user.display_name).cyan()
+                );
+            }
 
             if let Some(meta) = &context.backend {
                 println!(

@@ -20,6 +20,29 @@ track -o json PROJ-123
 track -o json i s "project: PROJ #Unresolved" --all
 ```
 
+## Session briefing
+
+`track prime` is the cheapest way to make an agent accurate. It prints the
+project's real state names, required fields, enum values, assignable users,
+tags and query templates in a few hundred tokens, entirely from the local
+cache:
+
+```bash
+track prime                # Compact briefing: states, required fields, values, users, templates
+track prime -p PROJ        # Brief on another cached project
+track prime --max-values 5 # Tighter cap per field (default 12)
+track -o json prime        # The same facts as JSON
+track prime --hook         # For session hooks: silent unless this directory is a track project
+```
+
+Long lists are cut to a cap and state how many entries were left out and
+which command lists them. A cache older than a day gets a warning line. Run
+`track cache refresh` once to populate the cache.
+
+With `--hook` the command is safe to run at the start of every agent session:
+it prints nothing unless the current directory has its own `.track.toml`, and
+it never fails.
+
 ## Context aggregation
 
 `track context` returns everything an agent needs to reason about a configured
@@ -34,6 +57,10 @@ track context --project PROJ   # Scope to one project
 track -o json context          # JSON for parsing
 track context --include-issues # Include unresolved issues
 ```
+
+The JSON reports how old its data is (`cache_updated_at`,
+`cache_age_seconds`, `stale`) and, where the backend can tell, the
+`current_user` the token belongs to.
 
 A local cache backs this for fast, low-API-cost lookups:
 

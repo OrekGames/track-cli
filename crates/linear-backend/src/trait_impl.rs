@@ -171,6 +171,10 @@ impl IssueTracker for LinearClient {
         Ok(team_details_custom_fields(&details))
     }
 
+    fn current_user(&self) -> Result<Option<User>> {
+        Ok(Some(self.viewer()?.into()))
+    }
+
     fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
         Ok(self
             .list_team_members(project_id)?

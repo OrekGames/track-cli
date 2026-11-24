@@ -6,7 +6,7 @@ use tracker_core::{
     CreateArticle, CreateIssue, CreateProject, CreateTag, Issue, IssueAttachment,
     IssueHistoryEvent, IssueLink, IssueTag, IssueTracker, KnowledgeBase, Project,
     ProjectCustomField, ProjectRef, Result, SearchResult, Tag, TrackerError, UpdateArticle,
-    UpdateIssue,
+    UpdateIssue, User,
 };
 
 use crate::client::GitHubClient;
@@ -329,6 +329,23 @@ impl IssueTracker for GitHubClient {
         let number = parse_issue_number(issue_id)?;
         let timeline = self.get_issue_timeline(number)?;
         Ok(github_timeline_to_events(timeline))
+    }
+
+    fn current_user(&self) -> Result<Option<User>> {
+        let user = self.get_current_user()?;
+        // GET /user carries the profile name; fall back to the login.
+        let display_name = user
+            .extra
+            .get("name")
+            .and_then(|name| name.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&user.login)
+            .to_string();
+        Ok(Some(User {
+            id: user.id.to_string(),
+            login: Some(user.login),
+            display_name,
+        }))
     }
 
     fn web_url(&self, issue_id: Option<&str>) -> Result<Option<String>> {

@@ -950,7 +950,11 @@ track -b jira config test          # Jira
 track -b gh config test            # GitHub
 track -b gl config test            # GitLab
 
-# 2. Get aggregated context (recommended - single command for all AI context)
+# 2. Get the project briefing (offline, a few hundred tokens)
+track prime                        # States, required fields, enum values, users, templates
+track prime -p PROJ                # Another cached project
+
+# 3. Full aggregated context, when the briefing is not enough
 track context                      # Full context from cache
 track context --refresh            # Force refresh from API
 track context --include-issues     # Include unresolved issues
@@ -959,11 +963,11 @@ track -o json context              # JSON for parsing
 # Alternative: Refresh cache separately
 track cache refresh
 
-# 3. View cached context (includes projects, fields, users, query templates)
+# 4. View cached context (includes projects, fields, users, query templates)
 track cache show                   # Text output
 track -o json cache show           # JSON for parsing
 
-# 4. Get unresolved issues
+# 5. Get unresolved issues
 track -o json i s "project: PROJ #Unresolved" --limit 20                          # YouTrack
 track -b j -o json i s "project = PROJ AND resolution IS EMPTY" --limit 20        # Jira
 track -b gh -o json i s "is:open" --limit 20                                      # GitHub
@@ -995,6 +999,33 @@ track cache refresh
 ---
 
 ## AI-Optimized Features
+
+### Prime Command
+
+`track prime` prints the facts an agent most often gets wrong, from the local cache only:
+
+```
+# track · youtrack · https://yt.example.com · project DEMO (default) · you: jdoe · cache 2h old
+state field: Stage = Backlog → Develop → Done*   (* = resolved)
+required on create: Stage, Priority
+fields:
+  Priority (enum): Low, Normal, High, Critical
+free-form fields: Assignee (user), Estimate (period)
+users: jdoe, asmith
+tags: backend, urgent
+templates (-T): unresolved (42), bugs
+commands:
+  track DEMO-1 --full
+  ...
+```
+
+- Lists are capped (`--max-values N`, default 12 per field; 15 users; 20 tags). A capped line
+  ends with `… +N more (<command that lists them>)`.
+- Lines starting with `!` are warnings: no cache yet, a cache written for another backend, or a
+  cache older than a day.
+- `track -o json prime` gives the same facts as JSON.
+- `track prime --hook` is for session hooks: silent and exit 0 unless the current directory has
+  its own `.track.toml` (or `--config` is given).
 
 ### Context Command
 

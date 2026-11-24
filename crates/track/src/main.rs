@@ -35,13 +35,31 @@ fn main() -> ExitCode {
         .unwrap_or(ExitCode::from(101))
 }
 
+/// Whether the process was started as `track prime --hook`, judged from the
+/// raw arguments so it still holds when they do not parse.
+fn is_prime_hook_invocation<I: IntoIterator<Item = String>>(args: I) -> bool {
+    let args: Vec<String> = args.into_iter().skip(1).collect();
+    args.iter().any(|arg| arg == "prime") && args.iter().any(|arg| arg == "--hook")
+}
+
 fn cli_main() -> ExitCode {
-    let cli = Cli::parse();
+    // A session hook runs in every project, configured for track or not, and
+    // whatever it prints lands in an agent's context. It must stay silent and
+    // succeed even when the arguments or environment do not parse.
+    let quiet_hook = is_prime_hook_invocation(std::env::args());
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(_) if quiet_hook => return ExitCode::SUCCESS,
+        Err(e) => e.exit(),
+    };
 
     // Initialize color mode based on CLI flag and environment
     color::init(cli.color);
 
     if let Err(e) = run(cli) {
+        if quiet_hook {
+            return ExitCode::SUCCESS;
+        }
         output_error(&e);
         if let Some(tip) = output::untrusted_certificate_tip(&format!("{e:#}")) {
             use colored::Colorize;
@@ -212,6 +230,33 @@ fn run(cli: Cli) -> Result<()> {
             &config,
             cli.format.output(),
         );
+    }
+
+    // Prime is offline too, and in hook mode it only speaks for a directory
+    // that is set up for track.
+    if let Commands::Prime {
+        project,
+        hook,
+        max_values,
+    } = &cli.command
+    {
+        let mock = tracker_mock::get_mock_dir().is_some();
+        if !mock {
+            let configured_here = cli.config.is_some() || config::is_project_context();
+            let valid = config.validate(effective_backend);
+            if *hook && !(configured_here && valid.is_ok()) {
+                return Ok(());
+            }
+            valid?;
+        }
+        return commands::prime::handle_prime(&commands::prime::PrimeOptions {
+            project: project.as_deref(),
+            max_values: *max_values,
+            format: cli.format.output(),
+            backend: effective_backend,
+            config: &config,
+            explicit_config: cli.config.as_deref(),
+        });
     }
 
     // Workflow commands are offline: after config load + backend selection,
@@ -504,6 +549,9 @@ fn run_with_client(
         }
         Commands::Workflow { .. } => {
             unreachable!("Workflow command should be handled before API validation")
+        }
+        Commands::Prime { .. } => {
+            unreachable!("Prime command should be handled before API validation")
         }
     }
 }

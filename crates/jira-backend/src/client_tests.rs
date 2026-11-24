@@ -2930,4 +2930,29 @@ mod tests {
         // A success is cached: no fourth request.
         assert_eq!(client.get_fields_cached().len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_trait_current_user_reads_myself() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/myself"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accountId": "712020:abc", "displayName": "Jane Doe", "active": true
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let user = tracker_core::IssueTracker::current_user(&client)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(user.id, "712020:abc");
+        assert_eq!(user.display_name, "Jane Doe");
+    }
 }

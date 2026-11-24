@@ -493,6 +493,11 @@ impl GitLabClient {
     // ==================== Member Operations ====================
 
     /// List every project member, including inherited members (all pages)
+    /// GET /user: the user the token authenticates as
+    pub fn get_current_user(&self) -> Result<GitLabUser> {
+        self.get_json(&format!("{}/user", self.base_url))
+    }
+
     pub fn list_project_members(&self) -> Result<Vec<GitLabUser>> {
         self.get_all_pages("/members/all")
     }

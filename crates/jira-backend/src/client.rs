@@ -339,6 +339,11 @@ impl JiraClient {
         Ok(result.issue_link_types)
     }
 
+    /// GET /rest/api/3/myself: the user the credentials authenticate as
+    pub fn get_current_user(&self) -> Result<JiraUser> {
+        self.get_json(&self.api_url("/myself"))
+    }
+
     /// List users assignable to issues in a project
     pub fn list_assignable_users(&self, project_key: &str) -> Result<Vec<JiraUser>> {
         let url = format!(

@@ -189,6 +189,9 @@ pub struct TrackerCache {
     /// Issue counts per project and template query (populated during refresh)
     #[serde(default)]
     pub issue_counts: Vec<CachedIssueCount>,
+    /// The user the credentials authenticate as, when the backend reports it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_user: Option<CachedUser>,
 
     /// Cache directory path (for lazy loading)
     #[serde(skip)]
@@ -457,6 +460,15 @@ impl TrackerCache {
             &self.query_templates,
         )?;
         Self::write_json_shard(&backend_dir.join("link_types.json"), &self.link_types)?;
+        let me_path = backend_dir.join("me.json");
+        match &self.current_user {
+            Some(user) => Self::write_json_shard(&me_path, user)?,
+            // A refresh that could not tell who is logged in must not leave
+            // an earlier answer behind.
+            None => {
+                let _ = fs::remove_file(&me_path);
+            }
+        }
 
         // 3. Save project shards
         let projects_dir = root.join("projects");
@@ -634,6 +646,7 @@ impl TrackerCache {
             if let Some(link_types) = Self::read_json_shard(&backend_dir.join("link_types.json")) {
                 self.link_types = link_types;
             }
+            self.current_user = Self::read_json_shard(&backend_dir.join("me.json"));
         }
         Ok(())
     }
@@ -901,6 +914,15 @@ impl TrackerCache {
                     description: None,
                 })
                 .collect();
+        }
+
+        // Who the credentials belong to. Optional: not every backend can say.
+        if let Ok(Some(user)) = client.current_user() {
+            cache.current_user = Some(CachedUser {
+                id: user.id,
+                login: user.login,
+                display_name: user.display_name,
+            });
         }
 
         // Fetch link types (instance-level, always fetch all)
