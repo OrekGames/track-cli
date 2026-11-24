@@ -34,7 +34,9 @@ pub fn handle_cache(
                 let max_age = cache::parse_duration(stale_duration)?;
                 let existing_cache = cache::TrackerCache::load(None).unwrap_or_default();
 
-                if !existing_cache.is_stale(max_age) {
+                // A cache written for another instance (the URL changed, or
+                // a committed .tracker-cache/) is out of date however new.
+                if existing_cache.matches_active() && !existing_cache.is_stale(max_age) {
                     // Cache is fresh, skip refresh
                     match format {
                         cli::OutputFormat::Json => {

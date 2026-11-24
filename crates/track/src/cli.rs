@@ -450,21 +450,20 @@ pub enum HookAgent {
     Gemini,
 }
 
+/// The name `--hook=` takes, so the command an installer writes and the one
+/// clap parses cannot drift apart.
 impl std::fmt::Display for HookAgent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Self::Orek => "orek",
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Cursor => "cursor",
-            Self::Antigravity => "antigravity",
-            Self::Gemini => "gemini",
-        };
-        f.write_str(name)
+        f.write_str(
+            self.to_possible_value()
+                .expect("HookAgent has no skipped variants")
+                .get_name(),
+        )
     }
 }
 
-/// A coding agent `track agent install` can set up.
+/// A coding agent `track agent install` can set up. Reported in declaration
+/// order (`ValueEnum::value_variants`).
 #[derive(ValueEnum, Clone, Debug, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AgentTool {
     /// Orek.ai
@@ -481,19 +480,6 @@ pub enum AgentTool {
     Gemini,
     /// GitHub Copilot (skill only; its locations are not verified)
     Copilot,
-}
-
-impl AgentTool {
-    /// Every tool, in the order they are reported.
-    pub const ALL: [AgentTool; 7] = [
-        AgentTool::Orek,
-        AgentTool::Claude,
-        AgentTool::Codex,
-        AgentTool::Cursor,
-        AgentTool::Antigravity,
-        AgentTool::Gemini,
-        AgentTool::Copilot,
-    ];
 }
 
 /// Where agent setup is written.
@@ -535,7 +521,9 @@ pub enum AgentCommands {
         /// Which installation to remove
         #[arg(long, value_enum, default_value_t = AgentScope::User)]
         scope: AgentScope,
-        /// Tools to remove, comma-separated (default: all)
+        /// Tools to remove, comma-separated (default: all). A skill folder or
+        /// instructions file that another tool also reads is kept unless that
+        /// tool is named too
         #[arg(long, value_enum, value_delimiter = ',', value_name = "TOOLS")]
         tools: Vec<AgentTool>,
     },

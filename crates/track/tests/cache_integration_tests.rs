@@ -84,6 +84,27 @@ fn populate_cache(dir: &Path) {
     track_in(dir).args(["cache", "refresh"]).assert().success();
 }
 
+/// Make the cache in `dir` look as if it was written for another instance
+/// of the same backend (the config's URL changed since, or the cache was
+/// committed by someone using another tracker). Returns the index path.
+fn mark_cache_as_another_instance(dir: &Path) -> PathBuf {
+    let index = dir.join(".tracker-cache/youtrack/index.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&index).unwrap()).unwrap();
+    json["backend_metadata"]["scope"] = "https://elsewhere.test|".into();
+    fs::write(&index, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+    index
+}
+
+fn cache_scope_in(index: &Path) -> String {
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(index).unwrap()).unwrap();
+    json["backend_metadata"]["scope"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
 // =============================================================================
 // cache refresh
 // =============================================================================
@@ -515,8 +536,9 @@ fn test_cache_refresh_if_stale_skips_fresh_cache() {
     let dir = temp_dir();
     populate_cache(&dir);
 
-    // Cache was just created, 1d staleness threshold should skip
-    track_in_no_mock(&dir)
+    // Cache was just created, 1d staleness threshold should skip. The run
+    // uses the same (mock) instance the cache was written for.
+    track_in(&dir)
         .args(["cache", "refresh", "--if-stale", "1d"])
         .assert()
         .success()
@@ -530,7 +552,7 @@ fn test_cache_refresh_if_stale_json_output() {
     let dir = temp_dir();
     populate_cache(&dir);
 
-    let output = track_in_no_mock(&dir)
+    let output = track_in(&dir)
         .args(["-o", "json", "cache", "refresh", "--if-stale", "1d"])
         .output()
         .unwrap();
@@ -544,6 +566,30 @@ fn test_cache_refresh_if_stale_json_output() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+#[test]
+fn test_cache_refresh_if_stale_refreshes_a_cache_for_another_instance() {
+    let dir = temp_dir();
+    populate_cache(&dir);
+    let index = mark_cache_as_another_instance(&dir);
+
+    // Minutes old, but not this instance's: it is refreshed, not kept.
+    let output = track_in(&dir)
+        .args(["-o", "json", "cache", "refresh", "--if-stale", "1d"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json.get("skipped").is_none(), "{json}");
+    assert!(cache_scope_in(&index).starts_with("mock:"));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
 // =============================================================================
 // context command
 // =============================================================================
@@ -553,8 +599,8 @@ fn test_context_loads_from_cache() {
     let dir = temp_dir();
     populate_cache(&dir);
 
-    // Context should load from existing cache without needing mock
-    track_in_no_mock(&dir)
+    // Context loads the existing cache written for this (mock) instance
+    track_in(&dir)
         .args(["context"])
         .assert()
         .success()
@@ -569,7 +615,7 @@ fn test_context_json_output_from_cache() {
     let dir = temp_dir();
     populate_cache(&dir);
 
-    let output = track_in_no_mock(&dir)
+    let output = track_in(&dir)
         .args(["-o", "json", "context"])
         .output()
         .unwrap();
@@ -591,7 +637,7 @@ fn test_context_project_filter() {
     let dir = temp_dir();
     populate_cache(&dir);
 
-    let output = track_in_no_mock(&dir)
+    let output = track_in(&dir)
         .args(["-o", "json", "context", "--project", "DEMO"])
         .output()
         .unwrap();
@@ -603,6 +649,35 @@ fn test_context_project_filter() {
     let projects = json["projects"].as_array().unwrap();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0]["short_name"], "DEMO");
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn test_context_refetches_a_cache_written_for_another_instance() {
+    let dir = temp_dir();
+    populate_cache(&dir);
+    let index = mark_cache_as_another_instance(&dir);
+
+    let output = track_in(&dir)
+        .args(["-o", "json", "context"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // What it reports was fetched for this instance, and the cache with it.
+    assert!(
+        json["backend"]["scope"]
+            .as_str()
+            .is_some_and(|scope| scope.starts_with("mock:")),
+        "{json}"
+    );
+    assert!(cache_scope_in(&index).starts_with("mock:"));
 
     fs::remove_dir_all(&dir).unwrap();
 }

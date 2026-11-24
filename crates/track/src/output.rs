@@ -32,6 +32,12 @@ pub fn is_agent() -> bool {
     AGENT_MODE.load(Ordering::Relaxed)
 }
 
+/// The variable that picks the output format when `-o` is not given. The
+/// session hooks and `track agent install` set it to [`OUTPUT_ENV_VALUE`].
+pub(crate) const OUTPUT_ENV: &str = "TRACK_OUTPUT";
+/// What agent setup sets [`OUTPUT_ENV`] to: `-o agent`.
+pub(crate) const OUTPUT_ENV_VALUE: &str = "agent";
+
 /// `--select` paths, set once before dispatch. Every JSON document a command
 /// prints goes through [`output_json`], so projecting there covers them all.
 static SELECT_PATHS: OnceLock<Vec<Vec<String>>> = OnceLock::new();

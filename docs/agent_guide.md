@@ -1027,8 +1027,8 @@ commands:
 
 - Lists are capped (`--max-values N`, default 12 per field; 15 users; 20 tags). A capped line
   ends with `… +N more (<command that lists them>)`.
-- Lines starting with `!` are warnings: no cache yet, a cache written for another backend, or a
-  cache older than a day.
+- Lines starting with `!` are warnings: no cache yet, a cache written for another backend or
+  another instance of it (its data is then not shown), or a cache older than a day.
 - `track -o json prime` gives the same facts as JSON.
 - `track prime --hook=<agent>` is for session-start hooks (`claude`, the default, `codex`,
   `cursor`, `antigravity`, `gemini`, `orek`). It prints that agent's hook JSON, always exits 0,

@@ -28,19 +28,31 @@ fn temp_dir() -> PathBuf {
 
 /// `track` run in `dir/repo` with its home in `dir/home`. Every variable the
 /// installer reads a location from is pinned, so the test sees the same
-/// paths on every platform and on a developer's machine.
+/// paths on every platform and on a developer's machine, and none that a
+/// Claude Code session running the tests sets (`CLAUDE_ENV_FILE`) leaks in.
 fn track(dir: &Path) -> assert_cmd::Command {
     let home = dir.join("home");
     let mut cmd = cargo_bin_cmd!("track");
     cmd.current_dir(dir.join("repo"))
         .env("HOME", &home)
         .env("USERPROFILE", &home)
-        .env("OREK_HOME", home.join("orek"))
-        .env_remove("CODEX_HOME")
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("APPDATA")
-        .env_remove("TRACK_MOCK_DIR")
-        .env_remove("TRACK_OUTPUT");
+        .env("OREK_HOME", home.join("orek"));
+    for var in [
+        "CODEX_HOME",
+        "XDG_CONFIG_HOME",
+        "APPDATA",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "TRACK_MOCK_DIR",
+        "TRACK_CACHE_DIR",
+        "TRACK_OUTPUT",
+        "TRACK_ERROR_FORMAT",
+        "TRACKER_CONFIG",
+        "TRACKER_BACKEND",
+        "CLAUDE_ENV_FILE",
+    ] {
+        cmd.env_remove(var);
+    }
     cmd
 }
 
@@ -158,6 +170,276 @@ fn user_install_sets_up_every_tool_where_its_docs_say() {
     for skills in ["orek/config/skills", ".claude/skills", ".agents/skills"] {
         assert!(!home.join(skills).join("track").exists(), "{skills}");
     }
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn uninstalling_one_tool_keeps_what_the_others_still_read() {
+    let dir = temp_dir();
+    let home = dir.join("home");
+    track(&dir).args(["agent", "install"]).assert().success();
+
+    // Codex shares ~/.agents/skills with Cursor and Gemini CLI.
+    let out = track(&dir)
+        .args(["-o", "json", "agent", "uninstall", "--tools", "codex"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(home.join(".agents/skills/track/SKILL.md").is_file());
+    let kept = report["kept"].as_array().unwrap();
+    assert!(
+        kept.iter().any(|item| {
+            let item = item.as_str().unwrap();
+            item.contains(".agents/skills/track") && item.contains("Cursor and Gemini CLI")
+        }),
+        "{report}"
+    );
+    // What only Codex reads is gone.
+    assert!(!home.join(".codex/hooks.json").exists());
+    assert!(!home.join(".codex/AGENTS.md").exists());
+    assert!(!home.join(".codex/config.toml").exists());
+    let status = status(&dir);
+    assert_eq!(tool_status(&status, 0, "Cursor")["skill"], "current");
+    assert_eq!(tool_status(&status, 0, "Gemini CLI")["skill"], "current");
+
+    // GEMINI.md serves Antigravity and Gemini CLI: it goes once both are named.
+    track(&dir)
+        .args(["agent", "uninstall", "--tools", "gemini"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Kept instructions block in"))
+        .stdout(predicate::str::contains("(Antigravity also reads it)"))
+        .stdout(predicate::str::contains("name those tools in --tools too"));
+    assert!(home.join(".gemini/GEMINI.md").is_file());
+    assert!(!home.join(".gemini/settings.json").exists());
+    track(&dir)
+        .args(["agent", "uninstall", "--tools", "gemini,antigravity"])
+        .assert()
+        .success();
+    assert!(!home.join(".gemini/GEMINI.md").exists());
+    assert!(!home.join(".gemini/config/hooks.json").exists());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn uninstalling_one_tool_from_a_project_keeps_the_shared_agents_md_block() {
+    let dir = temp_dir();
+    let repo = dir.join("repo");
+    track(&dir)
+        .args(["agent", "install", "--scope", "project"])
+        .assert()
+        .success();
+
+    // Every other tool reads AGENTS.md and .agents/skills too.
+    track(&dir)
+        .args([
+            "agent",
+            "uninstall",
+            "--scope",
+            "project",
+            "--tools",
+            "cursor",
+        ])
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(repo.join("AGENTS.md"))
+            .unwrap()
+            .contains("<!-- track:begin")
+    );
+    assert!(repo.join(".agents/skills/track/SKILL.md").is_file());
+    assert!(!repo.join(".cursor").exists());
+    let status = status(&dir);
+    assert_eq!(
+        tool_status(&status, 1, "Codex")["instructions"],
+        "installed"
+    );
+    assert_eq!(tool_status(&status, 1, "Codex")["skill"], "current");
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn uninstall_prunes_only_folders_on_the_named_tools_paths() {
+    let dir = temp_dir();
+    let repo = dir.join("repo");
+    // An empty folder of the user's, for a tool not being set up.
+    fs::create_dir(repo.join(".gemini")).unwrap();
+
+    track(&dir)
+        .args([
+            "agent", "install", "--scope", "project", "--tools", "claude",
+        ])
+        .assert()
+        .success();
+    track(&dir)
+        .args([
+            "agent",
+            "uninstall",
+            "--scope",
+            "project",
+            "--tools",
+            "claude",
+        ])
+        .assert()
+        .success();
+
+    assert!(!repo.join(".claude").exists());
+    assert!(repo.join(".gemini").is_dir());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_settings_file_with_comments_skips_that_file_and_sets_up_the_rest() {
+    // Gemini CLI's settings.json allows comments, which a rewrite would lose.
+    let dir = temp_dir();
+    let home = dir.join("home");
+    let settings = home.join(".gemini/settings.json");
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let commented = "{\n  // my theme\n  \"theme\": \"dark\"\n}\n";
+    fs::write(&settings, commented).unwrap();
+
+    let out = track(&dir)
+        .args(["-o", "json", "agent", "install"])
+        .output()
+        .unwrap();
+
+    // Partial: exit 6, the report on stdout, one JSON error on stderr.
+    assert_eq!(out.status.code(), Some(6));
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["success"], false);
+    let gemini = report["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["tool"] == "Gemini CLI")
+        .unwrap();
+    let error = gemini["errors"][0].as_str().unwrap();
+    assert!(
+        error.contains("settings.json was left unchanged"),
+        "{error}"
+    );
+    assert!(error.contains("comments"), "{error}");
+    let stderr: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(stderr["error"]["code"], "partial_failure");
+
+    // That file is untouched; everything else, Gemini's GEMINI.md included,
+    // is in place.
+    assert_eq!(fs::read_to_string(&settings).unwrap(), commented);
+    assert!(
+        fs::read_to_string(home.join(".gemini/GEMINI.md"))
+            .unwrap()
+            .contains("<!-- track:begin")
+    );
+    assert!(home.join(".agents/skills/track/SKILL.md").is_file());
+    assert!(home.join(".claude/settings.json").is_file());
+    assert!(home.join(".cursor/hooks.json").is_file());
+    assert!(home.join(".gemini/config/hooks.json").is_file());
+
+    // Text mode says the same, and still exits non-zero.
+    track(&dir)
+        .args(["agent", "install", "--tools", "gemini"])
+        .assert()
+        .code(6)
+        .stdout(predicate::str::contains("Not set up:"))
+        .stderr(predicate::str::contains("Code: partial_failure"));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn install_keeps_the_permissions_of_the_users_files_and_folders() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let dir = temp_dir();
+    let repo = dir.join("repo");
+    let home = dir.join("home");
+    fs::set_permissions(&repo, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(repo.join("AGENTS.md"), "# Repo\n").unwrap();
+    fs::set_permissions(repo.join("AGENTS.md"), fs::Permissions::from_mode(0o644)).unwrap();
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    fs::set_permissions(home.join(".claude"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(home.join(".claude/settings.json"), "{}\n").unwrap();
+    fs::set_permissions(
+        home.join(".claude/settings.json"),
+        fs::Permissions::from_mode(0o640),
+    )
+    .unwrap();
+
+    track(&dir)
+        .args(["agent", "install", "--scope", "project", "--tools", "codex"])
+        .assert()
+        .success();
+    track(&dir)
+        .args(["agent", "install", "--tools", "claude"])
+        .assert()
+        .success();
+
+    assert_eq!(mode(&repo), 0o755);
+    assert_eq!(mode(&repo.join("AGENTS.md")), 0o644);
+    assert!(
+        fs::read_to_string(repo.join("AGENTS.md"))
+            .unwrap()
+            .contains("<!-- track:begin")
+    );
+    assert_eq!(mode(&home.join(".claude")), 0o755);
+    assert_eq!(mode(&home.join(".claude/settings.json")), 0o640);
+    // What the installer creates gets the default mode, as anything else
+    // this umask makes would, rather than a private one.
+    let reference = dir.join("reference");
+    fs::write(&reference, "").unwrap();
+    fs::create_dir(dir.join("reference-dir")).unwrap();
+    assert_eq!(mode(&repo.join(".codex/hooks.json")), mode(&reference));
+    assert_eq!(mode(&repo.join(".codex")), mode(&dir.join("reference-dir")));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_settings_file_stays_a_link_to_the_edited_dotfile() {
+    let dir = temp_dir();
+    let home = dir.join("home");
+    let dotfile = home.join("dotfiles/claude-settings.json");
+    fs::create_dir_all(dotfile.parent().unwrap()).unwrap();
+    fs::write(&dotfile, "{\"model\": \"opus\"}\n").unwrap();
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let link = home.join(".claude/settings.json");
+    std::os::unix::fs::symlink("../dotfiles/claude-settings.json", &link).unwrap();
+
+    track(&dir)
+        .args(["agent", "install", "--hooks-only", "--tools", "claude"])
+        .assert()
+        .success();
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let settings = read_json(&dotfile);
+    assert_eq!(settings["model"], "opus");
+    assert_eq!(
+        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "track prime --hook=claude"
+    );
+
+    track(&dir)
+        .args(["agent", "uninstall", "--tools", "claude"])
+        .assert()
+        .success();
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(read_json(&dotfile), serde_json::json!({ "model": "opus" }));
 
     fs::remove_dir_all(&dir).unwrap();
 }

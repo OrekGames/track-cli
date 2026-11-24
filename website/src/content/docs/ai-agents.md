@@ -36,8 +36,10 @@ track prime --hook=claude  # For session hooks (claude, codex, cursor, antigravi
 ```
 
 Long lists are cut to a cap and state how many entries were left out and
-which command lists them. A cache older than a day gets a warning line. Run
-`track cache refresh` once to populate the cache.
+which command lists them. A cache older than a day gets a warning line, and so
+does one written for another instance (a changed URL, a committed
+`.tracker-cache/`), whose data is not shown. Run `track cache refresh` once to
+populate the cache.
 
 With `--hook` the command is safe to run at the start of every agent session:
 it prints nothing unless the current directory has its own `.track.toml`, and
@@ -86,8 +88,10 @@ becomes an error, the schema is fetched once more from the tracker. Commands tha
 **One directory per backend.** The cache lives in `.tracker-cache/<backend>/` (or
 `~/.tracker-cli/cache/<backend>/`), so switching backends in one directory no longer makes each
 refresh overwrite the other. A cache in the old single-directory layout is moved into place the
-first time it is used. Lookups only trust a cache written for the same instance (API endpoint,
-plus the repository or project for GitHub and GitLab).
+first time it is used. Lookups, `track prime`, `track context` and `cache refresh --if-stale`
+only trust a cache written for the same instance (API endpoint, plus the repository or project
+for GitHub and GitLab): `prime` says to refresh any other, `context` fetches afresh, and
+`--if-stale` refreshes it however recent it is.
 
 Built-in templates are fitted to each project whose schema is cached (YouTrack and Jira): they
 use the project's own state field name, and `high_priority`, `in_progress` and `bugs` are built
@@ -210,9 +214,13 @@ Orek's user config folder is `$OREK_HOME/config/` when that is set, else
   static, so it never goes stale; the user-level one applies only in projects with a
   `.track.toml`. A `CLAUDE.md` or `GEMINI.md` that already exists gets an import of `AGENTS.md`
   rather than a second copy.
-- Files are edited in place: key order and everything already in them are kept, a file that
-  does not parse is left untouched, and `uninstall` removes only what `install` added (and any
-  file or folder it created, once empty).
+- Files are edited in place: key order, permissions and everything already in them are kept,
+  and a symlinked settings file stays a link to the file that is edited. A file that is not plain
+  JSON (Gemini CLI allows comments) is left untouched and reported under its tool; everything
+  else is still installed, and the command exits 6.
+- `uninstall` removes only what `install` added (and any file or folder it created, once empty).
+  With `--tools`, a skill folder or instructions block another tool still reads (`AGENTS.md`,
+  `GEMINI.md`, `~/.agents/skills`) is kept, and the output says which tools read it.
 - `--skills-only` and `--hooks-only` install one half. `track init --skills` still works and
   installs the skills for you.
 

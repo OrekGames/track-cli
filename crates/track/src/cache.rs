@@ -16,6 +16,10 @@ use std::thread;
 
 use tracker_core::{IssueTracker, KnowledgeBase};
 
+/// Age past which the agent briefings (`track prime`, `track context`)
+/// report the cache as stale.
+pub const STALE_AFTER: Duration = Duration::hours(24);
+
 /// Directory name of a project's shard under `projects/`.
 ///
 /// Project keys may contain path separators (GitHub `owner/repo`, GitLab
@@ -1649,6 +1653,9 @@ impl TrackerCache {
     }
 
     /// Check if cache is older than the given duration
+    ///
+    /// The briefings (`track prime`, `track context`) call a cache stale past
+    /// [`STALE_AFTER`].
     pub fn is_stale(&self, max_age: Duration) -> bool {
         match self.age() {
             Some(age) => age > max_age,

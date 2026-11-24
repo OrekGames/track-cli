@@ -60,17 +60,22 @@ files were not verified, so nothing else is written for it.
 ## Decisions
 
 - **One skill copy per folder.** Codex, Cursor and Gemini CLI all read `~/.agents/skills`, so
-  they share one copy. Copies earlier versions wrote to `~/.cursor/skills/track` and
+  they share one copy. Copies 1.x (`track init --skills`) wrote to `~/.cursor/skills/track` and
   `~/.gemini/skills/track` are removed (only if their `SKILL.md` says `name: track`), so those
   tools do not load the skill twice. Orek.ai gets its own folder because it is the first one
   Orek reads.
 - **One command, one flag per tool.** `track prime --hook=<tool>` prints exactly one JSON
   document in that tool's format, or `{}` when it has nothing to add. `--hook` alone means
-  `claude`, which keeps hooks written by 1.x working. It never fails: a parse error, a missing
-  config or an invalid pack all print `{}` and exit 0.
+  `claude`. It never fails: a parse error, a missing config or an invalid pack all print `{}`
+  and exit 0.
 - **The hook briefs the session's folder.** It reads `cwd`, `workspace_roots[0]` or
-  `workspacePaths[0]` from stdin (half a second at most, non-terminal stdin only) and moves
-  there before loading config, so a user-level hook briefs the project the agent opened.
+  `workspacePaths[0]` from the JSON object on stdin (non-terminal stdin only; reading stops at
+  the object's closing brace, and waits half a second at most for an agent that sends nothing)
+  and moves there before loading config, so a user-level hook briefs the project the agent
+  opened.
+- **The briefing is this tracker's.** A cache written for another instance (the config's URL or
+  repository changed, or a `.tracker-cache/` was committed) is not used: the briefing says to
+  run `track cache refresh`, and `cache refresh --if-stale` refreshes it however recent it is.
 - **No double briefing in Cursor.** Cursor also runs Claude Code's hooks. The Claude Code hook
   prints `{}` when its input carries `cursor_version` and a Cursor hook of ours is installed.
 - **Instructions without duplication.** Project scope writes the block to `AGENTS.md`, which
@@ -78,15 +83,24 @@ files were not verified, so nothing else is written for it.
   `GEMINI.md` gets a short `@AGENTS.md` import block instead of a copy; none is created. The
   user-level block is conditional ("in a project with a `.track.toml`").
 - **Agent output.** Claude Code: the hook appends `export TRACK_OUTPUT=agent` to
-  `CLAUDE_ENV_FILE` (once). The 1.x `env.TRACK_OUTPUT` entry in Claude settings is removed on
-  install. Cursor: the hook returns it in `env`. Codex: `config.toml` gets
-  `shell_environment_policy.set.TRACK_OUTPUT = "agent"` unless the user set a value.
+  `CLAUDE_ENV_FILE` (once). Cursor: the hook returns it in `env`. Codex: `config.toml` gets
+  `shell_environment_policy.set.TRACK_OUTPUT = "agent"` unless the user set a value. Nothing
+  is written to a settings file's own `env`.
 - **Codex trust.** Codex runs non-managed hooks only after the user trusts them in `/hooks`;
   the installer says so.
 - **Edits are reversible.** JSON files keep their key order and untouched values; TOML is
   edited with `toml_edit`; Markdown only inside the markers. Uninstall removes only what install
-  added, deletes files it leaves empty, and in project scope removes the folders it created
+  added, deletes files it leaves empty, and in project scope removes the folders on those paths
   once they are empty.
+- **The user's files stay the user's.** A file keeps its permissions and a folder is never
+  chmod-ed; a symlinked settings file stays a link, and the file it points at is the one edited
+  (emptied rather than deleted on uninstall). Only track's own cache is written private.
+- **A file that cannot be round-tripped is not rewritten.** A settings file that is not plain
+  JSON (Gemini CLI allows comments) is left byte for byte, reported under its tool, and every
+  other file is still installed; the command then exits 6 (`partial_failure`).
+- **Shared files outlive a single tool.** `uninstall --tools X` keeps a skill folder or
+  instructions block (`~/.agents/skills`, `AGENTS.md`, `GEMINI.md`) while another tool that
+  reads it is not being uninstalled, and says which.
 
 ## Orek.ai session-start hook (proposed)
 
@@ -115,5 +129,5 @@ timeout = 10          # seconds
   nothing. A non-zero exit or a timeout is logged and ignored; it never blocks the session.
 - **Size:** context from hooks capped (Claude Code uses 10,000 characters).
 
-When Orek.ai ships this, `Roots::hook_file` gains its paths and `track agent install` writes
+When Orek.ai ships this, `Roots::hook_target` gains its paths and `track agent install` writes
 the entry; nothing else in `track` changes.

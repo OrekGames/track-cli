@@ -31,8 +31,9 @@ becomes an error, the schema is fetched once more from the tracker. Commands tha
 **One directory per backend.** The cache lives in `.tracker-cache/<backend>/` (or
 `~/.tracker-cli/cache/<backend>/`), so switching backends in one directory no longer makes each
 refresh overwrite the other. A cache in the old single-directory layout is moved into place the
-first time it is used. Lookups only trust a cache written for the same instance (API endpoint,
-plus the repository or project for GitHub and GitLab).
+first time it is used. Lookups, `track prime`, `track context` and `cache refresh --if-stale`
+only trust a cache written for the same instance (API endpoint, plus the repository or project
+for GitHub and GitLab).
 
 **Project context**: When `default_project` is set, cache refresh only fetches detailed data (fields, users, workflows) for that project. Instance-level data (tags, link types, query templates) is always fetched.
 

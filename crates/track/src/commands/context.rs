@@ -1,11 +1,11 @@
 use crate::cache::{
     CachedBackendMetadata, CachedIssueCount, CachedLinkType, CachedProject, CachedQueryTemplate,
     CachedRecentIssue, CachedTag, CachedUser, ProjectFieldsCache, ProjectUsersCache,
-    ProjectWorkflowHints, TrackerCache,
+    ProjectWorkflowHints, STALE_AFTER, TrackerCache,
 };
-use crate::cli::OutputFormat;
+use crate::cli::{Backend, OutputFormat};
 use crate::config::{LoadedWorkflowPack, pack_query_named, require_valid_workflow_pack};
-use crate::output::output_json;
+use crate::output::{AGENT_ISSUE_HEADER, agent_issue_row, output_json};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::Serialize;
@@ -103,44 +103,84 @@ pub fn handle_context(
     include_issues: bool,
     issue_limit: usize,
     format: OutputFormat,
-    backend_type: &str,
-    base_url: &str,
+    backend: Backend,
+    url: Option<&str>,
     default_project: Option<&str>,
     explicit_config: Option<&Path>,
 ) -> Result<()> {
-    // Load or refresh cache
-    let mut cache = if refresh {
-        // Force refresh from API
-        let cache = TrackerCache::refresh(client, backend_type, base_url, default_project)
-            .context("Failed to refresh cache from API")?;
+    let backend_type = backend.to_string();
+    let refresh_from_api = || -> Result<TrackerCache> {
+        let cache = TrackerCache::refresh(
+            client,
+            &backend_type,
+            url.unwrap_or("unknown"),
+            default_project,
+        )
+        .context("Failed to refresh cache from API")?;
         cache.save(None)?;
         cache.remember_default_project(client);
-        cache
+        Ok(cache)
+    };
+
+    let mut cache = if refresh {
+        refresh_from_api()?
     } else {
-        // Try to load existing cache, refresh if empty
         let mut loaded = TrackerCache::load(None).unwrap_or_default();
-        // Ensure we can assess emptiness correctly
         let _ = loaded.ensure_projects();
-        if loaded.projects.is_empty() {
-            let cache = TrackerCache::refresh(client, backend_type, base_url, default_project)
-                .context("Failed to refresh cache from API")?;
-            cache.save(None)?;
-            cache.remember_default_project(client);
-            cache
+        // An empty cache, or one written for another instance (the URL
+        // changed, or a committed .tracker-cache/), is fetched again rather
+        // than presented as this tracker's data.
+        if loaded.projects.is_empty() || !loaded.matches_active() {
+            refresh_from_api()?
         } else {
             loaded
         }
     };
 
+    let loaded_pack = require_valid_workflow_pack(explicit_config)?;
+    let issues_project = project.or(default_project);
+
+    // For an agent the briefing is the context: same cache, a fraction of
+    // the bytes, and nothing cut without a pointer to the rest. It reads
+    // only what it prints, so the aggregate below is never built.
+    if format == OutputFormat::Text && crate::output::is_agent() {
+        print!(
+            "{}",
+            super::prime::briefing(
+                &mut cache,
+                &super::prime::PrimeOptions {
+                    project,
+                    max_values: super::prime::DEFAULT_MAX_VALUES,
+                    format,
+                    backend,
+                    url,
+                    default_project,
+                    explicit_config,
+                    hook: None,
+                },
+            )
+        );
+        if include_issues
+            && let Some(issues) =
+                unresolved_issues(client, &backend_type, issues_project, issue_limit)
+        {
+            println!("unresolved issues ({}):", issues.len());
+            println!("{AGENT_ISSUE_HEADER}");
+            for issue in &issues {
+                println!("{}", agent_issue_row(issue));
+            }
+        }
+        return Ok(());
+    }
+
     // Ensure full data for context output
     cache.ensure_all_loaded()?;
 
-    let loaded_pack = require_valid_workflow_pack(explicit_config)?;
     // Templates fitted to the project in view, when its schema is cached.
     let query_templates = super::workflow::overlay_query_templates(
         loaded_pack.as_ref().map(|loaded| &loaded.pack),
-        cache.templates_for(project.or(default_project)),
-        backend_type,
+        cache.templates_for(issues_project),
+        &backend_type,
     );
     let mut issue_counts = cache.issue_counts.clone();
     if let Some(loaded) = &loaded_pack {
@@ -153,7 +193,7 @@ pub fn handle_context(
         generated_at: chrono::Utc::now().to_rfc3339(),
         cache_updated_at: cache.updated_at.clone(),
         cache_age_seconds: cache_age.map(|age| age.num_seconds()),
-        stale: cache.is_stale(chrono::Duration::hours(24)),
+        stale: cache.is_stale(STALE_AFTER),
         current_user: cache.current_user.clone(),
         backend: cache.backend_metadata.clone(),
         default_project: default_project.map(|s| s.to_string()),
@@ -194,61 +234,14 @@ pub fn handle_context(
 
     // Fetch unresolved issues if requested
     if include_issues {
-        match unresolved_issues_query(backend_type, project.or(default_project)) {
-            Some(query) => match client.search_issues(&query, issue_limit, 0) {
-                Ok(result) => {
-                    context.issues = Some(result.items.iter().map(IssueSummary::from).collect());
-                }
-                Err(e) => {
-                    // Don't fail the whole command, just skip issues
-                    eprintln!("Warning: Failed to fetch issues: {}", e);
-                }
-            },
-            None => eprintln!(
-                "Warning: --include-issues needs --project or a default project; skipping issues"
-            ),
-        }
+        context.issues = unresolved_issues(client, &backend_type, issues_project, issue_limit)
+            .map(|issues| issues.iter().map(IssueSummary::from).collect());
     }
 
     // Output
     match format {
         OutputFormat::Json => {
             output_json(&context)?;
-        }
-        // For an agent the briefing is the context: same cache, a fraction
-        // of the bytes, and nothing cut without a pointer to the rest.
-        OutputFormat::Text if crate::output::is_agent() => {
-            let backend = <crate::cli::Backend as clap::ValueEnum>::from_str(backend_type, true)
-                .unwrap_or_default();
-            print!(
-                "{}",
-                super::prime::briefing(
-                    &mut cache,
-                    &super::prime::PrimeOptions {
-                        project,
-                        max_values: super::prime::DEFAULT_MAX_VALUES,
-                        format,
-                        backend,
-                        url: (base_url != "unknown").then_some(base_url),
-                        default_project,
-                        explicit_config,
-                        hook: None,
-                    },
-                )
-            );
-            if let Some(issues) = &context.issues {
-                println!("unresolved issues ({}):", issues.len());
-                for issue in issues {
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}",
-                        issue.id_readable,
-                        issue.state.as_deref().unwrap_or("-"),
-                        issue.priority.as_deref().unwrap_or("-"),
-                        issue.assignee.as_deref().unwrap_or("-"),
-                        issue.summary
-                    );
-                }
-            }
         }
         OutputFormat::Text => {
             println!("{}:", "AI Context".white().bold());
@@ -489,6 +482,29 @@ pub fn handle_context(
     }
 
     Ok(())
+}
+
+/// The unresolved issues `--include-issues` asks for. A failure to fetch them
+/// is a warning on stderr, not a failed command.
+fn unresolved_issues(
+    client: &dyn IssueTracker,
+    backend_type: &str,
+    project: Option<&str>,
+    limit: usize,
+) -> Option<Vec<Issue>> {
+    let Some(query) = unresolved_issues_query(backend_type, project) else {
+        eprintln!(
+            "Warning: --include-issues needs --project or a default project; skipping issues"
+        );
+        return None;
+    };
+    match client.search_issues(&query, limit, 0) {
+        Ok(result) => Some(result.items),
+        Err(e) => {
+            eprintln!("Warning: Failed to fetch issues: {}", e);
+            None
+        }
+    }
 }
 
 /// Search query for unresolved issues in the backend's query syntax.

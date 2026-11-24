@@ -56,7 +56,11 @@ mkdir -p "$COMPLETIONS_DIR"
 # The binary carries the skill files, so it is the one place they come from.
 echo ""
 echo "Installing agent skills for AI coding tools..."
-"$INSTALL_DIR/$BINARY_NAME" agent install
+# A tool whose settings file cannot be edited (e.g. one with comments) is
+# reported and skipped; the rest is installed. That must not stop this script.
+if ! "$INSTALL_DIR/$BINARY_NAME" agent install; then
+    echo "Warning: some agent setup was skipped (see above). Fix it, then run: track agent install"
+fi
 
 # Create global config template if it doesn't exist
 GLOBAL_CONFIG="$INSTALL_DIR/.track.toml"

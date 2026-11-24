@@ -7,8 +7,11 @@
 //! mechanism gets nothing for it rather than a guess.
 
 use crate::cli::{AgentCommands, AgentScope, AgentTool, HookAgent, OutputFormat};
-use crate::output::output_json;
+use crate::config::{env_path, home_dir};
+use crate::fsutil;
+use crate::output::{OUTPUT_ENV, OUTPUT_ENV_VALUE, output_json};
 use anyhow::{Context, Result, anyhow};
+use clap::ValueEnum;
 use indexmap::IndexMap;
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -92,8 +95,9 @@ const HOOK_COMMAND_PREFIX: &str = "track prime --hook";
 /// Seconds the hook may take. It reads a few small files and never touches
 /// the network.
 const HOOK_TIMEOUT_SECS: u64 = 10;
-const OUTPUT_ENV: &str = "TRACK_OUTPUT";
-const OUTPUT_ENV_VALUE: &str = "agent";
+
+/// The folder the skill is installed as, inside each tool's skills folder.
+const SKILL_NAME: &str = "track";
 
 const BLOCK_START: &str = "<!-- track:begin";
 const BLOCK_BEGIN: &str =
@@ -139,41 +143,25 @@ fn tool_label(tool: AgentTool) -> &'static str {
     }
 }
 
-fn hook_agent(tool: AgentTool) -> Option<HookAgent> {
-    match tool {
-        AgentTool::Claude => Some(HookAgent::Claude),
-        AgentTool::Codex => Some(HookAgent::Codex),
-        AgentTool::Cursor => Some(HookAgent::Cursor),
-        AgentTool::Antigravity => Some(HookAgent::Antigravity),
-        AgentTool::Gemini => Some(HookAgent::Gemini),
-        // Orek.ai has no session-start hook yet; Copilot's is not verified.
-        AgentTool::Orek | AgentTool::Copilot => None,
+/// `Codex, Cursor and Gemini CLI`
+fn tool_list(tools: &[AgentTool]) -> String {
+    let labels: Vec<&str> = tools.iter().map(|&tool| tool_label(tool)).collect();
+    match labels.split_last() {
+        None => String::new(),
+        Some((last, [])) => (*last).to_string(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
     }
 }
 
-/// An environment variable, read the way `home_dir` reads them: empty
-/// counts as unset.
-fn env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+/// `Cursor and Gemini CLI also read it`
+fn also_read_by(others: &[AgentTool]) -> String {
+    let verb = if others.len() == 1 { "reads" } else { "read" };
+    format!("{} also {verb} it", tool_list(others))
 }
 
-/// The user's home directory. The environment wins over the platform lookup
-/// so tests (and CI runners) can point it elsewhere.
-pub fn home_dir() -> Option<PathBuf> {
-    env_path("HOME")
-        .or_else(|| env_path("USERPROFILE"))
-        .or_else(|| {
-            let drive = std::env::var_os("HOMEDRIVE")?;
-            let path = std::env::var_os("HOMEPATH")?;
-            Some(PathBuf::from(format!(
-                "{}{}",
-                drive.to_string_lossy(),
-                path.to_string_lossy()
-            )))
-        })
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
+/// The command a session-start hook for `agent` runs.
+fn hook_command(agent: HookAgent) -> String {
+    format!("{HOOK_COMMAND_PREFIX}={agent}")
 }
 
 /// Codex's home: `$CODEX_HOME`, else `~/.codex`.
@@ -215,6 +203,22 @@ fn orek_user_config_for(
     }
 }
 
+/// Where a tool reads its session-start hook, and what that hook runs.
+struct HookTarget {
+    path: PathBuf,
+    style: HookStyle,
+    command: String,
+}
+
+/// A file that carries the instructions block for a tool.
+struct InstructionFile {
+    path: PathBuf,
+    content: String,
+    /// Whether install creates the file when it is missing. Files that only
+    /// import `AGENTS.md` are added to, never created.
+    create: bool,
+}
+
 /// The folders a scope's paths are relative to.
 struct Roots {
     scope: AgentScope,
@@ -231,67 +235,93 @@ impl Roots {
         })
     }
 
-    /// The folder a tool reads skills from in this scope, if it has one.
-    fn skills_dir(&self, tool: AgentTool) -> Option<PathBuf> {
+    /// The folder the skill is installed as for a tool in this scope, if
+    /// the tool reads skills here.
+    fn skill_dir(&self, tool: AgentTool) -> Option<PathBuf> {
         let (home, project) = (&self.home, &self.project);
-        match (self.scope, tool) {
-            (AgentScope::User, AgentTool::Orek) => Some(orek_user_config(home).join("skills")),
-            (AgentScope::User, AgentTool::Claude) => Some(home.join(".claude/skills")),
+        let skills = match (self.scope, tool) {
+            (AgentScope::User, AgentTool::Orek) => orek_user_config(home).join("skills"),
+            (AgentScope::User, AgentTool::Claude) => home.join(".claude/skills"),
             (AgentScope::User, AgentTool::Codex | AgentTool::Cursor | AgentTool::Gemini) => {
-                Some(home.join(".agents/skills"))
+                home.join(".agents/skills")
             }
-            (AgentScope::User, AgentTool::Antigravity) => Some(home.join(".gemini/config/skills")),
-            (AgentScope::User, AgentTool::Copilot) => Some(home.join(".copilot/skills")),
-            (AgentScope::Project, AgentTool::Orek) => Some(project.join(".orek/skills")),
-            (AgentScope::Project, AgentTool::Claude) => Some(project.join(".claude/skills")),
+            (AgentScope::User, AgentTool::Antigravity) => home.join(".gemini/config/skills"),
+            (AgentScope::User, AgentTool::Copilot) => home.join(".copilot/skills"),
+            (AgentScope::Project, AgentTool::Orek) => project.join(".orek/skills"),
+            (AgentScope::Project, AgentTool::Claude) => project.join(".claude/skills"),
             (
                 AgentScope::Project,
                 AgentTool::Codex | AgentTool::Cursor | AgentTool::Gemini | AgentTool::Antigravity,
-            ) => Some(project.join(".agents/skills")),
-            (AgentScope::Project, AgentTool::Copilot) => None,
-        }
+            ) => project.join(".agents/skills"),
+            (AgentScope::Project, AgentTool::Copilot) => return None,
+        };
+        Some(skills.join(SKILL_NAME))
     }
 
-    /// The file a tool reads session-start hooks from in this scope.
-    fn hook_file(&self, tool: AgentTool) -> Option<(PathBuf, HookStyle)> {
-        let agent = hook_agent(tool)?;
-        let (home, project) = (&self.home, &self.project);
+    /// The file a tool reads session-start hooks from in this scope, the
+    /// shape it nests them in, and the command ours runs.
+    fn hook_target(&self, tool: AgentTool) -> Option<HookTarget> {
+        let base = match self.scope {
+            AgentScope::User => &self.home,
+            AgentScope::Project => &self.project,
+        };
         let user = self.scope == AgentScope::User;
-        let path = match tool {
-            AgentTool::Claude if user => home.join(".claude/settings.json"),
-            AgentTool::Claude => project.join(".claude/settings.json"),
-            AgentTool::Codex if user => codex_home(home).join("hooks.json"),
-            AgentTool::Codex => project.join(".codex/hooks.json"),
-            AgentTool::Cursor if user => home.join(".cursor/hooks.json"),
-            AgentTool::Cursor => project.join(".cursor/hooks.json"),
-            AgentTool::Antigravity if user => home.join(".gemini/config/hooks.json"),
-            AgentTool::Antigravity => project.join(".agents/hooks.json"),
-            AgentTool::Gemini if user => home.join(".gemini/settings.json"),
-            AgentTool::Gemini => project.join(".gemini/settings.json"),
+        let (agent, path, style) = match tool {
+            // Claude Code, Codex and Gemini CLI share one nesting: event,
+            // then matcher groups, then handlers.
+            AgentTool::Claude => (
+                HookAgent::Claude,
+                base.join(".claude/settings.json"),
+                HookStyle::Nested {
+                    matcher: None,
+                    timeout: HOOK_TIMEOUT_SECS,
+                },
+            ),
+            AgentTool::Codex => (
+                HookAgent::Codex,
+                if user {
+                    codex_home(&self.home).join("hooks.json")
+                } else {
+                    self.project.join(".codex/hooks.json")
+                },
+                // Codex filters SessionStart on its `source`; these are the
+                // ones a briefing belongs in.
+                HookStyle::Nested {
+                    matcher: Some("startup|resume|clear|compact"),
+                    timeout: HOOK_TIMEOUT_SECS,
+                },
+            ),
+            AgentTool::Gemini => (
+                HookAgent::Gemini,
+                base.join(".gemini/settings.json"),
+                // Gemini CLI takes its timeout in milliseconds.
+                HookStyle::Nested {
+                    matcher: None,
+                    timeout: HOOK_TIMEOUT_SECS * 1000,
+                },
+            ),
+            AgentTool::Cursor => (
+                HookAgent::Cursor,
+                base.join(".cursor/hooks.json"),
+                HookStyle::Cursor,
+            ),
+            AgentTool::Antigravity => (
+                HookAgent::Antigravity,
+                if user {
+                    self.home.join(".gemini/config/hooks.json")
+                } else {
+                    self.project.join(".agents/hooks.json")
+                },
+                HookStyle::Antigravity,
+            ),
+            // Orek.ai has no session-start hook yet; Copilot's is not verified.
             AgentTool::Orek | AgentTool::Copilot => return None,
         };
-        let style = match agent {
-            // Same nesting: event, then matcher groups, then handlers.
-            HookAgent::Claude => HookStyle::Nested {
-                matcher: None,
-                timeout: HOOK_TIMEOUT_SECS,
-            },
-            // Codex filters SessionStart on its `source`; these are the ones
-            // a briefing belongs in.
-            HookAgent::Codex => HookStyle::Nested {
-                matcher: Some("startup|resume|clear|compact"),
-                timeout: HOOK_TIMEOUT_SECS,
-            },
-            // Gemini CLI takes its timeout in milliseconds.
-            HookAgent::Gemini => HookStyle::Nested {
-                matcher: None,
-                timeout: HOOK_TIMEOUT_SECS * 1000,
-            },
-            HookAgent::Cursor => HookStyle::Cursor,
-            HookAgent::Antigravity => HookStyle::Antigravity,
-            HookAgent::Orek => return None,
-        };
-        Some((path, style.with_command(agent)))
+        Some(HookTarget {
+            path,
+            style,
+            command: hook_command(agent),
+        })
     }
 
     /// The config file that sets environment variables for the tool's
@@ -309,15 +339,19 @@ impl Roots {
         }
     }
 
-    /// Files that carry the instructions block for this tool in this scope:
-    /// `(path, block text, create when missing)`.
-    fn instruction_files(&self, tool: AgentTool) -> Vec<(PathBuf, String, bool)> {
+    /// Files that carry the instructions block for this tool in this scope.
+    fn instruction_files(&self, tool: AgentTool) -> Vec<InstructionFile> {
+        let file = |path: PathBuf, content: &str, create: bool| InstructionFile {
+            path,
+            content: content.to_string(),
+            create,
+        };
         let (home, project) = (&self.home, &self.project);
         match self.scope {
             AgentScope::User => match tool {
-                AgentTool::Claude => vec![(
+                AgentTool::Claude => vec![file(
                     home.join(".claude/CLAUDE.md"),
-                    USER_INSTRUCTIONS.to_string(),
+                    USER_INSTRUCTIONS,
                     true,
                 )],
                 AgentTool::Codex => {
@@ -331,12 +365,12 @@ impl Roots {
                     } else {
                         dir.join("AGENTS.md")
                     };
-                    vec![(path, USER_INSTRUCTIONS.to_string(), true)]
+                    vec![file(path, USER_INSTRUCTIONS, true)]
                 }
                 // One file serves both: Gemini CLI and Antigravity read it.
-                AgentTool::Antigravity | AgentTool::Gemini => vec![(
+                AgentTool::Antigravity | AgentTool::Gemini => vec![file(
                     home.join(".gemini/GEMINI.md"),
-                    USER_INSTRUCTIONS.to_string(),
+                    USER_INSTRUCTIONS,
                     true,
                 )],
                 // Cursor's user rules and Orek.ai's have no file; Copilot's
@@ -347,11 +381,7 @@ impl Roots {
                 if tool == AgentTool::Copilot {
                     return Vec::new();
                 }
-                let mut files = vec![(
-                    project.join("AGENTS.md"),
-                    PROJECT_INSTRUCTIONS.to_string(),
-                    true,
-                )];
+                let mut files = vec![file(project.join("AGENTS.md"), PROJECT_INSTRUCTIONS, true)];
                 // Claude Code skips AGENTS.md once a CLAUDE.md exists, and
                 // Gemini CLI reads GEMINI.md unless configured otherwise:
                 // an existing file of theirs gets an import of AGENTS.md.
@@ -363,10 +393,12 @@ impl Roots {
                     AgentTool::Gemini => &[("GEMINI.md", "@./AGENTS.md")],
                     _ => &[],
                 };
-                for (file, import) in imports {
-                    files.push((
-                        project.join(file),
-                        format!("Issue-tracker instructions for this project are in AGENTS.md:\n\n{import}"),
+                for (name, import) in imports {
+                    files.push(file(
+                        project.join(name),
+                        &format!(
+                            "Issue-tracker instructions for this project are in AGENTS.md:\n\n{import}"
+                        ),
                         false,
                     ));
                 }
@@ -375,8 +407,9 @@ impl Roots {
         }
     }
 
-    /// Skill folders earlier versions wrote that no tool needs now. Removed
-    /// so Cursor and Gemini CLI do not load the skill twice.
+    /// Skill folders that 1.x (`track init --skills`) wrote and no tool
+    /// needs now. Removed so Cursor and Gemini CLI do not load the skill
+    /// twice.
     fn legacy_skill_dirs(&self, tool: AgentTool) -> Vec<PathBuf> {
         match (self.scope, tool) {
             (AgentScope::User, AgentTool::Cursor) => vec![self.home.join(".cursor/skills/track")],
@@ -384,82 +417,154 @@ impl Roots {
             _ => Vec::new(),
         }
     }
+
+    /// The tools outside `selected` that also read what `reads` picks out:
+    /// a folder or file several tools share stays while one of them is
+    /// still set up.
+    fn other_readers(
+        &self,
+        selected: &[AgentTool],
+        reads: impl Fn(AgentTool) -> bool,
+    ) -> Vec<AgentTool> {
+        AgentTool::value_variants()
+            .iter()
+            .copied()
+            .filter(|tool| !selected.contains(tool) && reads(*tool))
+            .collect()
+    }
 }
 
 fn selected(tools: &[AgentTool]) -> Vec<AgentTool> {
-    if tools.is_empty() {
-        AgentTool::ALL.to_vec()
-    } else {
-        AgentTool::ALL
-            .iter()
-            .copied()
-            .filter(|tool| tools.contains(tool))
-            .collect()
-    }
+    AgentTool::value_variants()
+        .iter()
+        .copied()
+        .filter(|tool| tools.is_empty() || tools.contains(tool))
+        .collect()
+}
+
+/// Whether this installer's session-start hook for `tool` is in the file
+/// the tool reads in `scope`. False where the tool has no hook, or the scope
+/// cannot be resolved.
+pub(crate) fn hook_installed(scope: AgentScope, tool: AgentTool) -> bool {
+    Roots::new(scope)
+        .ok()
+        .and_then(|roots| hook_installed_in(&roots, tool))
+        .unwrap_or(false)
+}
+
+/// `None` when the tool has no hook in this scope.
+fn hook_installed_in(roots: &Roots, tool: AgentTool) -> Option<bool> {
+    let target = roots.hook_target(tool)?;
+    Some(std::fs::read_to_string(&target.path).is_ok_and(|text| text.contains(&target.command)))
 }
 
 // ============================================================================
 // Skills
 // ============================================================================
 
-/// Write the skill tree into every folder the selected tools read in
-/// `scope`. Returns each folder's tools and the path of its `SKILL.md`.
-pub fn write_skills(scope: AgentScope, tools: &[AgentTool]) -> Result<Vec<(String, PathBuf)>> {
-    let roots = Roots::new(scope)?;
-    let mut by_dir: Vec<(PathBuf, Vec<&'static str>)> = Vec::new();
-    for tool in selected(tools) {
-        for legacy in roots.legacy_skill_dirs(tool) {
-            remove_our_skill_dir(&legacy)?;
-        }
-        if let Some(dir) = roots.skills_dir(tool) {
-            match by_dir.iter_mut().find(|(known, _)| *known == dir) {
-                Some((_, labels)) => labels.push(tool_label(tool)),
-                None => by_dir.push((dir, vec![tool_label(tool)])),
-            }
-        }
-    }
-
-    let mut installed = Vec::new();
-    for (skills_dir, labels) in by_dir {
-        let skill_dir = skills_dir.join("track");
-        // References from an earlier version must not linger under names
-        // the core no longer points to.
-        let _ = std::fs::remove_dir_all(skill_dir.join("references"));
-        for (relative, content) in SKILL_FILES {
-            let path = skill_dir.join(relative);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create {}", parent.display()))?;
-            }
-            std::fs::write(&path, content)
-                .with_context(|| format!("Failed to write {}", path.display()))?;
-        }
-        installed.push((labels.join(", "), skill_dir.join("SKILL.md")));
-    }
-    Ok(installed)
+fn skill_md(skill_dir: &Path) -> PathBuf {
+    skill_dir.join("SKILL.md")
 }
 
-/// Remove `dir` if it holds this skill (its SKILL.md is named `track`), and
-/// leave anything else alone.
-fn remove_our_skill_dir(dir: &Path) -> Result<bool> {
-    let is_ours = std::fs::read_to_string(dir.join("SKILL.md")).is_ok_and(|text| {
+/// One skill folder and the selected tools that read it.
+struct SkillWrite {
+    dir: PathBuf,
+    tools: Vec<AgentTool>,
+    result: Result<()>,
+}
+
+/// Write the skill tree once into every folder the given tools read. Each
+/// folder succeeds or fails on its own.
+fn write_skills_in(roots: &Roots, tools: &[AgentTool]) -> Vec<SkillWrite> {
+    let mut writes: Vec<SkillWrite> = Vec::new();
+    for &tool in tools {
+        let Some(dir) = roots.skill_dir(tool) else {
+            continue;
+        };
+        match writes.iter_mut().find(|write| write.dir == dir) {
+            Some(write) => write.tools.push(tool),
+            None => writes.push(SkillWrite {
+                dir,
+                tools: vec![tool],
+                result: Ok(()),
+            }),
+        }
+    }
+    for write in &mut writes {
+        write.result = write_skill_tree(&write.dir);
+    }
+    writes
+}
+
+fn write_skill_tree(skill_dir: &Path) -> Result<()> {
+    // References from an earlier version must not linger under names the
+    // core no longer points to.
+    let _ = std::fs::remove_dir_all(skill_dir.join("references"));
+    for (relative, content) in SKILL_FILES {
+        let path = skill_dir.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+        std::fs::write(&path, content)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Remove the skill copies 1.x left where `tool` no longer reads them.
+fn remove_legacy_skills(roots: &Roots, tool: AgentTool) -> Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+    for dir in roots.legacy_skill_dirs(tool) {
+        if remove_our_skill_dir(&dir)? {
+            removed.push(dir);
+        }
+    }
+    Ok(removed)
+}
+
+/// Write the skill tree into every folder the selected tools read in
+/// `scope`. Returns one entry per folder: the tools that share it, and the
+/// path of its `SKILL.md`.
+pub fn write_skills(scope: AgentScope, tools: &[AgentTool]) -> Result<Vec<(String, PathBuf)>> {
+    let roots = Roots::new(scope)?;
+    let tools = selected(tools);
+    for &tool in &tools {
+        remove_legacy_skills(&roots, tool)?;
+    }
+    write_skills_in(&roots, &tools)
+        .into_iter()
+        .map(|write| {
+            write.result?;
+            let labels: Vec<&str> = write.tools.iter().map(|&tool| tool_label(tool)).collect();
+            Ok((labels.join(", "), skill_md(&write.dir)))
+        })
+        .collect()
+}
+
+/// Whether `dir` holds this skill: its SKILL.md is named `track`.
+fn is_our_skill_dir(dir: &Path) -> bool {
+    std::fs::read_to_string(skill_md(dir)).is_ok_and(|text| {
         text.lines()
             .take(5)
-            .any(|line| line.trim() == "name: track")
-    });
-    if !is_ours {
+            .any(|line| line.trim() == format!("name: {SKILL_NAME}"))
+    })
+}
+
+/// Remove `dir` if it holds this skill, and leave anything else alone.
+fn remove_our_skill_dir(dir: &Path) -> Result<bool> {
+    if !is_our_skill_dir(dir) {
         return Ok(false);
     }
     std::fs::remove_dir_all(dir).with_context(|| format!("Failed to remove {}", dir.display()))?;
     Ok(true)
 }
 
-fn skill_state(dir: &Path) -> &'static str {
-    let dir = dir.join("track");
-    if !dir.join("SKILL.md").is_file() {
+fn skill_state(skill_dir: &Path) -> &'static str {
+    if !skill_md(skill_dir).is_file() {
         "missing"
     } else if SKILL_FILES.iter().all(|(relative, content)| {
-        std::fs::read_to_string(dir.join(relative)).is_ok_and(|text| text == *content)
+        std::fs::read_to_string(skill_dir.join(relative)).is_ok_and(|text| text == *content)
     }) {
         "current"
     } else {
@@ -484,14 +589,6 @@ enum HookStyle {
     Cursor,
     /// `{"<group>": {"SessionStart": [handler]}}`: Antigravity.
     Antigravity,
-    /// A style bound to the command for one agent.
-    Bound(Box<HookStyle>, String),
-}
-
-impl HookStyle {
-    fn with_command(self, agent: HookAgent) -> Self {
-        HookStyle::Bound(Box::new(self), format!("{HOOK_COMMAND_PREFIX}={agent}"))
-    }
 }
 
 /// The group name this installer uses in Antigravity's hook file.
@@ -553,74 +650,84 @@ fn put_or_remove(object: &mut RawObject, key: &str, value: Option<Box<RawValue>>
     }
 }
 
-/// `text` with this installer's session-start hook present (`install`) or
-/// absent. Everything else in the file is left as written.
-fn edit_hook_file(text: &str, style: &HookStyle, install: bool) -> Result<String> {
-    let HookStyle::Bound(style, command) = style else {
-        unreachable!("hook styles are bound to a command before use")
-    };
+/// Replace this installer's entries in `hooks.<event>` with `entry`, or
+/// just drop them (`None`). A list or `hooks` object left empty goes too.
+fn set_session_hook(
+    doc: &mut RawObject,
+    event: &str,
+    entry: Option<serde_json::Value>,
+) -> Result<()> {
+    let mut hooks = parse_object(doc.get("hooks").map(|v| &**v), "hooks")?;
+    let mut list = parse_array(hooks.get(event).map(|v| &**v), &format!("hooks.{event}"))?;
+    list.retain(|entry| !is_our_hook(entry));
+    if let Some(entry) = entry {
+        list.push(raw(&entry, 3)?);
+    }
+    put_or_remove(
+        &mut hooks,
+        event,
+        (!list.is_empty()).then(|| raw(&list, 2)).transpose()?,
+    );
+    put_or_remove(
+        doc,
+        "hooks",
+        (!hooks.is_empty()).then(|| raw(&hooks, 1)).transpose()?,
+    );
+    Ok(())
+}
+
+/// Why a hook file cannot be edited: a rewrite would have to drop what the
+/// parser cannot keep, so the file is refused instead.
+fn unreadable_hook_file(text: &str, command: &str) -> String {
+    let commented = text.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("//") || line.starts_with("/*")
+    });
+    if commented {
+        format!(
+            "the file has comments, which rewriting it would lose; remove them, or add a \
+             session-start hook running `{command}` by hand"
+        )
+    } else {
+        "the file is not a JSON object".to_string()
+    }
+}
+
+/// `text` with this installer's session-start hook running `command`
+/// present (`install`) or absent. Everything else in the file is left as
+/// written.
+fn edit_hook_file(text: &str, style: &HookStyle, command: &str, install: bool) -> Result<String> {
+    if !install && !text.contains(HOOK_COMMAND_PREFIX) {
+        // Nothing of ours to take out, so nothing to parse: a file this
+        // installer never edited is no reason for uninstall to fail.
+        return Ok(text.to_string());
+    }
     let mut doc: RawObject = if text.trim().is_empty() {
         RawObject::new()
     } else {
-        serde_json::from_str(text).context("the file is not a JSON object")?
+        serde_json::from_str(text).with_context(|| unreadable_hook_file(text, command))?
     };
+    let handler = |timeout: u64| serde_json::json!({ "type": "command", "command": command, "timeout": timeout });
 
-    match style.as_ref() {
+    match style {
         HookStyle::Nested { matcher, timeout } => {
-            let mut hooks = parse_object(doc.get("hooks").map(|v| &**v), "hooks")?;
-            let mut list = parse_array(
-                hooks.get("SessionStart").map(|v| &**v),
-                "hooks.SessionStart",
-            )?;
-            list.retain(|entry| !is_our_hook(entry));
-            if install {
+            let entry = install.then(|| {
                 let mut group = serde_json::Map::new();
                 if let Some(matcher) = matcher {
                     group.insert("matcher".into(), (*matcher).into());
                 }
-                group.insert(
-                    "hooks".into(),
-                    serde_json::json!([{ "type": "command", "command": command, "timeout": timeout }]),
-                );
-                list.push(raw(&group, 3)?);
-            }
-            put_or_remove(
-                &mut hooks,
-                "SessionStart",
-                (!list.is_empty()).then(|| raw(&list, 2)).transpose()?,
-            );
-            put_or_remove(
-                &mut doc,
-                "hooks",
-                (!hooks.is_empty()).then(|| raw(&hooks, 1)).transpose()?,
-            );
+                group.insert("hooks".into(), serde_json::json!([handler(*timeout)]));
+                serde_json::Value::Object(group)
+            });
+            set_session_hook(&mut doc, "SessionStart", entry)?;
         }
         HookStyle::Cursor => {
-            let mut hooks = parse_object(doc.get("hooks").map(|v| &**v), "hooks")?;
-            let mut list = parse_array(
-                hooks.get("sessionStart").map(|v| &**v),
-                "hooks.sessionStart",
-            )?;
-            list.retain(|entry| !is_our_hook(entry));
-            if install {
-                list.push(raw(
-                    &serde_json::json!({ "command": command, "timeout": HOOK_TIMEOUT_SECS }),
-                    3,
-                )?);
-                if !doc.contains_key("version") {
-                    doc.shift_insert(0, "version".to_string(), raw(&1, 1)?);
-                }
+            let entry = install
+                .then(|| serde_json::json!({ "command": command, "timeout": HOOK_TIMEOUT_SECS }));
+            set_session_hook(&mut doc, "sessionStart", entry)?;
+            if install && !doc.contains_key("version") {
+                doc.shift_insert(0, "version".to_string(), raw(&1, 1)?);
             }
-            put_or_remove(
-                &mut hooks,
-                "sessionStart",
-                (!list.is_empty()).then(|| raw(&list, 2)).transpose()?,
-            );
-            put_or_remove(
-                &mut doc,
-                "hooks",
-                (!hooks.is_empty()).then(|| raw(&hooks, 1)).transpose()?,
-            );
             // A file left with nothing but its version holds no hooks.
             if doc.len() == 1 && doc.contains_key("version") {
                 doc.clear();
@@ -628,9 +735,7 @@ fn edit_hook_file(text: &str, style: &HookStyle, install: bool) -> Result<String
         }
         HookStyle::Antigravity => {
             if install {
-                let group = serde_json::json!({
-                    "SessionStart": [{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS }]
-                });
+                let group = serde_json::json!({ "SessionStart": [handler(HOOK_TIMEOUT_SECS)] });
                 doc.insert(ANTIGRAVITY_GROUP.to_string(), raw(&group, 1)?);
             } else if doc
                 .get(ANTIGRAVITY_GROUP)
@@ -639,39 +744,11 @@ fn edit_hook_file(text: &str, style: &HookStyle, install: bool) -> Result<String
                 doc.shift_remove(ANTIGRAVITY_GROUP);
             }
         }
-        HookStyle::Bound(..) => unreachable!("hook styles are bound once"),
-    }
-
-    // Before 2.0 the Claude Code installer also set TRACK_OUTPUT in the
-    // settings' `env`; the hook sets it now, so that entry goes.
-    if !install || matches!(style.as_ref(), HookStyle::Nested { .. }) {
-        remove_our_env_entry(&mut doc)?;
     }
 
     let mut out = serde_json::to_string_pretty(&doc)?;
     out.push('\n');
     Ok(out)
-}
-
-fn remove_our_env_entry(doc: &mut RawObject) -> Result<()> {
-    let Some(env) = doc.get("env") else {
-        return Ok(());
-    };
-    let Ok(mut env) = serde_json::from_str::<RawObject>(env.get()) else {
-        return Ok(());
-    };
-    let ours = env
-        .get(OUTPUT_ENV)
-        .is_some_and(|value| value.get().trim() == format!("\"{OUTPUT_ENV_VALUE}\""));
-    if ours {
-        env.shift_remove(OUTPUT_ENV);
-        put_or_remove(
-            doc,
-            "env",
-            (!env.is_empty()).then(|| raw(&env, 1)).transpose()?,
-        );
-    }
-    Ok(())
 }
 
 /// What a file edit did.
@@ -684,12 +761,12 @@ enum Change {
 }
 
 /// Apply `edit` to the file at `path`. A file that does not parse is left
-/// alone and reported. A missing file is only created when installing, and
-/// a file left empty (`{}`, no text) is removed.
+/// alone and reported. A missing file is only created when
+/// `create_if_missing`. A file left empty (`{}`, no text) is removed, unless
+/// it is a symlink: then the file it points at is emptied and the link kept.
 fn update_file(
     path: &Path,
-    install: bool,
-    create: bool,
+    create_if_missing: bool,
     edit: impl FnOnce(&str) -> Result<String>,
     is_empty: impl Fn(&str) -> bool,
 ) -> Result<Change> {
@@ -698,28 +775,34 @@ fn update_file(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
         Err(err) => return Err(err).with_context(|| format!("Failed to read {}", path.display())),
     };
-    if existing.is_none() && !(install && create) {
+    if existing.is_none() && !create_if_missing {
         return Ok(Change::Absent);
     }
     let updated = edit(existing.as_deref().unwrap_or_default())
         .with_context(|| format!("{} was left unchanged", path.display()))?;
+    if existing.as_deref() == Some(updated.as_str()) {
+        return Ok(Change::Unchanged);
+    }
     if is_empty(&updated) {
-        if existing.is_some() {
+        if existing.is_none() {
+            return Ok(Change::Absent);
+        }
+        if !fsutil::is_symlink(path) {
             std::fs::remove_file(path)
                 .with_context(|| format!("Failed to remove {}", path.display()))?;
             return Ok(Change::Removed);
         }
-        return Ok(Change::Absent);
     }
-    if existing.as_deref() == Some(updated.as_str()) {
-        return Ok(Change::Unchanged);
-    }
-    crate::fsutil::atomic_write(path, updated.as_bytes(), true)?;
+    fsutil::atomic_write_user_file(path, updated.as_bytes())?;
     Ok(Change::Written)
 }
 
 fn is_empty_json(text: &str) -> bool {
     text.trim() == "{}"
+}
+
+fn is_blank(text: &str) -> bool {
+    text.trim().is_empty()
 }
 
 // ============================================================================
@@ -730,6 +813,9 @@ fn is_empty_json(text: &str) -> bool {
 /// present (`install`) or absent. A value the user chose is theirs to keep.
 fn edit_codex_env(text: &str, install: bool) -> Result<String> {
     use toml_edit::{DocumentMut, Item, Table, value};
+    if !install && !text.contains(OUTPUT_ENV) {
+        return Ok(text.to_string());
+    }
     let mut doc: DocumentMut = text.parse().context("the file is not valid TOML")?;
     if install {
         if !doc.contains_key("shell_environment_policy") {
@@ -808,6 +894,114 @@ fn edit_block(text: &str, content: Option<&str>) -> String {
 }
 
 // ============================================================================
+// One tool's files
+// ============================================================================
+
+/// The kinds of file a tool's setup touches besides its skill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Artifact {
+    Hook,
+    Env,
+    Instructions,
+}
+
+impl Artifact {
+    /// How `uninstall` names what it took out of the file.
+    fn removed_label(self) -> &'static str {
+        match self {
+            Artifact::Hook => "session hook in",
+            Artifact::Env => "environment setting in",
+            Artifact::Instructions => "instructions block in",
+        }
+    }
+}
+
+/// One file edit and how it went.
+struct FileEdit {
+    artifact: Artifact,
+    path: PathBuf,
+    change: Result<Change>,
+}
+
+/// Add (`install`) or remove a tool's session hook, environment setting and
+/// instruction blocks. Each file is edited on its own, so one that cannot
+/// be (a settings file with comments, say) is left as it was and reported
+/// while the rest still go ahead. Files in `keep` are not touched.
+fn sync_tool(roots: &Roots, tool: AgentTool, install: bool, keep: &[PathBuf]) -> Vec<FileEdit> {
+    let mut edits = Vec::new();
+    if let Some(target) = roots.hook_target(tool) {
+        let change = update_file(
+            &target.path,
+            install,
+            |text| edit_hook_file(text, &target.style, &target.command, install),
+            is_empty_json,
+        );
+        edits.push(FileEdit {
+            artifact: Artifact::Hook,
+            path: target.path,
+            change,
+        });
+    }
+    if let Some(path) = roots.env_file(tool) {
+        let change = update_file(
+            &path,
+            install,
+            |text| edit_codex_env(text, install),
+            is_blank,
+        );
+        edits.push(FileEdit {
+            artifact: Artifact::Env,
+            path,
+            change,
+        });
+    }
+    for file in roots.instruction_files(tool) {
+        if keep.contains(&file.path) {
+            continue;
+        }
+        let content = install.then_some(file.content.as_str());
+        let change = update_file(
+            &file.path,
+            install && file.create,
+            |text| Ok(edit_block(text, content)),
+            is_blank,
+        );
+        edits.push(FileEdit {
+            artifact: Artifact::Instructions,
+            path: file.path,
+            change,
+        });
+    }
+    edits
+}
+
+/// The failure for commands that set up, or take down, several tools when
+/// some of them did not get all the way.
+fn not_every_tool(
+    verb: &str,
+    failed: &[(&'static str, Vec<String>)],
+    total: usize,
+) -> anyhow::Error {
+    let details: Vec<String> = failed
+        .iter()
+        .map(|(tool, errors)| format!("{tool}: {}", errors.join("; ")))
+        .collect();
+    crate::errors::CliError::new(
+        "partial_failure",
+        format!(
+            "{} of {total} tools not fully {verb}: {}",
+            failed.len(),
+            details.join(" | ")
+        ),
+    )
+    .with_hint(
+        "Everything else was done, and a file that did not parse was left exactly as it was. \
+         Fix that file (or add the hook to it by hand), then run the command again.",
+    )
+    .into()
+}
+
+// ============================================================================
 // Commands
 // ============================================================================
 
@@ -822,6 +1016,9 @@ struct ToolReport {
     environment: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     instructions: Vec<String>,
+    /// What could not be set up for this tool, one entry per file.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    errors: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -868,15 +1065,27 @@ fn install(
             ..Default::default()
         })
         .collect();
+    // Reports are in the order of `tools`.
+    let report_of = |tool: AgentTool| {
+        tools
+            .iter()
+            .position(|&known| known == tool)
+            .expect("every selected tool has a report")
+    };
     let mut notes = Vec::new();
 
     if skills {
-        let written = write_skills(scope, &tools)?;
-        for (tool, report) in tools.iter().zip(reports.iter_mut()) {
-            if let Some(dir) = roots.skills_dir(*tool) {
-                let path = dir.join("track").join("SKILL.md");
-                if written.iter().any(|(_, written)| *written == path) {
-                    report.skill = Some(path.display().to_string());
+        for &tool in &tools {
+            if let Err(err) = remove_legacy_skills(&roots, tool) {
+                reports[report_of(tool)].errors.push(format!("{err:#}"));
+            }
+        }
+        for write in write_skills_in(&roots, &tools) {
+            for &tool in &write.tools {
+                let at = report_of(tool);
+                match &write.result {
+                    Ok(()) => reports[at].skill = Some(skill_md(&write.dir).display().to_string()),
+                    Err(err) => reports[at].errors.push(format!("{err:#}")),
                 }
             }
         }
@@ -884,44 +1093,22 @@ fn install(
 
     if hooks {
         for (&tool, report) in tools.iter().zip(reports.iter_mut()) {
-            if let Some((path, style)) = roots.hook_file(tool) {
-                update_file(
-                    &path,
-                    true,
-                    true,
-                    |text| edit_hook_file(text, &style, true),
-                    is_empty_json,
-                )?;
-                report.session_hook = Some(path.display().to_string());
-            }
-            if let Some(path) = roots.env_file(tool) {
-                update_file(
-                    &path,
-                    true,
-                    true,
-                    |text| edit_codex_env(text, true),
-                    |t| t.trim().is_empty(),
-                )?;
-                report.environment = Some(path.display().to_string());
-            }
-            for (path, content, create) in roots.instruction_files(tool) {
-                let change = update_file(
-                    &path,
-                    true,
-                    create,
-                    |text| Ok(edit_block(text, Some(&content))),
-                    |t| t.trim().is_empty(),
-                )?;
-                if change != Change::Absent {
-                    report.instructions.push(path.display().to_string());
+            for edit in sync_tool(&roots, tool, true, &[]) {
+                let path = edit.path.display().to_string();
+                match (edit.artifact, edit.change) {
+                    (_, Err(err)) => report.errors.push(format!("{err:#}")),
+                    (Artifact::Hook, Ok(_)) => report.session_hook = Some(path),
+                    (Artifact::Env, Ok(_)) => report.environment = Some(path),
+                    (Artifact::Instructions, Ok(Change::Absent)) => {}
+                    (Artifact::Instructions, Ok(_)) => report.instructions.push(path),
                 }
             }
         }
         if tools.contains(&AgentTool::Codex) {
-            notes.push(
-                "Codex runs a hook only after you trust it: open /hooks in Codex once and trust \"track prime --hook=codex\"."
-                    .to_string(),
-            );
+            notes.push(format!(
+                "Codex runs a hook only after you trust it: open /hooks in Codex once and trust \"{}\".",
+                hook_command(HookAgent::Codex)
+            ));
         }
         if tools.contains(&AgentTool::Orek) {
             notes.push(if scope == AgentScope::Project {
@@ -945,8 +1132,13 @@ fn install(
         }
     }
 
+    let failed: Vec<(&'static str, Vec<String>)> = reports
+        .iter()
+        .filter(|report| !report.errors.is_empty())
+        .map(|report| (report.tool, report.errors.clone()))
+        .collect();
     let report = InstallReport {
-        success: true,
+        success: failed.is_empty(),
         scope: scope_name(scope),
         tools: reports,
         notes,
@@ -959,7 +1151,8 @@ fn install(
                 let nothing = tool.skill.is_none()
                     && tool.session_hook.is_none()
                     && tool.environment.is_none()
-                    && tool.instructions.is_empty();
+                    && tool.instructions.is_empty()
+                    && tool.errors.is_empty();
                 if nothing {
                     continue;
                 }
@@ -979,11 +1172,17 @@ fn install(
                 for path in &tool.instructions {
                     println!("  {} instructions: {path}", "Updated".green());
                 }
+                for error in &tool.errors {
+                    println!("  {} {error}", "Not set up:".red());
+                }
             }
             for note in &report.notes {
                 println!("{} {note}", "Note:".yellow());
             }
         }
+    }
+    if !failed.is_empty() {
+        return Err(not_every_tool("set up", &failed, report.tools.len()));
     }
     Ok(())
 }
@@ -992,93 +1191,157 @@ fn uninstall(scope: AgentScope, tools: &[AgentTool], format: OutputFormat) -> Re
     let roots = Roots::new(scope)?;
     let tools = selected(tools);
     let mut removed: Vec<String> = Vec::new();
-    let mut seen: Vec<PathBuf> = Vec::new();
-    let mut note = |path: &Path, what: &str| {
-        let line = format!("{what} {}", path.display());
+    let mut kept: Vec<String> = Vec::new();
+    let mut failed: Vec<(&'static str, Vec<String>)> = Vec::new();
+    let mut fail = |tool: AgentTool, err: anyhow::Error| {
+        let label = tool_label(tool);
+        match failed.iter_mut().find(|(known, _)| *known == label) {
+            Some((_, errors)) => errors.push(format!("{err:#}")),
+            None => failed.push((label, vec![format!("{err:#}")])),
+        }
+    };
+    let mut note = |line: String| {
         if !removed.contains(&line) {
             removed.push(line);
         }
     };
+    // Every path visited, for pruning the folders install created.
+    let mut visited: Vec<PathBuf> = Vec::new();
 
+    // Skills. One folder can serve several tools: it goes only once none of
+    // the tools that read it remain.
+    let mut skill_dirs: Vec<(PathBuf, AgentTool)> = Vec::new();
     for &tool in &tools {
-        let mut skill_dirs = roots.legacy_skill_dirs(tool);
-        skill_dirs.extend(roots.skills_dir(tool).map(|dir| dir.join("track")));
-        for dir in skill_dirs {
-            if !seen.contains(&dir) && remove_our_skill_dir(&dir)? {
-                note(&dir, "skill");
-            }
-            seen.push(dir);
+        match remove_legacy_skills(&roots, tool) {
+            Ok(dirs) => dirs
+                .iter()
+                .for_each(|dir| note(format!("skill {}", dir.display()))),
+            Err(err) => fail(tool, err),
         }
-        if let Some((path, style)) = roots.hook_file(tool) {
-            let change = update_file(
-                &path,
-                false,
-                false,
-                |text| edit_hook_file(text, &style, false),
-                is_empty_json,
-            )?;
-            if matches!(change, Change::Written | Change::Removed) {
-                note(&path, "session hook in");
-            }
-        }
-        if let Some(path) = roots.env_file(tool) {
-            let change = update_file(
-                &path,
-                false,
-                false,
-                |text| edit_codex_env(text, false),
-                |t| t.trim().is_empty(),
-            )?;
-            if matches!(change, Change::Written | Change::Removed) {
-                note(&path, "environment setting in");
-            }
-        }
-        for (path, _, _) in roots.instruction_files(tool) {
-            let change = update_file(
-                &path,
-                false,
-                false,
-                |text| Ok(edit_block(text, None)),
-                |t| t.trim().is_empty(),
-            )?;
-            if matches!(change, Change::Written | Change::Removed) {
-                note(&path, "instructions block in");
-            }
+        if let Some(dir) = roots.skill_dir(tool)
+            && !skill_dirs.iter().any(|(known, _)| *known == dir)
+        {
+            skill_dirs.push((dir, tool));
         }
     }
-    // Folders this installer may have created, removed only when empty.
-    if scope == AgentScope::Project {
-        for dir in [
-            ".orek/skills",
-            ".orek",
-            ".claude/skills",
-            ".claude",
-            ".agents/skills",
-            ".agents",
-            ".codex",
-            ".cursor",
-            ".gemini",
-        ] {
-            let _ = std::fs::remove_dir(roots.project.join(dir));
+    for (dir, tool) in skill_dirs {
+        let others = roots.other_readers(&tools, |other| {
+            roots.skill_dir(other).as_ref() == Some(&dir)
+        });
+        if !others.is_empty() {
+            if is_our_skill_dir(&dir) {
+                kept.push(format!(
+                    "skill {} ({})",
+                    dir.display(),
+                    also_read_by(&others)
+                ));
+            }
+            continue;
         }
+        match remove_our_skill_dir(&dir) {
+            Ok(true) => note(format!("skill {}", dir.display())),
+            Ok(false) => {}
+            Err(err) => fail(tool, err),
+        }
+        visited.push(dir);
+    }
+
+    // Instruction files several tools read (AGENTS.md, GEMINI.md) keep their
+    // block while one of those tools remains.
+    let mut keep: Vec<PathBuf> = Vec::new();
+    for &tool in &tools {
+        for file in roots.instruction_files(tool) {
+            if keep.contains(&file.path) {
+                continue;
+            }
+            let others = roots.other_readers(&tools, |other| {
+                roots
+                    .instruction_files(other)
+                    .iter()
+                    .any(|theirs| theirs.path == file.path)
+            });
+            if others.is_empty() {
+                continue;
+            }
+            if std::fs::read_to_string(&file.path).is_ok_and(|text| text.contains(BLOCK_START)) {
+                kept.push(format!(
+                    "instructions block in {} ({})",
+                    file.path.display(),
+                    also_read_by(&others)
+                ));
+            }
+            keep.push(file.path);
+        }
+    }
+
+    for &tool in &tools {
+        for edit in sync_tool(&roots, tool, false, &keep) {
+            match edit.change {
+                Ok(Change::Written | Change::Removed) => note(format!(
+                    "{} {}",
+                    edit.artifact.removed_label(),
+                    edit.path.display()
+                )),
+                Ok(Change::Unchanged | Change::Absent) => {}
+                Err(err) => fail(tool, err),
+            }
+            visited.push(edit.path);
+        }
+    }
+
+    // Folders install may have created, removed only when empty.
+    if scope == AgentScope::Project {
+        prune_empty_folders(&roots.project, &visited);
     }
 
     match format {
         OutputFormat::Json => output_json(&serde_json::json!({
-            "success": true,
+            "success": failed.is_empty(),
             "scope": scope_name(scope),
             "removed": removed,
+            "kept": kept,
         }))?,
         OutputFormat::Text => {
-            if removed.is_empty() {
+            if removed.is_empty() && kept.is_empty() {
                 println!("Nothing to remove for the {} scope.", scope_name(scope));
             }
             for item in &removed {
                 println!("Removed {item}");
             }
+            for item in &kept {
+                println!("Kept {item}");
+            }
+            if !kept.is_empty() {
+                println!(
+                    "To remove what was kept, name those tools in --tools too, or run `track agent uninstall{}` without --tools.",
+                    if scope == AgentScope::Project {
+                        " --scope project"
+                    } else {
+                        ""
+                    }
+                );
+            }
         }
     }
+    if !failed.is_empty() {
+        return Err(not_every_tool("removed", &failed, tools.len()));
+    }
     Ok(())
+}
+
+/// Remove the folder holding each of `paths`, then its parents, while they
+/// are empty and inside `root` (never `root` itself). A folder that is not
+/// empty ends that walk; a deeper path walked later still clears it.
+fn prune_empty_folders(root: &Path, paths: &[PathBuf]) {
+    for path in paths {
+        let mut folder = path.parent();
+        while let Some(dir) = folder {
+            if dir == root || !dir.starts_with(root) || std::fs::remove_dir(dir).is_err() {
+                break;
+            }
+            folder = dir.parent();
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -1104,29 +1367,21 @@ struct ScopeStatus {
 fn scope_status(scope: AgentScope) -> Result<ScopeStatus> {
     let roots = Roots::new(scope)?;
     let mark = |present: bool| if present { "installed" } else { "missing" };
-    let tools = AgentTool::ALL
+    let tools = AgentTool::value_variants()
         .iter()
         .map(|&tool| {
             let skill = roots
-                .skills_dir(tool)
+                .skill_dir(tool)
                 .map_or("not available", |dir| skill_state(&dir));
-            let session_hook = roots.hook_file(tool).map_or("not available", |(path, _)| {
-                mark(std::fs::read_to_string(path).is_ok_and(|text| {
-                    text.contains(&format!(
-                        "{HOOK_COMMAND_PREFIX}={}",
-                        hook_agent(tool).map(|a| a.to_string()).unwrap_or_default()
-                    ))
-                }))
-            });
+            let session_hook = hook_installed_in(&roots, tool).map_or("not available", mark);
             let files = roots.instruction_files(tool);
-            let instructions = if files.is_empty() {
-                "not available"
-            } else {
+            let instructions = match files.first() {
+                None => "not available",
                 // The first file is the one the tool reads directly.
-                mark(
-                    std::fs::read_to_string(&files[0].0)
+                Some(file) => mark(
+                    std::fs::read_to_string(&file.path)
                         .is_ok_and(|text| text.contains(BLOCK_START)),
-                )
+                ),
             };
             let environment = match tool {
                 AgentTool::Codex => roots.env_file(tool).map_or("missing", |path| {
@@ -1275,18 +1530,43 @@ mod tests {
         }
     }
 
-    fn bound(tool: AgentTool, scope: AgentScope) -> HookStyle {
-        let roots = Roots {
+    fn roots(scope: AgentScope) -> Roots {
+        Roots {
             scope,
             home: PathBuf::from("/home/u"),
             project: PathBuf::from("/work/p"),
-        };
-        roots.hook_file(tool).unwrap().1
+        }
+    }
+
+    /// `text` with the hook for `tool` in `scope` added or removed.
+    fn edit(text: &str, tool: AgentTool, scope: AgentScope, install: bool) -> Result<String> {
+        let target = roots(scope).hook_target(tool).unwrap();
+        edit_hook_file(text, &target.style, &target.command, install)
+    }
+
+    #[test]
+    fn the_hook_command_names_the_agent_as_clap_spells_it() {
+        for agent in HookAgent::value_variants() {
+            let name = agent.to_possible_value().unwrap().get_name().to_string();
+            assert_eq!(hook_command(*agent), format!("track prime --hook={name}"));
+        }
+        assert_eq!(
+            roots(AgentScope::User)
+                .hook_target(AgentTool::Gemini)
+                .unwrap()
+                .command,
+            "track prime --hook=gemini"
+        );
+        // The value the installers set is the one `-o` reads.
+        assert!(matches!(
+            <crate::cli::CliFormat as ValueEnum>::from_str(OUTPUT_ENV_VALUE, true),
+            Ok(crate::cli::CliFormat::Agent)
+        ));
     }
 
     #[test]
     fn claude_hooks_nest_under_session_start() {
-        let out = edit_hook_file("", &bound(AgentTool::Claude, AgentScope::User), true).unwrap();
+        let out = edit("", AgentTool::Claude, AgentScope::User, true).unwrap();
         let json: serde_json::Value = serde_json::from_str(&out).unwrap();
         let handler = &json["hooks"]["SessionStart"][0]["hooks"][0];
         assert_eq!(handler["command"], "track prime --hook=claude");
@@ -1299,7 +1579,7 @@ mod tests {
 
     #[test]
     fn codex_and_gemini_use_the_same_nesting_with_their_own_details() {
-        let codex = edit_hook_file("", &bound(AgentTool::Codex, AgentScope::User), true).unwrap();
+        let codex = edit("", AgentTool::Codex, AgentScope::User, true).unwrap();
         let json: serde_json::Value = serde_json::from_str(&codex).unwrap();
         assert_eq!(
             json["hooks"]["SessionStart"][0]["matcher"],
@@ -1310,8 +1590,7 @@ mod tests {
             "track prime --hook=codex"
         );
 
-        let gemini =
-            edit_hook_file("", &bound(AgentTool::Gemini, AgentScope::Project), true).unwrap();
+        let gemini = edit("", AgentTool::Gemini, AgentScope::Project, true).unwrap();
         let json: serde_json::Value = serde_json::from_str(&gemini).unwrap();
         // Gemini CLI takes milliseconds.
         assert_eq!(
@@ -1322,20 +1601,25 @@ mod tests {
 
     #[test]
     fn cursor_hooks_are_flat_and_versioned() {
-        let style = bound(AgentTool::Cursor, AgentScope::User);
-        let out = edit_hook_file("", &style, true).unwrap();
+        let t = roots(AgentScope::User)
+            .hook_target(AgentTool::Cursor)
+            .unwrap();
+        let out = edit_hook_file("", &t.style, &t.command, true).unwrap();
         let json: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(json["version"], 1);
         assert_eq!(
             json["hooks"]["sessionStart"][0]["command"],
             "track prime --hook=cursor"
         );
-        assert_eq!(edit_hook_file(&out, &style, false).unwrap(), "{}\n");
+        assert_eq!(
+            edit_hook_file(&out, &t.style, &t.command, false).unwrap(),
+            "{}\n"
+        );
 
         // Someone else's hooks keep the file, and its version, alive.
         let theirs = r#"{"version": 1, "hooks": {"stop": [{"command": "say done"}]}}"#;
-        let added = edit_hook_file(theirs, &style, true).unwrap();
-        let removed = edit_hook_file(&added, &style, false).unwrap();
+        let added = edit_hook_file(theirs, &t.style, &t.command, true).unwrap();
+        let removed = edit_hook_file(&added, &t.style, &t.command, false).unwrap();
         let json: serde_json::Value = serde_json::from_str(&removed).unwrap();
         assert_eq!(json["version"], 1);
         assert_eq!(json["hooks"]["stop"][0]["command"], "say done");
@@ -1344,9 +1628,11 @@ mod tests {
 
     #[test]
     fn antigravity_hooks_live_in_a_named_group() {
-        let style = bound(AgentTool::Antigravity, AgentScope::Project);
+        let t = roots(AgentScope::Project)
+            .hook_target(AgentTool::Antigravity)
+            .unwrap();
         let theirs = r#"{"lint": {"PreToolUse": [{"type": "command", "command": "lint"}]}}"#;
-        let out = edit_hook_file(theirs, &style, true).unwrap();
+        let out = edit_hook_file(theirs, &t.style, &t.command, true).unwrap();
         let json: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             json["track"]["SessionStart"][0]["command"],
@@ -1354,7 +1640,7 @@ mod tests {
         );
         assert_eq!(json["track"]["SessionStart"][0]["timeout"], 10);
         assert_eq!(json["lint"]["PreToolUse"][0]["command"], "lint");
-        let removed = edit_hook_file(&out, &style, false).unwrap();
+        let removed = edit_hook_file(&out, &t.style, &t.command, false).unwrap();
         let json: serde_json::Value = serde_json::from_str(&removed).unwrap();
         assert!(json.get("track").is_none());
         assert!(json.get("lint").is_some());
@@ -1362,7 +1648,7 @@ mod tests {
         // A group of the user's that happens to be called "track" is theirs.
         let named = r#"{"track": {"Stop": [{"type": "command", "command": "echo"}]}}"#;
         assert!(
-            edit_hook_file(named, &style, false)
+            edit_hook_file(named, &t.style, &t.command, false)
                 .unwrap()
                 .contains("echo")
         );
@@ -1370,7 +1656,9 @@ mod tests {
 
     #[test]
     fn install_keeps_key_order_and_everything_it_does_not_own() {
-        let style = bound(AgentTool::Claude, AgentScope::User);
+        let t = roots(AgentScope::User)
+            .hook_target(AgentTool::Claude)
+            .unwrap();
         let before = r#"{
   "zeta": {"b": 1,   "a": 2},
   "hooks": {
@@ -1380,7 +1668,7 @@ mod tests {
   "alpha": true,
   "env": {"OTHER": "1"}
 }"#;
-        let after = edit_hook_file(before, &style, true).unwrap();
+        let after = edit_hook_file(before, &t.style, &t.command, true).unwrap();
 
         // Order of the user's keys, and their untouched text, survive.
         let position = |key: &str| after.find(key).unwrap();
@@ -1394,10 +1682,13 @@ mod tests {
         assert_eq!(json["env"]["OTHER"], "1");
 
         // Installing again changes nothing.
-        assert_eq!(edit_hook_file(&after, &style, true).unwrap(), after);
+        assert_eq!(
+            edit_hook_file(&after, &t.style, &t.command, true).unwrap(),
+            after
+        );
 
         // Uninstalling removes exactly what was added.
-        let removed = edit_hook_file(&after, &style, false).unwrap();
+        let removed = edit_hook_file(&after, &t.style, &t.command, false).unwrap();
         let json: serde_json::Value = serde_json::from_str(&removed).unwrap();
         assert_eq!(json["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
         assert!(!removed.contains(HOOK_COMMAND_PREFIX));
@@ -1405,37 +1696,158 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_from_an_earlier_version_is_replaced_not_duplicated() {
-        let style = bound(AgentTool::Claude, AgentScope::User);
+    fn a_hook_of_ours_with_another_command_is_replaced_not_duplicated() {
+        // A hand-written entry, or one from a build that ran plain
+        // `track prime --hook`, matches by the command prefix.
+        let t = roots(AgentScope::User)
+            .hook_target(AgentTool::Claude)
+            .unwrap();
         let old = r#"{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "track prime --hook", "timeout": 10}]}]}, "env": {"TRACK_OUTPUT": "agent"}}"#;
-        let out = edit_hook_file(old, &style, true).unwrap();
+        let out = edit_hook_file(old, &t.style, &t.command, true).unwrap();
         let json: serde_json::Value = serde_json::from_str(&out).unwrap();
         let list = json["hooks"]["SessionStart"].as_array().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["hooks"][0]["command"], "track prime --hook=claude");
-        // The 1.x installer's env entry goes; the hook sets it now.
-        assert!(json.get("env").is_none());
-    }
-
-    #[test]
-    fn a_user_chosen_output_format_is_not_removed() {
-        let style = bound(AgentTool::Claude, AgentScope::User);
-        let before = r#"{"env": {"TRACK_OUTPUT": "json"}}"#;
-        let after = edit_hook_file(before, &style, true).unwrap();
-        assert!(after.contains("\"json\""));
-        assert!(
-            edit_hook_file(&after, &style, false)
-                .unwrap()
-                .contains("\"json\"")
-        );
+        // `env` is the user's: the installer never wrote it, so it stays.
+        assert_eq!(json["env"]["TRACK_OUTPUT"], "agent");
+        let removed = edit_hook_file(&out, &t.style, &t.command, false).unwrap();
+        assert!(removed.contains("\"TRACK_OUTPUT\": \"agent\""), "{removed}");
     }
 
     #[test]
     fn hook_files_that_do_not_parse_are_refused() {
-        let style = bound(AgentTool::Claude, AgentScope::User);
-        assert!(edit_hook_file("{ not json", &style, true).is_err());
-        assert!(edit_hook_file("[1, 2]", &style, true).is_err());
-        assert!(edit_hook_file(r#"{"hooks": []}"#, &style, true).is_err());
+        let t = roots(AgentScope::User)
+            .hook_target(AgentTool::Claude)
+            .unwrap();
+        assert!(edit_hook_file("{ not json", &t.style, &t.command, true).is_err());
+        assert!(edit_hook_file("[1, 2]", &t.style, &t.command, true).is_err());
+        assert!(edit_hook_file(r#"{"hooks": []}"#, &t.style, &t.command, true).is_err());
+
+        // Gemini CLI's settings allow comments, which a rewrite would drop.
+        let t = roots(AgentScope::User)
+            .hook_target(AgentTool::Gemini)
+            .unwrap();
+        let commented = "{\n  // my theme\n  \"theme\": \"dark\"\n}\n";
+        let err = edit_hook_file(commented, &t.style, &t.command, true).unwrap_err();
+        assert!(format!("{err:#}").contains("comments"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("track prime --hook=gemini"),
+            "{err:#}"
+        );
+        // Uninstall has nothing to take out of it, so it does not refuse it.
+        assert_eq!(
+            edit_hook_file(commented, &t.style, &t.command, false).unwrap(),
+            commented
+        );
+        assert_eq!(edit_codex_env("not = [toml", false).unwrap(), "not = [toml");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_edited_is_left_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let commented = "{\n  // my theme\n  \"theme\": \"dark\"\n}\n";
+        std::fs::write(&path, commented).unwrap();
+        let t = roots(AgentScope::User)
+            .hook_target(AgentTool::Gemini)
+            .unwrap();
+
+        let err = update_file(
+            &path,
+            true,
+            |text| edit_hook_file(text, &t.style, &t.command, true),
+            is_empty_json,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("was left unchanged"), "{err:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), commented);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_file_left_empty_keeps_its_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("dotfiles-settings.json");
+        let t = roots(AgentScope::User)
+            .hook_target(AgentTool::Claude)
+            .unwrap();
+        std::fs::write(
+            &target,
+            edit_hook_file("", &t.style, &t.command, true).unwrap(),
+        )
+        .unwrap();
+        let link = dir.path().join("settings.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let change = update_file(
+            &link,
+            false,
+            |text| edit_hook_file(text, &t.style, &t.command, false),
+            is_empty_json,
+        )
+        .unwrap();
+
+        assert_eq!(change, Change::Written);
+        assert!(fsutil::is_symlink(&link));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{}\n");
+    }
+
+    #[test]
+    fn pruning_removes_empty_folders_up_to_the_project_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join(".agents/skills")).unwrap();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude/keep.txt"), "mine").unwrap();
+
+        prune_empty_folders(
+            &root,
+            &[
+                root.join(".claude/settings.json"),
+                root.join(".agents/skills/track"),
+                root.join("AGENTS.md"),
+            ],
+        );
+
+        assert!(!root.join(".agents").exists());
+        assert!(root.join(".claude/keep.txt").exists());
+        assert!(root.is_dir());
+    }
+
+    #[test]
+    fn shared_files_name_the_other_tools_that_read_them() {
+        let user = roots(AgentScope::User);
+        let skills = user.skill_dir(AgentTool::Codex).unwrap();
+        let others = user.other_readers(&[AgentTool::Codex], |tool| {
+            user.skill_dir(tool).as_ref() == Some(&skills)
+        });
+        assert_eq!(others, [AgentTool::Cursor, AgentTool::Gemini]);
+        assert_eq!(also_read_by(&others), "Cursor and Gemini CLI also read it");
+        assert_eq!(also_read_by(&others[..1]), "Cursor also reads it");
+
+        let project = roots(AgentScope::Project);
+        let agents_md = PathBuf::from("/work/p/AGENTS.md");
+        let reads = |tool| {
+            project
+                .instruction_files(tool)
+                .iter()
+                .any(|file| file.path == agents_md)
+        };
+        let everyone_else: Vec<AgentTool> = AgentTool::value_variants()
+            .iter()
+            .copied()
+            .filter(|&tool| tool != AgentTool::Cursor && tool != AgentTool::Copilot)
+            .collect();
+        assert_eq!(
+            project.other_readers(&[AgentTool::Cursor], reads),
+            everyone_else
+        );
+        assert!(
+            project
+                .other_readers(AgentTool::value_variants(), reads)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1500,15 +1912,15 @@ mod tests {
             AgentTool::Antigravity,
         ] {
             assert_eq!(
-                roots.skills_dir(tool),
-                Some(PathBuf::from("/work/p/.agents/skills"))
+                roots.skill_dir(tool),
+                Some(PathBuf::from("/work/p/.agents/skills/track"))
             );
         }
         assert_eq!(
-            roots.skills_dir(AgentTool::Orek),
-            Some(PathBuf::from("/work/p/.orek/skills"))
+            roots.skill_dir(AgentTool::Orek),
+            Some(PathBuf::from("/work/p/.orek/skills/track"))
         );
-        assert!(roots.hook_file(AgentTool::Orek).is_none());
+        assert!(roots.hook_target(AgentTool::Orek).is_none());
     }
 
     #[test]

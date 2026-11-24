@@ -221,8 +221,9 @@ fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
     Ok(())
 }
 
-/// Write the skill file for every supported AI coding tool and return the
-/// (tool name, path) of each file written.
+/// Write the skill for every supported AI coding tool, once per folder the
+/// tools read. Returns one entry per folder: the tools that share it
+/// (comma-separated) and the path of its `SKILL.md`.
 fn write_agent_skills() -> Result<Vec<(String, PathBuf)>> {
     super::agent::write_skills(crate::cli::AgentScope::User, &[])
 }

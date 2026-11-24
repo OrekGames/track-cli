@@ -72,7 +72,7 @@ fn cli_main() -> ExitCode {
     // `TRACK_OUTPUT` picks the format when `-o` does not. Read here, not by
     // clap: a hook may leave it set but empty, and that must mean "unset".
     if matches.value_source("format") != Some(clap::parser::ValueSource::CommandLine)
-        && let Some(format) = format_from_env(std::env::var("TRACK_OUTPUT").ok().as_deref())
+        && let Some(format) = format_from_env(std::env::var(output::OUTPUT_ENV).ok().as_deref())
     {
         cli.format = format;
     }
@@ -569,7 +569,6 @@ fn run_with_client(
                 tracker_mock::log_cli_command(&mock_dir, "context", &args);
             }
 
-            let backend_type = backend.to_string();
             commands::context::handle_context(
                 issue_client,
                 Some(kb_client),
@@ -578,8 +577,8 @@ fn run_with_client(
                 *include_issues,
                 *issue_limit,
                 cli.format.output(),
-                &backend_type,
-                config.url.as_deref().unwrap_or("unknown"),
+                backend,
+                config.url.as_deref(),
                 config.default_project.as_deref(),
                 cli.config.as_deref(),
             )

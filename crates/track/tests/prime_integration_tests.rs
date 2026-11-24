@@ -28,41 +28,61 @@ fn temp_dir() -> PathBuf {
     dir
 }
 
-/// Isolated CLI invocation: HOME is the temp dir and no tracker variable
-/// leaks in from the environment running the tests.
-fn track_in(dir: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .env("HOME", dir)
-        .env("USERPROFILE", dir);
-    for var in [
-        "TRACKER_URL",
-        "TRACKER_TOKEN",
-        "TRACKER_BACKEND",
-        "TRACKER_CONFIG",
-        "YOUTRACK_URL",
-        "YOUTRACK_TOKEN",
-        "JIRA_URL",
-        "JIRA_EMAIL",
-        "JIRA_TOKEN",
-        "GITHUB_TOKEN",
-        "GITHUB_OWNER",
-        "GITHUB_REPO",
-        "GITHUB_API_URL",
-        "GITLAB_TOKEN",
-        "GITLAB_URL",
-        "GITLAB_PROJECT_ID",
-        "GITLAB_NAMESPACE",
-        "LINEAR_TOKEN",
-        "LINEAR_API_URL",
-        "LINEAR_URL",
-        "LINEAR_DEFAULT_TEAM",
-        "LINEAR_DEFAULT_PROJECT",
-        "TRACK_MOCK_DIR",
-        "TRACK_CACHE_DIR",
-    ] {
+/// Every variable `track` reads that the environment running the tests may
+/// have set. `CLAUDE_ENV_FILE` matters most: run from inside a Claude Code
+/// session, a hook test would otherwise append to that session's real file.
+const AMBIENT_VARS: &[&str] = &[
+    "TRACKER_URL",
+    "TRACKER_TOKEN",
+    "TRACKER_BACKEND",
+    "TRACKER_CONFIG",
+    "YOUTRACK_URL",
+    "YOUTRACK_TOKEN",
+    "JIRA_URL",
+    "JIRA_EMAIL",
+    "JIRA_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_OWNER",
+    "GITHUB_REPO",
+    "GITHUB_API_URL",
+    "GITLAB_TOKEN",
+    "GITLAB_URL",
+    "GITLAB_PROJECT_ID",
+    "GITLAB_NAMESPACE",
+    "LINEAR_TOKEN",
+    "LINEAR_API_URL",
+    "LINEAR_URL",
+    "LINEAR_DEFAULT_TEAM",
+    "LINEAR_DEFAULT_PROJECT",
+    "TRACK_MOCK_DIR",
+    "TRACK_CACHE_DIR",
+    "TRACK_CACHE_REFRESH_CONCURRENCY",
+    "TRACK_NO_CACHE",
+    "TRACK_SCHEMA_TTL",
+    "TRACK_MAX_RESULTS",
+    "TRACK_OUTPUT",
+    "TRACK_ERROR_FORMAT",
+    "CLAUDE_ENV_FILE",
+    "CODEX_HOME",
+    "OREK_HOME",
+];
+
+/// Drop every variable in [`AMBIENT_VARS`] from `cmd`.
+fn isolate(cmd: &mut assert_cmd::Command) -> &mut assert_cmd::Command {
+    for var in AMBIENT_VARS {
         cmd.env_remove(var);
     }
+    cmd
+}
+
+/// Isolated CLI invocation: HOME is the temp dir and no variable `track`
+/// reads leaks in from the environment running the tests.
+fn track_in(dir: &Path) -> assert_cmd::Command {
+    let mut cmd = cargo_bin_cmd!("track");
+    isolate(&mut cmd)
+        .current_dir(dir)
+        .env("HOME", dir)
+        .env("USERPROFILE", dir);
     cmd
 }
 
@@ -81,8 +101,16 @@ fn hours_ago(hours: i64) -> String {
     (chrono::Utc::now() - chrono::Duration::hours(hours)).to_rfc3339()
 }
 
+/// The instance `track cache refresh` records for [`PROJECT_CONFIG`].
+const PROJECT_SCOPE: &str = "https://yt.example.com|";
+
 /// Write a cache for project DEMO as `track cache refresh` would.
 fn seed_cache(dir: &Path, backend_type: &str, updated_at: &str) {
+    seed_cache_for(dir, backend_type, updated_at, PROJECT_SCOPE);
+}
+
+/// [`seed_cache`], as written for the instance `scope`.
+fn seed_cache_for(dir: &Path, backend_type: &str, updated_at: &str, scope: &str) {
     let cache = dir.join(".tracker-cache").join(backend_type);
     let project = cache.join("projects/DEMO");
     fs::create_dir_all(cache.join("backend")).unwrap();
@@ -92,7 +120,7 @@ fn seed_cache(dir: &Path, backend_type: &str, updated_at: &str) {
         cache.join("index.json"),
         format!(
             r#"{{"version": 2, "updated_at": "{updated_at}",
-                "backend_metadata": {{"backend_type": "{backend_type}", "base_url": "https://yt.example.com"}},
+                "backend_metadata": {{"backend_type": "{backend_type}", "base_url": "https://yt.example.com", "scope": "{scope}"}},
                 "default_project": "DEMO"}}"#
         ),
     )
@@ -252,8 +280,9 @@ fn prime_warns_when_the_cache_is_stale() {
     let stdout = stdout_of(track_in(&dir).arg("prime"));
 
     assert!(stdout.lines().next().unwrap().ends_with("cache 3d old"));
+    // The same age format as the header.
     assert!(
-        stdout.contains("! cache was last refreshed 3 days ago: run `track cache refresh`"),
+        stdout.contains("! cache was last refreshed 3d ago: run `track cache refresh`"),
         "{stdout}"
     );
 
@@ -288,6 +317,49 @@ fn prime_does_not_present_another_backends_cache() {
 
     assert!(stdout.contains("! no cached project data yet"), "{stdout}");
     assert!(!stdout.contains("Priority"), "{stdout}");
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn prime_does_not_present_a_cache_written_for_another_instance() {
+    // The config now names production, or the repository committed a cache
+    // someone built against staging: its states and users are not these.
+    let dir = temp_dir();
+    write_project_config(&dir);
+    seed_cache_for(
+        &dir,
+        "youtrack",
+        &hours_ago(1),
+        "https://staging.example.com|",
+    );
+
+    let stdout = stdout_of(track_in(&dir).arg("prime"));
+
+    assert!(
+        stdout.contains("! the cache here is for another youtrack instance"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("run `track cache refresh`"), "{stdout}");
+    assert!(!stdout.contains("state field:"), "{stdout}");
+    assert!(!stdout.contains("jdoe"), "{stdout}");
+    // Nor is its URL shown as this tracker's.
+    let json: Value =
+        serde_json::from_str(&stdout_of(track_in(&dir).args(["-o", "json", "prime"]))).unwrap();
+    assert_eq!(json["url"], "https://yt.example.com");
+    assert!(json.get("cache_updated_at").is_none(), "{json}");
+
+    // A cache from before the instance was recorded is not trusted either.
+    let index = dir.join(".tracker-cache/youtrack/index.json");
+    let text = fs::read_to_string(&index)
+        .unwrap()
+        .replace(r#", "scope": "https://staging.example.com|""#, "");
+    fs::write(&index, text).unwrap();
+    let stdout = stdout_of(track_in(&dir).arg("prime"));
+    assert!(
+        stdout.contains("! the cache here is for another youtrack instance"),
+        "{stdout}"
+    );
 
     fs::remove_dir_all(&dir).unwrap();
 }
@@ -543,6 +615,32 @@ fn the_claude_hook_sets_agent_output_for_the_session() {
         fs::read_to_string(&env_file).unwrap(),
         "export TRACK_OUTPUT=agent\n"
     );
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn hook_tests_never_write_to_the_session_running_them() {
+    // As if `cargo test` ran inside a Claude Code session: the variable is
+    // inherited, and the isolated command must not see it.
+    let dir = temp_dir();
+    write_project_config(&dir);
+    seed_cache(&dir, "youtrack", &hours_ago(1));
+    let live_session_file = dir.join("live-session-env.sh");
+
+    let mut cmd = cargo_bin_cmd!("track");
+    cmd.env("CLAUDE_ENV_FILE", &live_session_file)
+        .env("TRACK_OUTPUT", "json");
+    isolate(&mut cmd)
+        .current_dir(&dir)
+        .env("HOME", &dir)
+        .env("USERPROFILE", &dir)
+        .args(["prime", "--hook"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hookSpecificOutput"));
+
+    assert!(!live_session_file.exists());
 
     fs::remove_dir_all(&dir).unwrap();
 }
