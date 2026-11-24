@@ -8,8 +8,8 @@ use crate::anthropic::{
 use crate::tools;
 use anyhow::Result;
 use colored::Colorize;
-use std::path::PathBuf;
-use tracker_mock::Scenario;
+use std::path::{Path, PathBuf};
+use tracker_mock::{ContextUsage, Scenario};
 
 /// Result of running a session
 pub struct SessionResult {
@@ -20,20 +20,25 @@ pub struct SessionResult {
     pub total_output_tokens: Option<u32>,
     pub commands_executed: Vec<CommandExecution>,
     /// Bytes of prompt the agent started with (system prompt plus task)
-    pub prompt_bytes: Option<usize>,
+    pub prompt_bytes: usize,
 }
 
 impl SessionResult {
-    /// Bytes of `track` output the agent read across the session
-    pub fn tool_output_bytes(&self) -> usize {
-        self.commands_executed.iter().map(|c| c.output.len()).sum()
+    /// The context the agent consumed: its prompt, and every byte of `track`
+    /// output it read across the session
+    pub fn context_usage(&self) -> ContextUsage {
+        ContextUsage {
+            prompt_bytes: self.prompt_bytes,
+            tool_output_bytes: self.commands_executed.iter().map(|c| c.output.len()).sum(),
+        }
     }
 }
 
 /// What reference material the agent gets in its system prompt
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ContextMode {
-    /// The full skill file, as `track init --skills` installs it
+    /// The core skill plus the scenario backend's reference, as
+    /// `track agent install` ships them
     #[default]
     Skill,
     /// The output of `track prime`, as a session hook would inject it
@@ -42,101 +47,115 @@ pub enum ContextMode {
     None,
 }
 
-/// Settings for the scenario run in progress. The prompt builders and the
-/// code that spawns `track` are spread over several modules; a shared slot
-/// keeps their signatures stable.
-#[derive(Clone, Default)]
-pub struct RunSettings {
-    pub context: ContextMode,
-    /// Scenario directory, used as the mock backend for `track prime`
-    pub scenario_path: PathBuf,
-    /// Backend the scenario runs against (`youtrack`, `jira`, ...)
-    pub backend: String,
-    /// The scenario's default project, as a configured project would have
-    pub default_project: Option<String>,
-    /// Cache directory private to this run
-    pub cache_dir: Option<PathBuf>,
+/// What one scenario run gives every provider, prepared once before the agent
+/// starts.
+#[derive(Clone, Debug, Default)]
+pub struct RunSetup {
+    /// The reference section of the system prompt, per the context mode
+    pub reference: String,
+    /// Environment a `track` command of the run gets beyond the mock directory
+    pub track_env: Vec<(&'static str, String)>,
 }
 
-static RUN_SETTINGS: std::sync::Mutex<Option<RunSettings>> = std::sync::Mutex::new(None);
-
-pub fn set_run_settings(settings: RunSettings) {
-    *RUN_SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(settings);
-}
-
-/// Environment a `track` command of the current run gets beyond the mock
-/// directory: its private cache, the project's default, and, when the
-/// session hook is being simulated, the output mode the hook sets.
-pub(crate) fn track_env() -> Vec<(&'static str, String)> {
-    let settings = run_settings();
-    let mut env = Vec::new();
-    if let Some(cache_dir) = settings.cache_dir {
-        env.push(("TRACK_CACHE_DIR", cache_dir.display().to_string()));
+impl RunSetup {
+    /// Prepare a run of `scenario` with `cache_dir` as its private cache.
+    ///
+    /// In [`ContextMode::Prime`] this runs `track cache refresh` and
+    /// `track prime` against the mock, as a project's session hook would have.
+    /// Those calls land in the call log, so clear it afterwards: they are not
+    /// part of the run being scored.
+    pub fn prepare(
+        scenario_path: &Path,
+        scenario: &Scenario,
+        context: ContextMode,
+        cache_dir: &Path,
+    ) -> Self {
+        let track_env = track_env(
+            context,
+            cache_dir,
+            scenario.setup.default_project.as_deref(),
+        );
+        let reference = match context {
+            ContextMode::None => String::new(),
+            ContextMode::Skill => skill_reference(&scenario.scenario.backend),
+            ContextMode::Prime => {
+                // A project that uses the hook has a cache, so build one first.
+                let _ = tools::execute_track(
+                    &["cache".into(), "refresh".into()],
+                    scenario_path,
+                    &track_env,
+                );
+                let (output, is_error) =
+                    tools::execute_track(&["prime".into()], scenario_path, &track_env);
+                prime_reference(&output, is_error)
+            }
+        };
+        Self {
+            reference,
+            track_env,
+        }
     }
-    if settings.context == ContextMode::Prime {
-        if let Some(project) = settings.default_project {
-            env.push(("TRACKER_DEFAULT_PROJECT", project));
+}
+
+/// Environment a `track` command of a run gets beyond the mock directory:
+/// the run's private cache, so the agent's own cache or an earlier run cannot
+/// change how many backend calls this one makes, and, when the session hook
+/// is being simulated, the project default and output mode the hook sets.
+fn track_env(
+    context: ContextMode,
+    cache_dir: &Path,
+    default_project: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut env = vec![("TRACK_CACHE_DIR", cache_dir.display().to_string())];
+    if context == ContextMode::Prime {
+        if let Some(project) = default_project {
+            env.push(("TRACKER_DEFAULT_PROJECT", project.to_string()));
         }
         env.push(("TRACK_OUTPUT", "agent".to_string()));
     }
     env
 }
 
-pub(crate) fn run_settings() -> RunSettings {
-    RUN_SETTINGS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .unwrap_or_default()
+/// The reference section for [`ContextMode::Prime`]: what the session hook
+/// printed, or nothing if `track prime` failed or printed nothing.
+fn prime_reference(output: &str, is_error: bool) -> String {
+    if is_error || output.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "## Project briefing (printed by `track prime` at session start)\n\n```\n{}\n```\n\n\
+         `track guide` lists reference topics; `track <command> -h` shows a command's options.\n\n",
+        output.trim_end()
+    )
 }
 
-/// The reference section of the system prompt for the current context mode
-pub(crate) fn reference_block() -> String {
-    let settings = run_settings();
-    match settings.context {
-        ContextMode::None => String::new(),
-        ContextMode::Prime => {
-            // What a session hook would have printed. A project that uses the
-            // hook has a cache, so build one first; that setup is not part of
-            // the run being scored.
-            let _ =
-                tools::execute_track(&["cache".into(), "refresh".into()], &settings.scenario_path);
-            let (output, is_error) =
-                tools::execute_track(&["prime".to_string()], &settings.scenario_path);
-            let _ = std::fs::write(settings.scenario_path.join("call_log.jsonl"), "");
-            if is_error || output.trim().is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "## Project briefing (printed by `track prime` at session start)\n\n```\n{}\n```\n\n\
-                     `track guide` lists reference topics; `track <command> -h` shows a command's options.\n\n",
-                    output.trim_end()
-                )
-            }
-        }
-        ContextMode::Skill => match load_skill_file() {
-            Some(skill) => format!("---\n\n{}\n---\n\n", skill),
-            None => MINIMAL_REFERENCE.to_string(),
-        },
+/// The core skill, as `track agent install` ships it from this checkout
+const SKILL_CORE: &str = include_str!("../../../agent-skills/SKILL.md");
+
+/// The reference for `backend`, which the core skill tells an agent to read
+/// first. `None` for a scenario that runs against any backend.
+fn backend_reference(backend: &str) -> Option<&'static str> {
+    match backend.to_ascii_lowercase().as_str() {
+        "youtrack" => Some(include_str!("../../../agent-skills/references/youtrack.md")),
+        "jira" => Some(include_str!("../../../agent-skills/references/jira.md")),
+        "github" => Some(include_str!("../../../agent-skills/references/github.md")),
+        "gitlab" => Some(include_str!("../../../agent-skills/references/gitlab.md")),
+        "linear" => Some(include_str!("../../../agent-skills/references/linear.md")),
+        _ => None,
     }
 }
 
-/// Used when the skill file cannot be found
-const MINIMAL_REFERENCE: &str = "## Track CLI Quick Reference\n\n\
-Note: Skill file not found. Using minimal reference.\n\n\
-```bash\n\
-track PROJ-123                     # Get issue\n\
-track i s \"project: PROJ #Unresolved\"  # Search issues\n\
-track i new -p PROJ -s \"Summary\"   # Create issue\n\
-track i u PROJ-123 --field \"Field=Value\"  # Update issue\n\
-track i del PROJ-123               # Delete issue\n\
-track i cmt PROJ-123 -m \"Comment\"  # Add comment\n\
-track i link PROJ-1 PROJ-2         # Link issues\n\
-track p ls                         # List projects\n\
-track p f PROJ                     # List custom fields\n\
-track a ls --project PROJ          # List articles\n\
-track t ls                         # List tags\n\
-```\n\n";
+/// The reference section for [`ContextMode::Skill`]: what an agent with the
+/// skill installed starts with, the core skill plus the reference for the
+/// scenario's backend.
+fn skill_reference(backend: &str) -> String {
+    let mut skill = strip_frontmatter(SKILL_CORE).to_string();
+    if let Some(reference) = backend_reference(backend) {
+        skill.push_str("\n\n---\n\n");
+        skill.push_str(reference);
+    }
+    format!("---\n\n{skill}\n---\n\n")
+}
 
 /// Record of a command execution
 pub struct CommandExecution {
@@ -145,9 +164,6 @@ pub struct CommandExecution {
     /// `None` when the runner cannot tell whether the command failed
     pub is_error: Option<bool>,
 }
-
-/// The skill directory relative to the project root
-const SKILL_DIR: &str = "agent-skills";
 
 /// Strip YAML frontmatter (--- ... ---) from skill file content
 fn strip_frontmatter(content: &str) -> &str {
@@ -159,45 +175,11 @@ fn strip_frontmatter(content: &str) -> &str {
     content
 }
 
-/// Read a file of the skill, looking for the skill directory from the
-/// working directory upwards and beside the crate.
-fn read_skill_file(relative: &str) -> Option<String> {
-    let mut candidates: Vec<PathBuf> = ["", "./", "../", "../../"]
-        .iter()
-        .map(|prefix| PathBuf::from(format!("{prefix}{SKILL_DIR}/{relative}")))
-        .collect();
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR")
-        && let Some(root) = std::path::Path::new(&manifest_dir)
-            .parent() // crates/
-            .and_then(|p| p.parent())
-    {
-        candidates.push(root.join(SKILL_DIR).join(relative));
-    }
-    candidates
-        .iter()
-        .find_map(|path| std::fs::read_to_string(path).ok())
-}
-
-/// What an agent with the skill installed starts with: the core skill, plus
-/// the reference for the scenario's backend, which is the first thing the
-/// core tells it to read.
-fn load_skill_file() -> Option<String> {
-    let core = read_skill_file("SKILL.md")?;
-    let mut skill = strip_frontmatter(&core).to_string();
-    let backend = run_settings().backend;
-    if !backend.is_empty()
-        && let Some(reference) = read_skill_file(&format!("references/{backend}.md"))
-    {
-        skill.push_str("\n\n---\n\n");
-        skill.push_str(&reference);
-    }
-    Some(skill)
-}
-
 /// Runs an agent session against a scenario
 pub struct SessionRunner {
     scenario_path: PathBuf,
     scenario: Scenario,
+    run: RunSetup,
     client: Client,
     max_turns: usize,
     verbose: bool,
@@ -208,6 +190,7 @@ impl SessionRunner {
     pub fn new(
         scenario_path: PathBuf,
         scenario: Scenario,
+        run: RunSetup,
         api_key: String,
         model: String,
         max_turns: usize,
@@ -216,6 +199,7 @@ impl SessionRunner {
         Self {
             scenario_path,
             scenario,
+            run,
             client: Client::new(api_key, model),
             max_turns,
             verbose,
@@ -302,8 +286,11 @@ impl SessionRunner {
                                         );
                                     }
 
-                                    let (output, is_error) =
-                                        tools::execute_track(&args, &self.scenario_path);
+                                    let (output, is_error) = tools::execute_track(
+                                        &args,
+                                        &self.scenario_path,
+                                        &self.run.track_env,
+                                    );
 
                                     if self.verbose {
                                         if is_error {
@@ -400,7 +387,7 @@ impl SessionRunner {
             total_input_tokens: Some(total_input_tokens),
             total_output_tokens: Some(total_output_tokens),
             commands_executed,
-            prompt_bytes: Some(prompt_bytes),
+            prompt_bytes,
         })
     }
 
@@ -418,7 +405,7 @@ impl SessionRunner {
         prompt.push_str("4. When you've completed the task, simply respond with a summary (no more tool calls)\n");
         prompt.push_str("5. Use -o json for output you need to parse programmatically\n\n");
 
-        prompt.push_str(&reference_block());
+        prompt.push_str(&self.run.reference);
 
         if let Some(context) = &self.scenario.setup.context {
             prompt.push_str("## Context\n\n");
@@ -437,5 +424,137 @@ impl SessionRunner {
             "## Your Task\n\n{}\n\nPlease complete this task using the track CLI tool.",
             self.scenario.setup.prompt
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scenario(backend: &str, default_project: &str) -> Scenario {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenario.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[scenario]
+name = "t"
+description = "t"
+backend = "{backend}"
+
+[setup]
+prompt = "Create an issue."
+default_project = "{default_project}"
+"#
+            ),
+        )
+        .unwrap();
+        Scenario::load(&path).expect("scenario parses")
+    }
+
+    #[test]
+    fn track_env_isolates_the_cache_and_simulates_the_hook_only_in_prime_mode() {
+        let cache = Path::new("/tmp/run-cache");
+        assert_eq!(
+            track_env(ContextMode::Skill, cache, Some("DEMO")),
+            vec![("TRACK_CACHE_DIR", "/tmp/run-cache".to_string())]
+        );
+        assert_eq!(
+            track_env(ContextMode::Prime, cache, Some("DEMO")),
+            vec![
+                ("TRACK_CACHE_DIR", "/tmp/run-cache".to_string()),
+                ("TRACKER_DEFAULT_PROJECT", "DEMO".to_string()),
+                ("TRACK_OUTPUT", "agent".to_string()),
+            ]
+        );
+        assert_eq!(
+            track_env(ContextMode::Prime, cache, None),
+            vec![
+                ("TRACK_CACHE_DIR", "/tmp/run-cache".to_string()),
+                ("TRACK_OUTPUT", "agent".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn skill_reference_is_the_shipped_core_plus_the_backend_reference() {
+        let core = strip_frontmatter(SKILL_CORE);
+        assert!(SKILL_CORE.starts_with("---\n"), "the skill has frontmatter");
+        assert!(!core.starts_with("---"), "frontmatter was kept");
+        assert!(SKILL_CORE.ends_with(core));
+
+        let jira = skill_reference("Jira");
+        assert!(jira.contains(core));
+        assert!(jira.contains(backend_reference("jira").unwrap()));
+        assert!(!jira.contains(backend_reference("youtrack").unwrap()));
+
+        // A scenario for any backend gets the core only.
+        assert_eq!(skill_reference("any"), format!("---\n\n{core}\n---\n\n"));
+    }
+
+    #[test]
+    fn every_fixture_backend_has_a_reference() {
+        for backend in ["youtrack", "jira", "github", "gitlab", "linear"] {
+            assert!(backend_reference(backend).is_some(), "{backend}");
+        }
+        assert!(backend_reference("any").is_none());
+    }
+
+    #[test]
+    fn prime_reference_wraps_the_briefing_and_drops_failures() {
+        let briefing = prime_reference("Project DEMO\nStates: Open, Done\n", false);
+        assert!(briefing.starts_with("## Project briefing"), "{briefing}");
+        assert!(briefing.contains("```\nProject DEMO\nStates: Open, Done\n```"));
+
+        assert_eq!(prime_reference("error: no config", true), "");
+        assert_eq!(prime_reference("  \n", false), "");
+    }
+
+    #[test]
+    fn prepare_builds_the_reference_without_running_track_outside_prime_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let scenario = scenario("youtrack", "DEMO");
+
+        let none = RunSetup::prepare(dir.path(), &scenario, ContextMode::None, dir.path());
+        assert_eq!(none.reference, "");
+        let skill = RunSetup::prepare(dir.path(), &scenario, ContextMode::Skill, dir.path());
+        assert_eq!(skill.reference, skill_reference("youtrack"));
+        assert_eq!(
+            skill.track_env,
+            track_env(ContextMode::Skill, dir.path(), Some("DEMO"))
+        );
+
+        // Nothing ran against the mock, so there is no call log to clear.
+        assert!(!tracker_mock::call_log_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn context_usage_counts_the_prompt_and_all_track_output() {
+        let session = SessionResult {
+            turns_used: 2,
+            total_input_tokens: None,
+            total_output_tokens: None,
+            commands_executed: vec![
+                CommandExecution {
+                    args: vec!["prime".into()],
+                    output: "12345".into(),
+                    is_error: Some(false),
+                },
+                CommandExecution {
+                    args: vec!["issue".into()],
+                    output: "678".into(),
+                    is_error: None,
+                },
+            ],
+            prompt_bytes: 100,
+        };
+        assert_eq!(
+            session.context_usage(),
+            ContextUsage {
+                prompt_bytes: 100,
+                tool_output_bytes: 8,
+            }
+        );
     }
 }

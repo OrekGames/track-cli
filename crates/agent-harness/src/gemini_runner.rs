@@ -7,7 +7,7 @@
 
 use crate::claude_code::{build_system_prompt, build_task_prompt, run_stream_json_session};
 use crate::permissions::format_allowed_bash_pattern;
-use crate::runner::SessionResult;
+use crate::runner::{RunSetup, SessionResult};
 use crate::subprocess::route_track_to_mock;
 use crate::tools::find_track_binary;
 use anyhow::Result;
@@ -20,6 +20,7 @@ use tracker_mock::Scenario;
 pub struct GeminiRunnerConfig {
     pub scenario_path: PathBuf,
     pub scenario: Scenario,
+    pub run: RunSetup,
     pub max_turns: usize,
     pub verbose: bool,
 }
@@ -40,7 +41,7 @@ pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<SessionResult> {
     // Combine system and task prompts for Gemini
     let full_prompt = format!(
         "{}\n\n{}",
-        build_system_prompt(&config.scenario),
+        build_system_prompt(&config.scenario, &config.run.reference),
         build_task_prompt(&config.scenario)
     );
 
@@ -56,7 +57,12 @@ pub fn run_gemini(config: &GeminiRunnerConfig) -> Result<SessionResult> {
         &format_allowed_bash_pattern(&track_bin), // Only allow track CLI
     ]);
 
-    route_track_to_mock(&mut cmd, &config.scenario_path, &track_bin);
+    route_track_to_mock(
+        &mut cmd,
+        &config.scenario_path,
+        &track_bin,
+        &config.run.track_env,
+    );
 
     run_stream_json_session(cmd, "Gemini CLI", config.verbose, full_prompt.len())
 }
