@@ -95,3 +95,11 @@ jobs:
       - uses: actions/checkout@v7
       - name: Run update-homebrew-formula.sh regression tests
         run: bash scripts/test-update-homebrew-formula.sh
+
+  pypi-wheel-script:
+    name: PyPI Wheel Script Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run build-pypi-wheels.py regression tests
+        run: python3 scripts/test-build-pypi-wheels.py
