@@ -2155,18 +2155,33 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
         return Err(anyhow!("Duration must be positive"));
     }
 
-    match unit {
-        "d" => Ok(Duration::days(num)),
-        "h" => Ok(Duration::hours(num)),
-        "m" => Ok(Duration::minutes(num)),
-        "s" => Ok(Duration::seconds(num)),
-        _ => Err(anyhow!("Unknown duration unit: {}", unit)),
-    }
+    // The checked constructors: the plain ones panic past chrono's range.
+    let duration = match unit {
+        "d" => Duration::try_days(num),
+        "h" => Duration::try_hours(num),
+        "m" => Duration::try_minutes(num),
+        "s" => Duration::try_seconds(num),
+        _ => return Err(anyhow!("Unknown duration unit: {}", unit)),
+    };
+    duration.ok_or_else(|| anyhow!("Duration too large: '{}'", s))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_duration_past_the_representable_range_is_an_error_not_a_panic() {
+        for huge in [
+            "99999999999999d",
+            "9999999999999999h",
+            "9223372036854775807m",
+            "9223372036854775807s",
+        ] {
+            assert!(parse_duration(huge).is_err(), "{huge}");
+        }
+        assert_eq!(parse_duration("2d").unwrap(), Duration::days(2));
+    }
 
     #[cfg(unix)]
     #[test]

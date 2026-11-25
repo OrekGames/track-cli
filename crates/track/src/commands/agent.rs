@@ -10,7 +10,7 @@ use crate::cli::{AgentCommands, AgentScope, AgentTool, HookAgent, OutputFormat};
 use crate::config::{env_path, home_dir};
 use crate::fsutil;
 use crate::output::{OUTPUT_ENV, OUTPUT_ENV_VALUE, output_json};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
 use indexmap::IndexMap;
 use serde::Serialize;
@@ -510,6 +510,16 @@ fn write_skills_in(roots: &Roots, tools: &[AgentTool]) -> Vec<SkillWrite> {
 }
 
 fn write_skill_tree(skill_dir: &Path) -> Result<()> {
+    // A folder of this name that holds something else is the user's: the
+    // same test uninstall applies before it removes one.
+    let occupied = std::fs::read_dir(skill_dir).is_ok_and(|mut entries| entries.next().is_some());
+    if occupied && !is_our_skill_dir(skill_dir) {
+        bail!(
+            "{} holds something other than the {SKILL_NAME} skill, so it was left unchanged. \
+             Move or rename that folder, then run the command again.",
+            skill_dir.display()
+        );
+    }
     // References from an earlier version must not linger under names the
     // core no longer points to.
     let _ = std::fs::remove_dir_all(skill_dir.join("references"));
@@ -748,6 +758,16 @@ fn edit_hook_file(text: &str, style: &HookStyle, command: &str, install: bool) -
         }
         HookStyle::Antigravity => {
             if install {
+                if doc
+                    .get(ANTIGRAVITY_GROUP)
+                    .is_some_and(|group| !is_our_hook(group))
+                {
+                    bail!(
+                        "the file already has a hook group named \"{ANTIGRAVITY_GROUP}\" that is \
+                         not this installer's; rename it, or add a SessionStart hook running \
+                         `{command}` by hand"
+                    );
+                }
                 let group = serde_json::json!({ "SessionStart": [handler(HOOK_TIMEOUT_SECS)] });
                 doc.insert(ANTIGRAVITY_GROUP.to_string(), raw(&group, 1)?);
             } else if doc
@@ -881,13 +901,33 @@ fn codex_env_is_set(text: &str) -> bool {
 
 /// `text` with the managed block holding `content` (`Some`) or with no
 /// managed block (`None`). Text outside the markers is never touched.
-fn edit_block(text: &str, content: Option<&str>) -> String {
-    let existing = text.find(BLOCK_START).and_then(|start| {
-        text[start..]
-            .find(BLOCK_END)
-            .map(|end| (start, start + end + BLOCK_END.len()))
-    });
+///
+/// A begin marker whose end marker is missing is an error: pairing it with
+/// a later end marker, or appending a second block, would take the user's
+/// own text between them along with it.
+fn edit_block(text: &str, content: Option<&str>) -> Result<String> {
+    let existing = match text.find(BLOCK_START) {
+        None => None,
+        Some(start) => {
+            let rest = &text[start + BLOCK_START.len()..];
+            let end = rest.find(BLOCK_END);
+            let next_start = rest.find(BLOCK_START);
+            match (end, next_start) {
+                (Some(end), next) if next.is_none_or(|next| end < next) => {
+                    Some((start, start + BLOCK_START.len() + end + BLOCK_END.len()))
+                }
+                _ => bail!(
+                    "the `{BLOCK_START}` marker has no `{BLOCK_END}` line after it; \
+                     restore that line where the block ends, or delete the marker"
+                ),
+            }
+        }
+    };
     let block = content.map(|content| format!("{BLOCK_BEGIN}\n{content}\n{BLOCK_END}"));
+    Ok(edit_block_at(text, existing, block))
+}
+
+fn edit_block_at(text: &str, existing: Option<(usize, usize)>, block: Option<String>) -> String {
     match (existing, block) {
         (Some((start, end)), Some(block)) => format!("{}{}{}", &text[..start], block, &text[end..]),
         (Some((start, end)), None) => {
@@ -976,7 +1016,7 @@ fn sync_tool(roots: &Roots, tool: AgentTool, install: bool, keep: &[PathBuf]) ->
         let change = update_file(
             &file.path,
             install && file.create,
-            |text| Ok(edit_block(text, content)),
+            |text| edit_block(text, content),
             is_blank,
         );
         edits.push(FileEdit {
@@ -1513,6 +1553,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_begin_marker_without_its_end_is_refused_not_paired_or_duplicated() {
+        // The end marker was deleted and the user wrote below the block.
+        let clipped = format!("# Notes\n\n{BLOCK_BEGIN}\nold\n\n## My own section\nkeep me\n");
+        assert!(edit_block(&clipped, Some("new")).is_err());
+        assert!(edit_block(&clipped, None).is_err());
+        // Nor is it paired with the end of a later, complete block.
+        let two = format!("{clipped}\n{BLOCK_BEGIN}\nx\n{BLOCK_END}\n");
+        assert!(edit_block(&two, Some("new")).is_err());
+        assert!(edit_block(&two, None).is_err());
+    }
+
+    #[test]
+    fn a_skill_folder_holding_another_skill_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("track");
+        std::fs::create_dir_all(skill.join("references")).unwrap();
+        std::fs::write(skill_md(&skill), "---\nname: my-time-tracker\n---\n").unwrap();
+        std::fs::write(skill.join("references/notes.md"), "mine").unwrap();
+
+        let err = write_skill_tree(&skill).unwrap_err().to_string();
+        assert!(err.contains("left unchanged"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(skill_md(&skill)).unwrap(),
+            "---\nname: my-time-tracker\n---\n"
+        );
+        assert!(skill.join("references/notes.md").is_file());
+
+        // A missing or empty folder, and our own skill, are written.
+        let fresh = dir.path().join("fresh").join("track");
+        write_skill_tree(&fresh).unwrap();
+        std::fs::write(fresh.join("references").join("stale.md"), "old").unwrap();
+        write_skill_tree(&fresh).unwrap();
+        assert!(!fresh.join("references").join("stale.md").exists());
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        write_skill_tree(&empty).unwrap();
+    }
+
+    #[test]
     fn relative_paths_are_joined_one_component_at_a_time() {
         let base = Path::new("home");
         assert_eq!(
@@ -1668,7 +1747,10 @@ mod tests {
         assert!(json.get("track").is_none());
         assert!(json.get("lint").is_some());
 
-        // A group of the user's that happens to be called "track" is theirs.
+        // A group of the user's that happens to be called "track" is theirs:
+        // install refuses to replace it, and uninstall leaves it.
+        let theirs_named = r#"{"track": {"Stop": [{"type": "command", "command": "echo"}]}}"#;
+        assert!(edit_hook_file(theirs_named, &t.style, &t.command, true).is_err());
         let named = r#"{"track": {"Stop": [{"type": "command", "command": "echo"}]}}"#;
         assert!(
             edit_hook_file(named, &t.style, &t.command, false)
@@ -1948,7 +2030,7 @@ mod tests {
 
     #[test]
     fn the_instructions_block_is_added_replaced_and_removed_in_place() {
-        let add = |text: &str| edit_block(text, Some(PROJECT_INSTRUCTIONS));
+        let add = |text: &str| edit_block(text, Some(PROJECT_INSTRUCTIONS)).unwrap();
         let added = add("# Project\n\nNotes.\n");
         assert!(added.starts_with("# Project\n\nNotes.\n\n<!-- track:begin"));
         assert!(added.ends_with("<!-- track:end -->\n"));
@@ -1961,8 +2043,11 @@ mod tests {
         assert!(replaced.contains("track prime"));
         assert!(replaced.ends_with("\n\n## After\n"));
 
-        assert_eq!(edit_block(&added, None), "# Project\n\nNotes.\n");
-        assert_eq!(edit_block(&add(""), None), "");
-        assert_eq!(edit_block(&replaced, None), "# Project\n\n## After\n");
+        assert_eq!(edit_block(&added, None).unwrap(), "# Project\n\nNotes.\n");
+        assert_eq!(edit_block(&add(""), None).unwrap(), "");
+        assert_eq!(
+            edit_block(&replaced, None).unwrap(),
+            "# Project\n\n## After\n"
+        );
     }
 }
