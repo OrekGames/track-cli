@@ -57,10 +57,11 @@ class Track < Formula
     doc.install "README.md" if File.exist?("README.md")
     doc.install "agent_guide.md" if File.exist?("agent_guide.md")
 
-    # Keep a reference copy of the agent skill. Homebrew runs post-install
-    # with an isolated HOME, so the skill is installed per user by
-    # `track init --skills` (see caveats) rather than by the formula.
-    pkgshare.install "agent-skills/SKILL.md" if File.exist?("agent-skills/SKILL.md")
+    # Keep a reference copy of the agent skill (SKILL.md and references/).
+    # Homebrew runs post-install with an isolated HOME, so the skill and the
+    # session hooks are installed per user by `track agent install` (see
+    # caveats) rather than by the formula.
+    pkgshare.install "agent-skills" if File.directory?("agent-skills")
   end
 
   def caveats
@@ -73,11 +74,15 @@ class Track < Formula
         export TRACKER_URL="https://your-tracker-instance.com"
         export TRACKER_TOKEN="your-api-token"
 
-      To install the track skill for Claude Code, Copilot, Cursor, and Gemini CLI
-      (~/.claude/skills/track/, ~/.copilot/skills/track/,
-       ~/.cursor/skills/track/, ~/.gemini/skills/track/), run:
+      To set up AI coding agents, run:
 
-        track init --skills
+        track agent install
+
+      It sets up Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI
+      and Copilot: the track skill, and, where the tool supports one, a
+      session-start hook that prints the project briefing (`track prime`).
+      Run `track agent status` to see what went where, and add
+      --scope project to set up one repository.
 
       For more information, see:
         track --help

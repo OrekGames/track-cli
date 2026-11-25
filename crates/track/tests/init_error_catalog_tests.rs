@@ -4,66 +4,25 @@
 //! next action). They are expected to fail on current main until Optimizer
 //! rewrites the messages. Do not lock in today's accidental wording.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+mod common;
+use common::{temp_dir, track_in};
 
 const FIXTURE_OWNER: &str = "acme";
 const FIXTURE_REPO: &str = "widgets";
 const FIXTURE_PROJECT: &str = "acme/widgets";
 const DUMMY_CREDENTIAL: &str = "test-token";
 
-fn create_temp_dir() -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-init-catalog-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
+/// [`common::track_in`] with color off, so messages compare as plain text.
 fn track_with_home(temp_home: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(temp_home)
-        .args(["--color", "never"])
-        .env("HOME", temp_home)
-        .env("USERPROFILE", temp_home)
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("TRACKER_BACKEND")
-        .env_remove("TRACKER_CONFIG")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
-        .env_remove("JIRA_URL")
-        .env_remove("JIRA_EMAIL")
-        .env_remove("JIRA_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_OWNER")
-        .env_remove("GITHUB_REPO")
-        .env_remove("GITHUB_API_URL")
-        .env_remove("GITLAB_TOKEN")
-        .env_remove("GITLAB_URL")
-        .env_remove("GITLAB_PROJECT_ID")
-        .env_remove("GITLAB_NAMESPACE")
-        .env_remove("LINEAR_TOKEN")
-        .env_remove("LINEAR_API_URL")
-        .env_remove("LINEAR_URL")
-        .env_remove("LINEAR_DEFAULT_TEAM")
-        .env_remove("LINEAR_DEFAULT_PROJECT")
-        .env_remove("TRACK_MOCK_DIR");
+    let mut cmd = track_in(temp_home);
+    cmd.args(["--color", "never"]);
     cmd
 }
 
@@ -218,7 +177,7 @@ fn run_first_github_command(dir: &Path) -> Output {
 
 #[test]
 fn github_project_omitted_uses_catalog_copy() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     let output = run_github_init(&dir, "https://api.github.com", &[]);
     let stderr = failed_stderr(&output);
     assert_eq!(
@@ -230,14 +189,13 @@ fn github_project_omitted_uses_catalog_copy() {
         )
     );
     assert_no_config(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn github_project_malformed_uses_catalog_copy() {
     let cases = ["noslash", "acme/widgets/extra"];
     for value in cases {
-        let dir = create_temp_dir();
+        let dir = temp_dir();
         let output = run_github_init(&dir, "https://api.github.com", &["--project", value]);
         let stderr = failed_stderr(&output);
         let expected = format!(
@@ -246,14 +204,13 @@ fn github_project_malformed_uses_catalog_copy() {
         );
         assert_eq!(primary_error_line(&stderr), expected, "value={value}");
         assert_no_config(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
 fn invalid_url_uses_catalog_copy() {
     for url in ["http://example.com", "not-a-url"] {
-        let dir = create_temp_dir();
+        let dir = temp_dir();
         let output = run_init(&dir, url);
         let stderr = failed_stderr(&output);
         let expected = format!(
@@ -261,13 +218,12 @@ fn invalid_url_uses_catalog_copy() {
         );
         assert_eq!(primary_error_line(&stderr), expected, "url={url}");
         assert_no_config(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
 fn userinfo_url_is_rejected_without_echoing_authority() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     let url = "https://user:leak@example.com";
     let output = run_init(&dir, url);
     let stderr = failed_stderr_hiding(&output, &["@", "user:leak", "leak", url]);
@@ -281,12 +237,11 @@ fn userinfo_url_is_rejected_without_echoing_authority() {
         "expected write-status in stderr:\n{stderr}"
     );
     assert_no_config(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn config_already_exists_uses_catalog_copy_and_leaves_file_unchanged() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     let config_path = local_config_path(&dir);
     let original = "backend = \"youtrack\"\nurl = \"https://existing.example\"\n";
     write_local_config(&dir, original);
@@ -313,12 +268,11 @@ fn config_already_exists_uses_catalog_copy_and_leaves_file_unchanged() {
         original,
         "existing config must be unchanged"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn gitignore_update_failure_after_local_write_uses_catalog_copy() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     let config_path = local_config_path(&dir);
     let gitignore_path = dir.join(".gitignore");
     std::fs::create_dir(&gitignore_path).unwrap();
@@ -351,7 +305,6 @@ fn gitignore_update_failure_after_local_write_uses_catalog_copy() {
         config_path.exists(),
         "config must remain after gitignore update failure"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -409,7 +362,7 @@ fn github_probe_status_errors_use_catalog_copy() {
     ];
 
     for case in cases {
-        let dir = create_temp_dir();
+        let dir = temp_dir();
         let (port, _server) = start_mock_http(case.status, case.reason, case.headers, case.body);
         let url = format!("http://127.0.0.1:{port}");
         let output = run_github_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
@@ -426,13 +379,12 @@ fn github_probe_status_errors_use_catalog_copy() {
             );
         }
         assert_no_config(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
 fn github_probe_transport_uses_catalog_copy() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     let url = closed_localhost_url();
     let output = run_github_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
     let stderr = failed_stderr(&output);
@@ -451,12 +403,11 @@ fn github_probe_transport_uses_catalog_copy() {
         "missing next-action copy in stderr:\n{stderr}"
     );
     assert_no_config(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn github_probe_invalid_success_body_is_parse_not_http() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     let (port, _server) = start_mock_http(200, "OK", &[], "not-json");
     let url = format!("http://127.0.0.1:{port}");
     let output = run_github_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
@@ -481,12 +432,11 @@ fn github_probe_invalid_success_body_is_parse_not_http() {
         "missing next-action copy in stderr:\n{stderr}"
     );
     assert_no_config(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn github_probe_plain_429_keeps_generic_copy() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     let (port, _server) = start_mock_http(
         429,
         "Too Many Requests",
@@ -508,12 +458,11 @@ fn github_probe_plain_429_keeps_generic_copy() {
         "a plain 429 must not use the exhausted-quota copy:\n{stderr}"
     );
     assert_no_config(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn gitlab_probe_invalid_success_body_is_parse() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     let (port, _server) = start_mock_http(200, "OK", &[], "not-json");
     let url = format!("http://127.0.0.1:{port}");
     let output = run_gitlab_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
@@ -534,7 +483,6 @@ fn gitlab_probe_invalid_success_body_is_parse() {
         "missing next-action copy in stderr:\n{stderr}"
     );
     assert_no_config(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -559,7 +507,7 @@ fn gitlab_probe_status_errors_keep_their_text() {
     ];
 
     for (status, reason, body, expected) in cases {
-        let dir = create_temp_dir();
+        let dir = temp_dir();
         let (port, _server) = start_mock_http(status, reason, &[], body);
         let url = format!("http://127.0.0.1:{port}");
         let output = run_gitlab_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
@@ -574,13 +522,12 @@ fn gitlab_probe_status_errors_keep_their_text() {
             "status={status} missing next-action copy in stderr:\n{stderr}"
         );
         assert_no_config(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
 fn gitlab_probe_transport_failure_is_http() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     let url = closed_localhost_url();
     let output = run_gitlab_init(&dir, &url, &["--project", FIXTURE_PROJECT]);
     let stderr = failed_stderr(&output);
@@ -592,12 +539,11 @@ fn gitlab_probe_transport_failure_is_http() {
         "expected prefix {prefix:?}, got {line:?}\n{stderr}"
     );
     assert_no_config(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn first_github_command_missing_token_uses_catalog_copy() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     write_local_config(
         &dir,
         &format!(
@@ -613,14 +559,13 @@ fn first_github_command_missing_token_uses_catalog_copy() {
             "', set GITHUB_TOKEN, or pass --token."
         )
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn first_github_command_missing_owner_or_repo_uses_catalog_copy() {
     let cases = ["owner", "repo"];
     for field in cases {
-        let dir = create_temp_dir();
+        let dir = temp_dir();
         let section = match field {
             "owner" => format!("token = \"{DUMMY_CREDENTIAL}\"\nrepo = \"{FIXTURE_REPO}\"\n"),
             "repo" => format!("token = \"{DUMMY_CREDENTIAL}\"\nowner = \"{FIXTURE_OWNER}\"\n"),
@@ -636,13 +581,12 @@ fn first_github_command_missing_owner_or_repo_uses_catalog_copy() {
             "<VALUE>"
         );
         assert_eq!(primary_error_line(&stderr), expected, "missing {field}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
 fn github_config_test_names_github() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     write_local_config(
         &dir,
         &format!(
@@ -679,7 +623,6 @@ fn github_config_test_names_github() {
         ),
         "missing next-action copy in stderr:\n{stderr}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -687,7 +630,7 @@ fn invalid_or_transport_url_omits_query_and_fragment_from_stderr() {
     let suffix = "?access_token=leak#frag";
     let forbidden = ["access_token", "leak", "?", "#", "frag"];
     for kind in ["invalid-remote", "transport"] {
-        let dir = create_temp_dir();
+        let dir = temp_dir();
         let output = match kind {
             "invalid-remote" => run_init(&dir, &format!("http://example.com/{suffix}")),
             "transport" => {
@@ -705,13 +648,12 @@ fn invalid_or_transport_url_omits_query_and_fragment_from_stderr() {
             );
         }
         assert_no_config(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[test]
 fn github_config_test_does_not_print_token_when_wrapping_error() {
-    let dir = create_temp_dir();
+    let dir = temp_dir();
     write_local_config(
         &dir,
         &format!(
@@ -740,5 +682,4 @@ fn github_config_test_does_not_print_token_when_wrapping_error() {
         !stderr.contains(DUMMY_CREDENTIAL),
         "wrapper must not interpolate a token-bearing cause"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

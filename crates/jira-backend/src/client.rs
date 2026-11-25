@@ -28,6 +28,8 @@ pub struct JiraClient {
     pub(crate) link_types: LinkTypeMap,
     /// Cached instance-level field metadata (lazy-loaded)
     pub(crate) field_cache: Mutex<Option<Vec<JiraField>>>,
+    /// Cached instance-level priority names (lazy-loaded)
+    pub(crate) priority_cache: Mutex<Option<Vec<String>>>,
 }
 
 impl JiraClient {
@@ -42,6 +44,7 @@ impl JiraClient {
             auth_header: basic_auth_header(email, api_token),
             link_types: LinkTypeMap::new(LINK_TYPE_DEFAULTS, HashMap::new()),
             field_cache: Mutex::new(None),
+            priority_cache: Mutex::new(None),
         }
     }
 
@@ -339,6 +342,11 @@ impl JiraClient {
         Ok(result.issue_link_types)
     }
 
+    /// GET /rest/api/3/myself: the user the credentials authenticate as
+    pub fn get_current_user(&self) -> Result<JiraUser> {
+        self.get_json(&self.api_url("/myself"))
+    }
+
     /// List users assignable to issues in a project
     pub fn list_assignable_users(&self, project_key: &str) -> Result<Vec<JiraUser>> {
         let url = format!(
@@ -413,6 +421,35 @@ impl JiraClient {
         project_key: &str,
     ) -> Result<Vec<ProjectIssueTypeStatuses>> {
         self.get_json(&self.api_url(&format!("/project/{}/statuses", project_key)))
+    }
+
+    /// GET /rest/api/3/priority: the priorities this instance defines
+    pub fn list_priorities(&self) -> Result<Vec<String>> {
+        let priorities: Vec<JiraPriority> = self.get_json(&self.api_url("/priority"))?;
+        Ok(priorities.into_iter().map(|p| p.name).collect())
+    }
+
+    /// The instance's priority names, fetched once per client.
+    ///
+    /// Priorities belong to the whole instance, so every project's schema
+    /// shares one request. The lock is held across the fetch, so concurrent
+    /// callers wait for it instead of repeating it. A failed fetch is not
+    /// cached (the next call tries again) and gives an empty list.
+    pub fn get_priorities_cached(&self) -> Vec<String> {
+        let mut cache = self
+            .priority_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(ref priorities) = *cache {
+            return priorities.clone();
+        }
+        match self.list_priorities() {
+            Ok(priorities) => {
+                *cache = Some(priorities.clone());
+                priorities
+            }
+            Err(_) => vec![],
+        }
     }
 
     /// GET /rest/api/3/project/{projectIdOrKey}/components

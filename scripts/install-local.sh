@@ -9,7 +9,8 @@
 #   3. Copies the track binary there
 #   4. Copies documentation (README.md, agent_guide.md)
 #   5. Generates and installs shell completions
-#   6. Installs agent skills for Claude Code, Gemini CLI, Copilot, and Cursor
+#   6. Sets up AI coding agents with `track agent install` (skills,
+#      session-start hooks and instructions; `track agent status` lists them)
 #   7. Creates a global config template if none exists
 #   8. Adds the directory to PATH in shell config files
 
@@ -52,17 +53,15 @@ mkdir -p "$COMPLETIONS_DIR"
 "$INSTALL_DIR/$BINARY_NAME" completions zsh  > "$COMPLETIONS_DIR/_track"
 "$INSTALL_DIR/$BINARY_NAME" completions fish > "$COMPLETIONS_DIR/track.fish"
 
-# Install agent skill globally for all supported AI coding tools
-SKILL_SRC="$PROJECT_DIR/agent-skills/SKILL.md"
+# Install the agent skill and session hooks for all supported AI coding tools.
+# The binary carries the skill files, so it is the one place they come from.
 echo ""
-echo "Installing agent skills for AI coding tools..."
-
-for TOOL_DIR in .claude .copilot .cursor .gemini; do
-    TOOL_SKILL_DIR="$HOME/$TOOL_DIR/skills/track"
-    mkdir -p "$TOOL_SKILL_DIR"
-    cp "$SKILL_SRC" "$TOOL_SKILL_DIR/SKILL.md"
-    echo "  $TOOL_SKILL_DIR/SKILL.md"
-done
+echo "Setting up AI coding agents..."
+# A tool whose settings file cannot be edited (e.g. one with comments) is
+# reported and skipped; the rest is installed. That must not stop this script.
+if ! "$INSTALL_DIR/$BINARY_NAME" agent install; then
+    echo "Warning: some agent setup was skipped (see above). Fix it, then run: track agent install"
+fi
 
 # Create global config template if it doesn't exist
 GLOBAL_CONFIG="$INSTALL_DIR/.track.toml"
@@ -173,10 +172,9 @@ echo "                $DOCS_DIR/agent_guide.md"
 echo "  Completions:  $COMPLETIONS_DIR/ (bash, zsh, fish)"
 echo "  Config:       $GLOBAL_CONFIG"
 echo ""
-echo "Agent skills (installed globally for all AI coding tools):"
-for TOOL_DIR in .claude .copilot .cursor .gemini; do
-    echo "  ~/$TOOL_DIR/skills/track/SKILL.md"
-done
+echo "Agent setup (skills, session-start hooks and instructions) is listed above."
+echo "To see it again:  $BINARY_NAME agent status"
+echo "To remove it:     $BINARY_NAME agent uninstall"
 echo ""
 echo "To use the 'track' command immediately, run one of:"
 echo "  source ~/.zshrc    # for zsh"

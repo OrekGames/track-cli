@@ -6,10 +6,12 @@ pub mod pagination;
 pub mod strings;
 pub mod tls;
 pub mod traits;
+pub mod validation;
 
-pub use error::{Result, TrackerError};
+pub use error::{Result, TrackerError, is_retryable_code};
 pub use link_types::LinkTypeMap;
 pub use models::*;
 pub use pagination::{fetch_all_pages_keyed, get_max_results};
 pub use strings::{case_key, unicode_eq_ignore_case};
 pub use traits::{IssueTracker, KnowledgeBase};
+pub use validation::{FieldProblem, ValidationReport, ValidationRules, ValueCheck};

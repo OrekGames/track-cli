@@ -38,6 +38,50 @@ pub enum TrackerError {
     Io(String),
 }
 
+impl TrackerError {
+    /// A short, stable name for the kind of failure, for callers that
+    /// branch on it. New codes may be added; existing ones do not change.
+    pub fn code(&self) -> &'static str {
+        match self {
+            TrackerError::Unauthorized => "auth",
+            TrackerError::IssueNotFound(_) => "issue_not_found",
+            TrackerError::ProjectNotFound(_) => "project_not_found",
+            TrackerError::NotFound(_) => "not_found",
+            TrackerError::InvalidInput(_) => "invalid_input",
+            TrackerError::Unsupported(_) => "unsupported",
+            TrackerError::Api { status, .. } => match status {
+                401 => "auth",
+                403 => "permission",
+                404 => "not_found",
+                409 => "conflict",
+                429 => "rate_limited",
+                500..=599 => "server",
+                _ => "api",
+            },
+            TrackerError::Http(_) => "network",
+            TrackerError::Parse(_) => "parse",
+            TrackerError::PaginationStalled(_) => "pagination_stalled",
+            TrackerError::Io(_) => "io",
+        }
+    }
+
+    /// Whether running the same request again later may succeed: the
+    /// tracker was unreachable, overloaded or rate limiting.
+    pub fn retryable(&self) -> bool {
+        is_retryable_code(self.code())
+    }
+}
+
+/// The [`TrackerError::code`]s whose failure may go away on its own.
+pub const RETRYABLE_CODES: &[&str] = &["network", "rate_limited", "server"];
+
+/// Whether an error with this code may succeed if tried again later: the
+/// tracker was unreachable, overloaded or rate limiting. The one definition
+/// behind [`TrackerError::retryable`], for callers that only hold the code.
+pub fn is_retryable_code(code: &str) -> bool {
+    RETRYABLE_CODES.contains(&code)
+}
+
 pub type Result<T> = std::result::Result<T, TrackerError>;
 
 // Payloads stay Strings and no source is kept: anyhow's `{:#}` would otherwise
@@ -72,6 +116,41 @@ impl From<std::io::Error> for TrackerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retryable_follows_the_code() {
+        let cases = [
+            (TrackerError::Http("reset".into()), true),
+            (
+                TrackerError::Api {
+                    status: 429,
+                    message: String::new(),
+                },
+                true,
+            ),
+            (
+                TrackerError::Api {
+                    status: 503,
+                    message: String::new(),
+                },
+                true,
+            ),
+            (
+                TrackerError::Api {
+                    status: 404,
+                    message: String::new(),
+                },
+                false,
+            ),
+            (TrackerError::Unauthorized, false),
+            (TrackerError::InvalidInput("x".into()), false),
+        ];
+        for (err, retryable) in cases {
+            assert_eq!(err.retryable(), retryable, "{err:?}");
+            assert_eq!(is_retryable_code(err.code()), retryable, "{err:?}");
+        }
+        assert!(!is_retryable_code("issue_not_found"));
+    }
 
     #[test]
     fn from_ureq_error_keeps_ureq_text() {

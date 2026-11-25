@@ -2016,6 +2016,126 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// `--field State=...` arrives as a plain enum named State (the schema
+    /// calls the field Status): every name validation places on Status must
+    /// reach the /transitions endpoint, whatever the update's type.
+    #[tokio::test]
+    async fn test_update_issue_routes_aliased_status_fields_to_transitions() {
+        use tracker_core::{CustomFieldUpdate, IssueTracker, UpdateIssue};
+
+        let updates = [
+            CustomFieldUpdate::SingleEnum {
+                name: "State".to_string(),
+                value: "In Progress".to_string(),
+            },
+            CustomFieldUpdate::SingleEnum {
+                name: "Stage".to_string(),
+                value: "In Progress".to_string(),
+            },
+            CustomFieldUpdate::SingleEnum {
+                name: "status".to_string(),
+                value: "In Progress".to_string(),
+            },
+            CustomFieldUpdate::MultiEnum {
+                name: "Status".to_string(),
+                values: vec!["In Progress".to_string()],
+            },
+        ];
+        for update in updates {
+            let mock_server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/rest/api/3/issue/TEST-123/transitions"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "transitions": [
+                        { "id": "31", "name": "Start Progress", "to": { "id": "3", "name": "In Progress" } }
+                    ]
+                })))
+                .mount(&mock_server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/rest/api/3/issue/TEST-123/transitions"))
+                .and(wiremock::matchers::body_json(serde_json::json!({
+                    "transition": { "id": "31" }
+                })))
+                .respond_with(ResponseTemplate::new(204))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+            Mock::given(method("PUT"))
+                .and(path("/rest/api/3/issue/TEST-123"))
+                .respond_with(ResponseTemplate::new(204))
+                .expect(0)
+                .mount(&mock_server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/rest/api/3/issue/TEST-123"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(mock_jira_issue("TEST-123", "Test issue")),
+                )
+                .mount(&mock_server)
+                .await;
+
+            let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+            let request = UpdateIssue {
+                custom_fields: vec![update.clone()],
+                ..Default::default()
+            };
+            IssueTracker::update_issue(&client, "TEST-123", &request)
+                .unwrap_or_else(|err| panic!("{update:?}: {err}"));
+        }
+    }
+
+    /// A Jira field named like a non-reserved alias is that field, as it is
+    /// in validation: a custom "Stage" is set by a field edit, not a
+    /// transition.
+    #[tokio::test]
+    async fn test_update_issue_sets_a_custom_field_named_like_an_alias() {
+        use tracker_core::{CustomFieldUpdate, IssueTracker, UpdateIssue};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/field"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "id": "customfield_10500", "name": "Stage", "custom": true,
+                  "schema": { "type": "string" } }
+            ])))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "fields": { "customfield_10500": "Beta" }
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue/TEST-123/transitions"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/issue/TEST-123"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(mock_jira_issue("TEST-123", "Test issue")),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let update = UpdateIssue {
+            custom_fields: vec![CustomFieldUpdate::SingleEnum {
+                name: "Stage".to_string(),
+                value: "Beta".to_string(),
+            }],
+            ..Default::default()
+        };
+        IssueTracker::update_issue(&client, "TEST-123", &update).unwrap();
+    }
+
     #[tokio::test]
     async fn test_update_issue_with_state_and_summary_sends_both_requests() {
         let mock_server = MockServer::start().await;
@@ -2929,5 +3049,155 @@ mod tests {
         assert_eq!(client.get_fields_cached().len(), 1);
         // A success is cached: no fourth request.
         assert_eq!(client.get_fields_cached().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_trait_current_user_reads_myself() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/myself"))
+            .and(header(
+                "Authorization",
+                "Basic dGVzdEB0ZXN0LmNvbTp0ZXN0LXRva2Vu",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accountId": "712020:abc", "displayName": "Jane Doe", "active": true
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = JiraClient::new(&mock_server.uri(), "test@test.com", "test-token");
+        let user = tracker_core::IssueTracker::current_user(&client)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(user.id, "712020:abc");
+        assert_eq!(user.display_name, "Jane Doe");
+    }
+
+    #[tokio::test]
+    async fn test_trait_project_custom_fields_mark_fetched_lists_complete() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project/PROJ/statuses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "1", "name": "Story", "statuses": [
+                    {"id": "10", "name": "To Do", "statusCategory": {"key": "new", "name": "To Do"}},
+                    {"id": "11", "name": "Shipped", "statusCategory": {"key": "done", "name": "Done"}}
+                ]},
+                {"id": "2", "name": "Defect", "statuses": [
+                    {"id": "10", "name": "To Do", "statusCategory": {"key": "new", "name": "To Do"}}
+                ]}
+            ])))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/project/PROJ/components"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "100", "name": "Rendering"}
+            ])))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/priority"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "1", "name": "Blocker"},
+                {"id": "2", "name": "Trivial"}
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::validation::{FieldProblem, validate_fields};
+        use tracker_core::{CustomFieldUpdate, IssueTracker};
+        let fields = IssueTracker::get_project_custom_fields(&client, "PROJ").unwrap();
+        let field = |id: &str| fields.iter().find(|f| f.id == id).unwrap();
+
+        // Lists read from the instance are the whole truth...
+        assert_eq!(field("priority").values, ["Blocker", "Trivial"]);
+        assert!(field("priority").values_complete);
+        assert_eq!(field("issuetype").values, ["Story", "Defect"]);
+        assert!(field("issuetype").values_complete);
+        assert!(field("components").values_complete);
+        // ...but a status can also be reached by a transition name.
+        assert!(!field("status").values_complete);
+
+        let single = |name: &str, value: &str| CustomFieldUpdate::SingleEnum {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+        assert!(validate_fields(&client, &fields, &[single("Priority", "blocker")]).is_ok());
+        assert!(matches!(
+            validate_fields(&client, &fields, &[single("Priority", "High")])
+                .errors
+                .as_slice(),
+            [FieldProblem::InvalidValue { .. }]
+        ));
+        assert!(validate_fields(&client, &fields, &[single("issuetype", "Defect")]).is_ok());
+        // The `--state` shorthand says "State"; Jira calls the field "Status".
+        let state = CustomFieldUpdate::State {
+            name: "State".to_string(),
+            value: "Start Progress".to_string(),
+        };
+        let report = validate_fields(&client, &fields, &[state]);
+        assert!(report.is_ok() && report.warnings.is_empty());
+    }
+
+    /// Priorities belong to the instance: every project's schema shares one
+    /// `/priority` request, and a failed one is tried again.
+    #[tokio::test]
+    async fn test_trait_project_custom_fields_fetch_priorities_once() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/priority"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/rest/api/3/priority"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "1", "name": "Blocker"}
+            ])))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::IssueTracker;
+        let priority_values = |project: &str| {
+            IssueTracker::get_project_custom_fields(&client, project)
+                .unwrap()
+                .into_iter()
+                .find(|f| f.id == "priority")
+                .unwrap()
+                .values
+        };
+
+        // The first fetch fails: the built-in guesses stay, nothing is cached.
+        assert!(!priority_values("PROJ").contains(&"Blocker".to_string()));
+        assert_eq!(priority_values("PROJ"), ["Blocker"]);
+        assert_eq!(priority_values("OTHER"), ["Blocker"]);
+        assert_eq!(priority_values("THIRD"), ["Blocker"]);
+    }
+
+    #[tokio::test]
+    async fn test_trait_project_custom_fields_keep_guesses_unverified() {
+        let mock_server = MockServer::start().await;
+        // Every lookup fails: the built-in lists stay, marked as guesses.
+        let client = setup_mock_client(&mock_server).await;
+        use tracker_core::validation::validate_fields;
+        use tracker_core::{CustomFieldUpdate, IssueTracker};
+        let fields = IssueTracker::get_project_custom_fields(&client, "PROJ").unwrap();
+
+        assert!(fields.iter().all(|f| !f.values_complete));
+        let critical = CustomFieldUpdate::SingleEnum {
+            name: "Priority".to_string(),
+            value: "Critical".to_string(),
+        };
+        assert!(validate_fields(&client, &fields, &[critical]).is_ok());
     }
 }

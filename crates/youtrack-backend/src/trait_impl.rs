@@ -175,6 +175,19 @@ impl IssueTracker for YouTrackClient {
             .collect())
     }
 
+    // YouTrack applies custom fields by name exactly as given, and a bundle
+    // lists every value a field takes.
+    fn validation_rules(&self) -> tracker_core::ValidationRules {
+        tracker_core::ValidationRules {
+            names_exhaustive: true,
+            ..Default::default()
+        }
+    }
+
+    fn current_user(&self) -> Result<Option<User>> {
+        Ok(Some(self.get_current_user()?.into()))
+    }
+
     fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
         Ok(self
             .list_project_users(project_id)?

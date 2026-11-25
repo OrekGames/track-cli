@@ -5,7 +5,6 @@
 //! The server here presents a certificate from an authority created for the
 //! test, as a proxy that inspects HTTPS does.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair};
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -15,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
+mod common;
+use common::{TestDir, temp_dir, track_in};
+
 const ISSUE_JSON: &str = r#"{"id":"1-1","idReadable":"DEMO-1","summary":"Behind the proxy","project":{"id":"0-1","shortName":"DEMO"},"customFields":[],"tags":[],"created":1640000000000,"updated":1640000000000}"#;
 
 /// A YouTrack stand-in serving `DEMO-1` over HTTPS with a certificate issued
@@ -22,7 +24,7 @@ const ISSUE_JSON: &str = r#"{"id":"1-1","idReadable":"DEMO-1","summary":"Behind 
 /// authority's certificate as `ca.pem`.
 struct InspectingProxy {
     port: u16,
-    dir: PathBuf,
+    dir: TestDir,
 }
 
 impl InspectingProxy {
@@ -54,7 +56,7 @@ impl InspectingProxy {
             .unwrap(),
         );
 
-        let dir = tempfile::tempdir().unwrap().keep();
+        let dir = temp_dir();
         std::fs::create_dir_all(dir.join("certs")).unwrap();
         std::fs::write(dir.join("certs").join("ca.pem"), ca.pem()).unwrap();
 
@@ -80,34 +82,13 @@ impl InspectingProxy {
     /// `track issue get DEMO-1` against this server, with no certificate
     /// settings beyond the ones a test adds.
     fn track(&self) -> assert_cmd::Command {
-        let mut cmd = cargo_bin_cmd!("track");
-        cmd.current_dir(&self.dir)
-            .env("HOME", &self.dir)
-            .env("USERPROFILE", &self.dir)
+        let mut cmd = track_in(&self.dir);
+        cmd.env_remove("SSL_CERT_FILE")
+            .env_remove("SSL_CERT_DIR")
             .args(["-b", "youtrack", "--url"])
             .arg(format!("https://127.0.0.1:{}", self.port))
             .args(["--token", "test-token", "issue", "get", "DEMO-1"]);
-        for var in [
-            "SSL_CERT_FILE",
-            "SSL_CERT_DIR",
-            "TRACKER_SYSTEM_CERTS",
-            "TRACKER_CONFIG",
-            "TRACKER_BACKEND",
-            "TRACKER_URL",
-            "TRACKER_TOKEN",
-            "YOUTRACK_URL",
-            "YOUTRACK_TOKEN",
-            "TRACK_MOCK_DIR",
-        ] {
-            cmd.env_remove(var);
-        }
         cmd
-    }
-}
-
-impl Drop for InspectingProxy {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -135,7 +116,7 @@ fn assert_untrusted(cmd: &mut assert_cmd::Command) -> assert_cmd::assert::Assert
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("UnknownIssuer"))
-        .stderr(predicate::str::contains("Tip:"))
+        .stderr(predicate::str::contains("\nHint: The server's certificate"))
         .stderr(predicate::str::contains("SSL_CERT_FILE"))
         .stderr(predicate::str::contains(
             "track config set system_certs true",
@@ -146,6 +127,29 @@ fn assert_untrusted(cmd: &mut assert_cmd::Command) -> assert_cmd::assert::Assert
 fn an_unknown_certificate_authority_is_rejected_by_default() {
     let proxy = InspectingProxy::start();
     assert_untrusted(&mut proxy.track());
+}
+
+#[test]
+fn json_errors_carry_the_certificate_advice_in_their_one_object() {
+    let proxy = InspectingProxy::start();
+    let output = proxy.track().args(["-o", "json"]).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    // One JSON object on one line, and nothing after it.
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    let error: serde_json::Value = serde_json::from_str(&stderr).unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("UnknownIssuer")
+    );
+    let hint = error["error"]["hint"].as_str().unwrap();
+    assert!(hint.contains("SSL_CERT_FILE"), "{hint}");
+    assert!(
+        hint.contains("track config set system_certs true"),
+        "{hint}"
+    );
 }
 
 #[test]
@@ -202,14 +206,8 @@ fn system_certs_defers_to_ssl_cert_file() {
 fn system_certs_is_a_config_key() {
     let proxy = InspectingProxy::start();
     let config = |args: &[&str]| {
-        let mut cmd = cargo_bin_cmd!("track");
-        cmd.current_dir(&proxy.dir)
-            .env("HOME", &proxy.dir)
-            .env("USERPROFILE", &proxy.dir)
-            .env_remove("TRACKER_SYSTEM_CERTS")
-            .env_remove("TRACKER_CONFIG")
-            .arg("config")
-            .args(args);
+        let mut cmd = track_in(&proxy.dir);
+        cmd.arg("config").args(args);
         cmd
     };
 

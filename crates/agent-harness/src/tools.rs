@@ -61,17 +61,22 @@ pub fn parse_track_input(input: &serde_json::Value) -> Result<Vec<String>, Strin
     Ok(args)
 }
 
-/// Execute a track command and return the result
-pub fn execute_track(args: &[String], scenario_dir: &std::path::Path) -> (String, bool) {
+/// Execute a track command against the scenario's mock backend, with the
+/// run's `env`, and return its output and whether it failed
+pub fn execute_track(
+    args: &[String],
+    scenario_dir: &std::path::Path,
+    env: &[(&str, String)],
+) -> (String, bool) {
     use std::process::Command;
 
     // Find the track binary
     let track_bin = find_track_binary();
 
-    let result = Command::new(&track_bin)
-        .args(args)
-        .env("TRACK_MOCK_DIR", scenario_dir)
-        .output();
+    let mut command = Command::new(&track_bin);
+    command.args(args);
+    crate::subprocess::mock_track_env(&mut command, scenario_dir, env);
+    let result = command.output();
 
     match result {
         Ok(output) => {

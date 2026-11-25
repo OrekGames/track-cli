@@ -18,10 +18,12 @@ track open PROJ-123         # Open in browser
 track issue get PROJ-123
 track i g PROJ-123 --full
 
-# Create (with validation)
+# Create (fields are validated by default)
 track issue create -p PROJ -s "Summary" -d "Description"
 track i new -s "Subtask" --parent PROJ-100 --priority "Major"
-track i new -p PROJ -s "Title" --field "Priority=Major" --validate
+track i new -p PROJ -s "Title" --field "Priority=Major"
+track i new -p PROJ -s "Title" --field "Priority=Major" --dry-run   # Check only
+track i new -p PROJ -s "Title" --field "Custom=x" --no-validate     # Send as given
 
 # Update (single or batch)
 track issue update PROJ-123 --summary "New title"
@@ -42,9 +44,14 @@ track i s "project: PROJ #Unresolved" --all     # Fetch all pages
 track i s "project: PROJ #Unresolved" -o json --select id_readable,summary  # Projected JSON
 track i s "project: PROJ #Unresolved" -o jsonl                               # JSON Lines
 
-`--select` (JSON/JSONL only) takes comma-separated dotted paths and emits only
-those fields per issue; missing paths are omitted. It is rejected in text mode
-and for any command other than `issue search`.
+`--select` (JSON/JSONL only) works with every command that prints JSON. It
+takes comma-separated dotted paths and keeps only those fields;
+`fields.<Name>` is a custom field by name. A field the issue has but with no
+value gives `null`, and a path missing from one record is left out of that
+record. A read that matches nothing at all exits 5 (`select_no_match`). After
+a write the change is already made, so a miss is a warning on stderr and the
+command prints its full JSON output and exits 0. Text output (including
+`-o agent`) rejects the flag.
 
 # Inspect many issues with opt-in context
 track issue inspect PROJ-1,PROJ-2,PROJ-3 -o json
@@ -294,6 +301,55 @@ track -b gl i u 42 --assignee @username
 track -b gl i u 42 --assignee 7
 track -b gl i u 42 --assignee ""            # clear
 ```
+
+## Field validation
+
+Field updates are checked before they are sent, on every `issue create`, `issue update` and
+`apply` operation:
+
+| Mode | Flag | What is rejected |
+|------|------|------------------|
+| Default | (none) | Only what the backend would reject or silently drop (see below) |
+| Strict | `--validate` | What the default rejects, plus any field name not in the project schema and any value outside a listed value set. Names and values the backend itself takes (`State` for `Status`, `done` on GitHub) still pass. Failing to fetch the schema is an error |
+| Off | `--no-validate` | Nothing; fields are sent as given |
+
+What the default mode can reject depends on how much a backend's schema says:
+
+| Backend | Unknown field name | Invalid value |
+|---------|--------------------|---------------|
+| YouTrack | Error | Error, for every field with a value list |
+| GitHub, GitLab | Error. Only the state and `Assignee` are settable with field flags; use `--tag` for labels | Error for the state (anything that is not open/closed or an alias of them) |
+| Jira | Warning | Error for `Priority`, `Type` and `Components` when their lists were read from the instance; the status is left to the API |
+| Linear | Error. The state, `Priority`, `Assignee`, `Labels` (or `Tags`) and `Project` are settable | Error for the state and `Priority`; assignee, labels and project are left to the API |
+
+An error names the fix: `Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State,
+Priority, Type`, or the list of valid values with the nearest one.
+
+The default check never costs an extra request. It uses the schema the command already needs
+(any `--field` needs it for typing) or a cached one. With only `--state`, `--priority` or
+`--assignee` and no cache, nothing is checked. `--dry-run` no longer needs `--validate`: it
+checks, reports, and writes nothing. A dry run always reads the schema, and asks the tracker for
+the issue it would update, so when either cannot be had it fails instead of reporting fields it
+did not check.
+
+`issue start` and `issue complete` check the state before they write. When the project's state
+field has no state with the backend's default name, the command fails without touching the
+issue and lists the states the project does have (`Invalid value 'Develop' for field 'State'.
+Valid values: Open, In Progress, Done. Pass --state <NAME> to choose one.`). `issue complete`
+without `--state` uses the project's only resolved state when there is exactly one. An explicit
+`--field` skips the check and every lookup.
+
+## Prime (agent briefing)
+
+```bash
+track prime                # Compact briefing: states, required fields, values, users, templates
+track prime -p PROJ        # Brief on another cached project
+track prime --max-values 5 # Tighter cap per field (default 12)
+track -o json prime        # The same facts as JSON
+track prime --hook=claude  # For session hooks (claude, codex, cursor, antigravity, gemini, orek)
+```
+
+Offline: reads the local cache and config only. See [AI agents](../ai-agents/).
 
 ## Context (aggregated project context)
 

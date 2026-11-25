@@ -8,7 +8,7 @@
 |--------|---------|
 | **Binary** | `track` (or `target/release/track` if not installed) |
 | **Backends** | YouTrack (default), Jira (`-b jira`/`-b j`), GitHub (`-b github`/`-b gh`), GitLab (`-b gitlab`/`-b gl`), Linear (`-b linear`/`-b lin`) |
-| **Output** | Text (default), JSON (`-o json`), or the same JSON as JSON Lines (`-o jsonl`) |
+| **Output** | Text (default), JSON (`-o json`), JSON Lines (`-o jsonl`), or compact agent text (`-o agent`, or `TRACK_OUTPUT=agent`) |
 | **Config** | `.track.toml` (project), `~/.tracker-cli/.track.toml` (global), env vars, or CLI flags |
 | **Cache** | `.tracker-cache/` (project) or `~/.tracker-cli/cache/` (global) - run `track cache refresh` for context |
 | **AI Context** | `track context` - aggregated context in single command |
@@ -161,21 +161,27 @@ track init --url https://linear.app/your-workspace --token lin_api_TOKEN --backe
 
 ```bash
 # Install skills only (no config required)
-track init --skills
+track agent install    # Skills, session-start hooks and instructions for every supported tool
+track init --skills    # The skills only
 
 # Combine with config init
 track init --url https://youtrack.example.com --token YOUR_TOKEN --skills
 ```
 
-This installs the same `track` skill reference for Claude Code, GitHub Copilot,
-Cursor, and Gemini CLI:
+This installs the same `track` skill for Orek.ai, Claude Code, Codex, Cursor,
+Antigravity, Gemini CLI and GitHub Copilot, one copy per folder they read:
 
 | Agent | Installed path |
 |-------|----------------|
-| Claude Code | `~/.claude/skills/track/SKILL.md` |
-| GitHub Copilot | `~/.copilot/skills/track/SKILL.md` |
-| Cursor | `~/.cursor/skills/track/SKILL.md` |
-| Gemini CLI | `~/.gemini/skills/track/SKILL.md` |
+| Orek.ai | Orek's user config folder, `skills/track/` |
+| Claude Code | `~/.claude/skills/track/` |
+| Codex, Cursor, Gemini CLI | `~/.agents/skills/track/` |
+| Antigravity | `~/.gemini/config/skills/track/` |
+| GitHub Copilot | `~/.copilot/skills/track/` |
+
+Each holds `SKILL.md` plus `references/`. Orek's user config folder is `$OREK_HOME/config/`,
+else `~/Library/Application Support/orek-ai/` (macOS), `~/.config/orek-ai/` (Linux) or
+`%APPDATA%\orek-ai\config\` (Windows).
 
 The installed skill is guidance only. It does not store tracker credentials;
 tokens remain in `.track.toml`, environment variables, or CLI flags.
@@ -950,7 +956,11 @@ track -b jira config test          # Jira
 track -b gh config test            # GitHub
 track -b gl config test            # GitLab
 
-# 2. Get aggregated context (recommended - single command for all AI context)
+# 2. Get the project briefing (offline, a few hundred tokens)
+track prime                        # States, required fields, enum values, users, templates
+track prime -p PROJ                # Another cached project
+
+# 3. Full aggregated context, when the briefing is not enough
 track context                      # Full context from cache
 track context --refresh            # Force refresh from API
 track context --include-issues     # Include unresolved issues
@@ -959,11 +969,11 @@ track -o json context              # JSON for parsing
 # Alternative: Refresh cache separately
 track cache refresh
 
-# 3. View cached context (includes projects, fields, users, query templates)
+# 4. View cached context (includes projects, fields, users, query templates)
 track cache show                   # Text output
 track -o json cache show           # JSON for parsing
 
-# 4. Get unresolved issues
+# 5. Get unresolved issues
 track -o json i s "project: PROJ #Unresolved" --limit 20                          # YouTrack
 track -b j -o json i s "project = PROJ AND resolution IS EMPTY" --limit 20        # Jira
 track -b gh -o json i s "is:open" --limit 20                                      # GitHub
@@ -995,6 +1005,34 @@ track cache refresh
 ---
 
 ## AI-Optimized Features
+
+### Prime Command
+
+`track prime` prints the facts an agent most often gets wrong, from the local cache only:
+
+```
+# track · youtrack · https://yt.example.com · project DEMO (default) · you: jdoe · cache 2h old
+state field: Stage = Backlog → Develop → Done*   (* = resolved)
+required on create: Stage, Priority
+fields:
+  Priority (enum): Low, Normal, High, Critical
+free-form fields: Assignee (user), Estimate (period)
+users: jdoe, asmith
+tags: backend, urgent
+templates (-T): unresolved (42), bugs
+commands:
+  track DEMO-1 --full
+  ...
+```
+
+- Lists are capped (`--max-values N`, default 12 per field; 15 users; 20 tags). A capped line
+  ends with `… +N more (<command that lists them>)`.
+- Lines starting with `!` are warnings: no cache yet, a cache written for another backend or
+  another instance of it (its data is then not shown), or a cache older than a day.
+- `track -o json prime` gives the same facts as JSON.
+- `track prime --hook=<agent>` is for session-start hooks (`claude`, the default, `codex`,
+  `cursor`, `antigravity`, `gemini`, `orek`). It prints that agent's hook JSON, always exits 0,
+  and prints `{}` unless the session's folder has its own `.track.toml` (or `--config` is given).
 
 ### Context Command
 
@@ -1039,20 +1077,48 @@ track workflow validate
 
 ### Field Validation
 
-Validate custom fields before creating/updating (prevents API errors):
+Field updates are checked before they are sent, on every `issue create`, `issue update` and
+`apply` operation:
+
+| Mode | Flag | What is rejected |
+|------|------|------------------|
+| Default | (none) | Only what the backend would reject or silently drop (see below) |
+| Strict | `--validate` | What the default rejects, plus any field name not in the project schema and any value outside a listed value set. Names and values the backend itself takes (`State` for `Status`, `done` on GitHub) still pass. Failing to fetch the schema is an error |
+| Off | `--no-validate` | Nothing; fields are sent as given |
+
+What the default mode can reject depends on how much a backend's schema says:
+
+| Backend | Unknown field name | Invalid value |
+|---------|--------------------|---------------|
+| YouTrack | Error | Error, for every field with a value list |
+| GitHub, GitLab | Error. Only the state and `Assignee` are settable with field flags; use `--tag` for labels | Error for the state (anything that is not open/closed or an alias of them) |
+| Jira | Warning | Error for `Priority`, `Type` and `Components` when their lists were read from the instance; the status is left to the API |
+| Linear | Error. The state, `Priority`, `Assignee`, `Labels` (or `Tags`) and `Project` are settable | Error for the state and `Priority`; assignee, labels and project are left to the API |
+
+An error names the fix: `Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State,
+Priority, Type`, or the list of valid values with the nearest one.
+
+The default check never costs an extra request. It uses the schema the command already needs
+(any `--field` needs it for typing) or a cached one. With only `--state`, `--priority` or
+`--assignee` and no cache, nothing is checked. `--dry-run` no longer needs `--validate`: it
+checks, reports, and writes nothing. A dry run always reads the schema, and asks the tracker for
+the issue it would update, so when either cannot be had it fails instead of reporting fields it
+did not check.
 
 ```bash
-# Validate before creating
-track i new -p PROJ -s "Title" --field "Priority=Major" --validate
-
-# Validate only (dry run - doesn't create)
-track i new -p PROJ -s "Title" --field "Priority=Invalid" --validate --dry-run
+track i new -p PROJ -s "Title" --field "Priority=Major"              # Checked, then created
+track i new -p PROJ -s "Title" --field "Priority=Invalid" --dry-run  # Checked only
 # Error: Invalid value 'Invalid' for field 'Priority'. Valid values: Critical, Major, Normal, Minor
-
-# Validate before updating
-track i u PROJ-123 --field "State=Done" --validate
-track i u PROJ-123 --field "State=Done" --validate --dry-run
+track i u PROJ-123 --field "State=Done" --validate                   # Strict
+track i u PROJ-123 --field "Custom=x" --no-validate                  # Sent as given
 ```
+
+`issue start` and `issue complete` check the state before they write. When the project's state
+field has no state with the backend's default name, the command fails without touching the
+issue and lists the states the project does have (`Invalid value 'Develop' for field 'State'.
+Valid values: Open, In Progress, Done. Pass --state <NAME> to choose one.`). `issue complete`
+without `--state` uses the project's only resolved state when there is exactly one. An explicit
+`--field` skips the check and every lookup.
 
 ### Post-Action Verification & Diffing
 
@@ -1076,17 +1142,11 @@ track i u PROJ-123 --state "Done" --verbose
 
 ### Workflow Hints
 
-The cache includes workflow hints showing valid state transitions for each project. This helps prevent state transition failures due to workflow constraints.
+The cache holds each project's state fields and their states, in workflow order, with the resolved ones marked. `track prime` prints them on one line; `track context` has them as JSON.
 
 ```bash
-# View workflow hints in context
-track context -p PROJ
-
-# Output includes:
-# Workflow Hints:
-#   PROJ (Stage):
-#     States: Backlog -> Develop -> Review -> Test -> Done*
-#     Transitions: 10 forward, 4 backward (* = resolved)
+track prime -p PROJ
+# state field: Stage = Backlog → Develop → Review → Test → Done*   (* = resolved)
 ```
 
 **JSON structure** (from `track -o json context`):
@@ -1100,28 +1160,13 @@ track context -p PROJ
         {"name": "Backlog", "is_resolved": false, "ordinal": 1},
         {"name": "Develop", "is_resolved": false, "ordinal": 2},
         {"name": "Done", "is_resolved": true, "ordinal": 6}
-      ],
-      "transitions": [
-        {"from": "Backlog", "to": "Develop", "transition_type": "forward"},
-        {"from": "Backlog", "to": "Done", "transition_type": "to_resolved"},
-        {"from": "Done", "to": "Backlog", "transition_type": "reopen"}
       ]
     }]
   }]
 }
 ```
 
-**Transition types**:
-- `forward`: Moving later in workflow (typical progression)
-- `backward`: Moving earlier in workflow (rework/rejection)
-- `to_resolved`: Moving to a resolved/completed state
-- `reopen`: Moving from resolved back to unresolved
-
-**Use cases**:
-- Before state transitions, check if the transition is valid
-- Prefer `forward` transitions for normal workflow
-- Use `to_resolved` transitions for completion
-- Warn user about `backward` transitions (may indicate rework)
+Use the names exactly as listed. No tracker exposes its permitted transitions through this CLI: a transition the workflow refuses comes back as an error. (Before 2.0 the JSON also carried a `transitions` list. It was every pair of states, computed from the list above, and is gone.)
 
 ---
 
@@ -1214,14 +1259,119 @@ Nested arrays stay inside their line. In both modes stdout holds only JSON; warn
 and errors go to stderr. `issue inspect --jsonl` is different: it streams one result per issue
 instead of the report.
 
-`--select` takes comma-separated dotted paths (e.g. `id_readable,project.short_name`)
-and emits only those fields per issue; missing paths are omitted (no error). It is wired for
-`issue search` JSON/JSONL only — text mode and every other command reject the flag, and a flag
-with no usable paths is an error rather than a no-op.
+`--select` keeps only the listed fields of whatever JSON a command prints: comma-separated
+dotted paths, on any command, with `-o json` or `-o jsonl`. Paths walk into nested arrays, so
+they work on the `--full` and `inspect` envelopes too.
+
+```bash
+track -o json i s "project: PROJ #Unresolved" --select id_readable,summary,fields.Priority
+track -o json PROJ-1 --full --select issue.id_readable,issue.fields.Stage,comments.text
+track -o jsonl p ls --select short_name
+```
+
+- `fields.<Name>` is an issue's custom field by name, as a plain value
+  (`{"fields": {"Priority": "Major"}}`); a field the issue has but with no value is `null`. It
+  exists only under `--select`; the default JSON is unchanged. Quote a name that holds `.` or
+  `,`: `fields."Est. time"`.
+- A path missing from one record is omitted from that record.
+- A selection that matches nothing at all is an error (`select_no_match`, exit 5), not `{}`.
+  After a write (create, update, delete, comment, ...) it is a warning on stderr instead: the
+  write is done, so the command prints its whole JSON output and exits 0.
+- Text output (including `-o agent`) rejects the flag.
+
+### Agent output (`-o agent`)
+
+`-o agent` is text written for an AI agent to read: no colour, no decoration, and nothing cut
+without saying so. Set `TRACK_OUTPUT=agent` to make it the default (an explicit `-o` still
+wins; an empty or unknown value is ignored).
+
+```
+$ track -o agent i s "project: DEMO #Unresolved" --limit 2
+# id	state	priority	assignee	summary
+DEMO-1	Open	Normal	jdoe	Implement user authentication
+DEMO-2	In Progress	High	-	Fix login timeout
+# 2 shown of 57; more may exist: --skip 2, or --all for everything
+```
+
+| Command | Agent output |
+|---------|--------------|
+| `issue search` | One tab-separated line per issue, then a last line that says `complete` or how to get the rest |
+| `issue get` | Summary, every set field on one line, then the full description |
+| `issue get --full` | The same, plus every link (with its link id) and the last 20 comments in full; more are named with the command that lists them |
+| `issue create` / `update` | One line: what was done and the field values the issue ended up with |
+| `issue comments`, `project fields`, batch results | One line per item; `project fields` includes the values |
+| `article list` / `search` | One line per article, without its content (`article get` prints it whole), then the same last line as `issue search` |
+| `context` | The `track prime` briefing |
+| everything else | The usual text, uncoloured |
+
+It is typically a third to a fifth of the size of the JSON for the same data.
+
+When a search or list fills its limit, a one-line hint with the next `--skip` value (and a
+total when one is known) goes to stderr, in JSON and JSONL mode too: a full page of JSON
+otherwise looks exactly like a complete result. `-o agent` puts the verdict on the last line of
+stdout instead, `complete` or how to get the rest, for `issue search`, `article list` and
+`article search` alike.
+
+`issue start` / `issue complete` JSON reports what the tracker did, not only what was asked:
+`state` is the requested state, `actual_state` the one the issue is in afterwards, `verified`
+whether they agree, and `warnings` why not. `id_readable` is the issue id.
+
+Subcommand help lists that command's own options. The global options (`-o`, `--select`, `-v`,
+`--color`, `-b`, `--config`, `--url`, `--token`, `--no-cache`, `--error-format`) are documented
+once, in `track --help`, and accepted everywhere.
 
 ---
 
 ## Error Handling
+
+> 2.0 changed exit codes and JSON-mode errors; see "Upgrading to 2.0" in the README.
+
+A failure prints up to three lines on stderr and exits with a code that names its kind:
+
+```
+Error: Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State, Priority, Type
+Code: unknown_field
+Hint: `track prime` lists this project's fields and their values; --no-validate sends the fields as given.
+```
+
+`Code:` is a short, stable name to branch on; `Hint:` is the next step, when one is known.
+With `-o json` or `-o jsonl` the error is one JSON object on one line of stderr instead:
+`{"error": {"code", "message", "hint", "retryable"}}`. `--error-format text|json` (or
+`TRACK_ERROR_FORMAT`) chooses explicitly. `retryable` is true when the same command may work
+if run again later.
+
+The exit code says what kind of failure it was:
+
+| Exit | Meaning | Codes |
+|------|---------|-------|
+| 0 | Success (a write the tracker only partly applied still exits 0, with a warning on stderr) | |
+| 1 | Any other failure | `api`, `parse`, `io`, `pagination_stalled`, `error` |
+| 2 | The command line did not parse | (clap's own message) |
+| 3 | Not found | `issue_not_found`, `project_not_found`, `not_found`, `template_not_found`, `unknown_topic` |
+| 4 | Not allowed or not set up | `auth`, `permission`, `not_configured`, `token_refused` |
+| 5 | Refused as given: fix the command | `unknown_field`, `invalid_value`, `read_only_field`, `invalid_state`, `invalid_input`, `select_no_match`, `unsupported`, `conflict` |
+| 6 | Some items of a batch failed | `partial_failure` |
+| 7 | Retryable: run it again later | `network`, `rate_limited`, `server` |
+
+
+| Code | Meaning |
+|------|---------|
+| `auth` | The token was rejected |
+| `permission` | The token is valid but may not do this |
+| `issue_not_found`, `project_not_found`, `not_found` | No such issue, project or other resource (or the token cannot see it). `project_not_found` names the closest cached project key |
+| `unknown_field`, `invalid_value`, `read_only_field` | Field validation failed; the message lists what is valid |
+| `invalid_state` | `issue start` / `complete` asked for a state the project does not have |
+| `template_not_found` | No such `-T` template, or it does not apply to this project |
+| `unknown_topic` | `track guide` has no such topic; the message lists the topics |
+| `select_no_match` | `--select` paths are not in this command's JSON (a read; after a write it is a warning) |
+| `not_configured`, `token_refused` | No usable config, or a repository config tried to redirect the token |
+| `invalid_input`, `unsupported`, `conflict`, `api` | The tracker refused the request |
+| `rate_limited`, `server`, `network` | Retryable: the tracker is limiting, failing or unreachable |
+| `parse`, `pagination_stalled`, `io` | An unexpected response or a local file problem |
+| `error` | Anything else |
+
+Per-issue failures in batch results (`issue update A,B`, `issue inspect`) carry the same
+`code` beside their `error` text.
 
 Common errors and solutions:
 

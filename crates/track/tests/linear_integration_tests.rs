@@ -12,21 +12,18 @@
 //!   - For mutating tests, the workspace has a Linear project named "Track CLI".
 
 use anyhow::{Context, Result, bail, ensure};
-use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod common;
+use common::{track, workspace_root};
 
 const LINEAR_TEAM: &str = "ORE";
 const LINEAR_PROJECT: &str = "Track CLI";
 
 fn repo_config_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(".track.toml")
+    workspace_root().join(".track.toml")
 }
 
 fn config_exists() -> bool {
@@ -58,7 +55,7 @@ fn add_linear_env(cmd: &mut assert_cmd::Command) {
 }
 
 fn track_linear_json() -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "linear", "-o", "json", "--config"])
         .arg(repo_config_path());
     add_linear_env(&mut cmd);
@@ -66,7 +63,7 @@ fn track_linear_json() -> assert_cmd::Command {
 }
 
 fn track_linear() -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
+    let mut cmd = track();
     cmd.args(["-b", "linear", "--config"])
         .arg(repo_config_path());
     add_linear_env(&mut cmd);

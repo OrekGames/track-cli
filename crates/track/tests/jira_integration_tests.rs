@@ -13,23 +13,20 @@
 //!
 //!   - Have at least one project in Jira (e.g., "SMS")
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+mod common;
+use common::{temp_dir, track, track_in, workspace_root};
+
 /// Get the path to the .track.toml config file at project root
 fn jira_config_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(".track.toml")
+    workspace_root().join(".track.toml")
 }
 
 /// Check if the config file exists (skip tests if not)
@@ -58,7 +55,7 @@ fn test_jira_config_test_command() {
         return;
     }
 
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["config", "test"])
@@ -72,11 +69,10 @@ fn test_jira_config_test_command() {
 #[ignore]
 fn test_jira_missing_email_error() {
     // Test that missing email gives a clear error
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "project", "list"])
         .env("JIRA_URL", "https://test.atlassian.net")
         .env("JIRA_TOKEN", "test-token")
-        .env_remove("JIRA_EMAIL")
         .timeout(Duration::from_secs(10))
         .assert()
         .failure()
@@ -94,7 +90,7 @@ fn test_jira_project_list() {
         return;
     }
 
-    let output = cargo_bin_cmd!("track")
+    let output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["project", "list"])
@@ -129,7 +125,7 @@ fn test_jira_project_list_text_output() {
         return;
     }
 
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["project", "list"])
@@ -146,7 +142,7 @@ fn test_jira_project_get() {
         return;
     }
 
-    let output = cargo_bin_cmd!("track")
+    let output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["project", "get", "SMS"])
@@ -175,7 +171,7 @@ fn test_jira_issue_search_jql() {
         return;
     }
 
-    let output = cargo_bin_cmd!("track")
+    let output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "search", "project = SMS", "--limit", "5"])
@@ -200,7 +196,7 @@ fn test_jira_issue_search_with_status() {
     }
 
     // Test JQL with status filter
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -223,7 +219,7 @@ fn test_jira_issue_search_unresolved() {
     }
 
     // Test JQL for unresolved issues
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -246,7 +242,7 @@ fn test_jira_issue_search_pagination() {
     }
 
     // Test pagination with skip
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -275,7 +271,7 @@ fn test_jira_issue_create_and_delete() {
     }
 
     // Create an issue
-    let create_output = cargo_bin_cmd!("track")
+    let create_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -305,7 +301,7 @@ fn test_jira_issue_create_and_delete() {
     );
 
     // Get the issue we just created
-    let get_output = cargo_bin_cmd!("track")
+    let get_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "get", issue_key])
@@ -321,7 +317,7 @@ fn test_jira_issue_create_and_delete() {
     assert_eq!(fetched["summary"], "Integration Test Issue - DELETE ME");
 
     // Delete the issue
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "delete", issue_key])
@@ -330,7 +326,7 @@ fn test_jira_issue_create_and_delete() {
         .success();
 
     // Verify deletion - should fail to get
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "get", issue_key])
@@ -348,7 +344,7 @@ fn test_jira_issue_attachment_upload_and_list() {
 
     let file = temp_attachment_file("issue");
 
-    let create_output = cargo_bin_cmd!("track")
+    let create_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -370,7 +366,7 @@ fn test_jira_issue_attachment_upload_and_list() {
     let created: Value = serde_json::from_str(&create_str).unwrap();
     let issue_key = created["id_readable"].as_str().unwrap();
 
-    let upload_output = cargo_bin_cmd!("track")
+    let upload_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "attach", issue_key])
@@ -387,7 +383,7 @@ fn test_jira_issue_attachment_upload_and_list() {
     let uploaded: Value = serde_json::from_str(&upload_str).unwrap();
     assert_eq!(uploaded[0]["name"], "track-live-jira-attachment.txt");
 
-    let list_output = cargo_bin_cmd!("track")
+    let list_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "attachments", issue_key])
@@ -408,7 +404,7 @@ fn test_jira_issue_attachment_upload_and_list() {
     );
 
     let _ = std::fs::remove_file(&file);
-    let _ = cargo_bin_cmd!("track")
+    let _ = track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "delete", issue_key])
@@ -424,7 +420,7 @@ fn test_jira_issue_update() {
     }
 
     // Create an issue
-    let create_output = cargo_bin_cmd!("track")
+    let create_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -447,7 +443,7 @@ fn test_jira_issue_update() {
     let issue_key = created["id_readable"].as_str().unwrap().to_string();
 
     // Update the issue
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args([
@@ -464,7 +460,7 @@ fn test_jira_issue_update() {
         .success();
 
     // Verify update
-    let get_output = cargo_bin_cmd!("track")
+    let get_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "get", &issue_key])
@@ -480,7 +476,7 @@ fn test_jira_issue_update() {
     assert_eq!(fetched["summary"], "Updated Test Issue Summary");
 
     // Clean up
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "delete", &issue_key])
@@ -501,7 +497,7 @@ fn test_jira_issue_get_shortcut() {
     }
 
     // First create an issue to have something to get
-    let create_output = cargo_bin_cmd!("track")
+    let create_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "-p", "SMS", "-s", "Test Shortcut Access"])
@@ -517,7 +513,7 @@ fn test_jira_issue_get_shortcut() {
     let issue_key = created["id_readable"].as_str().unwrap().to_string();
 
     // Test direct access shortcut (track SMS-123 instead of track issue get SMS-123)
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .arg(&issue_key)
@@ -528,7 +524,7 @@ fn test_jira_issue_get_shortcut() {
         .stdout(predicate::str::contains("Test Shortcut Access"));
 
     // Clean up
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "delete", &issue_key])
@@ -544,7 +540,7 @@ fn test_jira_issue_get_not_found() {
         return;
     }
 
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "get", "SMS-99999"])
@@ -568,7 +564,7 @@ fn test_jira_issue_comments() {
     }
 
     // Create an issue
-    let create_output = cargo_bin_cmd!("track")
+    let create_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -591,7 +587,7 @@ fn test_jira_issue_comments() {
     let issue_key = created["id_readable"].as_str().unwrap().to_string();
 
     // Add a comment
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args([
@@ -606,7 +602,7 @@ fn test_jira_issue_comments() {
         .success();
 
     // Get comments
-    let comments_output = cargo_bin_cmd!("track")
+    let comments_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "comments", &issue_key])
@@ -632,7 +628,7 @@ fn test_jira_issue_comments() {
     assert!(found, "Should find the comment we added");
 
     // Clean up
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "delete", &issue_key])
@@ -653,7 +649,7 @@ fn test_jira_issue_link() {
     }
 
     // Create two issues
-    let create1 = cargo_bin_cmd!("track")
+    let create1 = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "-p", "SMS", "-s", "Link Test Issue 1"])
@@ -664,7 +660,7 @@ fn test_jira_issue_link() {
         .stdout
         .clone();
 
-    let create2 = cargo_bin_cmd!("track")
+    let create2 = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "-p", "SMS", "-s", "Link Test Issue 2"])
@@ -681,7 +677,7 @@ fn test_jira_issue_link() {
     let key2 = issue2["id_readable"].as_str().unwrap().to_string();
 
     // Link the issues
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "link", &key1, &key2, "-t", "Relates"])
@@ -691,7 +687,7 @@ fn test_jira_issue_link() {
 
     // Clean up
     for key in [&key1, &key2] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -709,7 +705,7 @@ fn test_jira_issue_link_subtask() {
     }
 
     // Create parent as Epic (Jira requires parent to be Epic/Story for subtask hierarchy)
-    let create_parent = cargo_bin_cmd!("track")
+    let create_parent = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -729,7 +725,7 @@ fn test_jira_issue_link_subtask() {
         .stdout
         .clone();
 
-    let create_child = cargo_bin_cmd!("track")
+    let create_child = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "-p", "SMS", "-s", "Subtask Link Child"])
@@ -746,7 +742,7 @@ fn test_jira_issue_link_subtask() {
     let child_key = child["id_readable"].as_str().unwrap().to_string();
 
     // Link child as subtask of parent: issue link CHILD PARENT -t subtask
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "link", &child_key, &parent_key, "-t", "subtask"])
@@ -756,7 +752,7 @@ fn test_jira_issue_link_subtask() {
 
     // Clean up
     for key in [&child_key, &parent_key] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -774,7 +770,7 @@ fn test_jira_issue_link_parent() {
     }
 
     // Create parent as Epic (Jira requires parent to be Epic/Story for subtask hierarchy)
-    let create_parent = cargo_bin_cmd!("track")
+    let create_parent = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -794,7 +790,7 @@ fn test_jira_issue_link_parent() {
         .stdout
         .clone();
 
-    let create_child = cargo_bin_cmd!("track")
+    let create_child = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "-p", "SMS", "-s", "Parent Link Child"])
@@ -811,7 +807,7 @@ fn test_jira_issue_link_parent() {
     let child_key = child["id_readable"].as_str().unwrap().to_string();
 
     // Link parent as parent of child: issue link PARENT CHILD -t parent
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "link", &parent_key, &child_key, "-t", "parent"])
@@ -821,7 +817,7 @@ fn test_jira_issue_link_parent() {
 
     // Clean up
     for key in [&child_key, &parent_key] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -843,7 +839,7 @@ fn test_feature_parity_project_structure() {
         return;
     }
 
-    let output = cargo_bin_cmd!("track")
+    let output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["project", "list"])
@@ -877,7 +873,7 @@ fn test_feature_parity_issue_structure() {
     }
 
     // Create an issue
-    let create_output = cargo_bin_cmd!("track")
+    let create_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -926,7 +922,7 @@ fn test_feature_parity_issue_structure() {
     let issue_key = issue["id_readable"].as_str().unwrap();
 
     // Clean up
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "delete", issue_key])
@@ -944,7 +940,7 @@ fn test_feature_parity_comment_structure() {
     }
 
     // Create an issue and add a comment
-    let create_output = cargo_bin_cmd!("track")
+    let create_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "-p", "SMS", "-s", "Comment Parity Test"])
@@ -960,7 +956,7 @@ fn test_feature_parity_comment_structure() {
     let issue_key = issue["id_readable"].as_str().unwrap().to_string();
 
     // Add comment
-    let comment_output = cargo_bin_cmd!("track")
+    let comment_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -993,7 +989,7 @@ fn test_feature_parity_comment_structure() {
     );
 
     // Clean up
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "delete", &issue_key])
@@ -1013,7 +1009,7 @@ fn test_jira_invalid_project() {
         return;
     }
 
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["project", "get", "NONEXISTENT_PROJECT_XYZ"])
@@ -1029,7 +1025,7 @@ fn test_jira_invalid_jql() {
         return;
     }
 
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "search", "INVALID JQL SYNTAX ==="])
@@ -1050,7 +1046,7 @@ fn test_jira_issue_create_with_parent() {
     }
 
     // Create a parent issue as an Epic (Jira hierarchy: Epic → Task → Subtask)
-    let parent_output = cargo_bin_cmd!("track")
+    let parent_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -1074,7 +1070,7 @@ fn test_jira_issue_create_with_parent() {
     let parent_key = parent["id_readable"].as_str().unwrap().to_string();
 
     // Create a child Task with --parent pointing to the Epic
-    let child_output = cargo_bin_cmd!("track")
+    let child_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -1103,7 +1099,7 @@ fn test_jira_issue_create_with_parent() {
 
     // Clean up both issues
     for key in [&child_key, &parent_key] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -1121,7 +1117,7 @@ fn test_jira_issue_update_with_parent() {
     }
 
     // Create a parent Epic
-    let parent_output = cargo_bin_cmd!("track")
+    let parent_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -1145,7 +1141,7 @@ fn test_jira_issue_update_with_parent() {
     let parent_key = parent["id_readable"].as_str().unwrap().to_string();
 
     // Create a standalone Task (no parent)
-    let child_output = cargo_bin_cmd!("track")
+    let child_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "-p", "SMS", "-s", "Standalone Task"])
@@ -1160,7 +1156,7 @@ fn test_jira_issue_update_with_parent() {
     let child_key = child["id_readable"].as_str().unwrap().to_string();
 
     // Update the Task to set --parent to the Epic
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "update", &child_key, "--parent", &parent_key])
@@ -1170,7 +1166,7 @@ fn test_jira_issue_update_with_parent() {
 
     // Clean up both issues
     for key in [&child_key, &parent_key] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -1188,7 +1184,7 @@ fn test_jira_issue_create_with_parent_json() {
     }
 
     // Create a parent Epic
-    let parent_output = cargo_bin_cmd!("track")
+    let parent_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -1217,7 +1213,7 @@ fn test_jira_issue_create_with_parent_json() {
         parent_key
     );
 
-    let child_output = cargo_bin_cmd!("track")
+    let child_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "--json", &json_payload])
@@ -1237,7 +1233,7 @@ fn test_jira_issue_create_with_parent_json() {
 
     // Clean up both issues
     for key in [&child_key, &parent_key] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -1255,7 +1251,7 @@ fn test_jira_issue_update_with_parent_json() {
     }
 
     // Create a parent Epic
-    let parent_output = cargo_bin_cmd!("track")
+    let parent_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -1279,7 +1275,7 @@ fn test_jira_issue_update_with_parent_json() {
     let parent_key = parent["id_readable"].as_str().unwrap().to_string();
 
     // Create a standalone Task
-    let child_output = cargo_bin_cmd!("track")
+    let child_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -1303,7 +1299,7 @@ fn test_jira_issue_update_with_parent_json() {
     // Update the Task via --json to set parent to the Epic
     let json_payload = format!(r#"{{"parent": "{}"}}"#, parent_key);
 
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "update", &child_key, "--json", &json_payload])
@@ -1313,7 +1309,7 @@ fn test_jira_issue_update_with_parent_json() {
 
     // Clean up both issues
     for key in [&child_key, &parent_key] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -1331,7 +1327,7 @@ fn test_jira_issue_create_subtask_with_parent() {
     }
 
     // Create a parent Task (in Jira: Task → Subtask hierarchy)
-    let parent_output = cargo_bin_cmd!("track")
+    let parent_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -1353,7 +1349,7 @@ fn test_jira_issue_create_subtask_with_parent() {
     let parent_key = parent["id_readable"].as_str().unwrap().to_string();
 
     // Create a Subtask with --parent pointing to the Task
-    let child_output = cargo_bin_cmd!("track")
+    let child_output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -1400,7 +1396,7 @@ fn test_jira_issue_create_subtask_with_parent() {
 
     // Clean up both issues (child first, then parent)
     for key in [&child_key, &parent_key] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -1422,7 +1418,7 @@ fn test_jira_article_list_via_confluence() {
     }
 
     // Jira article commands are backed by Confluence
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["article", "list"])
@@ -1439,7 +1435,7 @@ fn test_jira_project_create_not_supported() {
     }
 
     // Project creation should fail with helpful message
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["project", "create", "-n", "Test Project", "-s", "TEST"])
@@ -1461,7 +1457,7 @@ fn test_jira_cli_aliases() {
     }
 
     // Test -b j alias
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "j", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["p", "ls"]) // project list aliases
@@ -1470,7 +1466,7 @@ fn test_jira_cli_aliases() {
         .success();
 
     // Test i s alias (issue search)
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "j", "--config"])
         .arg(jira_config_path())
         .args(["i", "s", "project = SMS", "--limit", "1"])
@@ -1490,7 +1486,7 @@ fn test_jira_json_output_parseable() {
         return;
     }
 
-    let output = cargo_bin_cmd!("track")
+    let output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["project", "list"])
@@ -1519,7 +1515,7 @@ fn test_jira_text_output_readable() {
         return;
     }
 
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["project", "list"])
@@ -1594,11 +1590,10 @@ fn mock_jira_issue(key: &str, summary: &str) -> serde_json::Value {
     })
 }
 
-/// Write a temporary Jira config file and return its path.
-fn write_jira_mock_config(port: u16) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("track-jira-test-{}", port));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config_path = dir.join(".track.toml");
+/// Write a Jira config for the mock server at `port` into `dir` and return
+/// its path.
+fn write_jira_mock_config(dir: &Path, port: u16) -> PathBuf {
+    let config_path = dir.join("jira.toml");
     let content = format!(
         r#"
 [jira]
@@ -1613,13 +1608,12 @@ token = "test"
 }
 
 fn write_jira_mock_config_with_credentials(
+    dir: &Path,
     port: u16,
     email: &str,
     token: &str,
-) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("track-jira-test-auth-{}", port));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config_path = dir.join(".track.toml");
+) -> PathBuf {
+    let config_path = dir.join("jira.toml");
     let content = format!(
         r#"
 [jira]
@@ -1688,6 +1682,7 @@ fn start_jira_auth_capture_server(
 
 #[test]
 fn test_jira_pagination_hint_on_full_page() {
+    let dir = temp_dir();
     // Jira search response includes total inline
     let search_response = serde_json::json!({
         "startAt": 0,
@@ -1702,8 +1697,8 @@ fn test_jira_pagination_hint_on_full_page() {
     let (_server, port) = start_jira_mock_server(search_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "--config"])
         .arg(&cfg)
         .args(["issue", "search", "project = TEST", "--limit", "2"])
@@ -1723,24 +1718,21 @@ fn test_jira_pagination_hint_on_full_page() {
 
 #[test]
 fn test_jira_cli_trims_whitespace_in_basic_auth_header() {
+    let dir = temp_dir();
     let issue_response = mock_jira_issue("TEST-123", "Whitespace auth proof").to_string();
     let (server, port, captured_headers) = start_jira_auth_capture_server(issue_response);
     thread::sleep(Duration::from_millis(50));
 
     let cfg = write_jira_mock_config_with_credentials(
+        &dir,
         port,
         " test@test.com \n",
         "\rFAKE-TOKEN-DO-NOT-USE\t ",
     );
 
-    // Credentials in the environment override the config file, so a
-    // developer's own JIRA_TOKEN would replace the one under test.
-    cargo_bin_cmd!("track")
-        .env_remove("JIRA_URL")
-        .env_remove("JIRA_EMAIL")
-        .env_remove("JIRA_TOKEN")
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
+    // Credentials in the environment would override the config file under
+    // test; track_in leaves none.
+    track_in(&dir)
         .args(["-b", "jira", "--config"])
         .arg(&cfg)
         .args(["issue", "get", "TEST-123"])
@@ -1764,6 +1756,7 @@ fn test_jira_cli_trims_whitespace_in_basic_auth_header() {
 
 #[test]
 fn test_jira_no_hint_on_partial_page() {
+    let dir = temp_dir();
     let search_response = serde_json::json!({
         "startAt": 0,
         "maxResults": 10,
@@ -1777,8 +1770,8 @@ fn test_jira_no_hint_on_partial_page() {
     let (_server, port) = start_jira_mock_server(search_response.to_string());
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "--config"])
         .arg(&cfg)
         .args(["issue", "search", "project = TEST", "--limit", "10"])
@@ -1802,13 +1795,14 @@ fn test_jira_no_hint_on_partial_page() {
 
 #[test]
 fn test_jira_unlink_text_output() {
+    let dir = temp_dir();
     // Jira returns 204 No Content on delete link — mock returns 200 which is also fine
     let mock_response = String::new();
     let (_server, port) = start_jira_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    track_in(&dir)
         .args(["-b", "jira", "--config"])
         .arg(&cfg)
         .args(["issue", "unlink", "PROJ-123", "12345"])
@@ -1822,12 +1816,13 @@ fn test_jira_unlink_text_output() {
 
 #[test]
 fn test_jira_unlink_json_output() {
+    let dir = temp_dir();
     let mock_response = String::new();
     let (_server, port) = start_jira_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "unlink", "PROJ-123", "12345"])
@@ -1851,13 +1846,14 @@ fn test_jira_unlink_json_output() {
 
 #[test]
 fn test_jira_link_depends_text_output() {
+    let dir = temp_dir();
     // Jira returns 201 Created on POST /rest/api/3/issueLink
     let mock_response = String::new();
     let (_server, port) = start_jira_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    track_in(&dir)
         .args(["-b", "jira", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "depends"])
@@ -1871,12 +1867,13 @@ fn test_jira_link_depends_text_output() {
 
 #[test]
 fn test_jira_link_depends_json_output() {
+    let dir = temp_dir();
     let mock_response = String::new();
     let (_server, port) = start_jira_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "depends"])
@@ -1897,12 +1894,13 @@ fn test_jira_link_depends_json_output() {
 
 #[test]
 fn test_jira_link_relates_text_output() {
+    let dir = temp_dir();
     let mock_response = String::new();
     let (_server, port) = start_jira_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    track_in(&dir)
         .args(["-b", "jira", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "relates"])
@@ -1914,12 +1912,13 @@ fn test_jira_link_relates_text_output() {
 
 #[test]
 fn test_jira_link_duplicates_json_output() {
+    let dir = temp_dir();
     let mock_response = String::new();
     let (_server, port) = start_jira_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "duplicates"])
@@ -1937,13 +1936,14 @@ fn test_jira_link_duplicates_json_output() {
 
 #[test]
 fn test_jira_link_custom_type_passthrough() {
+    let dir = temp_dir();
     // Custom/unknown link types should pass through to the backend
     let mock_response = String::new();
     let (_server, port) = start_jira_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "clones"])
@@ -1960,10 +1960,8 @@ fn test_jira_link_custom_type_passthrough() {
 }
 
 /// Write a Jira mock config with custom link_mappings section.
-fn write_jira_mock_config_with_mappings(port: u16) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("track-jira-link-map-test-{}", port));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config_path = dir.join(".track.toml");
+fn write_jira_mock_config_with_mappings(dir: &Path, port: u16) -> PathBuf {
+    let config_path = dir.join("jira.toml");
     let content = format!(
         r#"
 [jira]
@@ -1982,14 +1980,15 @@ depends = "Requires"
 
 #[test]
 fn test_jira_link_with_config_mappings() {
+    let dir = temp_dir();
     // Even with custom mappings, the CLI-level behavior is the same
     // (the mapping happens inside the backend, transparent to the user)
     let mock_response = String::new();
     let (_server, port) = start_jira_mock_server(mock_response);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config_with_mappings(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config_with_mappings(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "link", "PROJ-1", "PROJ-2", "-t", "depends"])
@@ -2018,7 +2017,7 @@ fn test_jira_live_link_depends() {
     }
 
     // Create two issues
-    let create1 = cargo_bin_cmd!("track")
+    let create1 = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "-p", "SMS", "-s", "Depends Link Test 1"])
@@ -2029,7 +2028,7 @@ fn test_jira_live_link_depends() {
         .stdout
         .clone();
 
-    let create2 = cargo_bin_cmd!("track")
+    let create2 = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["issue", "create", "-p", "SMS", "-s", "Depends Link Test 2"])
@@ -2047,7 +2046,7 @@ fn test_jira_live_link_depends() {
 
     // Link with "depends" — should create a "Blocks" link (via config or default mapping)
     // The config has [jira.link_mappings] depends = "Blocks", confirming the mapping is used
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "link", &key1, &key2, "-t", "depends"])
@@ -2058,7 +2057,7 @@ fn test_jira_live_link_depends() {
 
     // Clean up
     for key in [&key1, &key2] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -2076,7 +2075,7 @@ fn test_jira_live_link_duplicates() {
     }
 
     // Create two issues
-    let create1 = cargo_bin_cmd!("track")
+    let create1 = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -2094,7 +2093,7 @@ fn test_jira_live_link_duplicates() {
         .stdout
         .clone();
 
-    let create2 = cargo_bin_cmd!("track")
+    let create2 = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args([
@@ -2118,7 +2117,7 @@ fn test_jira_live_link_duplicates() {
     let key2 = issue2["id_readable"].as_str().unwrap().to_string();
 
     // Link with "duplicates" — should create a "Duplicate" link
-    cargo_bin_cmd!("track")
+    track()
         .args(["-b", "jira", "--config"])
         .arg(jira_config_path())
         .args(["issue", "link", &key1, &key2, "-t", "duplicates"])
@@ -2129,7 +2128,7 @@ fn test_jira_live_link_duplicates() {
 
     // Clean up
     for key in [&key1, &key2] {
-        cargo_bin_cmd!("track")
+        track()
             .args(["-b", "jira", "--config"])
             .arg(jira_config_path())
             .args(["issue", "delete", key])
@@ -2150,7 +2149,7 @@ fn test_jira_project_fields_includes_custom_fields() {
         return;
     }
 
-    let output = cargo_bin_cmd!("track")
+    let output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["project", "fields", "SMS"])
@@ -2185,7 +2184,7 @@ fn test_jira_project_fields_shows_field_ids() {
         return;
     }
 
-    let output = cargo_bin_cmd!("track")
+    let output = track()
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(jira_config_path())
         .args(["project", "fields", "SMS"])
@@ -2314,6 +2313,7 @@ fn search_jql_requests(captured: &Mutex<Vec<String>>) -> Vec<String> {
 
 #[test]
 fn test_jira_search_all_walks_token_chain() {
+    let dir = temp_dir();
     // Three pages chained by nextPageToken; the middle page is deliberately
     // short (1 issue) — short pages must NOT terminate the walk, only token
     // absence does.
@@ -2355,8 +2355,8 @@ fn test_jira_search_all_walks_token_chain() {
     let (_server, port, captured) = start_jira_paged_mock_server(pages, 6);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "search", "project = TEST", "--all"])
@@ -2404,6 +2404,7 @@ fn test_jira_search_all_walks_token_chain() {
 
 #[test]
 fn test_jira_search_all_fails_loudly_on_stalled_pagination() {
+    let dir = temp_dir();
     // The server hands out a token but serves identical data for it: the
     // cursor never advances. --all must fail instead of silently returning
     // a truncated (or duplicated) result set.
@@ -2420,8 +2421,8 @@ fn test_jira_search_all_fails_loudly_on_stalled_pagination() {
     let (_server, port, _captured) = start_jira_paged_mock_server(pages, 4);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    track_in(&dir)
         .args(["-b", "jira", "--config"])
         .arg(&cfg)
         .args(["issue", "search", "project = TEST", "--all"])
@@ -2433,6 +2434,7 @@ fn test_jira_search_all_fails_loudly_on_stalled_pagination() {
 
 #[test]
 fn test_jira_search_skip_shifts_window() {
+    let dir = temp_dir();
     // --skip is emulated by walking the token chain and discarding: with
     // pages of 2+2, --limit 2 --skip 2 must return exactly the second page.
     let pages = vec![
@@ -2462,8 +2464,8 @@ fn test_jira_search_skip_shifts_window() {
     let (_server, port, _captured) = start_jira_paged_mock_server(pages, 4);
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         .args([
@@ -2526,11 +2528,12 @@ fn mock_changelog_body() -> String {
 
 #[test]
 fn test_jira_issue_history_json_envelope_orders_newest_first() {
+    let dir = temp_dir();
     let (_server, port) = start_jira_mock_server(mock_changelog_body());
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "history", "TEST-1"])
@@ -2563,11 +2566,12 @@ fn test_jira_issue_history_json_envelope_orders_newest_first() {
 
 #[test]
 fn test_jira_issue_history_field_filter() {
+    let dir = temp_dir();
     let (_server, port) = start_jira_mock_server(mock_changelog_body());
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         .args(["issue", "history", "TEST-1", "--field", "status"])
@@ -2587,11 +2591,12 @@ fn test_jira_issue_history_field_filter() {
 
 #[test]
 fn test_jira_issue_history_since_filter_excludes_old() {
+    let dir = temp_dir();
     let (_server, port) = start_jira_mock_server(mock_changelog_body());
     thread::sleep(Duration::from_millis(50));
 
-    let cfg = write_jira_mock_config(port);
-    let output = cargo_bin_cmd!("track")
+    let cfg = write_jira_mock_config(&dir, port);
+    let output = track_in(&dir)
         .args(["-b", "jira", "-o", "json", "--config"])
         .arg(&cfg)
         // The fixture's changes are from 2024; a 1-day window excludes them all.

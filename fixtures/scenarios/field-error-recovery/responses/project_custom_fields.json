@@ -1,0 +1,53 @@
+[
+  {
+    "id": "field-1",
+    "name": "State",
+    "field_type": "state",
+    "required": true,
+    "values": [
+      "Open",
+      "In Progress",
+      "Done"
+    ],
+    "state_values": [
+      {
+        "name": "Open",
+        "is_resolved": false,
+        "ordinal": 0
+      },
+      {
+        "name": "In Progress",
+        "is_resolved": false,
+        "ordinal": 1
+      },
+      {
+        "name": "Done",
+        "is_resolved": true,
+        "ordinal": 2
+      }
+    ]
+  },
+  {
+    "id": "field-2",
+    "name": "Severity",
+    "field_type": "enum",
+    "required": true,
+    "values": [
+      "Minor",
+      "Normal",
+      "Major",
+      "Blocker"
+    ]
+  },
+  {
+    "id": "field-3",
+    "name": "Area",
+    "field_type": "enum",
+    "required": false,
+    "values": [
+      "Backend",
+      "Frontend",
+      "Docs"
+    ]
+  }
+]

@@ -7,7 +7,7 @@
 //! your local machine.
 
 use crate::permissions::format_allowed_bash_pattern;
-use crate::runner::{CommandExecution, SessionResult, load_skill_file};
+use crate::runner::{CommandExecution, RunSetup, SessionResult};
 use crate::subprocess::{StderrCapture, ensure_success, route_track_to_mock};
 use crate::tools::{find_track_binary, is_track_command, parse_track_args};
 use anyhow::{Context, Result};
@@ -22,6 +22,7 @@ use tracker_mock::Scenario;
 pub struct ClaudeCodeConfig {
     pub scenario_path: PathBuf,
     pub scenario: Scenario,
+    pub run: RunSetup,
     pub max_turns: usize,
     pub verbose: bool,
 }
@@ -118,7 +119,7 @@ pub struct ResultEvent {
 /// Run Claude Code against a scenario
 pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<SessionResult> {
     // Build system prompt
-    let system_prompt = build_system_prompt(&config.scenario);
+    let system_prompt = build_system_prompt(&config.scenario, &config.run.reference);
 
     // Build the task prompt
     let task_prompt = build_task_prompt(&config.scenario);
@@ -152,12 +153,18 @@ pub fn run_claude_code(config: &ClaudeCodeConfig) -> Result<SessionResult> {
         &task_prompt,
     ]);
 
-    route_track_to_mock(&mut cmd, &config.scenario_path, &track_bin);
+    route_track_to_mock(
+        &mut cmd,
+        &config.scenario_path,
+        &track_bin,
+        &config.run.track_env,
+    );
 
     // Unset CLAUDECODE to allow running inside a Claude Code session
     cmd.env_remove("CLAUDECODE");
 
-    run_stream_json_session(cmd, "Claude Code CLI", config.verbose)
+    let prompt_bytes = system_prompt.len() + task_prompt.len();
+    run_stream_json_session(cmd, "Claude Code CLI", config.verbose, prompt_bytes)
 }
 
 /// Run an agent CLI that prints Claude Code stream-json events on stdout, and
@@ -166,6 +173,7 @@ pub(crate) fn run_stream_json_session(
     mut cmd: Command,
     cli_name: &str,
     verbose: bool,
+    prompt_bytes: usize,
 ) -> Result<SessionResult> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd
@@ -204,11 +212,12 @@ pub(crate) fn run_stream_json_session(
         total_input_tokens: None,  // Not available from CLI
         total_output_tokens: None, // Not available from CLI
         commands_executed,
+        prompt_bytes,
     })
 }
 
-/// Build system prompt for Claude Code using the track skill file
-pub(crate) fn build_system_prompt(scenario: &Scenario) -> String {
+/// Build system prompt for Claude Code, with the run's `reference` material
+pub(crate) fn build_system_prompt(scenario: &Scenario, reference: &str) -> String {
     let mut prompt = String::new();
 
     prompt.push_str("# Evaluation Mode\n\n");
@@ -222,29 +231,7 @@ pub(crate) fn build_system_prompt(scenario: &Scenario) -> String {
     prompt.push_str("- Minimize the number of commands you execute\n");
     prompt.push_str("- Use `-o json` when you need to parse output programmatically\n\n");
 
-    // Load and include the skill file (same context a real user would have installed)
-    if let Some(skill_content) = load_skill_file() {
-        prompt.push_str("---\n\n");
-        prompt.push_str(&skill_content);
-        prompt.push_str("\n---\n\n");
-    } else {
-        // Fallback to minimal reference if skill file not found
-        prompt.push_str("## Track CLI Quick Reference\n\n");
-        prompt.push_str("Note: Skill file not found. Using minimal reference.\n\n");
-        prompt.push_str("```bash\n");
-        prompt.push_str("track PROJ-123                     # Get issue\n");
-        prompt.push_str("track i s \"project: PROJ #Unresolved\"  # Search issues\n");
-        prompt.push_str("track i new -p PROJ -s \"Summary\"   # Create issue\n");
-        prompt.push_str("track i u PROJ-123 --field \"Field=Value\"  # Update issue\n");
-        prompt.push_str("track i del PROJ-123               # Delete issue\n");
-        prompt.push_str("track i cmt PROJ-123 -m \"Comment\"  # Add comment\n");
-        prompt.push_str("track i link PROJ-1 PROJ-2         # Link issues\n");
-        prompt.push_str("track p ls                         # List projects\n");
-        prompt.push_str("track p f PROJ                     # List custom fields\n");
-        prompt.push_str("track a ls --project PROJ          # List articles\n");
-        prompt.push_str("track t ls                         # List tags\n");
-        prompt.push_str("```\n\n");
-    }
+    prompt.push_str(reference);
 
     if let Some(context) = &scenario.setup.context {
         prompt.push_str("## Scenario Context\n\n");
@@ -461,6 +448,26 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_carries_the_run_reference_it_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenario.toml");
+        std::fs::write(
+            &path,
+            "[scenario]\nname = \"t\"\ndescription = \"t\"\n[setup]\nprompt = \"Do it.\"\n",
+        )
+        .unwrap();
+        let scenario = Scenario::load(&path).unwrap();
+
+        let with = build_system_prompt(&scenario, "## Project briefing\n\nDEMO\n\n");
+        let without = build_system_prompt(&scenario, "");
+        assert!(with.contains("## Project briefing\n\nDEMO\n\n"));
+        assert_eq!(
+            with.len() - without.len(),
+            "## Project briefing\n\nDEMO\n\n".len()
+        );
+    }
+
+    #[test]
     fn unknown_content_block_keeps_tool_calls_in_same_event() {
         let stream = concat!(
             r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"..."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"track issue get DEMO-1"}}]}}"#,
@@ -478,7 +485,7 @@ mod tests {
     fn run_fake_cli(script: &str) -> Result<SessionResult> {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", script]);
-        run_stream_json_session(cmd, "Fake CLI", false)
+        run_stream_json_session(cmd, "Fake CLI", false, 0)
     }
 
     #[cfg(unix)]

@@ -4,7 +4,7 @@
 //! This allows testing how GitHub Copilot performs on scenarios using the track CLI.
 //! Drives the interactive Q&A of the legacy `gh copilot suggest` command.
 
-use crate::runner::{CommandExecution, SessionResult, load_skill_file};
+use crate::runner::{CommandExecution, RunSetup, SessionResult};
 use crate::subprocess::{StderrCapture, ensure_success, route_track_to_mock};
 use crate::tools::{find_track_binary, is_track_command, parse_track_args};
 use anyhow::{Context, Result};
@@ -28,6 +28,7 @@ pub enum CopilotMode {
 pub struct CopilotCliConfig {
     pub scenario_path: PathBuf,
     pub scenario: Scenario,
+    pub run: RunSetup,
     pub max_turns: usize,
     pub verbose: bool,
     pub copilot_mode: CopilotMode,
@@ -50,7 +51,7 @@ struct InteractiveSession {
 /// Run Copilot CLI against a scenario
 pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<SessionResult> {
     // Build system prompt
-    let system_prompt = build_system_prompt(&config.scenario);
+    let system_prompt = build_system_prompt(&config.scenario, &config.run.reference);
 
     // Find track binary path
     let track_bin = find_track_binary();
@@ -66,7 +67,12 @@ pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<SessionResult> {
 
     // Build command
     let mut cmd = build_copilot_command(config);
-    route_track_to_mock(&mut cmd, &config.scenario_path, &track_bin);
+    route_track_to_mock(
+        &mut cmd,
+        &config.scenario_path,
+        &track_bin,
+        &config.run.track_env,
+    );
 
     let interactions = run_session(cmd, &system_prompt, config.max_turns, config.verbose)?;
 
@@ -88,11 +94,12 @@ pub fn run_copilot_cli(config: &CopilotCliConfig) -> Result<SessionResult> {
         total_input_tokens: None,  // Not available from CLI
         total_output_tokens: None, // Not available from CLI
         commands_executed,
+        prompt_bytes: system_prompt.len(),
     })
 }
 
-/// Build system prompt for Copilot CLI using the track skill file
-fn build_system_prompt(scenario: &Scenario) -> String {
+/// Build system prompt for Copilot CLI, with the run's `reference` material
+fn build_system_prompt(scenario: &Scenario, reference: &str) -> String {
     let mut prompt = String::new();
 
     prompt.push_str("# Evaluation Mode\n\n");
@@ -105,27 +112,7 @@ fn build_system_prompt(scenario: &Scenario) -> String {
     prompt.push_str("- Minimize the number of commands you execute\n");
     prompt.push_str("- Use `-o json` when you need to parse output programmatically\n\n");
 
-    // Load and include the skill file (same context a real user would have installed)
-    if let Some(skill_content) = load_skill_file() {
-        prompt.push_str("---\n\n");
-        prompt.push_str(&skill_content);
-        prompt.push_str("\n---\n\n");
-    } else {
-        // Fallback to minimal reference if skill file not found
-        prompt.push_str("## Track CLI Quick Reference\n\n");
-        prompt.push_str("Note: Skill file not found. Using minimal reference.\n\n");
-        prompt.push_str("```bash\n");
-        prompt.push_str("track PROJ-123                     # Get issue\n");
-        prompt.push_str("track i s \"project: PROJ #Unresolved\"  # Search issues\n");
-        prompt.push_str("track i new -p PROJ -s \"Summary\"   # Create issue\n");
-        prompt.push_str("track i u PROJ-123 --field \"Field=Value\"  # Update issue\n");
-        prompt.push_str("track i del PROJ-123               # Delete issue\n");
-        prompt.push_str("track i cmt PROJ-123 -m \"Comment\"  # Add comment\n");
-        prompt.push_str("track i link PROJ-1 PROJ-2         # Link issues\n");
-        prompt.push_str("track p ls                         # List projects\n");
-        prompt.push_str("track p f PROJ                     # List custom fields\n");
-        prompt.push_str("```\n\n");
-    }
+    prompt.push_str(reference);
 
     if let Some(context) = &scenario.setup.context {
         prompt.push_str("## Scenario Context\n\n");

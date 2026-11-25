@@ -8,9 +8,9 @@ use tracker_core::{
 
 use crate::client::JiraClient;
 use crate::convert::{
-    create_issue_to_jira, get_standard_custom_fields, jira_changelog_to_history_events,
-    jira_field_to_project_custom_field, jira_issue_to_core, merge_fields, parse_jira_datetime,
-    update_issue_to_jira,
+    FIELD_RULES, create_issue_to_jira, get_standard_custom_fields, is_status_update,
+    jira_changelog_to_history_events, jira_field_to_project_custom_field, jira_issue_to_core,
+    merge_fields, parse_jira_datetime, update_issue_to_jira,
 };
 use crate::models::{
     CreateJiraIssueLink, IssueKeyRef, IssueLinkTypeName, ParentId, UpdateJiraIssue,
@@ -178,23 +178,20 @@ impl IssueTracker for JiraClient {
     }
 
     fn update_issue(&self, id: &str, update: &UpdateIssue) -> Result<Issue> {
-        use tracker_core::CustomFieldUpdate;
-
         let fields = self.get_fields_cached();
 
-        // 1. Separate the state change, if present.
+        // 1. Separate the state change, if present: any update validation
+        // places on Status, whatever its type.
         let (status_update, other_fields): (Vec<_>, Vec<_>) = update
             .custom_fields
             .iter()
             .cloned()
-            .partition(|cf| matches!(cf, CustomFieldUpdate::State { .. }));
+            .partition(|cf| is_status_update(cf, &fields));
 
         let mut status_targets: Vec<String> = status_update
-            .into_iter()
-            .filter_map(|cf| match cf {
-                CustomFieldUpdate::State { value, .. } => Some(value),
-                _ => None,
-            })
+            .iter()
+            .flat_map(|cf| cf.values())
+            .map(str::to_string)
             .collect();
         status_targets.sort();
         status_targets.dedup();
@@ -206,6 +203,11 @@ impl IssueTracker for JiraClient {
             )));
         }
         let status_target = status_targets.pop();
+        if status_target.is_none() && !status_update.is_empty() {
+            return Err(TrackerError::InvalidInput(
+                "Jira cannot clear the status; name the status to move to.".to_string(),
+            ));
+        }
 
         let stripped = UpdateIssue {
             custom_fields: other_fields,
@@ -296,6 +298,32 @@ impl IssueTracker for JiraClient {
                 status_field.values = values;
                 status_field.state_values = state_values;
             }
+
+            // The same response is grouped by issue type, so it also names
+            // every type the project has.
+            let mut types: Vec<String> = Vec::new();
+            for group in &groups {
+                if !types.contains(&group.name) {
+                    types.push(group.name.clone());
+                }
+            }
+            if !types.is_empty()
+                && let Some(type_field) = standard.iter_mut().find(|f| f.id == "issuetype")
+            {
+                type_field.values = types;
+                type_field.values_complete = true;
+            }
+        }
+
+        // Priorities are defined per instance, so they are fetched once per
+        // client. Without them the built-in names stay, as a guess that is
+        // never used to reject a value.
+        let priorities = self.get_priorities_cached();
+        if !priorities.is_empty()
+            && let Some(priority_field) = standard.iter_mut().find(|f| f.id == "priority")
+        {
+            priority_field.values = priorities;
+            priority_field.values_complete = true;
         }
 
         // Try to fetch real project components and splice them into the "components" field
@@ -305,6 +333,7 @@ impl IssueTracker for JiraClient {
                 && let Some(components_field) = standard.iter_mut().find(|f| f.id == "components")
             {
                 components_field.values = values;
+                components_field.values_complete = true;
             }
         }
 
@@ -354,6 +383,15 @@ impl IssueTracker for JiraClient {
             .into_iter()
             .map(Into::into)
             .collect())
+    }
+
+    // The same rules the write path reads names with.
+    fn validation_rules(&self) -> tracker_core::ValidationRules {
+        FIELD_RULES
+    }
+
+    fn current_user(&self) -> Result<Option<User>> {
+        Ok(Some(self.get_current_user()?.into()))
     }
 
     fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {

@@ -249,6 +249,11 @@ impl GitHubClient {
         ))
     }
 
+    /// GET /user: the user the token authenticates as
+    pub fn get_current_user(&self) -> Result<GitHubUser> {
+        self.get_json(&format!("{}/user", self.base_url))
+    }
+
     /// Get a specific repository
     pub fn get_repo(&self, owner: &str, repo: &str) -> Result<GitHubRepo> {
         self.get_json(&format!("{}/repos/{}/{}", self.base_url, owner, repo))

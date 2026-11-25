@@ -1,18 +1,132 @@
 use crate::cache::TrackerCache;
-use crate::cli::{IssueCommands, OutputFormat};
+use crate::cli::{IssueCommands, OutputFormat, ValidationArgs};
 use crate::config::{pack_query_named, require_valid_workflow_pack};
+use crate::errors::FieldValidationError;
+use crate::lookup::{IssueProject, Lookup, Schema};
 use crate::output::{
-    Displayable, output_json, output_list, output_page_hint, output_progress, output_projected,
-    output_result,
+    Displayable, PageTotal, agent_issue_ack, is_agent, output_json, output_list, output_page_hint,
+    output_progress, output_result,
 };
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::Path;
-use tracker_core::{
-    CreateIssue, CustomFieldUpdate, Issue, IssueTracker, ProjectCustomField, UpdateIssue,
-    canonical_field_name, get_max_results, unicode_eq_ignore_case,
+use tracker_core::validation::{
+    FieldProblem, ValidationReport, ValidationRules, ValueCheck, check_membership,
+    is_state_field_name, resolve_field, validate_fields_with,
 };
+use tracker_core::{
+    CreateIssue, CustomFieldUpdate, Issue, IssueLink, IssueTracker, ProjectCustomField,
+    TrackerError, UpdateIssue, canonical_field_name, get_max_results, unicode_eq_ignore_case,
+};
+
+/// How field updates are checked before they are sent. Every mode starts
+/// from the backend's own rules ([`IssueTracker::validation_rules`] and
+/// [`IssueTracker::check_field_value`]), so no mode refuses a name or value
+/// the backend's write path accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValidationMode {
+    /// `--no-validate`: send as given, only warning about names the schema
+    /// does not have.
+    Off,
+    /// Reject what the backend says it would reject or drop, using a schema
+    /// that costs nothing extra to get. Never the reason a command fails for
+    /// want of a schema.
+    Default,
+    /// `--validate`: as Default, and also every name must be in the schema
+    /// and a value must be one the schema lists whenever it lists any. A
+    /// schema that cannot be fetched is an error.
+    Strict,
+}
+
+/// How the custom fields of one write are built and checked: how hard to
+/// try for the issue's project and its schema, and what to do with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FieldCheck {
+    mode: ValidationMode,
+    /// Some values are typed from the schema (`--field`, a plan's `fields`),
+    /// so it is worth a request.
+    typed: bool,
+    /// Only a check is wanted (`--dry-run`), so it has to be made: against
+    /// the issue the tracker has and a schema it supplies, or not at all.
+    dry_run: bool,
+}
+
+impl FieldCheck {
+    pub(crate) fn new(mode: ValidationMode, typed: bool, dry_run: bool) -> Self {
+        Self {
+            mode,
+            typed,
+            // With checks off there is nothing for a dry run to make.
+            dry_run: dry_run && mode != ValidationMode::Off,
+        }
+    }
+
+    /// A schema that cannot be had is an error rather than a skipped check.
+    fn needs_schema(self) -> bool {
+        self.mode == ValidationMode::Strict || self.dry_run
+    }
+
+    /// The schema to build and check against, tried for as hard as this
+    /// check asks. `None` when there is none to be had at that price.
+    fn schema(self, lookup: &Lookup, project_id: &str) -> Result<Option<Schema>> {
+        Ok(if self.needs_schema() {
+            Some(
+                lookup
+                    .schema(project_id)
+                    .context("Cannot check the custom fields without the project schema")?,
+            )
+        } else if self.typed {
+            lookup.schema(project_id).ok()
+        } else if self.mode == ValidationMode::Default {
+            lookup.schema_if_free(project_id)
+        } else {
+            None
+        })
+    }
+
+    /// The project of `issue_id`, found as [`Self::schema`] finds a schema.
+    /// A dry run asks the tracker, so an issue that does not exist is
+    /// reported rather than checked against the project its id names.
+    fn issue_project(self, lookup: &Lookup, issue_id: &str) -> Result<Option<IssueProject>> {
+        let for_validation = || format!("Failed to fetch issue '{}' for validation", issue_id);
+        Ok(if self.dry_run {
+            Some(
+                lookup
+                    .issue_project_live(issue_id)
+                    .with_context(for_validation)?,
+            )
+        } else if self.needs_schema() {
+            Some(
+                lookup
+                    .issue_project(issue_id)
+                    .with_context(for_validation)?,
+            )
+        } else if self.typed {
+            lookup.issue_project(issue_id).ok()
+        } else if self.mode == ValidationMode::Default {
+            lookup.issue_project_if_free(issue_id)
+        } else {
+            None
+        })
+    }
+}
+
+/// A project schema with the backend's rules for naming its fields: what
+/// field updates are typed from, so a name the backend takes as an alias
+/// (`State` for `Status`) gets the type of the field it stands for.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FieldTypes<'a> {
+    pub rules: &'a ValidationRules,
+    pub schema: &'a [ProjectCustomField],
+}
+
+impl<'a> FieldTypes<'a> {
+    /// The schema field `name` sets, if the schema has it.
+    fn field(self, name: &str) -> Option<&'a ProjectCustomField> {
+        resolve_field(self.rules, self.schema, name)
+    }
+}
 
 /// Shared fields for create, update, and batch-update commands.
 struct IssueFieldArgs<'a> {
@@ -24,9 +138,26 @@ struct IssueFieldArgs<'a> {
     assignee: Option<&'a str>,
     tags: &'a [String],
     parent: Option<&'a str>,
-    validate: bool,
+    validation: ValidationArgs,
     dry_run: bool,
     json: Option<&'a str>,
+}
+
+impl IssueFieldArgs<'_> {
+    fn field_check(&self) -> FieldCheck {
+        FieldCheck::new(
+            self.validation
+                .requested()
+                .unwrap_or(ValidationMode::Default),
+            !self.fields.is_empty(),
+            self.dry_run,
+        )
+    }
+
+    /// The custom fields these flags set, typed from `types` when given.
+    fn custom_fields(&self, types: Option<FieldTypes>) -> Result<Vec<CustomFieldUpdate>> {
+        build_custom_fields(self.fields, self.state, self.priority, self.assignee, types)
+    }
 }
 
 /// Arguments for issue search.
@@ -39,24 +170,16 @@ struct SearchArgs<'a> {
     all: bool,
 }
 
-/// CLI output options shared by issue commands. Bundled so `handle_issue`
-/// stays under clippy's argument limit.
-pub struct IssueOutput<'a> {
-    pub format: OutputFormat,
-    pub select: Option<&'a str>,
-    pub jsonl: bool,
-}
-
 pub fn handle_issue(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     action: &IssueCommands,
-    output: IssueOutput<'_>,
+    format: OutputFormat,
     default_project: Option<&str>,
     verbose: bool,
     link_mappings: &std::collections::HashMap<String, String>,
     explicit_config: Option<&Path>,
 ) -> Result<()> {
-    let format = output.format;
+    let client = lookup.client();
     match action {
         IssueCommands::Get { id, full } => handle_get(client, id, *full, format),
         IssueCommands::Create {
@@ -70,7 +193,7 @@ pub fn handle_issue(
             assignee,
             tags,
             parent,
-            validate,
+            validation,
             dry_run,
             json,
         } => {
@@ -84,12 +207,12 @@ pub fn handle_issue(
                 assignee: assignee.as_deref(),
                 tags,
                 parent: parent.as_deref(),
-                validate: *validate,
+                validation: *validation,
                 dry_run: *dry_run,
                 json: json.as_deref(),
             };
             handle_create(
-                client,
+                lookup,
                 &args,
                 project.as_deref(),
                 format,
@@ -108,7 +231,7 @@ pub fn handle_issue(
             assignee,
             tags,
             parent,
-            validate,
+            validation,
             dry_run,
             json,
         } => {
@@ -122,11 +245,11 @@ pub fn handle_issue(
                 assignee: assignee.as_deref(),
                 tags,
                 parent: parent.as_deref(),
-                validate: *validate,
+                validation: *validation,
                 dry_run: *dry_run,
                 json: json.as_deref(),
             };
-            handle_update_batch(client, ids, &args, format, verbose)
+            handle_update_batch(lookup, ids, &args, format, verbose)
         }
         IssueCommands::Search {
             query,
@@ -144,7 +267,7 @@ pub fn handle_issue(
                 skip: *skip,
                 all: *all,
             };
-            handle_search(client, &args, output, default_project, explicit_config)
+            handle_search(client, &args, format, default_project, explicit_config)
         }
         IssueCommands::Inspect {
             ids,
@@ -235,15 +358,34 @@ pub fn handle_issue(
         } => handle_link(client, source, target, link_type, format),
         IssueCommands::Unlink { source, link_id } => handle_unlink(client, source, link_id, format),
         IssueCommands::Start { ids, field, state } => {
-            let state = state.as_deref().unwrap_or(client.default_start_state());
-            handle_state_transition_batch(client, ids, field.as_deref(), state, "started", format)
+            let request = StateRequest {
+                state: state.as_deref().unwrap_or(client.default_start_state()),
+                explicit: state.is_some(),
+                completing: false,
+            };
+            handle_state_transition_batch(lookup, ids, field.as_deref(), request, "started", format)
         }
         IssueCommands::Complete { ids, field, state } => {
-            let state = state.as_deref().unwrap_or(client.default_complete_state());
-            handle_state_transition_batch(client, ids, field.as_deref(), state, "completed", format)
+            let request = StateRequest {
+                state: state.as_deref().unwrap_or(client.default_complete_state()),
+                explicit: state.is_some(),
+                completing: true,
+            };
+            handle_state_transition_batch(
+                lookup,
+                ids,
+                field.as_deref(),
+                request,
+                "completed",
+                format,
+            )
         }
     }
 }
+
+/// Comments `issue get --full` prints in agent mode before pointing at
+/// `issue comments --all` for the rest.
+const AGENT_FULL_COMMENTS: usize = 20;
 
 /// Record issue access in the cache for LRU tracking
 fn record_issue_access(issue: &Issue) {
@@ -292,6 +434,41 @@ pub(crate) fn handle_get(
             });
             output_json(&full_issue)?;
         }
+        OutputFormat::Text if is_agent() => {
+            println!("{}", issue.display_agent());
+            let linked: usize = links.iter().map(|link| link.issues.len()).sum();
+            if linked > 0 {
+                println!("links ({linked}):");
+                for link in &links {
+                    let relation = link_relation(link);
+                    for other in &link.issues {
+                        println!(
+                            "{} {}  {}  (link id {})",
+                            relation,
+                            other.id_readable.as_deref().unwrap_or(&other.id),
+                            other.summary.as_deref().unwrap_or(""),
+                            link.id
+                        );
+                    }
+                }
+            }
+            if !comments.is_empty() {
+                // Whole comments, newest last. Past a point the rest is
+                // named, not dropped.
+                let shown = comments.len().min(AGENT_FULL_COMMENTS);
+                if shown < comments.len() {
+                    println!(
+                        "comments (last {shown} of {}; all: track i comments {id} --all):",
+                        comments.len()
+                    );
+                } else {
+                    println!("comments ({shown}):");
+                }
+                for comment in &comments[comments.len() - shown..] {
+                    println!("{}", comment.display_agent());
+                }
+            }
+        }
         OutputFormat::Text => {
             use colored::Colorize;
             // Print issue details
@@ -301,20 +478,7 @@ pub(crate) fn handle_get(
             if !links.is_empty() {
                 println!("\n  {}:", "Links".dimmed());
                 for link in &links {
-                    let direction = link.direction.as_deref().unwrap_or("BOTH");
-                    let description = match direction {
-                        "INWARD" => link
-                            .link_type
-                            .target_to_source
-                            .as_deref()
-                            .unwrap_or(&link.link_type.name),
-                        "OUTWARD" => link
-                            .link_type
-                            .source_to_target
-                            .as_deref()
-                            .unwrap_or(&link.link_type.name),
-                        _ => &link.link_type.name,
-                    };
+                    let description = link_relation(link);
                     for linked_issue in &link.issues {
                         let linked_id = linked_issue
                             .id_readable
@@ -363,18 +527,27 @@ pub(crate) fn handle_get(
     Ok(())
 }
 
+/// How `link` reads from the issue it was fetched for: the phrase for its
+/// direction ("is blocked by", "blocks"), or the link type's name.
+fn link_relation(link: &IssueLink) -> &str {
+    let phrase = match link.direction.as_deref() {
+        Some("INWARD") => link.link_type.target_to_source.as_deref(),
+        Some("OUTWARD") => link.link_type.source_to_target.as_deref(),
+        _ => None,
+    };
+    phrase.unwrap_or(&link.link_type.name)
+}
+
 fn handle_create(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     args: &IssueFieldArgs,
     project: Option<&str>,
     format: OutputFormat,
     default_project: Option<&str>,
     verbose: bool,
 ) -> Result<()> {
-    let (create, project_id) = if let Some(payload) = args.json {
-        let create = parse_create_payload(client, payload)?;
-        let pid = create.project_id.clone();
-        (create, pid)
+    let create = if let Some(payload) = args.json {
+        parse_create_payload(lookup, payload)?
     } else {
         // Try CLI flag first, then fall back to config default_project
         let project_input = project
@@ -388,67 +561,44 @@ fn handle_create(
         let summary = args.summary.ok_or_else(|| anyhow!("Summary is required"))?;
 
         // Resolve project shortName to internal ID
-        let project_id = client
-            .resolve_project_id(&project_input)
-            .with_context(|| format!("Failed to resolve project '{}'", project_input))?;
+        let project_id = lookup.project_id(&project_input)?;
+        let custom_fields = build_and_check(lookup, &project_id, args.field_check(), |types| {
+            args.custom_fields(types)
+        })?;
 
-        // Fetch project schema for field type detection
-        let schema = if !args.fields.is_empty() {
-            client.get_project_custom_fields(&project_id).ok()
-        } else {
-            None
-        };
-
-        let custom_fields = build_custom_fields(
-            args.fields,
-            args.state,
-            args.priority,
-            args.assignee,
-            schema.as_deref(),
-        )?;
-
-        let create = CreateIssue {
-            project_id: project_id.clone(),
+        CreateIssue {
+            project_id,
             summary: summary.to_string(),
             description: args.description.map(|s| s.to_string()),
             custom_fields,
             tags: args.tags.to_vec(),
             parent: args.parent.map(|s| s.to_string()),
-        };
-
-        (create, project_id)
+        }
     };
 
-    // Validate custom fields if requested
-    if args.validate {
-        validate_custom_fields(client, &project_id, &create.custom_fields)?;
-
-        if args.dry_run {
-            match format {
-                OutputFormat::Json => {
-                    let response = serde_json::json!({
-                        "valid": true,
-                        "message": "Validation passed",
-                        "fields_validated": create.custom_fields.len(),
-                    });
-                    output_json(&response)?;
-                }
-                OutputFormat::Text => {
-                    use colored::Colorize;
-                    println!("{}", "Validation passed".green().bold());
-                    println!(
-                        "  {} custom fields validated against project schema",
-                        create.custom_fields.len()
-                    );
-                }
+    if args.dry_run {
+        match format {
+            OutputFormat::Json => {
+                let response = serde_json::json!({
+                    "valid": true,
+                    "message": "Validation passed",
+                    "fields_validated": create.custom_fields.len(),
+                });
+                output_json(&response)?;
             }
-            return Ok(());
+            OutputFormat::Text => {
+                use colored::Colorize;
+                println!("{}", "Validation passed".green().bold());
+                println!(
+                    "  {} custom fields validated against project schema",
+                    create.custom_fields.len()
+                );
+            }
         }
+        return Ok(());
     }
 
-    let issue = client
-        .create_issue(&create)
-        .context("Failed to create issue")?;
+    let issue = lookup.create_issue(&create)?;
 
     let warnings = verify_issue_create(&create, &issue);
     crate::output::output_verification_warnings(&warnings, format);
@@ -459,28 +609,27 @@ fn handle_create(
         println!();
     }
 
-    output_result(&issue, format)?;
+    if format == OutputFormat::Text && is_agent() {
+        println!("{}", agent_issue_ack("created", &issue));
+    } else {
+        output_result(&issue, format)?;
+    }
 
     Ok(())
 }
 
 fn handle_update(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     id: &str,
     args: &IssueFieldArgs,
     format: OutputFormat,
     verbose: bool,
 ) -> Result<()> {
-    let update = build_update(client, id, args)?;
+    let client = lookup.client();
 
     if args.dry_run {
-        let fields_validated = validate_update(client, id, &update)?;
-        return output_update_dry_run(id, fields_validated, format);
-    }
-
-    // Validate custom fields if requested
-    if args.validate {
-        validate_update(client, id, &update)?;
+        let (update, _) = build_checked_update(lookup, id, args, None)?;
+        return output_update_dry_run(id, update.custom_fields.len(), format);
     }
 
     // Fetch old state if verbose for diffing
@@ -490,9 +639,7 @@ fn handle_update(
         None
     };
 
-    let issue = client
-        .update_issue(id, &update)
-        .with_context(|| format!("Failed to update issue '{}'", id))?;
+    let (update, issue) = send_update(lookup, id, args)?;
 
     let warnings = verify_issue_update(&update, &issue);
     crate::output::output_verification_warnings(&warnings, format);
@@ -509,58 +656,287 @@ fn handle_update(
         println!();
     }
 
-    output_result(&issue, format)?;
+    if format == OutputFormat::Text && is_agent() {
+        println!("{}", agent_issue_ack("updated", &issue));
+    } else {
+        output_result(&issue, format)?;
+    }
     Ok(())
 }
 
-fn build_update(client: &dyn IssueTracker, id: &str, args: &IssueFieldArgs) -> Result<UpdateIssue> {
-    let update = if let Some(payload) = args.json {
-        parse_update_payload(payload)?
-    } else {
-        // Fetch project schema for field type detection when generic fields are provided
-        let schema = if !args.fields.is_empty() {
-            client
-                .get_issue(id)
-                .ok()
-                .and_then(|issue| client.get_project_custom_fields(&issue.project.id).ok())
-        } else {
-            None
-        };
+/// Build the update for `id`, check it, and send it.
+///
+/// When the issue's project was read off its id and the tracker refuses the
+/// update, the issue may have moved to another project: the update is then
+/// rebuilt against the project the tracker reports and sent once more (see
+/// [`moved_project`]).
+fn send_update(lookup: &Lookup, id: &str, args: &IssueFieldArgs) -> Result<(UpdateIssue, Issue)> {
+    let send = |update: UpdateIssue| -> Result<(UpdateIssue, Issue)> {
+        let issue = lookup
+            .client()
+            .update_issue(id, &update)
+            .with_context(|| format!("Failed to update issue '{}'", id))?;
+        Ok((update, issue))
+    };
+    let (update, project) = build_checked_update(lookup, id, args, None)?;
+    let err = match send(update) {
+        Ok(sent) => return Ok(sent),
+        Err(err) => err,
+    };
+    match project.and_then(|project| moved_project(lookup, id, &project, &err)) {
+        Some(actual) => send(build_checked_update(lookup, id, args, Some(actual))?.0),
+        None => Err(err),
+    }
+}
 
-        let custom_fields = build_custom_fields(
-            args.fields,
-            args.state,
-            args.priority,
-            args.assignee,
-            schema.as_deref(),
-        )?;
+/// The update `args` describe for `id`, with its custom fields typed from
+/// the project schema and checked as the validation mode asks. The schema
+/// is `known_project`'s when given. Also returns the project the schema was
+/// taken from, when one was needed.
+fn build_checked_update(
+    lookup: &Lookup,
+    id: &str,
+    args: &IssueFieldArgs,
+    known_project: Option<IssueProject>,
+) -> Result<(UpdateIssue, Option<IssueProject>)> {
+    if let Some(payload) = args.json {
+        return Ok((parse_update_payload(payload)?, None));
+    }
 
+    let (custom_fields, project) =
+        build_issue_fields(lookup, id, known_project, args.field_check(), |types| {
+            args.custom_fields(types)
+        })?;
+
+    Ok((
         UpdateIssue {
             summary: args.summary.map(|s| s.to_string()),
             description: args.description.map(|s| s.to_string()),
             custom_fields,
             tags: args.tags.to_vec(),
             parent: args.parent.map(|s| s.to_string()),
-        }
-    };
-
-    Ok(update)
+        },
+        project,
+    ))
 }
 
-pub(crate) fn validate_update(
-    client: &dyn IssueTracker,
-    id: &str,
-    update: &UpdateIssue,
-) -> Result<usize> {
-    if !update.custom_fields.is_empty() {
-        let existing_issue = client
-            .get_issue(id)
-            .with_context(|| format!("Failed to fetch issue '{}' for validation", id))?;
+/// The project `issue_id` is really in, when a step that used `assumed`
+/// failed with `err` and the wrong project could be why.
+///
+/// This is the one place that decides when a project read off an issue id
+/// gets a second, live opinion. An issue moved to another project keeps
+/// answering to its old id, so a derived project can be wrong; one taken
+/// from the tracker cannot. Nor is the tracker asked when `err` says it
+/// could not be reached, was overloaded, or refused the credentials: the
+/// question would fail the same way. `None` also when the tracker agrees
+/// with `assumed`, so the caller's error stands.
+fn moved_project(
+    lookup: &Lookup,
+    issue_id: &str,
+    assumed: &IssueProject,
+    err: &anyhow::Error,
+) -> Option<IssueProject> {
+    let unanswerable = err
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<TrackerError>())
+        .any(|cause| cause.retryable() || cause.code() == "auth");
+    if !assumed.derived || unanswerable {
+        return None;
+    }
+    lookup
+        .issue_project_live(issue_id)
+        .ok()
+        .filter(|actual| actual.id != assumed.id)
+}
 
-        validate_custom_fields(client, &existing_issue.project.id, &update.custom_fields)?;
+/// Build and check the custom fields of an update to `issue_id`.
+///
+/// The schema comes from the issue's project: `known_project` when the
+/// caller knows it, otherwise as `check` finds it, from the cache when it
+/// can be. If the fields are then rejected and the project may be the wrong
+/// one ([`moved_project`]), they are built and checked once more against
+/// the project the tracker reports.
+pub(crate) fn build_issue_fields<F>(
+    lookup: &Lookup,
+    issue_id: &str,
+    known_project: Option<IssueProject>,
+    check: FieldCheck,
+    build: F,
+) -> Result<(Vec<CustomFieldUpdate>, Option<IssueProject>)>
+where
+    F: Fn(Option<FieldTypes>) -> Result<Vec<CustomFieldUpdate>>,
+{
+    let unchecked = build(None)?;
+    if unchecked.is_empty() {
+        return Ok((unchecked, None));
+    }
+    let project = match known_project {
+        Some(project) => Some(project),
+        None => check.issue_project(lookup, issue_id)?,
+    };
+    let Some(project) = project else {
+        return Ok((unchecked, None));
+    };
+
+    match build_and_check(lookup, &project.id, check, &build) {
+        Ok(fields) => Ok((fields, Some(project))),
+        Err(err) => match moved_project(lookup, issue_id, &project, &err) {
+            Some(actual) => {
+                let fields = build_and_check(lookup, &actual.id, check, &build)?;
+                Ok((fields, Some(actual)))
+            }
+            None => Err(err),
+        },
+    }
+}
+
+/// Build custom field updates against `project_id`'s schema and check them.
+///
+/// `build` turns a schema (or none) into updates; it runs again if the
+/// schema has to be re-read. The cheapest schema `check` allows is tried
+/// first. If that one came from the cache and the updates do not pass, the
+/// live schema gets the final word, so a stale cache cannot reject what the
+/// tracker would accept.
+pub(crate) fn build_and_check<F>(
+    lookup: &Lookup,
+    project_id: &str,
+    check: FieldCheck,
+    build: F,
+) -> Result<Vec<CustomFieldUpdate>>
+where
+    F: Fn(Option<FieldTypes>) -> Result<Vec<CustomFieldUpdate>>,
+{
+    let unchecked = build(None)?;
+    if unchecked.is_empty() {
+        return Ok(unchecked);
+    }
+    let Some(schema) = check.schema(lookup, project_id)? else {
+        return Ok(unchecked);
+    };
+    let client = lookup.client();
+    let rules = client.validation_rules();
+    let build_checked = |schema: &[ProjectCustomField]| {
+        let fields = build(Some(FieldTypes {
+            rules: &rules,
+            schema,
+        }))?;
+        let report = evaluate_fields(client, schema, &fields, check.mode);
+        anyhow::Ok((fields, report))
+    };
+
+    let (fields, report) = build_checked(&schema)?;
+    if !(worth_a_live_schema(&rules, &report) && lookup.schema_may_be_stale(project_id)) {
+        report_into_result(report, check.mode)?;
+        return Ok(fields);
     }
 
-    Ok(update.custom_fields.len())
+    match lookup.schema_live(project_id) {
+        Ok(live) => {
+            let (fields, report) = build_checked(&live)?;
+            report_into_result(report, check.mode)?;
+            Ok(fields)
+        }
+        Err(err) if check.needs_schema() => {
+            Err(err).context("Cannot check the custom fields without the project schema")
+        }
+        // The cached schema objected and the live one is out of reach: the
+        // objection cannot be confirmed, so the tracker gets to decide.
+        Err(_) => {
+            print_warnings(&report.warnings, check.mode);
+            Ok(fields)
+        }
+    }
+}
+
+/// Whether what a cached schema made of the updates deserves a second,
+/// live look: it rejected something, or, on a backend whose schema lists
+/// every field it takes, it could not place a name. That name may be a field
+/// added since the schema was cached, and typed wrongly for want of it. On a
+/// backend that takes fields its schema does not list (Jira), a fresh schema
+/// would not place it either, so it is not worth a request every run.
+fn worth_a_live_schema(rules: &ValidationRules, report: &ValidationReport) -> bool {
+    !report.errors.is_empty()
+        || (rules.names_exhaustive
+            && report
+                .warnings
+                .iter()
+                .any(|problem| matches!(problem, FieldProblem::UnknownField { .. })))
+}
+
+/// Check `updates` against `schema` as `mode` asks, without reporting yet.
+///
+/// Each mode is [`validate_fields_with`] under the backend's own rules, so
+/// aliases, read-only fields and the backend's value mappings (GitHub's
+/// `done` for `closed`) count in all of them. Strict adds only that every
+/// name must be in the schema and that a value the backend cannot judge
+/// must be one the schema lists. Off keeps only the names the schema does
+/// not have, as warnings.
+fn evaluate_fields(
+    client: &dyn IssueTracker,
+    schema: &[ProjectCustomField],
+    updates: &[CustomFieldUpdate],
+    mode: ValidationMode,
+) -> ValidationReport {
+    let rules = client.validation_rules();
+    match mode {
+        ValidationMode::Default => validate_fields_with(&rules, schema, updates, |field, value| {
+            client.check_field_value(field, value)
+        }),
+        ValidationMode::Strict => validate_fields_with(
+            &ValidationRules {
+                names_exhaustive: true,
+                ..rules
+            },
+            schema,
+            updates,
+            |field, value| match client.check_field_value(field, value) {
+                ValueCheck::Unknown => check_membership(field, value),
+                verdict => verdict,
+            },
+        ),
+        ValidationMode::Off => validate_fields_with(
+            &ValidationRules {
+                names_exhaustive: false,
+                read_only_fields: &[],
+                ..rules
+            },
+            schema,
+            updates,
+            |_, _| ValueCheck::Unknown,
+        ),
+    }
+}
+
+/// Print a check's warnings to stderr and turn any errors into a failure.
+fn report_into_result(report: ValidationReport, mode: ValidationMode) -> Result<()> {
+    print_warnings(&report.warnings, mode);
+    if report.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(FieldValidationError {
+            problems: report.errors,
+        }
+        .into())
+    }
+}
+
+fn print_warnings(warnings: &[FieldProblem], mode: ValidationMode) {
+    for warning in warnings {
+        match warning {
+            // With checks off, a name the schema lacks is all there is to
+            // say: the tracker is likely to drop it without a word.
+            FieldProblem::UnknownField { name, .. } if mode == ValidationMode::Off => eprintln!(
+                "Warning: field '{}' not found in project schema. \
+                 The update may be silently ignored by the server. \
+                 Use 'track project fields <PROJECT>' to see available fields.",
+                name
+            ),
+            _ => eprintln!(
+                "Warning: {} The server may ignore it; --validate makes this an error.",
+                warning
+            ),
+        }
+    }
 }
 
 fn output_update_dry_run(id: &str, fields_validated: usize, format: OutputFormat) -> Result<()> {
@@ -588,15 +964,16 @@ fn output_update_dry_run(id: &str, fields_validated: usize, format: OutputFormat
 
 /// Build a list of custom field updates from CLI arguments.
 ///
-/// When `project_fields` is provided, the field type is detected from the project schema
-/// so that state fields, user fields, and enum fields get the correct `$type` discriminator.
-/// Without schema info, generic `--field` arguments default to SingleEnum.
+/// When `types` is provided, each field's type is detected from the project
+/// schema so that state fields, user fields, and enum fields get the correct
+/// `$type` discriminator. Without schema info, generic `--field` arguments
+/// default to SingleEnum.
 pub(crate) fn build_custom_fields(
     fields: &[String],
     state: Option<&str>,
     priority: Option<&str>,
     assignee: Option<&str>,
-    project_fields: Option<&[ProjectCustomField]>,
+    types: Option<FieldTypes>,
 ) -> Result<Vec<CustomFieldUpdate>> {
     let mut custom_fields = Vec::new();
 
@@ -604,25 +981,7 @@ pub(crate) fn build_custom_fields(
     for field in fields {
         let (name, value) = parse_field_value(field)?;
 
-        let matched_field = project_fields
-            .and_then(|pf| pf.iter().find(|f| unicode_eq_ignore_case(&f.name, &name)));
-
-        if matched_field.is_none() && project_fields.is_some() {
-            eprintln!(
-                "Warning: field '{}' not found in project schema. \
-                 The update may be silently ignored by the server. \
-                 Use 'track project fields <PROJECT>' to see available fields, \
-                 or use --validate to catch this as an error.",
-                name
-            );
-        }
-
-        custom_fields.push(build_custom_field_update(
-            name,
-            vec![value],
-            false,
-            project_fields,
-        ));
+        custom_fields.push(build_custom_field_update(name, vec![value], false, types));
     }
 
     custom_fields.extend(shorthand_field_updates(state, priority, assignee));
@@ -651,20 +1010,22 @@ pub(crate) fn shorthand_field_updates(
     state.into_iter().chain(priority).chain(assignee)
 }
 
-/// Name of the field a custom field update targets.
+/// The update setting field `name` to `values`, typed from the schema field
+/// it names (directly or through a backend alias) when `types` is given.
+/// The name is kept as written: the backends resolve aliases themselves.
 pub(crate) fn build_custom_field_update(
     name: String,
     values: Vec<String>,
     force_multi: bool,
-    project_fields: Option<&[ProjectCustomField]>,
+    types: Option<FieldTypes>,
 ) -> CustomFieldUpdate {
     if force_multi {
         return CustomFieldUpdate::MultiEnum { name, values };
     }
 
     let value = values.into_iter().next().unwrap_or_default();
-    let detected_type = project_fields
-        .and_then(|pf| pf.iter().find(|f| unicode_eq_ignore_case(&f.name, &name)))
+    let detected_type = types
+        .and_then(|types| types.field(&name))
         .map(|f| f.field_type.as_str());
 
     match detected_type {
@@ -677,67 +1038,6 @@ pub(crate) fn build_custom_field_update(
         }
         _ => CustomFieldUpdate::SingleEnum { name, value },
     }
-}
-
-/// Validate custom fields against project schema
-pub(crate) fn validate_custom_fields(
-    client: &dyn IssueTracker,
-    project_id: &str,
-    custom_fields: &[CustomFieldUpdate],
-) -> Result<()> {
-    if custom_fields.is_empty() {
-        return Ok(());
-    }
-
-    // Fetch project fields schema
-    let project_fields = client
-        .get_project_custom_fields(project_id)
-        .with_context(|| format!("Failed to fetch custom fields for project '{}'", project_id))?;
-
-    for field in custom_fields {
-        let field_name = field.name();
-
-        // Find the field definition
-        let field_def = project_fields
-            .iter()
-            .find(|f| unicode_eq_ignore_case(&f.name, field_name));
-
-        match field_def {
-            Some(def) => {
-                if !def.values.is_empty() {
-                    // Collect all values to validate
-                    let values_to_check: Vec<&str> = match field {
-                        CustomFieldUpdate::SingleEnum { value, .. } => vec![value.as_str()],
-                        CustomFieldUpdate::MultiEnum { values, .. } => {
-                            values.iter().map(|v| v.as_str()).collect()
-                        }
-                        CustomFieldUpdate::State { value, .. } => vec![value.as_str()],
-                        CustomFieldUpdate::SingleUser { login, .. } => vec![login.as_str()],
-                    };
-
-                    for val in &values_to_check {
-                        let value_valid = def.values.iter().any(|v| unicode_eq_ignore_case(v, val));
-                        if !value_valid {
-                            return Err(anyhow!(
-                                "Invalid value '{}' for field '{}'. Valid values: {}",
-                                val,
-                                field_name,
-                                def.values.join(", ")
-                            ));
-                        }
-                    }
-                }
-            }
-            None => {
-                return Err(anyhow!(
-                    "Unknown field '{}'. Use 'track project fields <PROJECT>' to see available fields.",
-                    field_name
-                ));
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Parse a "Name=Value" string into (name, value) tuple
@@ -796,7 +1096,7 @@ struct UpdateIssuePayload {
     parent: Option<String>,
 }
 
-fn parse_create_payload(client: &dyn IssueTracker, payload: &str) -> Result<CreateIssue> {
+fn parse_create_payload(lookup: &Lookup, payload: &str) -> Result<CreateIssue> {
     let parsed: CreateIssuePayload =
         serde_json::from_str(payload).context("Invalid JSON payload for issue create")?;
 
@@ -806,9 +1106,7 @@ fn parse_create_payload(client: &dyn IssueTracker, payload: &str) -> Result<Crea
     };
 
     // Resolve project ID
-    let project_id = client
-        .resolve_project_id(&project_input)
-        .with_context(|| format!("Failed to resolve project '{}'", project_input))?;
+    let project_id = lookup.project_id(&project_input)?;
 
     // Parse custom fields from raw JSON
     let custom_fields = parse_custom_fields_json(&parsed.custom_fields)?;
@@ -932,15 +1230,10 @@ pub(crate) fn parse_custom_fields_json(
 fn handle_search(
     client: &dyn IssueTracker,
     args: &SearchArgs,
-    output: IssueOutput<'_>,
+    format: OutputFormat,
     default_project: Option<&str>,
     explicit_config: Option<&Path>,
 ) -> Result<()> {
-    let IssueOutput {
-        format,
-        select,
-        jsonl,
-    } = output;
     // Resolve query from template if needed
     let actual_query = resolve_search_query(
         args.query,
@@ -970,28 +1263,21 @@ fn handle_search(
         record_issue_access(first);
     }
 
-    // JSON/JSONL `--select` uses projection. Without it, `-o jsonl` renders
-    // through `output_list` like every other command, keeping `-o json`'s
-    // key order. Text mode rejects `--select` before dispatch.
-    if select.is_some() && format != OutputFormat::Text {
-        output_projected(&issues, select, jsonl)?;
+    // Total, when known — priority cascade: inline total > cached total
+    let total = if args.all {
+        None
     } else {
-        output_list(&issues, format)?;
-    }
+        inline_total.map(PageTotal::Live).or_else(|| {
+            try_cached_count(&actual_query, args.skip)
+                .map(|(count, age)| PageTotal::Cached { count, age })
+        })
+    };
 
-    // Pagination hint — priority cascade: inline total > cached total > heuristic
-    if !args.all {
-        let total_info = inline_total
-            .map(|t| (t, "live".to_string()))
-            .or_else(|| try_cached_count(&actual_query, args.skip));
-        output_page_hint(
-            issues.len(),
-            args.limit,
-            args.skip,
-            total_info.as_ref().map(|(n, s)| (*n, s.as_str())),
-            format,
-        );
-    }
+    // `--select` projects inside `output_json`; text mode rejects it before
+    // dispatch. `-o agent` prints one line per issue; descriptions are a
+    // `track <ID>` away.
+    output_list(&issues, format)?;
+    output_page_hint(issues.len(), args.limit, args.skip, total, args.all);
 
     Ok(())
 }
@@ -1008,7 +1294,7 @@ fn try_cached_count(query: &str, skip: usize) -> Option<(u64, String)> {
 
     // Check if the query matches any expanded template
     for project in &cache.projects {
-        for template in &cache.query_templates {
+        for template in cache.templates_for(Some(&project.short_name)) {
             let expanded = template.query.replace("{PROJECT}", &project.short_name);
             if unicode_eq_ignore_case(&expanded, query)
                 && let Some(count) = cache.get_issue_count(&project.short_name, &template.name)
@@ -1057,9 +1343,12 @@ fn resolve_template_query(
         );
     }
 
-    let cache = TrackerCache::load_all(None)?;
-    if let Some(template_def) = cache
-        .query_templates
+    // Built-ins are fitted to the project they are run for, when its schema
+    // is cached: the project's own state field and the values it really has.
+    let mut cache = TrackerCache::load(None)?;
+    let target = project.or(default_project);
+    let templates = cache.templates_for_project(target).to_vec();
+    if let Some(template_def) = templates
         .iter()
         .find(|qt| unicode_eq_ignore_case(&qt.name, tmpl))
     {
@@ -1070,16 +1359,42 @@ fn resolve_template_query(
     if let Some(loaded) = &loaded {
         available.extend(loaded.pack.queries.iter().map(|query| query.name.as_str()));
     }
-    available.extend(cache.query_templates.iter().map(|t| t.name.as_str()));
-    Err(anyhow!(
-        "Template '{}' not found. Available templates: {}",
-        tmpl,
-        if available.is_empty() {
-            "(none - run 'track cache refresh' or add a [workflow_pack] to .track.toml)".to_string()
-        } else {
-            available.join(", ")
-        }
-    ))
+    available.extend(templates.iter().map(|t| t.name.as_str()));
+    // A built-in can be missing for one project only: its schema has none
+    // of the values the template stands for.
+    if let Some(target) = target
+        && cache
+            .query_templates
+            .iter()
+            .any(|qt| unicode_eq_ignore_case(&qt.name, tmpl))
+    {
+        return Err(crate::errors::CliError::new(
+            crate::errors::CliCode::TemplateNotFound,
+            format!(
+                "Template '{}' does not apply to project {}: its fields have no matching values. Available templates: {}",
+                tmpl,
+                target,
+                available.join(", ")
+            ),
+        )
+        .with_hint("Search with an explicit query instead; `track prime` shows this project's values.")
+        .into());
+    }
+    Err(crate::errors::CliError::new(
+        crate::errors::CliCode::TemplateNotFound,
+        format!(
+            "Template '{}' not found. Available templates: {}",
+            tmpl,
+            if available.is_empty() {
+                "(none - run 'track cache refresh' or add a [workflow_pack] to .track.toml)"
+                    .to_string()
+            } else {
+                available.join(", ")
+            }
+        ),
+    )
+    .with_hint("`track workflow list` shows every template and the query behind it.")
+    .into())
 }
 
 fn expand_template_query(
@@ -1189,6 +1504,10 @@ fn handle_comment(
         OutputFormat::Json => {
             output_json(&comment)?;
         }
+        // The agent wrote the text; it does not need it read back.
+        OutputFormat::Text if is_agent() => {
+            println!("comment added to {id}");
+        }
         OutputFormat::Text => {
             use colored::Colorize;
             println!("Comment added to {}:", id.cyan().bold());
@@ -1218,6 +1537,18 @@ fn handle_comments(
     match format {
         OutputFormat::Json => {
             output_json(&comments)?;
+        }
+        OutputFormat::Text if is_agent() => {
+            // A full page may not be the whole thread.
+            let more = if !all && limit > 0 && comments.len() >= limit {
+                format!("; more may exist: track i comments {id} --all")
+            } else {
+                String::new()
+            };
+            println!("comments on {id} ({}{more}):", comments.len());
+            for comment in &comments {
+                println!("{}", comment.display_agent());
+            }
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -1446,40 +1777,104 @@ const DEFAULT_STATE_FIELD: &str = "State";
 
 /// Pick the workflow state field from a project schema: the first field whose
 /// type contains "state" (case-insensitive), e.g. YouTrack "state[1]".
-pub(crate) fn state_field_name(fields: &[ProjectCustomField]) -> Option<&str> {
+pub(crate) fn state_field(fields: &[ProjectCustomField]) -> Option<&ProjectCustomField> {
     fields
         .iter()
         .find(|f| f.field_type.to_ascii_lowercase().contains("state"))
-        .map(|f| f.name.as_str())
 }
 
-/// Resolve the actual state field name for an issue's project when the user
-/// didn't pass `--field` explicitly (issue #308: the field is "State" on some
-/// YouTrack projects, "Stage" on others — a hardcoded name 400s).
+/// What `issue start` / `issue complete` was asked to move issues to.
+#[derive(Debug, Clone, Copy)]
+struct StateRequest<'a> {
+    state: &'a str,
+    /// Given with `--state`, as opposed to the backend's default name.
+    explicit: bool,
+    /// `issue complete`: a resolved state is wanted.
+    completing: bool,
+}
+
+/// The state field and value for a transition of `id` when the user did not
+/// pass `--field` (issue #308: the field is "State" on some YouTrack
+/// projects, "Stage" on others, and a hardcoded name 400s).
 ///
-/// Schema lookups are cached per project id so batches spanning multiple
-/// projects don't re-fetch the same schema. Falls back to
-/// [`DEFAULT_STATE_FIELD`] when the issue or schema can't be fetched or the
-/// schema has no state-typed field.
-fn resolve_state_field(
-    client: &dyn IssueTracker,
+/// The field name comes from the project schema. When the backend can tell
+/// that the requested state does not exist there, the transition fails
+/// before any write and names the states that do, except that
+/// `issue complete` without `--state` settles on the project's only resolved
+/// state. Falls back to [`DEFAULT_STATE_FIELD`] and the requested state when
+/// the issue or schema cannot be read or has no state-typed field.
+fn resolve_transition(
+    lookup: &Lookup,
     id: &str,
-    cache: &mut std::collections::HashMap<String, Option<String>>,
-) -> String {
-    let resolved = client.get_issue(id).ok().and_then(|issue| {
-        let project_id = issue.project.id;
-        cache
-            .entry(project_id.clone())
-            .or_insert_with(|| {
-                let fields = client.get_project_custom_fields(&project_id).ok();
-                fields
-                    .as_deref()
-                    .and_then(state_field_name)
-                    .map(str::to_string)
-            })
-            .clone()
-    });
-    resolved.unwrap_or_else(|| DEFAULT_STATE_FIELD.to_string())
+    request: StateRequest<'_>,
+) -> Result<CustomFieldUpdate> {
+    let fallback = || CustomFieldUpdate::State {
+        name: DEFAULT_STATE_FIELD.to_string(),
+        value: request.state.to_string(),
+    };
+    let client = lookup.client();
+    let pick = |schema: &[ProjectCustomField]| {
+        let Some(field) = state_field(schema) else {
+            return Ok(fallback());
+        };
+        pick_state(client, field, request).map(|value| CustomFieldUpdate::State {
+            name: field.name.clone(),
+            value,
+        })
+    };
+
+    let Ok(project) = lookup.issue_project(id) else {
+        return Ok(fallback());
+    };
+    let Ok(schema) = lookup.schema(&project.id) else {
+        return Ok(fallback());
+    };
+    let rejection = match pick(&schema) {
+        Ok(update) => return Ok(update),
+        Err(problem) => invalid_state(problem),
+    };
+
+    // A cached schema, or a project read off the issue id, said no. Ask the
+    // tracker before believing it.
+    let moved = moved_project(lookup, id, &project, &rejection);
+    let target = moved.as_ref().unwrap_or(&project);
+    if (moved.is_some() || lookup.schema_may_be_stale(&target.id))
+        && let Ok(live) = lookup.schema_live(&target.id)
+    {
+        return pick(&live).map_err(invalid_state);
+    }
+    Err(rejection)
+}
+
+fn invalid_state(problem: FieldProblem) -> anyhow::Error {
+    crate::errors::CliError::new(
+        crate::errors::CliCode::InvalidState,
+        format!("{}. Pass --state <NAME> to choose one.", problem),
+    )
+    .into()
+}
+
+/// The state to send for `request`, or why the backend would refuse it.
+fn pick_state(
+    client: &dyn IssueTracker,
+    field: &ProjectCustomField,
+    request: StateRequest<'_>,
+) -> std::result::Result<String, FieldProblem> {
+    let ValueCheck::Invalid { valid_values } = client.check_field_value(field, request.state)
+    else {
+        return Ok(request.state.to_string());
+    };
+    if !request.explicit && request.completing {
+        let mut resolved = field.state_values.iter().filter(|state| state.is_resolved);
+        if let (Some(only), None) = (resolved.next(), resolved.next()) {
+            return Ok(only.name.clone());
+        }
+    }
+    Err(FieldProblem::invalid_value(
+        &field.name,
+        request.state,
+        valid_values,
+    ))
 }
 
 /// Build the custom field update for a state transition (`issue start`/`issue complete`).
@@ -1488,10 +1883,7 @@ fn resolve_state_field(
 /// workflow-transition machinery: "State"/"Stage" (YouTrack), "Status" (Jira).
 /// Anything else falls back to SingleEnum.
 fn build_state_field_update(field: &str, state: &str) -> CustomFieldUpdate {
-    if field.eq_ignore_ascii_case("State")
-        || field.eq_ignore_ascii_case("Stage")
-        || field.eq_ignore_ascii_case("Status")
-    {
+    if is_state_field_name(field) {
         CustomFieldUpdate::State {
             name: field.to_string(),
             value: state.to_string(),
@@ -1508,10 +1900,11 @@ fn handle_state_transition(
     client: &dyn IssueTracker,
     id: &str,
     field_update: CustomFieldUpdate,
-    state: &str,
     action: &str,
     format: OutputFormat,
 ) -> Result<()> {
+    let state = field_update.values().join(", ");
+    let state = state.as_str();
     let update = UpdateIssue {
         custom_fields: vec![field_update],
         ..Default::default()
@@ -1526,12 +1919,19 @@ fn handle_state_transition(
 
     match format {
         OutputFormat::Json => {
+            // `state` is what was asked for. `actual_state` is what the
+            // tracker reports afterwards, and `verified` says whether the
+            // two agree, so success here cannot hide a transition the
+            // tracker ignored.
             output_json(&serde_json::json!({
                 "success": true,
                 "id": issue.id,
-                "idReadable": issue.id_readable,
+                "id_readable": issue.id_readable,
                 "action": action,
                 "state": state,
+                "actual_state": issue.common_fields().state,
+                "verified": warnings.is_empty(),
+                "warnings": warnings,
             }))?;
         }
         OutputFormat::Text => {
@@ -1559,6 +1959,9 @@ struct BatchResult<'a> {
     success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// Stable code of the failure (see `track --help` on error codes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id_readable: Option<Cow<'a, str>>,
 }
@@ -1572,6 +1975,7 @@ impl<'a> BatchResult<'a> {
                 id,
                 success: true,
                 error: None,
+                code: None,
                 id_readable,
             },
             // `{:#}` keeps the cause chain: a context such as "Failed to update
@@ -1580,6 +1984,7 @@ impl<'a> BatchResult<'a> {
                 id,
                 success: false,
                 error: Some(format!("{:#}", e)),
+                code: Some(crate::errors::code_of(&e)),
                 id_readable: None,
             },
         }
@@ -1596,7 +2001,7 @@ struct BatchSummary<'a> {
 }
 
 fn handle_update_batch(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     ids: &[String],
     args: &IssueFieldArgs,
     format: OutputFormat,
@@ -1605,18 +2010,16 @@ fn handle_update_batch(
     let ids = batch_issue_ids(ids)?;
     // Single issue - delegate to original handler
     if let [id] = ids[..] {
-        return handle_update(client, id, args, format, verbose);
+        return handle_update(lookup, id, args, format, verbose);
     }
 
     let results: Vec<BatchResult> = ids
         .iter()
         .map(|&id| {
             let outcome = if args.dry_run {
-                build_update(client, id, args)
-                    .and_then(|update| validate_update(client, id, &update))
-                    .map(|_| None)
+                build_checked_update(lookup, id, args, None).map(|_| None)
             } else {
-                handle_update_single(client, id, args, format)
+                handle_update_single(lookup, id, args, format)
                     .map(|issue| Some(Cow::Owned(issue.id_readable)))
             };
             BatchResult::new(id, outcome)
@@ -1629,20 +2032,12 @@ fn handle_update_batch(
 
 /// Internal update function that returns the issue instead of printing
 fn handle_update_single(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     id: &str,
     args: &IssueFieldArgs,
     format: OutputFormat,
 ) -> Result<Issue> {
-    let update = build_update(client, id, args)?;
-
-    if args.validate {
-        validate_update(client, id, &update)?;
-    }
-
-    let issue = client
-        .update_issue(id, &update)
-        .with_context(|| format!("Failed to update issue '{}'", id))?;
+    let (update, issue) = send_update(lookup, id, args)?;
 
     let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
     crate::output::output_verification_warnings(&warnings, format);
@@ -1699,49 +2094,44 @@ fn handle_delete_batch(
 }
 
 fn handle_state_transition_batch(
-    client: &dyn IssueTracker,
+    lookup: &Lookup,
     ids: &[String],
     field: Option<&str>,
-    state: &str,
+    request: StateRequest<'_>,
     action: &str,
     format: OutputFormat,
 ) -> Result<()> {
+    let client = lookup.client();
     let ids = batch_issue_ids(ids)?;
-    // Explicit --field wins; otherwise resolve the state field name from each
-    // issue's project schema, caching lookups per project id. Auto-resolved
-    // fields are state-typed by construction, so they always get the State
-    // variant (routing YouTrack to its commands API) even under exotic names.
-    let mut schema_cache: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
-    let mut update_for = |id: &str| match field {
-        Some(f) => build_state_field_update(f, state),
-        None => CustomFieldUpdate::State {
-            name: resolve_state_field(client, id, &mut schema_cache),
-            value: state.to_string(),
-        },
+    // Explicit --field wins and involves no lookup; otherwise the state field
+    // comes from each issue's project schema, which is read once per project.
+    // Auto-resolved fields are state-typed by construction, so they always
+    // get the State variant (routing YouTrack to its commands API) even under
+    // exotic names.
+    let update_for = |id: &str| match field {
+        Some(f) => Ok(build_state_field_update(f, request.state)),
+        None => resolve_transition(lookup, id, request),
     };
 
     // Single issue - delegate to original handler
     if let [id] = ids[..] {
-        let field_update = update_for(id);
-        return handle_state_transition(client, id, field_update, state, action, format);
+        let field_update = update_for(id)?;
+        return handle_state_transition(client, id, field_update, action, format);
     }
 
     let results: Vec<BatchResult> = ids
         .iter()
         .map(|&id| {
-            let update = UpdateIssue {
-                custom_fields: vec![update_for(id)],
-                ..Default::default()
-            };
-            let outcome = client
-                .update_issue(id, &update)
-                .map(|issue| {
-                    let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
-                    crate::output::output_verification_warnings(&warnings, format);
-                    Some(Cow::Owned(issue.id_readable))
-                })
-                .map_err(anyhow::Error::from);
+            let outcome = update_for(id).and_then(|field_update| {
+                let update = UpdateIssue {
+                    custom_fields: vec![field_update],
+                    ..Default::default()
+                };
+                let issue = client.update_issue(id, &update)?;
+                let warnings = prefix_warnings(id, verify_issue_update(&update, &issue));
+                crate::output::output_verification_warnings(&warnings, format);
+                Ok(Some(Cow::Owned(issue.id_readable)))
+            });
             BatchResult::new(id, outcome)
         })
         .collect();
@@ -1765,6 +2155,16 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
     match format {
         OutputFormat::Json => {
             output_json(&summary)?;
+        }
+        OutputFormat::Text if is_agent() => {
+            println!("{succeeded} of {} {action}", results.len());
+            for result in results {
+                let id = result.id_readable.as_deref().unwrap_or(result.id);
+                match &result.error {
+                    None => println!("ok {id}"),
+                    Some(error) => println!("failed {id}: {error}"),
+                }
+            }
         }
         OutputFormat::Text => {
             use colored::Colorize;
@@ -1806,12 +2206,14 @@ fn output_batch_results(results: &[BatchResult], action: &str, format: OutputFor
     }
 
     if failed > 0 {
-        return Err(anyhow!(
-            "{} of {} issues were not {}",
-            failed,
-            results.len(),
-            action
-        ));
+        return Err(crate::errors::CliError::new(
+            crate::errors::CliCode::PartialFailure,
+            format!("{} of {} issues were not {}", failed, results.len(), action),
+        )
+        .with_hint(
+            "The per-issue results above say which failed and why; rerun with only those ids.",
+        )
+        .into());
     }
     Ok(())
 }
@@ -2008,6 +2410,20 @@ fn verify_field_match(
 mod tests {
     use super::*;
 
+    /// Rules with no aliases: field names are matched as written.
+    static AS_WRITTEN: ValidationRules = ValidationRules {
+        names_exhaustive: false,
+        name_aliases: &[],
+        read_only_fields: &[],
+    };
+
+    fn as_written(schema: &[ProjectCustomField]) -> Option<FieldTypes<'_>> {
+        Some(FieldTypes {
+            rules: &AS_WRITTEN,
+            schema,
+        })
+    }
+
     #[test]
     fn parses_field_value_correctly() {
         let (name, value) = parse_field_value("Priority=Major").unwrap();
@@ -2099,6 +2515,7 @@ mod tests {
                 required: true,
                 values: vec!["Planning".to_string(), "Development".to_string()],
                 state_values: vec![],
+                values_complete: false,
             },
             ProjectCustomField {
                 id: "2".to_string(),
@@ -2107,6 +2524,7 @@ mod tests {
                 required: true,
                 values: vec!["Web".to_string(), "Mobile".to_string()],
                 state_values: vec![],
+                values_complete: false,
             },
             ProjectCustomField {
                 id: "3".to_string(),
@@ -2115,6 +2533,7 @@ mod tests {
                 required: false,
                 values: vec![],
                 state_values: vec![],
+                values_complete: false,
             },
             ProjectCustomField {
                 id: "4".to_string(),
@@ -2127,6 +2546,7 @@ mod tests {
                     "Linux".to_string(),
                 ],
                 state_values: vec![],
+                values_complete: false,
             },
         ];
 
@@ -2136,7 +2556,7 @@ mod tests {
             "Reviewer=alice".to_string(),
             "Platform=Windows, macOS".to_string(),
         ];
-        let result = build_custom_fields(&fields, None, None, None, Some(&schema)).unwrap();
+        let result = build_custom_fields(&fields, None, None, None, as_written(&schema)).unwrap();
 
         assert_eq!(result.len(), 4);
         assert!(
@@ -2171,49 +2591,53 @@ mod tests {
             required: false,
             values: vec![],
             state_values: vec![],
+            values_complete: false,
         }
     }
 
     #[test]
-    fn state_field_name_finds_state_typed_field_regardless_of_name() {
+    fn state_field_finds_state_typed_field_regardless_of_name() {
         // Issue #308: the workflow field may be named "State", "Stage", or
         // anything else - detection must go by field type, not name.
         let schema = vec![
             schema_field("Priority", "enum[1]"),
             schema_field("Stage", "state[1]"),
         ];
-        assert_eq!(state_field_name(&schema), Some("Stage"));
+        assert_eq!(state_field(&schema).map(|f| f.name.as_str()), Some("Stage"));
 
         let schema = vec![
             schema_field("Assignee", "user[1]"),
             schema_field("Workflow Step", "state[1]"),
         ];
-        assert_eq!(state_field_name(&schema), Some("Workflow Step"));
+        assert_eq!(
+            state_field(&schema).map(|f| f.name.as_str()),
+            Some("Workflow Step")
+        );
     }
 
     #[test]
-    fn state_field_name_matches_field_type_case_insensitively() {
+    fn state_field_matches_field_type_case_insensitively() {
         let schema = vec![schema_field("State", "State[1]")];
-        assert_eq!(state_field_name(&schema), Some("State"));
+        assert_eq!(state_field(&schema).map(|f| f.name.as_str()), Some("State"));
     }
 
     #[test]
-    fn state_field_name_returns_none_without_state_typed_field() {
+    fn state_field_returns_none_without_state_typed_field() {
         let schema = vec![
             schema_field("Priority", "enum[1]"),
             schema_field("Assignee", "user[1]"),
         ];
-        assert_eq!(state_field_name(&schema), None);
-        assert_eq!(state_field_name(&[]), None);
+        assert_eq!(state_field(&schema).map(|f| f.name.as_str()), None);
+        assert!(state_field(&[]).is_none());
     }
 
     #[test]
-    fn state_field_name_picks_first_of_multiple_state_fields() {
+    fn state_field_picks_first_of_multiple_state_fields() {
         let schema = vec![
             schema_field("State", "state[1]"),
             schema_field("Stage", "state[1]"),
         ];
-        assert_eq!(state_field_name(&schema), Some("State"));
+        assert_eq!(state_field(&schema).map(|f| f.name.as_str()), Some("State"));
     }
 
     #[test]
@@ -2338,7 +2762,7 @@ query = "state=opened"
     }
 
     #[test]
-    fn build_custom_fields_warns_on_unknown_field_with_schema() {
+    fn build_custom_fields_passes_an_unknown_field_through() {
         use tracker_core::ProjectCustomField;
 
         let schema = vec![ProjectCustomField {
@@ -2348,12 +2772,13 @@ query = "state=opened"
             required: false,
             values: vec![],
             state_values: vec![],
+            values_complete: false,
         }];
 
-        // "Story Points" is not in the schema, should still succeed but with a warning
+        // "Story Points" is not in the schema: building is not checking, so
+        // it is built as a plain enum and left for validation to judge.
         let fields = vec!["Story Points=5".to_string()];
-        let result = build_custom_fields(&fields, None, None, None, Some(&schema));
-        // Should still succeed (warning goes to stderr, not an error)
+        let result = build_custom_fields(&fields, None, None, None, as_written(&schema));
         assert!(result.is_ok());
         let updates = result.unwrap();
         assert_eq!(updates.len(), 1);
@@ -2365,11 +2790,15 @@ query = "state=opened"
     }
 
     #[test]
-    fn build_custom_fields_no_warning_without_schema() {
-        // Without schema, fields should pass through silently (no schema to check against)
-        let fields = vec!["Story Points=5".to_string()];
-        let result = build_custom_fields(&fields, None, None, None, None);
-        assert!(result.is_ok());
+    fn build_custom_fields_without_schema_defaults_to_single_enum() {
+        let fields = vec!["Story Points=5".to_string(), "State=Done".to_string()];
+        let updates = build_custom_fields(&fields, None, None, None, None).unwrap();
+        assert!(
+            updates
+                .iter()
+                .all(|update| matches!(update, CustomFieldUpdate::SingleEnum { .. })),
+            "{updates:?}"
+        );
     }
 
     #[test]
@@ -2552,5 +2981,204 @@ query = "state=opened"
 
         let warning = verify_field_match(&requested, &actual).expect("missing field must warn");
         assert!(warning.contains("ignored"));
+    }
+
+    // ---- Validation against the backends' own rules (no requests) ----
+
+    fn github() -> github_backend::GitHubClient {
+        github_backend::GitHubClient::new("owner", "repo", "token")
+    }
+
+    /// GitHub's built-in schema: Status, Assignee, Labels, Milestone.
+    fn github_schema() -> Vec<ProjectCustomField> {
+        github().get_project_custom_fields("").unwrap()
+    }
+
+    fn jira() -> jira_backend::JiraClient {
+        jira_backend::JiraClient::new("http://127.0.0.1:1", "me@example.com", "token")
+    }
+
+    fn jira_schema() -> Vec<ProjectCustomField> {
+        let mut status = schema_field("Status", "state[1]");
+        status.values = vec!["To Do".into(), "In Progress".into(), "Done".into()];
+        status.values_complete = true;
+        let mut priority = schema_field("Priority", "enum[1]");
+        // Not read from the instance, so Jira itself does not judge values.
+        priority.values = vec!["High".into(), "Low".into()];
+        vec![status, priority]
+    }
+
+    fn enum_update(name: &str, value: &str) -> CustomFieldUpdate {
+        CustomFieldUpdate::SingleEnum {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    /// What `--state` sends.
+    fn state_shorthand(value: &str) -> CustomFieldUpdate {
+        shorthand_field_updates(Some(value), None, None)
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn strict_mode_keeps_the_backends_aliases_and_value_mappings() {
+        // `--state done --validate` on GitHub: State is Status there, and
+        // `done` is how the write path spells `closed`.
+        let report = evaluate_fields(
+            &github(),
+            &github_schema(),
+            &[state_shorthand("done")],
+            ValidationMode::Strict,
+        );
+        assert_eq!(report, ValidationReport::default());
+
+        // `--state Done --validate` on Jira used to be "Unknown field 'State'".
+        let report = evaluate_fields(
+            &jira(),
+            &jira_schema(),
+            &[state_shorthand("Done")],
+            ValidationMode::Strict,
+        );
+        assert_eq!(report, ValidationReport::default());
+    }
+
+    #[test]
+    fn strict_mode_refuses_whatever_the_default_refuses() {
+        // GitHub drops Labels set as a field: an error in Default, so in
+        // Strict too (it used to pass Strict and be dropped).
+        for mode in [ValidationMode::Default, ValidationMode::Strict] {
+            let report = evaluate_fields(
+                &github(),
+                &github_schema(),
+                &[enum_update("Labels", "bug")],
+                mode,
+            );
+            assert!(
+                matches!(&report.errors[..], [FieldProblem::ReadOnlyField { name, .. }] if name == "Labels"),
+                "{mode:?}: {report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_mode_adds_only_unknown_names_and_listed_values() {
+        // Jira lets unlisted fields through and does not judge a value list
+        // it did not read from the instance. Strict refuses both.
+        let updates = [
+            enum_update("Sprint", "12"),
+            enum_update("Priority", "Urgent"),
+        ];
+        let default = evaluate_fields(&jira(), &jira_schema(), &updates, ValidationMode::Default);
+        assert!(default.errors.is_empty(), "{default:?}");
+        assert_eq!(
+            default.warnings,
+            [FieldProblem::unknown_field("Sprint", &jira_schema())]
+        );
+
+        let strict = evaluate_fields(&jira(), &jira_schema(), &updates, ValidationMode::Strict);
+        assert_eq!(
+            strict.errors,
+            [
+                FieldProblem::unknown_field("Sprint", &jira_schema()),
+                FieldProblem::invalid_value(
+                    "Priority",
+                    "Urgent",
+                    vec!["High".into(), "Low".into()]
+                ),
+            ]
+        );
+        assert!(strict.warnings.is_empty());
+    }
+
+    #[test]
+    fn off_mode_only_names_fields_the_schema_lacks() {
+        let schema = github_schema();
+        let updates = [
+            enum_update("Labels", "bug"),
+            state_shorthand("nonsense"),
+            enum_update("Sprint", "1"),
+        ];
+        let report = evaluate_fields(&github(), &schema, &updates, ValidationMode::Off);
+        assert_eq!(
+            report,
+            ValidationReport {
+                errors: vec![],
+                warnings: vec![FieldProblem::unknown_field("Sprint", &schema)],
+            }
+        );
+    }
+
+    #[test]
+    fn a_name_a_lenient_schema_cannot_place_is_not_worth_a_refetch() {
+        let unknown = ValidationReport {
+            errors: vec![],
+            warnings: vec![FieldProblem::unknown_field("Due date", &jira_schema())],
+        };
+        // Jira takes fields its schema does not list: a refetch would not
+        // place the name either.
+        assert!(!worth_a_live_schema(&jira().validation_rules(), &unknown));
+        // GitHub lists everything, so the name may be new since caching.
+        assert!(worth_a_live_schema(&github().validation_rules(), &unknown));
+        // A rejection always is.
+        let rejected = ValidationReport {
+            errors: unknown.warnings.clone(),
+            warnings: vec![],
+        };
+        assert!(worth_a_live_schema(&jira().validation_rules(), &rejected));
+    }
+
+    #[test]
+    fn field_types_follow_the_backends_aliases() {
+        // `--field State=closed` on GitHub sets Status, a state field.
+        let rules = github().validation_rules();
+        let schema = github_schema();
+        let types = Some(FieldTypes {
+            rules: &rules,
+            schema: &schema,
+        });
+        let updates =
+            build_custom_fields(&["State=closed".to_string()], None, None, None, types).unwrap();
+        assert!(
+            matches!(&updates[..], [CustomFieldUpdate::State { name, value }] if name == "State" && value == "closed"),
+            "{updates:?}"
+        );
+
+        // Linear's `Tags` is its multi-valued Labels, so a list is split.
+        let rules = linear_backend::LinearClient::new("token").validation_rules();
+        let schema = vec![schema_field("Labels", "enum[*]")];
+        let types = Some(FieldTypes {
+            rules: &rules,
+            schema: &schema,
+        });
+        let updates =
+            build_custom_fields(&["Tags=bug, ui".to_string()], None, None, None, types).unwrap();
+        assert!(
+            matches!(&updates[..], [CustomFieldUpdate::MultiEnum { name, values }] if name == "Tags" && values == &["bug", "ui"]),
+            "{updates:?}"
+        );
+    }
+
+    #[test]
+    fn an_update_is_built_and_checked_with_the_backends_rules() {
+        // The whole path, on GitHub, whose schema costs no request.
+        let client = github();
+        let lookup = Lookup::new(&client, false);
+        let strict = FieldCheck::new(ValidationMode::Strict, true, false);
+        let build = |fields: &'static [&'static str]| {
+            move |types: Option<FieldTypes>| {
+                let fields: Vec<String> = fields.iter().map(|f| f.to_string()).collect();
+                build_custom_fields(&fields, None, None, None, types)
+            }
+        };
+
+        let (updates, _) =
+            build_issue_fields(&lookup, "42", None, strict, build(&["State=done"])).unwrap();
+        assert!(matches!(&updates[..], [CustomFieldUpdate::State { .. }]));
+
+        let err =
+            build_issue_fields(&lookup, "42", None, strict, build(&["Labels=bug"])).unwrap_err();
+        assert_eq!(crate::errors::code_of(&err), "read_only_field", "{err:#}");
     }
 }

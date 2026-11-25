@@ -17,7 +17,18 @@ use tracker_core::{
 };
 
 /// Call log file, relative to the scenario directory.
-const CALL_LOG_FILE: &str = "call_log.jsonl";
+pub const CALL_LOG_FILE: &str = "call_log.jsonl";
+
+/// The call log of the scenario in `scenario_dir`.
+pub fn call_log_path(scenario_dir: &Path) -> PathBuf {
+    scenario_dir.join(CALL_LOG_FILE)
+}
+
+/// Empty the call log of the scenario in `scenario_dir`, creating it if it
+/// does not exist, so the next run is scored on its own calls only.
+pub fn clear_call_log(scenario_dir: &Path) -> std::io::Result<()> {
+    std::fs::write(call_log_path(scenario_dir), "")
+}
 
 /// A mock client that reads responses from fixture files
 pub struct MockClient {
@@ -75,7 +86,7 @@ impl MockClient {
             .map_err(|e| TrackerError::Io(format!("Failed to load mock manifest: {}", e)))?;
 
         // Open call log file
-        let log_path = scenario_dir.join(CALL_LOG_FILE);
+        let log_path = call_log_path(&scenario_dir);
         let log_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -218,7 +229,7 @@ impl MockClient {
 
     /// Get the call log entries
     pub fn read_call_log(&self) -> Result<Vec<CallLogEntry>> {
-        let log_path = self.scenario_dir.join(CALL_LOG_FILE);
+        let log_path = call_log_path(&self.scenario_dir);
         let content = std::fs::read_to_string(&log_path).unwrap_or_default();
 
         let entries: Vec<CallLogEntry> = content
@@ -352,6 +363,27 @@ impl IssueTracker for MockClient {
     fn get_project_custom_fields(&self, project_id: &str) -> Result<Vec<ProjectCustomField>> {
         let args = call_args([("project_id", project_id)]);
         self.get_response("get_project_custom_fields", args, None)
+    }
+
+    // Fixtures describe YouTrack-style projects: the schema is the whole truth.
+    fn validation_rules(&self) -> tracker_core::ValidationRules {
+        tracker_core::ValidationRules {
+            names_exhaustive: true,
+            ..Default::default()
+        }
+    }
+
+    fn check_field_value(
+        &self,
+        field: &ProjectCustomField,
+        value: &str,
+    ) -> tracker_core::ValueCheck {
+        tracker_core::validation::check_membership(field, value)
+    }
+
+    fn current_user(&self) -> Result<Option<User>> {
+        // Optional: scenarios without a `current_user` response have none.
+        Ok(self.get_response("current_user", HashMap::new(), None).ok())
     }
 
     fn list_project_users(&self, project_id: &str) -> Result<Vec<User>> {
@@ -510,7 +542,7 @@ pub fn log_cli_command(scenario_dir: &Path, method: &str, args: &[(&str, &str)])
         duration_ms: 0,
     };
 
-    let log_path = scenario_dir.join(CALL_LOG_FILE);
+    let log_path = call_log_path(scenario_dir);
     if let Ok(file) = OpenOptions::new().create(true).append(true).open(&log_path) {
         append_log_entry(&mut BufWriter::new(file), &entry);
     }
@@ -641,5 +673,27 @@ leader = "alice"
         assert_eq!(project.id, "0-2");
         let log = client.read_call_log().unwrap();
         assert_eq!(log[0].args["leader"], "alice");
+    }
+
+    #[test]
+    fn clear_call_log_empties_the_log_the_client_reads() {
+        let dir = scenario_dir("", &[]);
+        log_cli_command(dir.path(), "prime", &[]);
+        let client = MockClient::new(dir.path()).unwrap();
+        assert_eq!(client.read_call_log().unwrap().len(), 1);
+
+        clear_call_log(dir.path()).unwrap();
+
+        assert!(client.read_call_log().unwrap().is_empty());
+        assert_eq!(fs::read_to_string(call_log_path(dir.path())).unwrap(), "");
+    }
+
+    #[test]
+    fn clear_call_log_creates_a_missing_log_and_fails_without_a_scenario_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        clear_call_log(dir.path()).unwrap();
+        assert!(dir.path().join(CALL_LOG_FILE).is_file());
+
+        assert!(clear_call_log(&dir.path().join("missing")).is_err());
     }
 }

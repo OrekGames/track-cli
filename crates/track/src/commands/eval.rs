@@ -403,6 +403,13 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
                         println!("  {}", line);
                     }
 
+                    if let Some(hints) = &scenario_data.setup.hints {
+                        println!("\n{}:", "Hints".white().bold());
+                        for line in hints.trim().lines() {
+                            println!("  {}", line.dimmed());
+                        }
+                    }
+
                     if let Some(context) = &scenario_data.setup.context {
                         println!("\n{}:", "Additional Context".white().bold());
                         for line in context.lines() {
@@ -454,7 +461,7 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
                     scenario.display()
                 ));
             }
-            let log_path = scenario.join("call_log.jsonl");
+            let log_path = tracker_mock::call_log_path(scenario);
 
             if log_path.exists() {
                 std::fs::write(&log_path, "")?;
@@ -481,7 +488,7 @@ pub fn handle_eval(action: &cli::EvalCommands, format: cli::OutputFormat) -> Res
 
             let mut cleared = 0;
             for entry in entries.flatten() {
-                let log_path = entry.path().join("call_log.jsonl");
+                let log_path = tracker_mock::call_log_path(&entry.path());
                 if log_path.exists() {
                     std::fs::write(&log_path, "")?;
                     cleared += 1;

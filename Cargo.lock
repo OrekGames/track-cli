@@ -913,6 +913,8 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1988,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "track"
-version = "1.19.3"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2000,6 +2002,7 @@ dependencies = [
  "figment",
  "github-backend",
  "gitlab-backend",
+ "indexmap",
  "jira-backend",
  "linear-backend",
  "open",
@@ -2011,6 +2014,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "toml 1.2.1+spec-1.1.0",
+ "toml_edit",
  "tracker-core",
  "tracker-mock",
  "ureq",

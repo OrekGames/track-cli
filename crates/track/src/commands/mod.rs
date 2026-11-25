@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod apply;
 pub mod article;
 pub(crate) mod attachments;
@@ -12,6 +13,7 @@ pub mod init;
 pub(crate) mod inspect;
 pub mod issue;
 pub mod open;
+pub mod prime;
 pub mod project;
 pub mod tags;
 pub mod workflow;

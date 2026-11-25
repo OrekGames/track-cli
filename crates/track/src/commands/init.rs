@@ -15,17 +15,6 @@ use youtrack_backend::YouTrackClient;
 /// Embedded agent guide content - written to project directory during `track init`
 const AGENT_GUIDE: &str = include_str!("../../../../docs/agent_guide.md");
 
-/// Embedded agent skill file (shared by all AI coding tools)
-const AGENT_SKILL: &str = include_str!("../../../../agent-skills/SKILL.md");
-
-/// AI coding tool directories that support the Agent Skills standard (~/.{tool}/skills/{name}/SKILL.md)
-const SKILL_TOOL_DIRS: &[(&str, &str)] = &[
-    ("Claude Code", ".claude"),
-    ("Copilot", ".copilot"),
-    ("Cursor", ".cursor"),
-    ("Gemini CLI", ".gemini"),
-];
-
 const LOCAL_GITIGNORE_ENTRIES: &[&str] = &[".track.toml", ".tracker-cache/"];
 
 #[derive(Debug, Clone)]
@@ -232,40 +221,14 @@ fn install_agent_skills(format: cli::OutputFormat) -> Result<()> {
     Ok(())
 }
 
-/// Write the skill file for every supported AI coding tool and return the
-/// (tool name, path) of each file written.
-fn write_agent_skills() -> Result<Vec<(&'static str, PathBuf)>> {
-    // Prefer robust fallback chain for CI/container environments where
-    // platform home discovery APIs may fail (notably on Windows runners).
-    let home = directories::BaseDirs::new()
-        .map(|d| d.home_dir().to_path_buf())
-        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
-        .or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from))
-        .or_else(|| {
-            let drive = std::env::var_os("HOMEDRIVE")?;
-            let path = std::env::var_os("HOMEPATH")?;
-            Some(std::path::PathBuf::from(format!(
-                "{}{}",
-                drive.to_string_lossy(),
-                path.to_string_lossy()
-            )))
-        })
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    let mut installed = Vec::new();
-
-    for &(tool_name, tool_dir) in SKILL_TOOL_DIRS {
-        let skill_dir = home.join(tool_dir).join("skills").join("track");
-        let skill_path = skill_dir.join("SKILL.md");
-
-        std::fs::create_dir_all(&skill_dir)?;
-        std::fs::write(&skill_path, AGENT_SKILL)?;
-        installed.push((tool_name, skill_path));
-    }
-
-    Ok(installed)
+/// Write the skill for every supported AI coding tool, once per folder the
+/// tools read. Returns one entry per folder: the tools that share it
+/// (comma-separated) and the path of its `SKILL.md`.
+fn write_agent_skills() -> Result<Vec<(String, PathBuf)>> {
+    super::agent::write_skills(crate::cli::AgentScope::User, &[])
 }
 
-fn installed_skills_json(installed: &[(&str, PathBuf)]) -> serde_json::Value {
+fn installed_skills_json(installed: &[(String, PathBuf)]) -> serde_json::Value {
     installed
         .iter()
         .map(|(tool, path)| {
@@ -277,7 +240,7 @@ fn installed_skills_json(installed: &[(&str, PathBuf)]) -> serde_json::Value {
         .collect()
 }
 
-fn print_installed_skills(installed: &[(&str, PathBuf)]) {
+fn print_installed_skills(installed: &[(String, PathBuf)]) {
     use colored::Colorize;
 
     for (tool, path) in installed {

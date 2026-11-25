@@ -1,0 +1,32 @@
+[
+  {
+    "id": "tag-1",
+    "name": "backend",
+    "color": {
+      "id": "color-1",
+      "background": "#4CAF50",
+      "foreground": "#FFFFFF"
+    },
+    "issues_count": 5
+  },
+  {
+    "id": "tag-2",
+    "name": "frontend",
+    "color": {
+      "id": "color-2",
+      "background": "#2196F3",
+      "foreground": "#FFFFFF"
+    },
+    "issues_count": 8
+  },
+  {
+    "id": "tag-3",
+    "name": "urgent",
+    "color": {
+      "id": "color-3",
+      "background": "#F44336",
+      "foreground": "#FFFFFF"
+    },
+    "issues_count": 2
+  }
+]

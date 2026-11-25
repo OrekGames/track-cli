@@ -64,6 +64,9 @@ enum Commands {
         /// Minimum score to consider a pass
         #[arg(long, default_value_t = 70)]
         min_score: u8,
+
+        #[command(flatten)]
+        options: RunOptions,
     },
 
     /// Run all scenarios in a directory
@@ -99,6 +102,9 @@ enum Commands {
         /// Output format
         #[arg(long, short = 'o', value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+
+        #[command(flatten)]
+        options: RunOptions,
     },
 
     /// List available scenarios
@@ -128,6 +134,45 @@ enum Provider {
     Gemini,
 }
 
+/// Whether the agent is told how to solve the task
+#[derive(ValueEnum, Clone, Debug, Copy, Default, PartialEq, Eq)]
+enum Hints {
+    #[default]
+    On,
+    Off,
+}
+
+/// How a run is set up, apart from which agent runs it
+#[derive(clap::Args, Clone, Copy, Debug, PartialEq, Eq)]
+struct RunOptions {
+    /// Give the agent the scenario's hints and extra context
+    #[arg(long, value_enum, default_value_t = Hints::On)]
+    hints: Hints,
+
+    /// Reference material placed in the agent's system prompt
+    #[arg(long, value_enum, default_value_t = runner::ContextMode::Skill)]
+    context: runner::ContextMode,
+}
+
+/// The scenario as the agent will see it. With hints on they are appended to
+/// the task; with hints off both the hints and the extra context are withheld.
+fn scenario_for_run(scenario: &Scenario, hints: Hints) -> Scenario {
+    let mut scenario = scenario.clone();
+    match hints {
+        Hints::On => {
+            if let Some(hints) = scenario.setup.hints.take() {
+                let prompt = scenario.setup.prompt.trim_end();
+                scenario.setup.prompt = format!("{prompt}\n\nHints:\n{}\n", hints.trim());
+            }
+        }
+        Hints::Off => {
+            scenario.setup.hints = None;
+            scenario.setup.context = None;
+        }
+    }
+    scenario
+}
+
 #[derive(ValueEnum, Clone, Debug, Copy, Default)]
 enum OutputFormat {
     #[default]
@@ -148,8 +193,9 @@ fn main() -> Result<()> {
             format,
             api_key,
             min_score,
+            options,
         } => run_scenario(
-            &scenario, provider, model, max_turns, verbose, format, api_key, min_score,
+            &scenario, provider, model, max_turns, verbose, format, api_key, min_score, options,
         ),
 
         Commands::RunAll {
@@ -161,8 +207,9 @@ fn main() -> Result<()> {
             min_score,
             fail_fast,
             format,
+            options,
         } => run_all_scenarios(
-            &path, provider, model, max_turns, api_key, min_score, fail_fast, format,
+            &path, provider, model, max_turns, api_key, min_score, fail_fast, format, options,
         ),
 
         Commands::List { path } => list_scenarios(&path),
@@ -181,13 +228,10 @@ fn run_scenario(
     format: OutputFormat,
     api_key: Option<String>,
     min_score: u8,
+    options: RunOptions,
 ) -> Result<()> {
     // Load scenario
     let scenario = Scenario::load_from_dir(scenario_path)?;
-
-    // Clear call log
-    let log_path = scenario_path.join("call_log.jsonl");
-    std::fs::write(&log_path, "")?;
 
     let session_result = run_agent_session(
         provider,
@@ -197,13 +241,15 @@ fn run_scenario(
         max_turns,
         verbose,
         api_key.as_deref(),
+        options,
     )?;
 
     // Evaluate results
     let client = MockClient::new(scenario_path)?;
     let calls = client.read_call_log()?;
     let evaluator = Evaluator::new(scenario);
-    let eval_result = evaluator.evaluate(&calls);
+    let usage = session_result.context_usage();
+    let eval_result = evaluator.evaluate_with_usage(&calls, Some(usage));
     let passed = eval_result.score_percent >= min_score as f64 && eval_result.success;
 
     // Output results
@@ -218,6 +264,9 @@ fn run_scenario(
                 "turns_used": session_result.turns_used,
                 "input_tokens": session_result.total_input_tokens,
                 "output_tokens": session_result.total_output_tokens,
+                "prompt_bytes": usage.prompt_bytes,
+                "tool_output_bytes": usage.tool_output_bytes,
+                "approx_context_tokens": usage.approx_tokens(),
                 "commands_executed": session_result.commands_executed.iter().map(|c| {
                     serde_json::json!({
                         "args": c.args,
@@ -279,6 +328,14 @@ fn run_scenario(
                 eval_result.efficiency
             );
 
+            println!(
+                "{}: ~{} tokens ({} prompt bytes, {} tool output bytes)",
+                "Context".white().bold(),
+                usage.approx_tokens(),
+                usage.prompt_bytes,
+                usage.tool_output_bytes
+            );
+
             // Outcomes
             println!("\n{}:", "Expected Outcomes".white().bold());
             for outcome in &eval_result.outcomes {
@@ -314,7 +371,32 @@ fn run_scenario(
     Ok(())
 }
 
+/// Prepare a run of `scenario`: a cache private to it, removed when the
+/// returned directory is dropped, and what every provider is given.
+///
+/// The call log is cleared last, so only the agent's own calls are scored:
+/// not an earlier run's, nor those of the setup.
+fn prepare_run(
+    scenario_path: &Path,
+    scenario: &Scenario,
+    context: runner::ContextMode,
+) -> Result<(tempfile::TempDir, runner::RunSetup)> {
+    let cache_dir = tempfile::Builder::new()
+        .prefix("track-agent-cache-")
+        .tempdir()
+        .context("Failed to create run cache dir")?;
+    let run = runner::RunSetup::prepare(scenario_path, scenario, context, cache_dir.path());
+    tracker_mock::clear_call_log(scenario_path).with_context(|| {
+        format!(
+            "Failed to clear the call log in {}",
+            scenario_path.display()
+        )
+    })?;
+    Ok((cache_dir, run))
+}
+
 /// Run one agent session against `scenario` with the selected provider
+#[allow(clippy::too_many_arguments)]
 fn run_agent_session(
     provider: Provider,
     scenario_path: &Path,
@@ -323,9 +405,13 @@ fn run_agent_session(
     max_turns: usize,
     verbose: bool,
     api_key: Option<&str>,
+    options: RunOptions,
 ) -> Result<runner::SessionResult> {
     let scenario_path = scenario_path.to_path_buf();
-    let scenario = scenario.clone();
+    let scenario = scenario_for_run(scenario, options.hints);
+
+    // Held until the session ends, then removed.
+    let (_cache_dir, run) = prepare_run(&scenario_path, &scenario, options.context)?;
 
     match provider {
         Provider::Anthropic => {
@@ -334,6 +420,7 @@ fn run_agent_session(
             runner::SessionRunner::new(
                 scenario_path,
                 scenario,
+                run,
                 api_key.to_string(),
                 model.unwrap_or(DEFAULT_ANTHROPIC_MODEL).to_string(),
                 max_turns,
@@ -344,12 +431,14 @@ fn run_agent_session(
         Provider::ClaudeCode => claude_code::run_claude_code(&claude_code::ClaudeCodeConfig {
             scenario_path,
             scenario,
+            run,
             max_turns,
             verbose,
         }),
         Provider::CopilotCli => copilot_cli::run_copilot_cli(&copilot_cli::CopilotCliConfig {
             scenario_path,
             scenario,
+            run,
             max_turns,
             verbose,
             copilot_mode: copilot_cli::CopilotMode::Suggest,
@@ -357,6 +446,7 @@ fn run_agent_session(
         Provider::Gemini => gemini_runner::run_gemini(&gemini_runner::GeminiRunnerConfig {
             scenario_path,
             scenario,
+            run,
             max_turns,
             verbose,
         }),
@@ -373,6 +463,7 @@ fn run_all_scenarios(
     min_score: u8,
     fail_fast: bool,
     format: OutputFormat,
+    options: RunOptions,
 ) -> Result<()> {
     // Validate API key for Anthropic provider
     if matches!(provider, Provider::Anthropic) && api_key.is_none() {
@@ -409,10 +500,6 @@ fn run_all_scenarios(
             );
         }
 
-        // Clear call log
-        let log_path = scenario_path.join("call_log.jsonl");
-        std::fs::write(&log_path, "")?;
-
         let session_result = match run_agent_session(
             provider,
             scenario_path,
@@ -421,6 +508,7 @@ fn run_all_scenarios(
             max_turns,
             false, // not verbose in batch mode
             api_key.as_deref(),
+            options,
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -438,7 +526,8 @@ fn run_all_scenarios(
         let client = MockClient::new(scenario_path)?;
         let calls = client.read_call_log()?;
         let evaluator = Evaluator::new(scenario.clone());
-        let eval_result = evaluator.evaluate(&calls);
+        let usage = session_result.context_usage();
+        let eval_result = evaluator.evaluate_with_usage(&calls, Some(usage));
 
         let passed = eval_result.score_percent >= min_score as f64 && eval_result.success;
         if !passed {
@@ -454,6 +543,9 @@ fn run_all_scenarios(
             "turns_used": session_result.turns_used,
             "input_tokens": session_result.total_input_tokens,
             "output_tokens": session_result.total_output_tokens,
+            "prompt_bytes": usage.prompt_bytes,
+            "tool_output_bytes": usage.tool_output_bytes,
+            "approx_context_tokens": usage.approx_tokens(),
             "commands_executed_count": session_result.commands_executed.len(),
             "success": eval_result.success,
         }));
@@ -461,11 +553,12 @@ fn run_all_scenarios(
         if matches!(format, OutputFormat::Text) {
             let status = if passed { "PASS".green() } else { "FAIL".red() };
             println!(
-                "  {} - {:.0}% ({} calls, {} turns)",
+                "  {} - {:.0}% ({} calls, {} turns, ~{} context tokens)",
                 status,
                 eval_result.score_percent,
                 eval_result.total_calls,
-                session_result.turns_used
+                session_result.turns_used,
+                usage.approx_tokens()
             );
         }
 
@@ -563,6 +656,13 @@ fn show_scenario(scenario_path: &Path) -> Result<()> {
     }
     println!("{}", "─".repeat(60));
 
+    if let Some(hints) = &scenario.setup.hints {
+        println!("\n{}:", "Hints (--hints on)".white().bold());
+        for line in hints.trim().lines() {
+            println!("  {}", line.dimmed());
+        }
+    }
+
     if let Some(context) = &scenario.setup.context {
         println!("\n{}:", "Additional Context".white().bold());
         for line in context.lines() {
@@ -585,4 +685,117 @@ fn show_scenario(scenario_path: &Path) -> Result<()> {
     println!();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scenario_with_hints() -> Scenario {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scenario.toml");
+        std::fs::write(
+            &path,
+            r#"
+[scenario]
+name = "t"
+description = "t"
+
+[setup]
+prompt = """
+Create an issue.
+"""
+hints = """
+- Use the cache
+"""
+context = "Valid Priority values: Low, High"
+"#,
+        )
+        .unwrap();
+        Scenario::load(&path).expect("scenario parses")
+    }
+
+    #[test]
+    fn hints_on_appends_them_to_the_task() {
+        let scenario = scenario_for_run(&scenario_with_hints(), Hints::On);
+        assert_eq!(
+            scenario.setup.prompt,
+            "Create an issue.\n\nHints:\n- Use the cache\n"
+        );
+        assert!(scenario.setup.context.is_some());
+    }
+
+    #[test]
+    fn hints_off_withholds_hints_and_context() {
+        let scenario = scenario_for_run(&scenario_with_hints(), Hints::Off);
+        assert_eq!(scenario.setup.prompt, "Create an issue.\n");
+        assert!(scenario.setup.hints.is_none());
+        assert!(scenario.setup.context.is_none());
+    }
+
+    #[test]
+    fn prepare_run_clears_a_stale_call_log_and_owns_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let scenario = scenario_with_hints();
+        let log = tracker_mock::call_log_path(dir.path());
+        // Prime mode is left out: it would run whatever `track` is on PATH.
+        for context in [runner::ContextMode::None, runner::ContextMode::Skill] {
+            // A call left over from an earlier run.
+            tracker_mock::log_cli_command(dir.path(), "get_issue", &[("id", "DEMO-1")]);
+
+            let (cache_dir, run) = prepare_run(dir.path(), &scenario, context).unwrap();
+
+            assert_eq!(std::fs::read_to_string(&log).unwrap(), "", "{context:?}");
+            let cache = cache_dir.path().to_path_buf();
+            assert!(cache.is_dir());
+            assert_eq!(
+                run.track_env[0],
+                ("TRACK_CACHE_DIR", cache.display().to_string())
+            );
+            drop(cache_dir);
+            assert!(!cache.exists());
+        }
+    }
+
+    #[test]
+    fn prepare_run_fails_when_the_call_log_cannot_be_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let err = prepare_run(&missing, &scenario_with_hints(), runner::ContextMode::None)
+            .expect_err("a stale log must not be scored silently");
+        assert!(
+            err.to_string().starts_with("Failed to clear the call log"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cli_definition_is_valid() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn run_and_run_all_share_the_run_options() {
+        let defaults = RunOptions {
+            hints: Hints::On,
+            context: runner::ContextMode::Skill,
+        };
+        let chosen = RunOptions {
+            hints: Hints::Off,
+            context: runner::ContextMode::Prime,
+        };
+        let options_of = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+            Commands::Run { options, .. } | Commands::RunAll { options, .. } => options,
+            other => panic!("unexpected command {other:?}"),
+        };
+
+        assert_eq!(options_of(&["track-agent", "run", "s"]), defaults);
+        assert_eq!(options_of(&["track-agent", "run-all"]), defaults);
+        let flags = ["--hints", "off", "--context", "prime"];
+        let run = [&["track-agent", "run", "s"][..], &flags[..]].concat();
+        let run_all = [&["track-agent", "run-all"][..], &flags[..]].concat();
+        assert_eq!(options_of(&run), chosen);
+        assert_eq!(options_of(&run_all), chosen);
+    }
 }

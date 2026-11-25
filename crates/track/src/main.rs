@@ -3,12 +3,14 @@ mod cli;
 mod color;
 mod commands;
 mod config;
+mod errors;
+mod fsutil;
+mod lookup;
 mod output;
 mod token_guard;
 
 use anyhow::{Result, anyhow};
-use clap::Parser;
-use cli::{Backend, Cli, CliFormat, Commands, IssueCommands};
+use cli::{Backend, Cli, CliFormat, Commands};
 use config::Config;
 use github_backend::GitHubClient;
 use gitlab_backend::GitLabClient;
@@ -35,22 +37,106 @@ fn main() -> ExitCode {
         .unwrap_or(ExitCode::from(101))
 }
 
-fn cli_main() -> ExitCode {
-    let cli = Cli::parse();
+/// Whether the process was started as `track prime --hook[=AGENT]`, judged
+/// from the raw arguments so it still holds when they do not parse.
+fn is_prime_hook_invocation<I: IntoIterator<Item = String>>(args: I) -> bool {
+    let args: Vec<String> = args.into_iter().skip(1).collect();
+    args.iter().any(|arg| arg == "prime")
+        && args
+            .iter()
+            .any(|arg| arg == "--hook" || arg.starts_with("--hook="))
+}
 
-    // Initialize color mode based on CLI flag and environment
-    color::init(cli.color);
+/// Names the error format when `--error-format` does not.
+const ERROR_FORMAT_ENV: &str = "TRACK_ERROR_FORMAT";
+
+/// The value of the environment variable `var` as one of `T`'s variants.
+/// An empty or unrecognised value counts as unset: a hook may leave a
+/// variable set but empty, and that must not change what a command does.
+fn value_enum_from_env<T: clap::ValueEnum>(var: &str) -> Option<T> {
+    value_enum_from(std::env::var(var).ok().as_deref())
+}
+
+/// `value` as one of `T`'s variants, ignoring case and surrounding space;
+/// `None` when it is absent, empty or names no variant.
+fn value_enum_from<T: clap::ValueEnum>(value: Option<&str>) -> Option<T> {
+    T::from_str(value?.trim(), true).ok()
+}
+
+fn cli_main() -> ExitCode {
+    // A session hook runs in every project, configured for track or not, and
+    // whatever it prints lands in an agent's context. It must stay silent and
+    // succeed even when the arguments or environment do not parse.
+    let quiet_hook = is_prime_hook_invocation(std::env::args());
+    if quiet_hook {
+        commands::prime::prepare_hook();
+    }
+    let (mut cli, matches) = match Cli::try_parse_args() {
+        Ok(parsed) => parsed,
+        Err(_) if quiet_hook => {
+            commands::prime::print_empty_hook_output();
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => e.exit(),
+    };
+    // `TRACK_OUTPUT` picks the format when `-o` does not. Read here, not by
+    // clap: a hook may leave it set but empty, and that must mean "unset".
+    if matches.value_source("format") != Some(clap::parser::ValueSource::CommandLine)
+        && let Some(format) = value_enum_from_env::<CliFormat>(output::OUTPUT_ENV)
+    {
+        cli.format = format;
+    }
+    // Errors follow the output: JSON output gets JSON errors, unless the
+    // flag or `TRACK_ERROR_FORMAT` says otherwise.
+    if matches.value_source("error_format") != Some(clap::parser::ValueSource::CommandLine) {
+        let from_env = value_enum_from_env::<errors::ErrorFormat>(ERROR_FORMAT_ENV);
+        cli.error_format = from_env.unwrap_or(if cli.format.output() == cli::OutputFormat::Json {
+            errors::ErrorFormat::Json
+        } else {
+            errors::ErrorFormat::Text
+        });
+    }
+    let error_format = cli.error_format;
+
+    // Initialize color mode based on CLI flag and environment. Agent output
+    // is never coloured: escape codes are noise to a model.
+    if cli.format.is_agent() {
+        color::init(cli::ColorChoice::Never);
+    } else {
+        color::init(cli.color);
+    }
+    output::set_agent_mode(cli.format.is_agent());
 
     if let Err(e) = run(cli) {
-        output_error(&e);
-        if let Some(tip) = output::untrusted_certificate_tip(&format!("{e:#}")) {
-            use colored::Colorize;
-            eprintln!("{} {}", "Tip:".yellow(), tip);
+        if quiet_hook {
+            commands::prime::print_empty_hook_output();
+            return ExitCode::SUCCESS;
         }
-        return ExitCode::from(1);
+        return ExitCode::from(output_error(&e, error_format).exit_code);
     }
 
     ExitCode::SUCCESS
+}
+
+/// What the configured credentials point at, as the cache records it: a
+/// cache answers lookups only for the instance it was written for.
+fn cache_scope(backend: Backend, config: &Config) -> String {
+    if let Some(mock_dir) = tracker_mock::get_mock_dir() {
+        let dir = std::fs::canonicalize(&mock_dir).unwrap_or(mock_dir);
+        return format!("mock:{}", dir.display());
+    }
+    let endpoint = config.token_endpoint(backend).unwrap_or_default();
+    // GitHub and GitLab clients are bound to one repository or project.
+    let bound_to = match backend {
+        Backend::GitHub => format!(
+            "{}/{}",
+            config.github.owner.as_deref().unwrap_or_default(),
+            config.github.repo.as_deref().unwrap_or_default()
+        ),
+        Backend::GitLab => config.gitlab.project_id.clone().unwrap_or_default(),
+        _ => String::new(),
+    };
+    format!("{}|{}", endpoint.trim_end_matches('/'), bound_to)
 }
 
 /// `-o jsonl` renders the document `-o json` prints, so every command that
@@ -59,14 +145,75 @@ fn command_supports_cli_jsonl(command: &Commands) -> bool {
     !matches!(command, Commands::Completions { .. })
 }
 
-/// `--select` is wired for `issue search` only.
-fn command_supports_select(command: &Commands) -> bool {
-    matches!(
-        command,
-        Commands::Issue {
-            action: IssueCommands::Search { .. }
-        }
-    )
+/// Whether `command` only reads: running it again changes nothing on the
+/// tracker or on disk, beyond refreshing the local cache. A command not
+/// listed here counts as a write, so that a new command is never reported
+/// as failed after its write was done.
+fn is_read_only(command: &Commands) -> bool {
+    use cli::{
+        AgentCommands, ArticleCommands, BundleCommands, CacheCommands, ConfigCommands,
+        EvalCommands, FieldCommands, IssueCommands, ProjectCommands, TagCommands,
+    };
+    match command {
+        Commands::Issue { action } => matches!(
+            action,
+            IssueCommands::Create { dry_run: true, .. }
+                | IssueCommands::Update { dry_run: true, .. }
+                | IssueCommands::Get { .. }
+                | IssueCommands::Search { .. }
+                | IssueCommands::Inspect { .. }
+                | IssueCommands::Attachments { .. }
+                | IssueCommands::Comments { .. }
+                | IssueCommands::History { .. }
+        ),
+        Commands::Project { action } => matches!(
+            action,
+            ProjectCommands::List | ProjectCommands::Get { .. } | ProjectCommands::Fields { .. }
+        ),
+        Commands::Tags { action } => matches!(action, TagCommands::List),
+        Commands::Cache { action } => matches!(
+            action,
+            CacheCommands::Status | CacheCommands::Show | CacheCommands::Path
+        ),
+        Commands::Eval { action } => matches!(
+            action,
+            EvalCommands::Run { .. }
+                | EvalCommands::RunAll { .. }
+                | EvalCommands::List { .. }
+                | EvalCommands::Show { .. }
+                | EvalCommands::Status
+        ),
+        Commands::Config { action } => matches!(
+            action,
+            ConfigCommands::Get { .. }
+                | ConfigCommands::Show
+                | ConfigCommands::Keys
+                | ConfigCommands::Path
+                | ConfigCommands::Test
+        ),
+        Commands::Article { action } => matches!(
+            action,
+            ArticleCommands::Get { .. }
+                | ArticleCommands::List { .. }
+                | ArticleCommands::Search { .. }
+                | ArticleCommands::Tree { .. }
+                | ArticleCommands::Attachments { .. }
+                | ArticleCommands::Comments { .. }
+        ),
+        Commands::Field { action } => matches!(action, FieldCommands::List),
+        Commands::Bundle { action } => matches!(action, BundleCommands::List { .. }),
+        Commands::Agent { action } => matches!(action, AgentCommands::Status),
+        Commands::Apply { dry_run, .. } => *dry_run,
+        // `External` is `track PROJ-1`, the `issue get` shortcut.
+        Commands::Doctor { .. }
+        | Commands::Workflow { .. }
+        | Commands::Context { .. }
+        | Commands::Prime { .. }
+        | Commands::Guide { .. }
+        | Commands::Completions { .. }
+        | Commands::External(_) => true,
+        Commands::Init { .. } | Commands::Open { .. } => false,
+    }
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -87,19 +234,21 @@ fn run(cli: Cli) -> Result<()> {
             .is_ok_and(|config| config.system_certs == Some(true)),
     );
 
-    // `--select` is wired for `issue search` JSON/JSONL only. Other commands
-    // and text mode must not silently print the full document, and a present
-    // flag with no usable paths is not a successful no-op projection.
+    // `--select` projects whatever JSON a command prints. Text has no
+    // fields to select, and a flag with no usable paths is not a successful
+    // no-op projection. A selection that matches nothing fails a read, but
+    // not a write that is already done.
     if let Some(select) = cli.select.as_deref() {
-        if !command_supports_select(&cli.command) {
-            return Err(anyhow!("select is unsupported for this command"));
+        if cli.format.output() == cli::OutputFormat::Text {
+            return Err(anyhow!(
+                "--select needs JSON output: add -o json or -o jsonl"
+            ));
         }
-        if cli.format == CliFormat::Text {
-            return Err(anyhow!("--select is unsupported in text mode"));
-        }
-        if parse_select_paths(select).is_empty() {
+        let paths = parse_select_paths(select);
+        if paths.is_empty() {
             return Err(anyhow!("--select requires at least one field path"));
         }
+        output::set_select_paths(paths, is_read_only(&cli.command));
     }
 
     // Handle completions command - no API needed
@@ -111,6 +260,14 @@ fn run(cli: Cli) -> Result<()> {
     // Handle eval command - no API needed (uses mock system)
     if let Commands::Eval { action } = &cli.command {
         return commands::eval::handle_eval(action, cli.format.output());
+    }
+
+    // Agent setup and the embedded guide need no config or API either.
+    if let Commands::Agent { action } = &cli.command {
+        return commands::agent::handle_agent(action, cli.format.output());
+    }
+    if let Commands::Guide { topic } = &cli.command {
+        return commands::agent::handle_guide(topic.as_deref(), cli.format.output());
     }
 
     // Handle init command - creates config, no existing auth needed
@@ -214,6 +371,41 @@ fn run(cli: Cli) -> Result<()> {
         );
     }
 
+    cache::set_active_backend(
+        &effective_backend.to_string(),
+        cache_scope(effective_backend, &config),
+    );
+
+    // Prime is offline too, and in hook mode it only speaks for a directory
+    // that is set up for track.
+    if let Commands::Prime {
+        project,
+        hook,
+        max_values,
+    } = &cli.command
+    {
+        let mock = tracker_mock::get_mock_dir().is_some();
+        if !mock {
+            let configured_here = cli.config.is_some() || config::is_project_context();
+            let valid = config.validate(effective_backend);
+            if hook.is_some() && !(configured_here && valid.is_ok()) {
+                commands::prime::print_empty_hook_output();
+                return Ok(());
+            }
+            valid.map_err(|err| errors::coded(errors::CliCode::NotConfigured, err))?;
+        }
+        return commands::prime::handle_prime(&commands::prime::PrimeOptions {
+            project: project.as_deref(),
+            max_values: *max_values,
+            format: cli.format.output(),
+            backend: effective_backend,
+            url: config.url.as_deref(),
+            default_project: config.default_project.as_deref(),
+            explicit_config: cli.config.as_deref(),
+            hook: *hook,
+        });
+    }
+
     // Workflow commands are offline: after config load + backend selection,
     // before credential validation and client construction.
     if let Commands::Workflow { action } = &cli.command {
@@ -233,14 +425,17 @@ fn run(cli: Cli) -> Result<()> {
         return run_with_client(&client, &client, &cli, &config, effective_backend);
     }
 
-    config.validate(effective_backend)?;
+    config
+        .validate(effective_backend)
+        .map_err(|err| errors::coded(errors::CliCode::NotConfigured, err))?;
     token_guard::ensure_token_destination_allowed(
         cli.config.as_deref(),
         effective_backend,
         cli.url.as_deref(),
         cli.token.as_deref(),
         &config,
-    )?;
+    )
+    .map_err(|err| errors::coded(errors::CliCode::TokenRefused, err))?;
 
     // Create the appropriate backend client
     let client = build_client(effective_backend, &config)?;
@@ -385,25 +580,22 @@ fn run_with_client(
     config: &Config,
     backend: Backend,
 ) -> Result<()> {
+    let lookup = lookup::Lookup::new(issue_client, !cli.no_cache);
     match &cli.command {
         Commands::Issue { action } => commands::issue::handle_issue(
-            issue_client,
+            &lookup,
             action,
-            commands::issue::IssueOutput {
-                format: cli.format.output(),
-                select: cli.select.as_deref(),
-                jsonl: cli.format.is_jsonl(),
-            },
+            cli.format.output(),
             config.default_project.as_deref(),
             cli.verbose,
             config.link_mappings_for(backend),
             cli.config.as_deref(),
         ),
         Commands::Project { action } => {
-            commands::project::handle_project(issue_client, action, cli.format.output())
+            commands::project::handle_project(&lookup, action, cli.format.output())
         }
         Commands::Tags { action } => {
-            commands::tags::handle_tags(issue_client, action, cli.format.output())
+            commands::tags::handle_tags(&lookup, action, cli.format.output())
         }
         Commands::Cache { action } => commands::cache::handle_cache(
             issue_client,
@@ -424,10 +616,10 @@ fn run_with_client(
             commands::article::handle_article(issue_client, kb_client, action, cli.format.output())
         }
         Commands::Field { action } => {
-            commands::field::handle_field(issue_client, action, cli.format.output())
+            commands::field::handle_field(&lookup, action, cli.format.output())
         }
         Commands::Bundle { action } => {
-            commands::bundle::handle_bundle(issue_client, action, cli.format.output())
+            commands::bundle::handle_bundle(&lookup, action, cli.format.output())
         }
         Commands::Context {
             project,
@@ -447,7 +639,6 @@ fn run_with_client(
                 tracker_mock::log_cli_command(&mock_dir, "context", &args);
             }
 
-            let backend_type = backend.to_string();
             commands::context::handle_context(
                 issue_client,
                 Some(kb_client),
@@ -456,8 +647,8 @@ fn run_with_client(
                 *include_issues,
                 *issue_limit,
                 cli.format.output(),
-                &backend_type,
-                config.url.as_deref().unwrap_or("unknown"),
+                backend,
+                config.url.as_deref(),
                 config.default_project.as_deref(),
                 cli.config.as_deref(),
             )
@@ -465,15 +656,15 @@ fn run_with_client(
         Commands::Apply {
             plan,
             dry_run,
-            validate,
+            validation,
             resume,
             allow_delete,
         } => commands::apply::handle_apply(
-            issue_client,
+            &lookup,
             commands::apply::ApplyOptions {
                 plan_path: plan,
                 dry_run: *dry_run,
-                validate: *validate,
+                validation: validation.requested(),
                 resume_path: resume.as_deref(),
                 allow_delete: *allow_delete,
                 format: cli.format.output(),
@@ -485,6 +676,9 @@ fn run_with_client(
         }
         Commands::Init { .. } => {
             unreachable!("Init command should be handled before API validation")
+        }
+        Commands::Agent { .. } | Commands::Guide { .. } => {
+            unreachable!("Agent and guide commands should be handled before API validation")
         }
         Commands::Open { id } => commands::open::handle_open(
             issue_client,
@@ -504,6 +698,68 @@ fn run_with_client(
         }
         Commands::Workflow { .. } => {
             unreachable!("Workflow command should be handled before API validation")
+        }
+        Commands::Prime { .. } => {
+            unreachable!("Prime command should be handled before API validation")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn read_only(args: &[&str]) -> bool {
+        let cli = Cli::try_parse_from(std::iter::once("track").chain(args.iter().copied()))
+            .unwrap_or_else(|err| panic!("{args:?}: {err}"));
+        is_read_only(&cli.command)
+    }
+
+    #[test]
+    fn env_values_name_a_variant_or_count_as_unset() {
+        assert_eq!(value_enum_from(Some(" JSON ")), Some(CliFormat::Json));
+        assert_eq!(value_enum_from(Some("agent")), Some(CliFormat::Agent));
+        assert_eq!(
+            value_enum_from(Some("Json")),
+            Some(errors::ErrorFormat::Json)
+        );
+        for unset in [None, Some(""), Some("  "), Some("yaml")] {
+            assert_eq!(value_enum_from::<CliFormat>(unset), None, "{unset:?}");
+            assert_eq!(
+                value_enum_from::<errors::ErrorFormat>(unset),
+                None,
+                "{unset:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn writes_are_told_apart_from_reads() {
+        for args in [
+            &["issue", "get", "X-1"][..],
+            &["issue", "search", "q"],
+            &["X-1"],
+            &["article", "list"],
+            &["apply", "plan.json", "--dry-run"],
+            &["issue", "update", "X-1", "--summary", "x", "--dry-run"],
+            &["context"],
+            &["config", "show"],
+        ] {
+            assert!(read_only(args), "{args:?} only reads");
+        }
+        for args in [
+            &["issue", "create", "-s", "x"][..],
+            &["issue", "update", "X-1", "--summary", "x"],
+            &["issue", "delete", "X-1"],
+            &["issue", "comment", "X-1", "-m", "hi"],
+            &["issue", "complete", "X-1"],
+            &["article", "create", "-p", "KB", "-s", "x"],
+            &["apply", "plan.json"],
+            &["cache", "refresh"],
+            &["config", "set", "url", "x"],
+        ] {
+            assert!(!read_only(args), "{args:?} writes");
         }
     }
 }

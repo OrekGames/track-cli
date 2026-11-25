@@ -51,12 +51,13 @@ curl -fsSL https://raw.githubusercontent.com/OrekGames/track-cli/v1.15.1/scripts
 $env:TRACK_VERSION = "1.15.1"; irm https://raw.githubusercontent.com/OrekGames/track-cli/v1.15.1/scripts/install.ps1 | iex
 ```
 
-Agent skills are optional and installed explicitly after the CLI is available.
-`track init --skills` installs the bundled `track` reference for Claude Code,
-GitHub Copilot, Cursor, and Gemini CLI:
+Agent setup is optional and done explicitly after the CLI is available.
+`track agent install` sets up Orek.ai, Claude Code, Codex, Cursor, Antigravity,
+Gemini CLI and Copilot: the bundled `track` skill, and, where the tool supports
+one, a session-start hook that prints the project briefing:
 
 ```bash
-track init --skills
+track agent install
 ```
 
 ### Homebrew (Package Manager)
@@ -68,8 +69,9 @@ brew install track
 
 Shell completions for bash, zsh, and fish are installed automatically.
 
-To install the agent skill for Claude Code, Copilot, Cursor, and Gemini CLI, run
-`track init --skills` (Homebrew can't write into your home directory itself).
+To set up AI coding agents (Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI
+and Copilot), run `track agent install` (Homebrew can't write into your home directory
+itself).
 
 ### From Source
 
@@ -122,13 +124,13 @@ track init --url https://your-domain.atlassian.net --token YOUR_TOKEN --backend 
 track init --url https://linear.app/your-workspace --token YOUR_LINEAR_API_KEY --backend linear --project PROJ
 ```
 
-For AI-assisted workflows, install the agent skill reference once per user:
+For AI-assisted workflows, set up agents once per user:
 
 ```bash
-track init --skills
+track agent install
 ```
 
-This installs guidance for Claude Code, GitHub Copilot, Cursor, and Gemini CLI.
+This sets up Orek.ai, Claude Code, Codex, Cursor, Antigravity, Gemini CLI and Copilot.
 
 ### 2. Set Default Project (Optional)
 
@@ -387,10 +389,12 @@ track open PROJ-123         # Open in browser
 track issue get PROJ-123
 track i g PROJ-123 --full
 
-# Create (with validation)
+# Create (fields are validated by default)
 track issue create -p PROJ -s "Summary" -d "Description"
 track i new -s "Subtask" --parent PROJ-100 --priority "Major"
-track i new -p PROJ -s "Title" --field "Priority=Major" --validate
+track i new -p PROJ -s "Title" --field "Priority=Major"
+track i new -p PROJ -s "Title" --field "Priority=Major" --dry-run   # Check only
+track i new -p PROJ -s "Title" --field "Custom=x" --no-validate     # Send as given
 
 # Update (single or batch)
 track issue update PROJ-123 --summary "New title"
@@ -415,9 +419,13 @@ track i s "project: PROJ #Unresolved" -o json --select id_readable,summary  # Pr
 track i s "project: PROJ #Unresolved" -o jsonl  # JSON Lines: one issue per line
 track i s "project: PROJ #Unresolved" -o jsonl --select id_readable,summary  # Projected JSON Lines
 
-`--select` (JSON/JSONL only) takes comma-separated dotted paths (e.g. `id_readable,project.short_name`)
-and emits only those fields per issue; missing paths are omitted. It is rejected in text mode and
-for any command other than `issue search`.
+`--select` (JSON/JSONL only) works with every command that prints JSON. It takes comma-separated
+dotted paths (e.g. `id_readable,project.short_name`, or `fields.Priority` for a custom field by
+name) and keeps only those fields. A field the issue has but with no value gives `null`, and a path
+missing from one record is left out of that record. A read that matches nothing at all exits 5
+(`select_no_match`). After a write the change is already made, so a miss is a warning on stderr and
+the command prints its full JSON output and exits 0. Text output (including `-o agent`) rejects
+the flag.
 
 # Inspect many issues at once (per-issue success/failure, opt-in context)
 track issue inspect PROJ-1,PROJ-2,PROJ-3 -o json
@@ -430,6 +438,43 @@ track i ix PROJ-1,PROJ-404 --strict     # Exit non-zero if any issue fails (afte
 track issue delete PROJ-123
 track i del PROJ-1,PROJ-2,PROJ-3        # Batch delete
 ```
+
+#### Field validation
+
+Field updates are checked before they are sent, on every `issue create`, `issue update` and
+`apply` operation:
+
+| Mode | Flag | What is rejected |
+|------|------|------------------|
+| Default | (none) | Only what the backend would reject or silently drop (see below) |
+| Strict | `--validate` | What the default rejects, plus any field name not in the project schema and any value outside a listed value set. Names and values the backend itself takes (`State` for `Status`, `done` on GitHub) still pass. Failing to fetch the schema is an error |
+| Off | `--no-validate` | Nothing; fields are sent as given |
+
+What the default mode can reject depends on how much a backend's schema says:
+
+| Backend | Unknown field name | Invalid value |
+|---------|--------------------|---------------|
+| YouTrack | Error | Error, for every field with a value list |
+| GitHub, GitLab | Error. Only the state and `Assignee` are settable with field flags; use `--tag` for labels | Error for the state (anything that is not open/closed or an alias of them) |
+| Jira | Warning | Error for `Priority`, `Type` and `Components` when their lists were read from the instance; the status is left to the API |
+| Linear | Error. The state, `Priority`, `Assignee`, `Labels` (or `Tags`) and `Project` are settable | Error for the state and `Priority`; assignee, labels and project are left to the API |
+
+An error names the fix: `Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State,
+Priority, Type`, or the list of valid values with the nearest one.
+
+The default check never costs an extra request. It uses the schema the command already needs
+(any `--field` needs it for typing) or a cached one. With only `--state`, `--priority` or
+`--assignee` and no cache, nothing is checked. `--dry-run` no longer needs `--validate`: it
+checks, reports, and writes nothing. A dry run always reads the schema, and asks the tracker for
+the issue it would update, so when either cannot be had it fails instead of reporting fields it
+did not check.
+
+`issue start` and `issue complete` check the state before they write. When the project's state
+field has no state with the backend's default name, the command fails without touching the
+issue and lists the states the project does have (`Invalid value 'Develop' for field 'State'.
+Valid values: Open, In Progress, Done. Pass --state <NAME> to choose one.`). `issue complete`
+without `--state` uses the project's only resolved state when there is exactly one. An explicit
+`--field` skips the check and every lookup.
 
 ### Comments
 
@@ -634,11 +679,40 @@ The cache stores comprehensive tracker context for fast lookups:
 - Issue counts per project and query template
 - Recently accessed issues (LRU, max 50)
 
+**Read-through lookups.** Commands that need a project's id or schema to build a write take
+them from the cache when it holds an answer no older than 24 hours, and write back what they
+had to fetch. After one `track cache refresh`, a validated `issue create` is a single request,
+and so is `issue start`. A cached "no" is never final: before an unknown field or invalid value
+becomes an error, the schema is fetched once more from the tracker, and a cached project id the
+tracker turns down (the project was deleted and recreated) is looked up again before the write
+fails. Commands that exist to read (`project fields`, `project list`, `tags list`, `issue get`)
+always ask the tracker for what they show, and `project fields` and `tags list` refresh the cache
+with what they read.
+
+| Control | Effect |
+|---------|--------|
+| `--no-cache` or `TRACK_NO_CACHE=1` | Answer every lookup from the tracker (`0`, `false`, `off` or empty leave the cache on). Changes a command makes, such as a new tag or project, still reach the cache |
+| `TRACK_SCHEMA_TTL=7d` | How long a cached schema or project id is trusted (default `24h`) |
+| `TRACK_CACHE_DIR=<path>` | Use this directory as the cache, instead of the project or global one |
+
+**One directory per backend.** The cache lives in `.tracker-cache/<backend>/` (or
+`~/.tracker-cli/cache/<backend>/`), so switching backends in one directory no longer makes each
+refresh overwrite the other. A cache in the old single-directory layout is moved into place the
+first time it is used. Lookups, `track prime`, `track context` and `cache refresh --if-stale`
+only trust a cache written for the same instance (API endpoint, plus the repository or project
+for GitHub and GitLab): `prime` says to refresh any other, `context` fetches afresh, and
+`--if-stale` refreshes it however recent it is.
+
+Built-in templates are fitted to each project whose schema is cached (YouTrack and Jira): they
+use the project's own state field name, and `high_priority`, `in_progress` and `bugs` are built
+from the values the project really has. A template with no fitting value is left out for that
+project, and `-T` says so instead of running a query that matches nothing.
+
 Cached built-in templates are backend-scoped: the cache records which backend wrote it, and
 `workflow list` / template resolution only expose templates whose backend matches the selected
 one. A repository workflow pack (`[workflow_pack]` in `.track.toml`) takes precedence over
 cache-built-ins on name collision (shadowing); pack queries are never written into the cache.
-Run `track cache refresh` after switching backends.
+Each backend keeps its own cache directory, so run `track cache refresh` once per backend.
 
 ### Workflow Packs
 
@@ -672,6 +746,29 @@ track i s -T ready -p PROJ
 - An invalid pack fails pack-consuming commands (`-T` search, `workflow` commands) instead
   of silently falling back to built-ins; ordinary commands like `issue get` are unaffected.
 
+### Prime (agent briefing)
+
+```bash
+track prime                # Compact briefing: states, required fields, values, users, templates
+track prime -p PROJ        # Brief on another cached project
+track prime --max-values 5 # Tighter cap per field (default 12)
+track -o json prime        # The same facts as JSON
+track prime --hook=claude  # For session hooks (claude, codex, cursor, antigravity, gemini, orek)
+```
+
+`track prime` prints what an agent needs before it touches this project: the real state names
+(with the resolved ones marked), the fields required on create, every enum value, assignable
+users, tags, the `-T` templates with counts, and a few commands in the backend's own query
+syntax. It reads only the local cache and config, never the network, and stays within a few
+hundred tokens. Long lists are cut to a cap and say how many entries were left out and which
+command lists them. Run `track cache refresh` once to populate the cache; a cache older than a
+day, or one written for another instance (a changed URL, a committed `.tracker-cache/`), gets a
+warning line instead of being presented as this tracker's.
+
+`--hook` is for running it automatically at the start of an agent session: it prints nothing
+and exits 0 unless the current directory has its own `.track.toml` (or `--config` is given),
+and it never fails.
+
 ### Context (AI-Optimized)
 
 ```bash
@@ -683,6 +780,10 @@ track -o json context            # JSON output for parsing
 ```
 
 Single command to get all relevant data: projects, fields, users, query templates, workflow hints, issue counts, and recent issues.
+
+The JSON also says how old that data is: `cache_updated_at`, `cache_age_seconds` and `stale`
+(true after 24 hours). `generated_at` is only when the command ran. `current_user` is the
+account the token belongs to, when the backend reports it.
 
 ## Command Aliases
 
@@ -768,6 +869,7 @@ track PROJ-123              # Text (default)
 track -o json PROJ-123      # JSON
 track --format json p ls    # JSON
 track -o jsonl p ls         # JSON Lines: one project per line
+track -o agent PROJ-123     # Compact text for AI agents
 ```
 
 `-o jsonl` prints the same document as `-o json`, compacted for line-based tools: when the
@@ -776,6 +878,140 @@ empty list prints nothing; anything else (an object such as `track PROJ-123` or 
 is a single line. Nested arrays stay inside their line. Every command that prints JSON accepts
 it; `completions` rejects it. In both modes stdout holds only JSON; warnings, progress and
 errors go to stderr.
+
+### Agent output
+
+`-o agent` is text written for an AI agent to read: no colour, no decoration, and nothing cut
+without saying so. Set `TRACK_OUTPUT=agent` to make it the default (an explicit `-o` still
+wins; an empty or unknown value is ignored).
+
+```
+$ track -o agent i s "project: DEMO #Unresolved" --limit 2
+# id	state	priority	assignee	summary
+DEMO-1	Open	Normal	jdoe	Implement user authentication
+DEMO-2	In Progress	High	-	Fix login timeout
+# 2 shown of 57; more may exist: --skip 2, or --all for everything
+```
+
+| Command | Agent output |
+|---------|--------------|
+| `issue search` | One tab-separated line per issue, then a last line that says `complete` or how to get the rest |
+| `issue get` | Summary, every set field on one line, then the full description |
+| `issue get --full` | The same, plus every link (with its link id) and the last 20 comments in full; more are named with the command that lists them |
+| `issue create` / `update` | One line: what was done and the field values the issue ended up with |
+| `issue comments`, `project fields`, batch results | One line per item; `project fields` includes the values |
+| `article list` / `search` | One line per article, without its content (`article get` prints it whole), then the same last line as `issue search` |
+| `context` | The `track prime` briefing |
+| everything else | The usual text, uncoloured |
+
+It is typically a third to a fifth of the size of the JSON for the same data.
+
+### Selecting fields
+
+`--select` keeps only the listed fields of whatever JSON a command prints: comma-separated
+dotted paths, on any command, with `-o json` or `-o jsonl`. Paths walk into nested arrays, so
+they work on the `--full` and `inspect` envelopes too.
+
+```bash
+track -o json i s "project: PROJ #Unresolved" --select id_readable,summary,fields.Priority
+track -o json PROJ-1 --full --select issue.id_readable,issue.fields.Stage,comments.text
+track -o jsonl p ls --select short_name
+```
+
+- `fields.<Name>` is an issue's custom field by name, as a plain value
+  (`{"fields": {"Priority": "Major"}}`); a field the issue has but with no value is `null`. It
+  exists only under `--select`; the default JSON is unchanged. Quote a name that holds `.` or
+  `,`: `fields."Est. time"`.
+- A path missing from one record is omitted from that record.
+- A selection that matches nothing at all is an error (`select_no_match`, exit 5), not `{}`.
+  After a write (create, update, delete, comment, ...) it is a warning on stderr instead: the
+  write is done, so the command prints its whole JSON output and exits 0.
+- Text output (including `-o agent`) rejects the flag.
+
+### Pagination and write results
+
+When a search or list fills its limit, a one-line hint with the next `--skip` value (and a
+total when one is known) goes to stderr, in JSON and JSONL mode too: a full page of JSON
+otherwise looks exactly like a complete result. `-o agent` puts the verdict on the last line of
+stdout instead, `complete` or how to get the rest, for `issue search`, `article list` and
+`article search` alike.
+
+`issue start` / `issue complete` JSON reports what the tracker did, not only what was asked:
+`state` is the requested state, `actual_state` the one the issue is in afterwards, `verified`
+whether they agree, and `warnings` why not. `id_readable` is the issue id.
+
+Subcommand help lists that command's own options. The global options (`-o`, `--select`, `-v`,
+`--color`, `-b`, `--config`, `--url`, `--token`, `--no-cache`, `--error-format`) are documented
+once, in `track --help`, and accepted everywhere.
+
+## Errors
+
+A failure prints up to three lines on stderr and exits with a code that names its kind:
+
+```
+Error: Unknown field 'Prio'. Did you mean 'Priority'? Available fields: State, Priority, Type
+Code: unknown_field
+Hint: `track prime` lists this project's fields and their values; --no-validate sends the fields as given.
+```
+
+`Code:` is a short, stable name to branch on; `Hint:` is the next step, when one is known.
+With `-o json` or `-o jsonl` the error is one JSON object on one line of stderr instead:
+`{"error": {"code", "message", "hint", "retryable"}}`. `--error-format text|json` (or
+`TRACK_ERROR_FORMAT`) chooses explicitly. `retryable` is true when the same command may work
+if run again later.
+
+The exit code says what kind of failure it was:
+
+| Exit | Meaning | Codes |
+|------|---------|-------|
+| 0 | Success (a write the tracker only partly applied still exits 0, with a warning on stderr) | |
+| 1 | Any other failure | `api`, `parse`, `io`, `pagination_stalled`, `error` |
+| 2 | The command line did not parse | (clap's own message) |
+| 3 | Not found | `issue_not_found`, `project_not_found`, `not_found`, `template_not_found`, `unknown_topic` |
+| 4 | Not allowed or not set up | `auth`, `permission`, `not_configured`, `token_refused` |
+| 5 | Refused as given: fix the command | `unknown_field`, `invalid_value`, `read_only_field`, `invalid_state`, `invalid_input`, `select_no_match`, `unsupported`, `conflict` |
+| 6 | Some items of a batch failed | `partial_failure` |
+| 7 | Retryable: run it again later | `network`, `rate_limited`, `server` |
+
+
+| Code | Meaning |
+|------|---------|
+| `auth` | The token was rejected |
+| `permission` | The token is valid but may not do this |
+| `issue_not_found`, `project_not_found`, `not_found` | No such issue, project or other resource (or the token cannot see it). `project_not_found` names the closest cached project key |
+| `unknown_field`, `invalid_value`, `read_only_field` | Field validation failed; the message lists what is valid |
+| `invalid_state` | `issue start` / `complete` asked for a state the project does not have |
+| `template_not_found` | No such `-T` template, or it does not apply to this project |
+| `unknown_topic` | `track guide` has no such topic; the message lists the topics |
+| `select_no_match` | `--select` paths are not in this command's JSON (a read; after a write it is a warning) |
+| `not_configured`, `token_refused` | No usable config, or a repository config tried to redirect the token |
+| `invalid_input`, `unsupported`, `conflict`, `api` | The tracker refused the request |
+| `rate_limited`, `server`, `network` | Retryable: the tracker is limiting, failing or unreachable |
+| `parse`, `pagination_stalled`, `io` | An unexpected response or a local file problem |
+| `error` | Anything else |
+
+Per-issue failures in batch results (`issue update A,B`, `issue inspect`) carry the same
+`code` beside their `error` text.
+
+## Upgrading to 2.0
+
+2.0 changes four contracts. Everything else added since 1.19 (`track prime`, `-o agent`,
+default validation, `track agent install`, error codes) arrived without breaking anything.
+
+| Change | Before | Now | If you depended on it |
+|--------|--------|-----|-----------------------|
+| Exit codes | `1` for every failure | `1`-`7` by kind (see [Errors](#errors)) | Test for non-zero, or for the specific code |
+| Errors in JSON mode | Plain text on stderr | One JSON object on stderr | Pass `--error-format text`, or set `TRACK_ERROR_FORMAT=text` |
+| `workflow_hints[].state_fields[].transitions` in `context` and `cache show` JSON | A list of every state pair | Removed; `states` (in order, with `is_resolved`) remains | The list was computed from `states` and added no information |
+| `idReadable` in `issue start` / `complete` JSON | Present | Removed | Read `id_readable`, as in every other command |
+
+Changed earlier in the 1.x line and worth knowing when coming from 1.19:
+
+- Field validation is on by default (1.21). `--no-validate` restores the old behaviour.
+- `issue start` / `complete` fail before writing when the default state does not exist in the
+  project, and list the states that do (1.21).
+- The cache lives in `.tracker-cache/<backend>/`; an old cache is moved there on first use (1.21).
+- A full page of search results prints its pagination hint to stderr in JSON mode too (1.22).
 
 ## Backend-Specific Notes
 
@@ -885,6 +1121,63 @@ cargo run -- PROJ-123
 See existing backend crates (`jira-backend/`, `github-backend/`, `gitlab-backend/`) for reference implementations.
 
 ## For AI Agents
+
+### Setup
+
+```bash
+track agent install                  # For you: every supported tool, in your home directory
+track agent install --scope project  # For the team: writes into this repository (commit the result)
+track agent install --tools orek,claude   # Only the tools you name
+track agent status                   # What is installed, per tool, for you and for this directory
+track agent uninstall [--scope project] [--tools ...]
+```
+
+Each tool gets what its own documentation says it reads, and nothing it does not:
+
+| Tool | Skill (user / project) | Session-start hook (user / project) | Instructions |
+|------|------------------------|-------------------------------------|--------------|
+| Orek.ai | Orek's user config `skills/` / `.orek/skills/` | none yet: the hook is ready for when Orek.ai ships session hooks | `AGENTS.md` (project) |
+| Claude Code | `~/.claude/skills/` / `.claude/skills/` | `~/.claude/settings.json` / `.claude/settings.json` | `~/.claude/CLAUDE.md`; `@AGENTS.md` import in an existing `CLAUDE.md` |
+| Codex | `~/.agents/skills/` / `.agents/skills/` | `$CODEX_HOME/hooks.json` / `.codex/hooks.json` | `$CODEX_HOME/AGENTS.md`; `AGENTS.md` |
+| Cursor | `~/.agents/skills/` / `.agents/skills/` | `~/.cursor/hooks.json` / `.cursor/hooks.json` | `AGENTS.md` (project) |
+| Antigravity | `~/.gemini/config/skills/` / `.agents/skills/` | `~/.gemini/config/hooks.json` / `.agents/hooks.json` | `~/.gemini/GEMINI.md`; `AGENTS.md` |
+| Gemini CLI | `~/.agents/skills/` / `.agents/skills/` | `~/.gemini/settings.json` / `.gemini/settings.json` | `~/.gemini/GEMINI.md`; `@./AGENTS.md` import in an existing `GEMINI.md` |
+| Copilot | `~/.copilot/skills/` (user only) | not installed | not installed |
+
+Orek's user config folder is `$OREK_HOME/config/` when that is set, else
+`~/Library/Application Support/orek-ai/` (macOS), `$XDG_CONFIG_HOME/orek-ai/` or
+`~/.config/orek-ai/` (Linux), or `%APPDATA%\orek-ai\config\` (Windows).
+
+- **The session-start hook** runs `track prime --hook=<tool>` when a session starts, and again
+  after it is cleared or compacted where the tool supports that. In a directory with its own
+  `.track.toml` it hands the project briefing to the agent in that tool's hook format; anywhere
+  else it adds nothing. It reads the session's folder from the hook input, so it briefs the
+  project the agent opened.
+- **Agent output.** The Claude Code hook sets `TRACK_OUTPUT=agent` for the session's shell
+  commands, Cursor's hook returns it, and Codex gets it in `config.toml`
+  (`[shell_environment_policy] set`). Antigravity, Gemini CLI and Orek.ai have no setting for
+  it; the instructions tell the agent to add `-o agent`.
+- **Codex** runs a hook only after you trust it: open `/hooks` in Codex once.
+- **Cursor** also runs Claude Code's hooks. When both are installed, the Claude Code one stays
+  quiet inside Cursor so the briefing arrives once.
+- **The skill** is a core of under 6 KB (commands, output modes, error handling, the traps) and
+  one reference per topic that an agent reads only when it needs it. Tools that share a folder
+  share one copy. `track guide <topic>` prints the same references from the binary.
+- **The instructions block** tells the agent to run `track prime` before issue work. It is
+  static, so it never goes stale; the user-level one applies only in projects with a
+  `.track.toml`. A `CLAUDE.md` or `GEMINI.md` that already exists gets an import of `AGENTS.md`
+  rather than a second copy.
+- Files are edited in place: key order, permissions and everything already in them are kept,
+  and a symlinked settings file stays a link to the file that is edited. A file that is not plain
+  JSON (Gemini CLI allows comments) is left untouched and reported under its tool; everything
+  else is still installed, and the command exits 6.
+- `uninstall` removes only what `install` added (and any file or folder it created, once empty).
+  With `--tools`, a skill folder or instructions block another tool still reads (`AGENTS.md`,
+  `GEMINI.md`, `~/.agents/skills`) is kept, and the output says which tools read it.
+- `--skills-only` and `--hooks-only` install one half. `track init --skills` still works and
+  installs the skills for you.
+
+### Reference
 
 See [Agent Guide](docs/agent_guide.md) for:
 - AI-optimized features: context command, query templates, workflow hints

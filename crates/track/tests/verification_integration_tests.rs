@@ -1,8 +1,11 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::net::TcpListener;
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
+
+mod common;
+use common::{temp_dir, track_in};
 
 /// Helper to create a mock server that handles multiple sequential requests.
 fn start_mock_server_multi(responses: Vec<String>) -> (thread::JoinHandle<()>, u16) {
@@ -62,13 +65,12 @@ fn test_issue_update_verification_warning() {
 
     let (_server, port) = start_mock_server_multi(vec![issue_json.clone(), issue_json]);
     thread::sleep(Duration::from_millis(100));
+    let home = temp_dir();
 
-    cargo_bin_cmd!("track")
+    track_in(&home)
         .args(["issue", "update", "PROJ-123", "--summary", "New Summary"])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .success()
         .stderr(predicate::str::contains("⚠ Warning:"))
@@ -105,8 +107,9 @@ fn test_issue_create_verification_warning() {
 
     let (_server, port) = start_mock_server_multi(vec![project_json, issue_json]);
     thread::sleep(Duration::from_millis(100));
+    let home = temp_dir();
 
-    cargo_bin_cmd!("track")
+    track_in(&home)
         .args([
             "issue",
             "create",
@@ -117,8 +120,6 @@ fn test_issue_create_verification_warning() {
         ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .success()
         .stderr(predicate::str::contains("⚠ Warning:"))
@@ -157,8 +158,9 @@ fn test_issue_update_verbose_diff() {
 
     let (_server, port) = start_mock_server_multi(vec![old_issue, new_issue.clone(), new_issue]);
     thread::sleep(Duration::from_millis(100));
+    let home = temp_dir();
 
-    cargo_bin_cmd!("track")
+    track_in(&home)
         .args([
             "issue",
             "update",
@@ -169,8 +171,6 @@ fn test_issue_update_verbose_diff() {
         ])
         .env("TRACKER_TOKEN", "test-token")
         .env("TRACKER_URL", format!("http://127.0.0.1:{}", port))
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
         .assert()
         .success()
         .stdout(predicate::str::contains("--- Change Summary ---"))
@@ -244,16 +244,15 @@ fn start_github_issue_server(
     (port, requests)
 }
 
-fn track_github(port: u16) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
+/// [`common::track_in`] `home`, configured by the environment for GitHub at
+/// `port`.
+fn track_github(home: &Path, port: u16) -> assert_cmd::Command {
+    let mut cmd = track_in(home);
     cmd.args(["-b", "github"])
         .env("GITHUB_TOKEN", "test-token")
         .env("GITHUB_OWNER", "o")
         .env("GITHUB_REPO", "r")
-        .env("GITHUB_API_URL", format!("http://127.0.0.1:{port}"))
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("TRACKER_CONFIG");
+        .env("GITHUB_API_URL", format!("http://127.0.0.1:{port}"));
     cmd
 }
 
@@ -264,8 +263,9 @@ fn test_github_start_and_complete_default_to_open_and_closed() {
     for (action, initial, expected) in [("complete", "open", "closed"), ("start", "closed", "open")]
     {
         let (port, requests) = start_github_issue_server(initial, expected);
+        let home = temp_dir();
 
-        track_github(port)
+        track_github(&home, port)
             .args(["issue", action, "42"])
             .assert()
             .success()
@@ -289,8 +289,9 @@ fn test_github_start_and_complete_default_to_open_and_closed() {
 #[test]
 fn test_state_verification_ignores_case() {
     let (port, _requests) = start_github_issue_server("open", "closed");
+    let home = temp_dir();
 
-    track_github(port)
+    track_github(&home, port)
         .args(["issue", "complete", "42", "--state", "Closed"])
         .assert()
         .success()
@@ -301,8 +302,9 @@ fn test_state_verification_ignores_case() {
 #[test]
 fn test_state_verification_warns_when_state_did_not_change() {
     let (port, _requests) = start_github_issue_server("open", "open");
+    let home = temp_dir();
 
-    track_github(port)
+    track_github(&home, port)
         .args(["issue", "complete", "42"])
         .assert()
         .success()

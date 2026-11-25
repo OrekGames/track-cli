@@ -7,110 +7,17 @@
 //! `Config::load` / `Config::save` stop treating pack structure as
 //! required or known-only. No production code lives here.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Output;
 
+mod common;
+use common::{copy_scenario, mock_calls, parse_json_stdout, temp_dir, track_in, track_mock};
+
 // =============================================================================
-// Helpers (mirrors command_integration_tests.rs / cli_tests.rs)
+// Helpers
 // =============================================================================
-
-fn temp_dir() -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "track-workflow-test-{}-{}-{}",
-        std::process::id(),
-        nanos,
-        n
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn fixtures_path() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("fixtures")
-        .join("scenarios")
-}
-
-fn copy_dir_recursive(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let source = entry.path();
-        let target = to.join(entry.file_name());
-        if source.is_dir() {
-            copy_dir_recursive(&source, &target);
-        } else {
-            fs::copy(&source, &target).unwrap();
-        }
-    }
-}
-
-fn copy_scenario(dir: &Path, name: &str) -> PathBuf {
-    let scenario = dir.join(name);
-    copy_dir_recursive(&fixtures_path().join(name), &scenario);
-    fs::write(scenario.join("call_log.jsonl"), "").unwrap();
-    scenario
-}
-
-/// Isolated CLI invocation: HOME is the temp dir, TRACKER_CONFIG is unset
-/// unless a later `.env("TRACKER_CONFIG", ...)` overrides it.
-fn track_in(dir: &Path) -> assert_cmd::Command {
-    let mut cmd = cargo_bin_cmd!("track");
-    cmd.current_dir(dir)
-        .env("HOME", dir)
-        .env("USERPROFILE", dir)
-        .env_remove("TRACKER_URL")
-        .env_remove("TRACKER_TOKEN")
-        .env_remove("TRACKER_BACKEND")
-        .env_remove("TRACKER_CONFIG")
-        .env_remove("YOUTRACK_URL")
-        .env_remove("YOUTRACK_TOKEN")
-        .env_remove("JIRA_URL")
-        .env_remove("JIRA_EMAIL")
-        .env_remove("JIRA_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("GITHUB_OWNER")
-        .env_remove("GITHUB_REPO")
-        .env_remove("GITHUB_API_URL")
-        .env_remove("GITLAB_TOKEN")
-        .env_remove("GITLAB_URL")
-        .env_remove("GITLAB_PROJECT_ID")
-        .env_remove("GITLAB_NAMESPACE")
-        .env_remove("LINEAR_TOKEN")
-        .env_remove("LINEAR_API_URL")
-        .env_remove("LINEAR_URL")
-        .env_remove("LINEAR_DEFAULT_TEAM")
-        .env_remove("LINEAR_DEFAULT_PROJECT")
-        .env_remove("TRACK_MOCK_DIR");
-    cmd
-}
-
-fn track_mock(dir: &Path, scenario: &Path) -> assert_cmd::Command {
-    let mut cmd = track_in(dir);
-    cmd.env("TRACK_MOCK_DIR", scenario.to_str().unwrap()).args([
-        "--url",
-        "https://mock.test",
-        "--token",
-        "mock-token",
-    ]);
-    cmd
-}
 
 fn write_config(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
@@ -127,23 +34,11 @@ fn combined_output(output: &Output) -> String {
     )
 }
 
-fn parse_json_stdout(output: &Output) -> Value {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("stdout is not valid JSON ({e}): {stdout}"))
-}
-
 fn search_queries(scenario: &Path) -> Vec<String> {
-    let log = fs::read_to_string(scenario.join("call_log.jsonl")).unwrap_or_default();
-    log.lines()
-        .filter_map(|line| {
-            let entry: Value = serde_json::from_str(line).ok()?;
-            if entry["method"].as_str() == Some("search_issues") {
-                entry["args"]["query"].as_str().map(str::to_string)
-            } else {
-                None
-            }
-        })
+    mock_calls(scenario)
+        .iter()
+        .filter(|entry| entry["method"] == "search_issues")
+        .filter_map(|entry| entry["args"]["query"].as_str().map(str::to_string))
         .collect()
 }
 
@@ -264,8 +159,6 @@ fn pack_query_selected_by_template_flag() {
         !queries.iter().any(|q| q == "project: DEMO #Unresolved"),
         "must not fall back to the built-in unresolved query, got {queries:?}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -337,8 +230,6 @@ fn pack_wins_on_name_collision_and_validate_warns() {
         }),
         "expected shadows_builtin warning for unresolved, got {json}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -396,8 +287,6 @@ query = "project: {PROJECT} Type: {Task}"
         "must not silently run a first-wins search, got {:?}",
         search_queries(&scenario)
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -460,8 +349,6 @@ query = "project: {PROJECT} #Unresolved State: {Ready}"
         "must not fall back to the built-in unresolved query, got {:?}",
         search_queries(&scenario)
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -570,8 +457,6 @@ query = "project: {PROJECT} #Unresolved State: {Ready}"
         "validate must name the empty pack name, got: {}",
         combined_output(&validate_err)
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -686,8 +571,6 @@ fn structural_pack_error_does_not_fail_ordinary_config_load() {
         }),
         "validate must blame the pack structure, got {json}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -729,8 +612,6 @@ fn config_set_preserves_unknown_or_invalid_pack_content() {
         saved.contains("retries") && saved.contains("not-a-number"),
         "nested query field with a non-schema type must survive Config::save, got:\n{saved}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -757,8 +638,6 @@ fn workflow_commands_run_offline_without_credentials() {
             combined_output(&output)
         );
     }
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 // =============================================================================
@@ -834,8 +713,6 @@ fn workflow_list_ignores_cache_from_other_backend() {
         json_mentions_name(&other_json, "ready") && json_mentions_name(&other_json, "blocked"),
         "pack queries must still list under the selected backend, got {other_json}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 /// Even when the cache index matches the selected backend, individual cached
@@ -888,6 +765,4 @@ fn workflow_list_filters_cached_templates_by_backend_field() {
         json_mentions_name(&json, "ready"),
         "pack queries must still list, got {json}"
     );
-
-    let _ = fs::remove_dir_all(&dir);
 }

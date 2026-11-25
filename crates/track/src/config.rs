@@ -754,11 +754,28 @@ fn get_local_track_config_path() -> Option<PathBuf> {
         .map(|dir| dir.join(".track.toml"))
 }
 
-/// Returns the user's home directory
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
+/// A path from the environment variable `name`. Empty counts as unset.
+pub(crate) fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+/// The user's home directory: `HOME`, `USERPROFILE`, `HOMEDRIVE` plus
+/// `HOMEPATH`, then the platform lookup. The environment wins so tests (and
+/// CI runners) can point it elsewhere. The global config and cache, and
+/// `track agent install`, all resolve it here, so they agree on one home.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    env_path("HOME")
+        .or_else(|| env_path("USERPROFILE"))
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE").filter(|v| !v.is_empty())?;
+            let path = std::env::var_os("HOMEPATH").filter(|v| !v.is_empty())?;
+            let mut joined = drive;
+            joined.push(path);
+            Some(PathBuf::from(joined))
+        })
+        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
 }
 
 /// Returns the path where `track init` will create the config file

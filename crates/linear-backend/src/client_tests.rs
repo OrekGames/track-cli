@@ -932,6 +932,162 @@ mod tests {
         );
     }
 
+    /// Validation and the write path read field names from one table: every
+    /// name validation accepts, under any update type, is one the write path
+    /// sets, and every name it refuses the write path refuses too.
+    #[test]
+    fn validation_and_write_path_agree_on_every_name_and_type() {
+        use crate::trait_impl::write_target;
+        use tracker_core::ProjectCustomField;
+        use tracker_core::validation::validate_fields;
+
+        let client = LinearClient::with_base_url("http://localhost", "token");
+        let details: crate::client::LinearTeamDetails = serde_json::from_value(serde_json::json!({
+            "id": "team-1",
+            "key": "ORE",
+            "name": "Orek",
+            "states": { "nodes": [], "pageInfo": { "hasNextPage": false, "endCursor": null } },
+            "members": { "nodes": [], "pageInfo": { "hasNextPage": false, "endCursor": null } },
+            "labels": { "nodes": [], "pageInfo": { "hasNextPage": false, "endCursor": null } },
+            "projects": { "nodes": [], "pageInfo": { "hasNextPage": false, "endCursor": null } }
+        }))
+        .unwrap();
+        let schema: Vec<ProjectCustomField> = crate::convert::team_details_custom_fields(&details);
+        let rules = client.validation_rules();
+        for &(alias, target) in tracker_core::validation::STATE_FIELD_ALIASES {
+            assert!(rules.name_aliases.contains(&(alias, target)), "{alias}");
+        }
+        let mut names: Vec<&str> = schema.iter().map(|f| f.name.as_str()).collect();
+        names.extend(rules.name_aliases.iter().map(|(alias, _)| *alias));
+        names.extend(["status", "TAGS", "Sprint", "Milestone", "Estimate"]);
+
+        // "High" is a valid priority; no other field lists values to judge.
+        for name in names {
+            let updates = [
+                CustomFieldUpdate::SingleEnum {
+                    name: name.to_string(),
+                    value: "High".to_string(),
+                },
+                CustomFieldUpdate::State {
+                    name: name.to_string(),
+                    value: "High".to_string(),
+                },
+                CustomFieldUpdate::SingleUser {
+                    name: name.to_string(),
+                    login: "High".to_string(),
+                },
+                CustomFieldUpdate::MultiEnum {
+                    name: name.to_string(),
+                    values: vec!["High".to_string()],
+                },
+            ];
+            for update in updates {
+                let report = validate_fields(&client, &schema, std::slice::from_ref(&update));
+                let placed = !report.errors.iter().chain(&report.warnings).any(|problem| {
+                    matches!(problem, tracker_core::FieldProblem::UnknownField { .. })
+                });
+                assert_eq!(placed, write_target(update.name()).is_some(), "{update:?}");
+            }
+        }
+    }
+
+    /// `--field State=Erledigt` and `--field Tags=Bug` arrive as plain enums
+    /// (the schema calls the fields Status and Labels); both must reach the
+    /// update mutation.
+    #[tokio::test]
+    async fn test_update_issue_applies_aliased_state_and_labels() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(body_string_contains("query Issue("))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "issue": mock_linear_issue("ORE-9", "Existing") }
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("connection: states("))
+            .respond_with(ResponseTemplate::new(200).set_body_json(team_connection_page(
+                vec![
+                    serde_json::json!({ "id": "state-open", "name": "Geöffnet", "type": "unstarted", "position": 1.0 }),
+                    serde_json::json!({ "id": "state-done", "name": "Erledigt", "type": "completed", "position": 2.0 }),
+                ],
+                None,
+            )))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("connection: labels("))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(team_connection_page(
+                    vec![serde_json::json!({
+                        "id": "label-bug", "name": "Bug", "color": "#d73a4a", "description": null
+                    })],
+                    None,
+                )),
+            )
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("mutation IssueUpdate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "issueUpdate": {
+                        "success": true,
+                        "issue": mock_linear_issue("ORE-9", "Existing")
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let update = tracker_core::UpdateIssue {
+            custom_fields: vec![
+                CustomFieldUpdate::SingleEnum {
+                    name: "State".to_string(),
+                    value: "erledigt".to_string(),
+                },
+                CustomFieldUpdate::SingleEnum {
+                    name: "Tags".to_string(),
+                    value: "Bug".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        <LinearClient as IssueTracker>::update_issue(&client, "ORE-9", &update).unwrap();
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let update_request = requests
+            .iter()
+            .find(|request| String::from_utf8_lossy(&request.body).contains("mutation IssueUpdate"))
+            .unwrap();
+        let input = &request_variables(update_request)["input"];
+        assert_eq!(input["stateId"], "state-done");
+        assert_eq!(input["labelIds"], serde_json::json!(["label-bug"]));
+    }
+
+    /// A single-value field given several values is refused, not truncated.
+    #[tokio::test]
+    async fn test_create_issue_refuses_several_values_for_a_single_field() {
+        let mock_server = MockServer::start().await;
+        let client = LinearClient::with_base_url(&mock_server.uri(), "test-token");
+        let create = CreateIssue {
+            project_id: "team-ore".to_string(),
+            summary: "New issue".to_string(),
+            description: None,
+            custom_fields: vec![CustomFieldUpdate::MultiEnum {
+                name: "Priority".to_string(),
+                values: vec!["High".to_string(), "Low".to_string()],
+            }],
+            tags: vec![],
+            parent: None,
+        };
+        let err = <LinearClient as IssueTracker>::create_issue(&client, &create).unwrap_err();
+        assert!(matches!(err, TrackerError::InvalidInput(_)), "{err:?}");
+    }
+
     // ==================== Error and HTTP Plumbing ====================
     //
     // These pin how failures surface through the IssueTracker trait.
@@ -1384,5 +1540,108 @@ mod tests {
             matches!(err, TrackerError::ProjectNotFound(ref id) if id == "OPS"),
             "expected ProjectNotFound(\"OPS\"), got: {err:?}"
         );
+    }
+
+    /// The value forms Linear's write path resolves must pass validation.
+    #[test]
+    fn validation_matches_what_the_write_path_accepts() {
+        use tracker_core::validation::{FieldProblem, validate_fields};
+        use tracker_core::{CustomFieldUpdate, ProjectCustomField};
+
+        let client = LinearClient::with_base_url("http://localhost", "token");
+        let field = |name: &str, field_type: &str, values: &[&str]| ProjectCustomField {
+            id: name.to_lowercase(),
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            required: false,
+            values: values.iter().map(|v| v.to_string()).collect(),
+            state_values: vec![],
+            values_complete: false,
+        };
+        let schema = vec![
+            field("Status", "state[1]", &["Backlog", "Building", "Shipped"]),
+            field(
+                "Priority",
+                "enum[1]",
+                &["No priority", "Urgent", "High", "Medium", "Low"],
+            ),
+            field("Assignee", "user[1]", &["jane@example.com"]),
+            field("Labels", "enum[*]", &["Bug"]),
+            // team_details_custom_fields always lists Project.
+            field("Project", "enum[1]", &["Track CLI"]),
+        ];
+        let state = |name: &str, value: &str| CustomFieldUpdate::State {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+        let priority = |value: &str| CustomFieldUpdate::SingleEnum {
+            name: "Priority".to_string(),
+            value: value.to_string(),
+        };
+
+        // A state by name, or a word mapped onto the first started/completed state.
+        for (name, value) in [
+            ("Status", "building"),
+            ("State", "In Progress"),
+            ("Stage", "Done"),
+            ("state", "started"),
+        ] {
+            let report = validate_fields(&client, &schema, &[state(name, value)]);
+            assert!(report.is_ok(), "{name}={value}: {:?}", report.errors);
+            assert!(report.warnings.is_empty(), "{name}={value}");
+        }
+        for value in ["high", "Urgent", "normal", "none", "2", "No priority"] {
+            assert!(
+                validate_fields(&client, &schema, &[priority(value)]).is_ok(),
+                "{value}"
+            );
+        }
+        // Assignees resolve by login, name, id or "me": never judged here.
+        let me = CustomFieldUpdate::SingleUser {
+            name: "Assignee".to_string(),
+            login: "me".to_string(),
+        };
+        assert!(validate_fields(&client, &schema, &[me]).is_ok());
+        // Projects resolve by name, id or slug: never judged here.
+        let project = CustomFieldUpdate::SingleEnum {
+            name: "Project".to_string(),
+            value: "track-cli".to_string(),
+        };
+        let report = validate_fields(&client, &schema, &[project]);
+        assert!(report.is_ok() && report.warnings.is_empty(), "{report:?}");
+        // The schema names every field the write path sets, so any other
+        // name is refused up front, with a suggestion when one is close.
+        let other = |name: &str| CustomFieldUpdate::SingleEnum {
+            name: name.to_string(),
+            value: "x".to_string(),
+        };
+        assert!(matches!(
+            validate_fields(&client, &schema, &[other("Sprint")])
+                .errors
+                .as_slice(),
+            [FieldProblem::UnknownField {
+                suggestion: None,
+                ..
+            }]
+        ));
+        assert!(matches!(
+            validate_fields(&client, &schema, &[other("Projet")])
+                .errors
+                .as_slice(),
+            [FieldProblem::UnknownField { suggestion: Some(s), .. }] if s == "Project"
+        ));
+
+        assert!(matches!(
+            validate_fields(&client, &schema, &[state("State", "Blocked")])
+                .errors
+                .as_slice(),
+            [FieldProblem::InvalidValue { .. }]
+        ));
+        assert!(matches!(
+            validate_fields(&client, &schema, &[priority("sometime")])
+                .errors
+                .as_slice(),
+            [FieldProblem::InvalidValue { .. }]
+        ));
     }
 }

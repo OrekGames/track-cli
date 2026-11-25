@@ -6,11 +6,14 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "track", version, about = "CLI for issue tracking systems")]
 pub struct Cli {
-    /// Output format (jsonl: the json document as compact JSON Lines)
+    /// Output format (jsonl: the json document as compact JSON Lines; agent:
+    /// compact text for AI agents). TRACK_OUTPUT sets the default
     #[arg(long, short = 'o', value_enum, global = true, default_value_t = CliFormat::Text)]
     pub format: CliFormat,
 
-    /// Comma-separated dotted field paths to project from JSON/JSONL output (issue search only)
+    /// Comma-separated dotted field paths to keep in JSON/JSONL output, e.g.
+    /// id_readable,summary,fields.Priority (fields.<Name> is an issue's custom
+    /// field by name; quote names holding '.' or ',')
     #[arg(long, global = true, value_name = "PATHS")]
     pub select: Option<String>,
 
@@ -37,6 +40,20 @@ pub struct Cli {
     /// API token (overrides config file)
     #[arg(long, env = "TRACKER_TOKEN", global = true)]
     pub token: Option<String>,
+
+    /// Answer project lookups from the tracker instead of the local cache
+    #[arg(
+        long,
+        global = true,
+        env = "TRACK_NO_CACHE",
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
+    pub no_cache: bool,
+
+    /// How errors are written to stderr (json: one object on one line).
+    /// TRACK_ERROR_FORMAT sets the default
+    #[arg(long, value_enum, global = true, default_value_t = crate::errors::ErrorFormat::Text, value_name = "FORMAT")]
+    pub error_format: crate::errors::ErrorFormat,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -104,18 +121,25 @@ pub enum CliFormat {
     /// The json document compacted: a top-level array prints one element per
     /// line, anything else prints on a single line
     Jsonl,
+    /// Compact text for AI agents: one line per list item, nothing cut
+    /// without saying how to get the rest (also: TRACK_OUTPUT=agent)
+    Agent,
 }
 
 impl CliFormat {
     pub fn output(self) -> OutputFormat {
         match self {
-            Self::Text => OutputFormat::Text,
+            Self::Text | Self::Agent => OutputFormat::Text,
             Self::Json | Self::Jsonl => OutputFormat::Json,
         }
     }
 
     pub fn is_jsonl(self) -> bool {
         matches!(self, Self::Jsonl)
+    }
+
+    pub fn is_agent(self) -> bool {
+        matches!(self, Self::Agent)
     }
 }
 
@@ -125,6 +149,7 @@ impl std::fmt::Display for CliFormat {
             Self::Text => write!(f, "text"),
             Self::Json => write!(f, "json"),
             Self::Jsonl => write!(f, "jsonl"),
+            Self::Agent => write!(f, "agent"),
         }
     }
 }
@@ -138,6 +163,36 @@ pub enum ColorChoice {
     Always,
     /// Never colorize output
     Never,
+}
+
+/// How strictly `issue create`, `issue update` and `apply` check custom
+/// fields before they write. The arg ids stay `validate` and `no_validate`,
+/// so `conflicts_with` lists elsewhere can name them.
+#[derive(clap::Args, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ValidationArgs {
+    /// Strict validation: every field name and listed value must match the
+    /// project schema, except names and values the backend itself takes
+    /// (aliases such as State for Status, value forms such as GitHub's
+    /// done). Failing to fetch the schema is an error
+    #[arg(long, conflicts_with = "no_validate")]
+    pub validate: bool,
+    /// Skip the default field validation and send the fields as given
+    #[arg(long)]
+    pub no_validate: bool,
+}
+
+impl ValidationArgs {
+    /// The mode these flags ask for, or `None` when neither was given.
+    pub fn requested(self) -> Option<crate::commands::issue::ValidationMode> {
+        use crate::commands::issue::ValidationMode;
+        if self.no_validate {
+            Some(ValidationMode::Off)
+        } else if self.validate {
+            Some(ValidationMode::Strict)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -245,6 +300,34 @@ pub enum Commands {
         #[arg(long, default_value_t = 10)]
         issue_limit: usize,
     },
+    /// Print a compact briefing for AI agents: this project's states, fields, values and users
+    ///
+    /// Offline: reads the local cache and config only. Run `track cache refresh`
+    /// once to populate it. Meant to be printed at the start of an agent
+    /// session, so it stays within a few hundred tokens.
+    Prime {
+        /// Project to brief on (defaults to the configured default project)
+        #[arg(long, short = 'p')]
+        project: Option<String>,
+
+        /// Session-hook mode for the named agent: print the briefing in the JSON
+        /// shape that agent's session-start hook expects (`{}` outside a track
+        /// project), read the project folder from the hook's input, and never
+        /// fail. `--hook` alone means `--hook=claude`
+        #[arg(
+            long,
+            value_enum,
+            value_name = "AGENT",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "claude"
+        )]
+        hook: Option<HookAgent>,
+
+        /// Values listed per field before the rest is summarised
+        #[arg(long, default_value_t = crate::commands::prime::DEFAULT_MAX_VALUES, value_name = "N")]
+        max_values: usize,
+    },
     /// Execute a JSON issue-operation plan against the selected backend
     Apply {
         /// Path to a JSON apply plan, or "-" to read from stdin
@@ -252,9 +335,8 @@ pub enum Commands {
         /// Parse, resolve, validate, and dedupe-check without mutating
         #[arg(long)]
         dry_run: bool,
-        /// Validate custom fields against project schema before create/update writes
-        #[arg(long)]
-        validate: bool,
+        #[command(flatten)]
+        validation: ValidationArgs,
         /// Explicit JSON resume state path
         #[arg(long, value_name = "PATH")]
         resume: Option<PathBuf>,
@@ -267,6 +349,19 @@ pub enum Commands {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: Shell,
+    },
+    /// Set up AI coding agents: skill files, a session hook, project instructions
+    Agent {
+        #[command(subcommand)]
+        action: AgentCommands,
+    },
+    /// Print a reference topic (backend query syntax, JSON shapes, error codes, ...)
+    ///
+    /// The same references the agent skill points to, from this binary, so
+    /// they match the version in use. Without a topic, lists them.
+    Guide {
+        /// Topic to print, e.g. jira, github, json, output
+        topic: Option<String>,
     },
     /// Initialize a .track.toml config file
     ///
@@ -308,12 +403,179 @@ pub enum Commands {
     External(Vec<String>),
 }
 
+/// Shown under every subcommand's help in place of the global options:
+/// each one's short flag, or its long one, in the order `track --help`
+/// lists them.
+fn global_options_note(globals: &[clap::Arg]) -> String {
+    let flags: Vec<String> = globals
+        .iter()
+        .filter_map(|arg| {
+            arg.get_short()
+                .map(|short| format!("-{short}"))
+                .or_else(|| arg.get_long().map(|long| format!("--{long}")))
+        })
+        .collect();
+    format!("Global options ({}): see 'track --help'", flags.join(", "))
+}
+
+/// Give every subcommand a hidden copy of each global option.
+///
+/// clap repeats global options in the help of every subcommand, which is
+/// most of what an agent reads when it asks how one command works. An
+/// argument a subcommand already defines is not propagated again, so the
+/// hidden copy is the one its help uses. The options keep working there.
+fn hide_globals_in_subcommands(
+    command: clap::Command,
+    globals: &[clap::Arg],
+    note: &str,
+) -> clap::Command {
+    let names: Vec<String> = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+    names.into_iter().fold(command, |command, name| {
+        command.mut_subcommand(name, |sub| {
+            // A subcommand may define an option of its own under a global's
+            // name (`init --url`); that one stays as it is.
+            let own: Vec<clap::Id> = sub
+                .get_arguments()
+                .map(|arg| arg.get_id().clone())
+                .collect();
+            let hidden = globals
+                .iter()
+                .filter(|arg| !own.contains(arg.get_id()))
+                .cloned()
+                .map(|arg| arg.hide(true));
+            let sub = sub.args(hidden).after_help(note.to_string());
+            hide_globals_in_subcommands(sub, globals, note)
+        })
+    })
+}
+
 impl Cli {
+    /// The command as it is parsed: global options are listed once, in the
+    /// top-level help, instead of under every subcommand.
+    pub fn parsing_command() -> clap::Command {
+        let command = Cli::command();
+        let globals: Vec<clap::Arg> = command
+            .get_arguments()
+            .filter(|arg| arg.is_global_set())
+            .cloned()
+            .collect();
+        let note = global_options_note(&globals);
+        hide_globals_in_subcommands(command, &globals, &note)
+    }
+
+    /// Parse the process arguments.
+    pub fn try_parse_args() -> Result<(Self, clap::ArgMatches), clap::Error> {
+        let matches = Self::parsing_command().try_get_matches()?;
+        let cli = <Self as clap::FromArgMatches>::from_arg_matches(&matches)?;
+        Ok((cli, matches))
+    }
+
     /// Generate shell completions and write to stdout
     pub fn generate_completions(shell: Shell) {
         let mut cmd = Cli::command();
         clap_complete::generate(shell, &mut cmd, "track", &mut std::io::stdout());
     }
+}
+
+/// An agent whose session-start hook `track prime --hook` can answer.
+#[derive(ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
+pub enum HookAgent {
+    /// Orek.ai (the hook shape it will read once it ships session hooks)
+    Orek,
+    /// Claude Code
+    Claude,
+    /// OpenAI Codex
+    Codex,
+    /// Cursor
+    Cursor,
+    /// Google Antigravity
+    Antigravity,
+    /// Gemini CLI
+    Gemini,
+}
+
+/// The name `--hook=` takes, so the command an installer writes and the one
+/// clap parses cannot drift apart.
+impl std::fmt::Display for HookAgent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            self.to_possible_value()
+                .expect("HookAgent has no skipped variants")
+                .get_name(),
+        )
+    }
+}
+
+/// A coding agent `track agent install` can set up. Reported in declaration
+/// order (`ValueEnum::value_variants`).
+#[derive(ValueEnum, Clone, Debug, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AgentTool {
+    /// Orek.ai
+    Orek,
+    /// Claude Code
+    Claude,
+    /// OpenAI Codex
+    Codex,
+    /// Cursor
+    Cursor,
+    /// Google Antigravity
+    Antigravity,
+    /// Gemini CLI
+    Gemini,
+    /// GitHub Copilot (skill only; its locations are not verified)
+    Copilot,
+}
+
+/// Where agent setup is written.
+#[derive(ValueEnum, Clone, Debug, Copy, Default, PartialEq, Eq)]
+pub enum AgentScope {
+    /// Your home directory: applies to every project on this machine
+    #[default]
+    User,
+    /// The current directory: meant to be committed and shared with the team
+    Project,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AgentCommands {
+    /// Set up coding agents: skill, session-start hook, instructions
+    ///
+    /// For every selected tool that has one, a session-start hook runs
+    /// `track prime --hook=<agent>`, which puts the project briefing in the
+    /// agent's context in directories that have a .track.toml and adds
+    /// nothing elsewhere. A short instructions block (AGENTS.md and the
+    /// tools' own files) tells the agent to run `track prime` itself where
+    /// no hook fires. The skill goes where each tool reads skills.
+    Install {
+        /// Where to install
+        #[arg(long, value_enum, default_value_t = AgentScope::User)]
+        scope: AgentScope,
+        /// Tools to set up, comma-separated (default: all)
+        #[arg(long, value_enum, value_delimiter = ',', value_name = "TOOLS")]
+        tools: Vec<AgentTool>,
+        /// Install only the skill files
+        #[arg(long, conflicts_with = "hooks_only")]
+        skills_only: bool,
+        /// Install only the hooks, instructions and environment settings
+        #[arg(long)]
+        hooks_only: bool,
+    },
+    /// Remove what `agent install` wrote, and nothing else
+    Uninstall {
+        /// Which installation to remove
+        #[arg(long, value_enum, default_value_t = AgentScope::User)]
+        scope: AgentScope,
+        /// Tools to remove, comma-separated (default: all). A skill folder or
+        /// instructions file that another tool also reads is kept unless that
+        /// tool is named too
+        #[arg(long, value_enum, value_delimiter = ',', value_name = "TOOLS")]
+        tools: Vec<AgentTool>,
+    },
+    /// Show what is installed for you and for the current directory
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -508,14 +770,13 @@ pub enum IssueCommands {
         /// Parent issue ID to create this as a subtask (e.g., PROJ-123)
         #[arg(long, conflicts_with = "json")]
         parent: Option<String>,
-        /// Validate custom fields against project schema before creating
-        #[arg(long)]
-        validate: bool,
-        /// Validate only, do not create the issue (requires --validate)
-        #[arg(long, requires = "validate")]
+        #[command(flatten)]
+        validation: ValidationArgs,
+        /// Validate only, do not create the issue
+        #[arg(long, conflicts_with = "no_validate")]
         dry_run: bool,
         /// JSON payload for issue creation
-        #[arg(long, conflicts_with_all = ["project", "summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
+        #[arg(long, conflicts_with_all = ["project", "summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "no_validate", "dry_run"], value_name = "JSON")]
         json: Option<String>,
     },
     /// Update existing issue(s) - supports comma-separated IDs for batch updates
@@ -561,14 +822,13 @@ pub enum IssueCommands {
         /// Parent issue ID to set on this issue (e.g., PROJ-123)
         #[arg(long, conflicts_with = "json")]
         parent: Option<String>,
-        /// Validate custom fields against project schema before updating
-        #[arg(long)]
-        validate: bool,
-        /// Validate only, do not update the issue (requires --validate)
-        #[arg(long, requires = "validate")]
+        #[command(flatten)]
+        validation: ValidationArgs,
+        /// Validate only, do not update the issue
+        #[arg(long, conflicts_with = "no_validate")]
         dry_run: bool,
         /// JSON payload for issue update
-        #[arg(long, conflicts_with_all = ["summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "dry_run"], value_name = "JSON")]
+        #[arg(long, conflicts_with_all = ["summary", "description", "body_file", "fields", "state", "priority", "assignee", "tags", "parent", "validate", "no_validate", "dry_run"], value_name = "JSON")]
         json: Option<String>,
     },
     /// Search issues
@@ -1138,6 +1398,39 @@ pub enum ArticleCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subcommand_help_names_every_global_option() {
+        let command = Cli::parsing_command();
+        let globals: Vec<&clap::Arg> = command
+            .get_arguments()
+            .filter(|arg| arg.is_global_set())
+            .collect();
+        assert!(globals.len() >= 10, "{} globals", globals.len());
+        let issue = command.find_subcommand("issue").unwrap();
+        for sub in [
+            command.find_subcommand("cache").unwrap(),
+            issue.find_subcommand("get").unwrap(),
+        ] {
+            let note = sub
+                .get_after_help()
+                .expect("a global options note")
+                .to_string();
+            assert!(note.starts_with("Global options (-o, "), "{note}");
+            for arg in &globals {
+                let flag = match (arg.get_short(), arg.get_long()) {
+                    (Some(short), _) => format!("-{short}"),
+                    (None, Some(long)) => format!("--{long}"),
+                    (None, None) => panic!("global {:?} has no flag", arg.get_id()),
+                };
+                assert!(
+                    note.contains(&format!("{flag},")) || note.contains(&format!("{flag})")),
+                    "{} help does not name {flag}: {note}",
+                    sub.get_name()
+                );
+            }
+        }
+    }
 
     #[test]
     fn parses_global_flags_for_issue_get() {
@@ -2274,9 +2567,11 @@ mod tests {
         match cli.command {
             Commands::Issue { action } => match action {
                 IssueCommands::Create {
-                    validate, dry_run, ..
+                    validation,
+                    dry_run,
+                    ..
                 } => {
-                    assert!(validate);
+                    assert!(validation.validate);
                     assert!(!dry_run);
                 }
                 _ => panic!("expected issue create"),
@@ -2302,9 +2597,11 @@ mod tests {
         match cli.command {
             Commands::Issue { action } => match action {
                 IssueCommands::Create {
-                    validate, dry_run, ..
+                    validation,
+                    dry_run,
+                    ..
                 } => {
-                    assert!(validate);
+                    assert!(validation.validate);
                     assert!(dry_run);
                 }
                 _ => panic!("expected issue create"),
@@ -2314,8 +2611,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dry_run_without_validate() {
-        let result = Cli::try_parse_from([
+    fn dry_run_no_longer_needs_validate() {
+        let cli = Cli::parse_from([
             "track",
             "issue",
             "create",
@@ -2326,7 +2623,64 @@ mod tests {
             "--dry-run",
         ]);
 
+        match cli.command {
+            Commands::Issue {
+                action:
+                    IssueCommands::Create {
+                        validation,
+                        dry_run,
+                        ..
+                    },
+            } => {
+                assert!(dry_run);
+                assert_eq!(validation, ValidationArgs::default());
+                assert_eq!(validation.requested(), None);
+            }
+            _ => panic!("expected issue create"),
+        }
+    }
+
+    #[test]
+    fn no_validate_conflicts_with_validate_and_dry_run() {
+        for flag in ["--validate", "--dry-run"] {
+            let result = Cli::try_parse_from([
+                "track",
+                "issue",
+                "update",
+                "PROJ-1",
+                "--field",
+                "Priority=High",
+                "--no-validate",
+                flag,
+            ]);
+            assert!(result.is_err(), "--no-validate must conflict with {flag}");
+        }
+    }
+
+    #[test]
+    fn shared_validation_flags_keep_their_conflicts() {
+        // `--json` names the flattened args by id.
+        for flag in ["--validate", "--no-validate"] {
+            for command in [
+                &["issue", "create", "--json", "{}"][..],
+                &["issue", "update", "PROJ-1", "--json", "{}"][..],
+            ] {
+                let result = Cli::try_parse_from(["track"].iter().chain(command).chain([&flag]));
+                assert!(result.is_err(), "--json must conflict with {flag}");
+            }
+        }
+        let result =
+            Cli::try_parse_from(["track", "apply", "p.json", "--validate", "--no-validate"]);
         assert!(result.is_err());
+        // A plan-level dry run may still turn validation off.
+        let cli = Cli::parse_from(["track", "apply", "p.json", "--dry-run", "--no-validate"]);
+        let Commands::Apply { validation, .. } = cli.command else {
+            panic!("expected apply command");
+        };
+        assert_eq!(
+            validation.requested(),
+            Some(crate::commands::issue::ValidationMode::Off)
+        );
     }
 
     #[test]
@@ -2344,9 +2698,11 @@ mod tests {
         match cli.command {
             Commands::Issue { action } => match action {
                 IssueCommands::Update {
-                    validate, dry_run, ..
+                    validation,
+                    dry_run,
+                    ..
                 } => {
-                    assert!(validate);
+                    assert!(validation.validate);
                     assert!(!dry_run);
                 }
                 _ => panic!("expected issue update"),
@@ -2371,9 +2727,11 @@ mod tests {
         match cli.command {
             Commands::Issue { action } => match action {
                 IssueCommands::Update {
-                    validate, dry_run, ..
+                    validation,
+                    dry_run,
+                    ..
                 } => {
-                    assert!(validate);
+                    assert!(validation.validate);
                     assert!(dry_run);
                 }
                 _ => panic!("expected issue update"),
@@ -3051,13 +3409,14 @@ mod tests {
             Commands::Apply {
                 plan,
                 dry_run,
-                validate,
+                validation,
                 resume,
                 allow_delete,
+                ..
             } => {
                 assert_eq!(plan, PathBuf::from("plan.json"));
                 assert!(!dry_run);
-                assert!(!validate);
+                assert_eq!(validation.requested(), None);
                 assert!(resume.is_none());
                 assert!(!allow_delete);
             }
@@ -3110,13 +3469,17 @@ mod tests {
             Commands::Apply {
                 plan,
                 dry_run,
-                validate,
+                validation,
                 resume,
                 allow_delete,
+                ..
             } => {
                 assert_eq!(plan, PathBuf::from("-"));
                 assert!(dry_run);
-                assert!(validate);
+                assert_eq!(
+                    validation.requested(),
+                    Some(crate::commands::issue::ValidationMode::Strict)
+                );
                 assert_eq!(resume, Some(PathBuf::from("state.json")));
                 assert!(allow_delete);
             }

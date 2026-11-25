@@ -2851,4 +2851,180 @@ mod tests {
         <GitLabClient as IssueTracker>::link_issues(&client, "42", "43", "relates", "outward")
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn test_trait_current_user_reads_the_token_owner() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .and(header("PRIVATE-TOKEN", "test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 7, "username": "jdoe", "name": "Jane Doe"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+        let user = tracker_core::IssueTracker::current_user(&client)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(user.id, "7");
+        assert_eq!(user.login.as_deref(), Some("jdoe"));
+        assert_eq!(user.display_name, "Jane Doe");
+    }
+
+    /// Every name and state form the write path takes must pass its own
+    /// validation, and what it would drop must not.
+    #[test]
+    fn validation_matches_what_the_write_path_accepts() {
+        use tracker_core::validation::{FieldProblem, validate_fields};
+        use tracker_core::{CustomFieldUpdate, IssueTracker};
+
+        let client = GitLabClient::new("http://localhost", "token", Some("123"));
+        let schema = client.get_project_custom_fields("").unwrap();
+        let state = |name: &str, value: &str| CustomFieldUpdate::State {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+
+        for name in ["Status", "State", "Stage"] {
+            for value in [
+                "Closed",
+                "resolved",
+                "done",
+                "completed",
+                "Open",
+                "opened",
+                "reopen",
+                "reopened",
+                "In Progress",
+                "Develop",
+            ] {
+                let report = validate_fields(&client, &schema, &[state(name, value)]);
+                assert!(report.is_ok(), "{name}={value}: {:?}", report.errors);
+            }
+        }
+
+        // An unrecognised state would leave the issue as it is.
+        assert!(matches!(
+            validate_fields(&client, &schema, &[state("State", "blocked")])
+                .errors
+                .as_slice(),
+            [FieldProblem::InvalidValue { .. }]
+        ));
+        let milestone = CustomFieldUpdate::SingleEnum {
+            name: "Milestone".to_string(),
+            value: "v1".to_string(),
+        };
+        assert!(matches!(
+            validate_fields(&client, &schema, &[milestone])
+                .errors
+                .as_slice(),
+            [FieldProblem::ReadOnlyField { .. }]
+        ));
+    }
+
+    /// Validation and the write path read field names from one table: every
+    /// update validation accepts, of any type, is applied, and every update
+    /// it rejects is not.
+    #[test]
+    fn validation_and_write_path_agree_on_every_name_and_type() {
+        use crate::trait_impl::{WriteTarget, state_event, update_for};
+        use tracker_core::validation::validate_fields;
+
+        let client = GitLabClient::new("http://localhost", "token", Some("123"));
+        let schema = client.get_project_custom_fields("").unwrap();
+        let rules = client.validation_rules();
+        let mut names: Vec<&str> = schema.iter().map(|f| f.name.as_str()).collect();
+        names.extend(rules.name_aliases.iter().map(|(alias, _)| *alias));
+        names.extend(["status", "STATE", "assignee", "Priority", "Sprint"]);
+
+        for name in names {
+            let updates = [
+                CustomFieldUpdate::SingleEnum {
+                    name: name.to_string(),
+                    value: "closed".to_string(),
+                },
+                CustomFieldUpdate::State {
+                    name: name.to_string(),
+                    value: "closed".to_string(),
+                },
+                CustomFieldUpdate::SingleUser {
+                    name: name.to_string(),
+                    login: "closed".to_string(),
+                },
+                CustomFieldUpdate::MultiEnum {
+                    name: name.to_string(),
+                    values: vec!["closed".to_string()],
+                },
+            ];
+            for update in updates {
+                let fields = std::slice::from_ref(&update);
+                let accepted = validate_fields(&client, &schema, fields).is_ok();
+                let applied = state_event(fields).unwrap().is_some()
+                    || update_for(fields, WriteTarget::Assignees).is_some();
+                assert_eq!(accepted, applied, "{update:?}");
+            }
+        }
+    }
+
+    /// `--field State=closed` arrives as a plain enum named State (the
+    /// schema calls the field Status); it must still close the issue.
+    #[tokio::test]
+    async fn trait_update_sends_state_event_for_any_state_field_name() {
+        let cases = [
+            (
+                CustomFieldUpdate::SingleEnum {
+                    name: "State".to_string(),
+                    value: "closed".to_string(),
+                },
+                "close",
+            ),
+            (
+                CustomFieldUpdate::SingleEnum {
+                    name: "Stage".to_string(),
+                    value: "Done".to_string(),
+                },
+                "close",
+            ),
+            (
+                CustomFieldUpdate::State {
+                    name: "State".to_string(),
+                    value: "reopened".to_string(),
+                },
+                "reopen",
+            ),
+            (
+                CustomFieldUpdate::SingleEnum {
+                    name: "status".to_string(),
+                    value: "Open".to_string(),
+                },
+                "reopen",
+            ),
+        ];
+        for (update, state_event) in cases {
+            let mock_server = MockServer::start().await;
+            Mock::given(method("PUT"))
+                .and(path("/projects/123/issues/42"))
+                .and(body_partial_json(
+                    serde_json::json!({ "state_event": state_event }),
+                ))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(mock_gitlab_issue(42, "Issue")),
+                )
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+
+            let client = GitLabClient::new(&mock_server.uri(), "test-token", Some("123"));
+            let update = UpdateIssue {
+                custom_fields: vec![update],
+                ..Default::default()
+            };
+            IssueTracker::update_issue(&client, "42", &update)
+                .unwrap_or_else(|err| panic!("{update:?}: {err}"));
+        }
+    }
 }

@@ -256,16 +256,19 @@ fn list_items(
 /// list`.
 fn load_cached_templates(backend: &str) -> Option<Vec<CachedQueryTemplate>> {
     let mut cache = TrackerCache::load(None).ok()?;
-    cache.ensure_backend_shards().ok()?;
     if let Some(metadata) = &cache.backend_metadata
         && !metadata.backend_type.eq_ignore_ascii_case(backend)
     {
         return None;
     }
+    // The default project's fitted templates are what `-T` resolves to
+    // without `-p`, so they are what the list shows.
+    let default_project = cache.default_project.clone();
     let templates: Vec<CachedQueryTemplate> = cache
-        .query_templates
-        .into_iter()
+        .templates_for_project(default_project.as_deref())
+        .iter()
         .filter(|template| template.backend.eq_ignore_ascii_case(backend))
+        .cloned()
         .collect();
     if templates.is_empty() {
         None

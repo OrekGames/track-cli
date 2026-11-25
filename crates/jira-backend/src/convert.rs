@@ -649,6 +649,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                 "Lowest".to_string(),
             ],
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "assignee".to_string(),
@@ -657,6 +658,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![], // Users are fetched separately
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "components".to_string(),
@@ -665,6 +667,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![], // Per-project components are spliced in by the caller
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "status".to_string(),
@@ -693,6 +696,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                     ordinal: 2,
                 },
             ],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "issuetype".to_string(),
@@ -707,6 +711,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
                 "Subtask".to_string(),
             ],
             state_values: vec![],
+            values_complete: false,
         },
         ProjectCustomField {
             id: "labels".to_string(),
@@ -715,6 +720,7 @@ pub fn get_standard_custom_fields() -> Vec<ProjectCustomField> {
             required: false,
             values: vec![], // Labels are created dynamically
             state_values: vec![],
+            values_complete: false,
         },
     ]
 }
@@ -746,6 +752,7 @@ pub fn jira_field_to_project_custom_field(field: &JiraField) -> ProjectCustomFie
         required: false,
         values: vec![],
         state_values: vec![],
+        values_complete: false,
     }
 }
 
@@ -923,15 +930,52 @@ fn is_reserved_field(name: &str) -> bool {
         .any(|&r| r.eq_ignore_ascii_case(name))
 }
 
+/// How Jira's write path reads custom-field names. Validation uses these
+/// rules, and [`is_status_update`] resolves names through the same aliases,
+/// so a name validation places on Status reaches the /transitions endpoint.
+// System fields are writable but not all listed, so names are only checked
+// for a warning. Status is left to the API: it takes transition names as
+// well as status names.
+pub const FIELD_RULES: tracker_core::ValidationRules = tracker_core::ValidationRules {
+    names_exhaustive: false,
+    name_aliases: &[
+        ("State", "Status"),
+        ("Stage", "Status"),
+        ("issuetype", "Type"),
+    ],
+    read_only_fields: &[],
+};
+
+/// Whether the update path sends `update` to the /transitions endpoint: a
+/// state update, or one named Status or an alias of it in [`FIELD_RULES`],
+/// whatever its type (`--field State=Done` arrives as a plain enum). As in
+/// validation, a field's own name wins over an alias: a Jira field named
+/// like a non-reserved alias (a custom "Stage") is that field. Status and
+/// State are reserved and always mean the workflow status.
+pub fn is_status_update(update: &CustomFieldUpdate, jira_fields: &[JiraField]) -> bool {
+    if matches!(update, CustomFieldUpdate::State { .. }) {
+        return true;
+    }
+    let name = update.name();
+    let names_status = unicode_eq_ignore_case(name, "Status")
+        || FIELD_RULES
+            .alias_target(name)
+            .is_some_and(|target| unicode_eq_ignore_case(target, "Status"));
+    names_status
+        && (is_reserved_field(name)
+            || !jira_fields
+                .iter()
+                .any(|field| unicode_eq_ignore_case(&field.name, name)))
+}
+
 /// Reserved fields the create path consumes through the typed request struct;
 /// dropping them from "extra" is expected and must stay silent.
 const CREATE_HANDLED_FIELDS: &[&str] = &["priority", "type", "issuetype"];
 
 /// Reserved fields the update path consumes through the typed request struct.
-/// Status/state never legitimately reach `resolve_extra_fields` on this path:
-/// `CustomFieldUpdate::State` is partitioned out upstream and routed to the
-/// /transitions endpoint, so a status-named field seen here was mistyped
-/// (e.g. SingleEnum) and is about to be dropped.
+/// Status/state never reach `resolve_extra_fields` on this path: every
+/// update [`is_status_update`] accepts, whatever its type, is partitioned
+/// out upstream and routed to the /transitions endpoint.
 const UPDATE_HANDLED_FIELDS: &[&str] = &["priority", "assignee"];
 
 /// Warning for a reserved-name field that is about to be silently dropped, or
@@ -1054,6 +1098,61 @@ pub fn resolve_extra_fields(
 mod tests {
     use super::*;
     use tracker_core::{CreateIssue, UpdateIssue};
+
+    /// Every name validation places on Status through [`FIELD_RULES`] is a
+    /// status change on the write path, whatever the update's type.
+    #[test]
+    fn status_aliases_in_the_rules_are_status_updates() {
+        let field = |id: &str, name: &str, custom: bool| JiraField {
+            id: id.to_string(),
+            name: name.to_string(),
+            custom,
+            schema: None,
+        };
+        // /field lists the system Status field and a custom "State" field.
+        let jira_fields = vec![
+            field("status", "Status", false),
+            field("customfield_1", "State", true),
+        ];
+        let schema = get_standard_custom_fields();
+        let single = |name: &str| CustomFieldUpdate::SingleEnum {
+            name: name.to_string(),
+            value: "Done".to_string(),
+        };
+
+        let mut names = vec!["Status", "status"];
+        names.extend(
+            FIELD_RULES
+                .name_aliases
+                .iter()
+                .filter(|(_, target)| *target == "Status")
+                .map(|(alias, _)| *alias),
+        );
+        for &(alias, target) in tracker_core::validation::STATE_FIELD_ALIASES {
+            assert!(
+                FIELD_RULES.name_aliases.contains(&(alias, target)),
+                "{alias}"
+            );
+        }
+        for name in names {
+            let placed = tracker_core::validation::resolve_field(&FIELD_RULES, &schema, name)
+                .map(|f| f.name.as_str());
+            assert_eq!(placed, Some("Status"), "{name}");
+            assert!(is_status_update(&single(name), &jira_fields), "{name}");
+        }
+        // Any state update is one, whatever its name.
+        let state = CustomFieldUpdate::State {
+            name: "Workflow".to_string(),
+            value: "Done".to_string(),
+        };
+        assert!(is_status_update(&state, &[]));
+        // A custom field named like a non-reserved alias is that field.
+        assert!(!is_status_update(
+            &single("Stage"),
+            &[field("customfield_2", "Stage", true)]
+        ));
+        assert!(!is_status_update(&single("Priority"), &jira_fields));
+    }
 
     #[test]
     fn create_issue_to_jira_maps_parent() {
@@ -1557,6 +1656,7 @@ mod tests {
                 required: false,
                 values: vec![],
                 state_values: vec![],
+                values_complete: false,
             },
             ProjectCustomField {
                 id: "customfield_10016".to_string(),
@@ -1565,6 +1665,7 @@ mod tests {
                 required: false,
                 values: vec![],
                 state_values: vec![],
+                values_complete: false,
             },
         ];
         let merged = merge_fields(standard, instance);

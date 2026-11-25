@@ -57,6 +57,9 @@ struct IncludeWarning {
 struct InspectError {
     id: String,
     error: String,
+    /// Stable code of the failure, when the backend reported a typed one
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 /// Result of inspecting one issue: a flattened issue object (success) or an
@@ -73,6 +76,15 @@ struct JsonlSuccess<'a> {
     success: bool,
     #[serde(flatten)]
     issue: &'a Map<String, Value>,
+}
+
+/// JSONL failure line: a `success` flag plus the same fields, with the same
+/// omissions, as the error's entry in the report's `errors` array.
+#[derive(Serialize)]
+struct JsonlFailure<'a> {
+    success: bool,
+    #[serde(flatten)]
+    error: &'a InspectError,
 }
 
 pub(crate) fn handle_inspect(
@@ -151,6 +163,7 @@ pub(crate) fn handle_inspect(
                 Err(e) => InspectOutcome::Failure(InspectError {
                     id,
                     error: e.to_string(),
+                    code: Some(e.code()),
                 }),
             };
             record(outcome)?;
@@ -198,6 +211,7 @@ fn inspect_issue(
             return InspectOutcome::Failure(InspectError {
                 id: id.to_string(),
                 error: "Failed to serialize issue".to_string(),
+                code: None,
             });
         }
     };
@@ -331,6 +345,7 @@ fn include_failure(id: &str, include: &str, error: TrackerError) -> InspectOutco
     InspectOutcome::Failure(InspectError {
         id: id.to_string(),
         error: format!("Failed to fetch {include}: {error}"),
+        code: Some(error.code()),
     })
 }
 
@@ -471,15 +486,14 @@ fn output_report_json(
 /// immediately so `--jsonl` streams results as they are processed.
 fn output_jsonl_line(outcome: &InspectOutcome) -> Result<()> {
     let line = match outcome {
-        InspectOutcome::Success(obj) => serde_json::to_string(&JsonlSuccess {
+        InspectOutcome::Success(obj) => crate::output::jsonl_line(&JsonlSuccess {
             success: true,
             issue: obj,
         })?,
-        InspectOutcome::Failure(err) => serde_json::to_string(&serde_json::json!({
-            "success": false,
-            "id": err.id,
-            "error": err.error,
-        }))?,
+        InspectOutcome::Failure(err) => crate::output::jsonl_line(&JsonlFailure {
+            success: false,
+            error: err,
+        })?,
     };
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{}", line)?;
@@ -722,6 +736,7 @@ mod tests {
             InspectOutcome::Failure(InspectError {
                 id: "X-1".to_string(),
                 error: "boom".to_string(),
+                code: None,
             }),
             InspectOutcome::Success(Map::new()),
         ];
@@ -731,5 +746,29 @@ mod tests {
         });
         assert_eq!((succeeded, failed), (2, 1));
         assert_eq!(outcomes.len(), 3);
+    }
+
+    #[test]
+    fn a_jsonl_failure_line_has_the_shape_of_its_errors_entry() {
+        for code in [None, Some("issue_not_found")] {
+            let error = InspectError {
+                id: "X-1".to_string(),
+                error: "boom".to_string(),
+                code,
+            };
+            let mut entry = serde_json::to_value(&error).unwrap();
+            let line = serde_json::to_value(JsonlFailure {
+                success: false,
+                error: &error,
+            })
+            .unwrap();
+            entry
+                .as_object_mut()
+                .unwrap()
+                .insert("success".to_string(), false.into());
+            assert_eq!(line, entry);
+            // A missing code is left out, as in the `errors` array.
+            assert_eq!(line.get("code").is_some(), code.is_some(), "{line}");
+        }
     }
 }

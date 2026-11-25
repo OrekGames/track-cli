@@ -1,0 +1,4 @@
+# Keep a developer's own agent setup out of the test suite: tests assert on
+# the default text output, and `track agent install` exports TRACK_OUTPUT.
+[env]
+TRACK_OUTPUT = { value = "", force = true }
